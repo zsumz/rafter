@@ -111,6 +111,15 @@ pub(super) struct CommittedConfigurationCrossing {
     /// reached.
     pub(super) index: LogIndex,
     pub(super) term: Term,
+    /// The membership in effect immediately before this entry, as the kernel
+    /// computed it at the crossing.
+    ///
+    /// Carried rather than re-derived for the reason
+    /// [`rafter::Output::ConfigurationCommitted`] carries it: the difference
+    /// between the two memberships is only chronological where the log is, and
+    /// nothing above the kernel can recover which of its own past states stood
+    /// at a historical index.
+    pub(super) previous: MembershipConfig,
     pub(super) membership: MembershipConfig,
 }
 

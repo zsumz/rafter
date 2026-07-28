@@ -359,6 +359,9 @@ fn typed_step_group_rejects_membership_events_for_another_group() {
         group_id: 2,
         index: LogIndex(5),
         term: Term(1),
+        previous: MembershipConfig::stable(
+            MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("valid membership"),
+        ),
         membership: MembershipConfig::stable(
             MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("valid membership"),
         ),

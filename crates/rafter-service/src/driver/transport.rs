@@ -57,7 +57,7 @@ mod state;
 mod waiters;
 
 pub use bounds::TransportDriverOptions;
-pub use checkpoint::PeerControlPlaneCheckpoint;
+pub use checkpoint::{CurrentCommittedState, PeerControlPlaneCheckpoint};
 pub use error::InboundEnvelopeError;
 pub use state::DriverServiceState;
 
@@ -230,41 +230,30 @@ where
                 refused_non_member_frames: 0,
                 effective_members: BTreeSet::new(),
                 committed_members: BTreeSet::new(),
-                live_committed_members: BTreeSet::new(),
+                current_committed: None,
                 committed_id_high_water: None,
                 published_peers: None,
                 pending_fences: BTreeSet::new(),
-                committed_crossings_through: None,
-                committed_endpoint_through: None,
                 checkpoint_epoch: 0,
                 shutting_down: false,
             })),
         };
         // Before everything below, and that order is the contract: the spent
-        // test reads the recovered mark and the recovered live set together, and
-        // a membership fact derived ahead of them would be derived against state
-        // the crash erased. It also installs the consumer offset the replay
-        // below is filtered against.
+        // test reads the recovered mark and the recovered current state
+        // together, and a membership fact derived ahead of them would be derived
+        // against state the crash erased.
         driver
             .inner
             .lock()
             .restore_control_plane_checkpoint(checkpoint)
             .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
-        // **The history, then the endpoint.** The recovery outputs are the
-        // committed configurations this replica crossed, oldest first, and every
-        // one of them is older than the committed membership the recovered
-        // runtime reports. Publishing the endpoint first made each of them a
-        // *removal* of everything the endpoint had that they did not — so a
-        // restart retired the replicas the cluster had most recently admitted,
-        // permanently, and the spent filter meant the very next crossing could
-        // not give them back.
-        //
-        // Order alone is not the whole fix and this order is not load-bearing on
-        // its own: each fact is gated on the checkpoint's consumer offset, so a
-        // second recovery over the same durable state skips the history it has
-        // already folded in rather than re-deriving it against a live set that
-        // has moved. What order still buys is that a *first* recovery, with no
-        // offset to gate on, folds the stream in the direction it happened.
+        // **The history, then the endpoint**, which is now a preference rather
+        // than a correctness requirement and is kept for what it still buys.
+        // Each recovery output carries its own transition, so folding one out of
+        // order proves the same removals it would in order; what this order
+        // gives is that the driver's current committed state ends level with the
+        // runtime rather than at the last entry replayed, without depending on
+        // the endpoint being the later position.
         if !recovery_outputs.is_empty() {
             driver
                 .inner

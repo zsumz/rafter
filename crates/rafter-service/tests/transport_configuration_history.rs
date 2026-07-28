@@ -122,12 +122,12 @@ fn one_append_crossing_two_configurations_spends_the_intermediate_identity() {
         "the intermediate configuration raised the mark, so node 5 is allocated"
     );
     assert_eq!(
-        checkpoint.live_committed_members,
+        live_of(&checkpoint),
         [NodeId(1), NodeId(2), NodeId(3)].into_iter().collect(),
         "and the configuration that removed it took it back out of the live set"
     );
     assert!(
-        !checkpoint.live_committed_members.contains(&NodeId(5)),
+        !live_of(&checkpoint).contains(&NodeId(5)),
         "node 5 is spent: at or below the mark and not live"
     );
 
@@ -232,7 +232,7 @@ fn a_multi_configuration_step_is_reported_in_index_order() {
         "the mark is the highest identity any crossed configuration named"
     );
     assert_eq!(
-        checkpoint.live_committed_members,
+        live_of(&checkpoint),
         [NodeId(1), NodeId(2), NodeId(3), NodeId(5)]
             .into_iter()
             .collect(),
@@ -274,7 +274,7 @@ fn a_single_crossed_configuration_still_retires_exactly_what_left() {
     let checkpoint = driver.control_plane_checkpoint();
     assert_eq!(checkpoint.committed_id_high_water, Some(NodeId(3)));
     assert_eq!(
-        checkpoint.live_committed_members,
+        live_of(&checkpoint),
         [NodeId(1), NodeId(2)].into_iter().collect()
     );
     assert!(transport.is_fenced(NodeId(3)));
@@ -303,7 +303,7 @@ fn recommitting_the_same_membership_retires_nothing() {
     let checkpoint = driver.control_plane_checkpoint();
     assert_eq!(checkpoint.committed_id_high_water, Some(NodeId(3)));
     assert_eq!(
-        checkpoint.live_committed_members,
+        live_of(&checkpoint),
         [NodeId(1), NodeId(2), NodeId(3)].into_iter().collect()
     );
     assert_eq!(driver.pending_peer_fences(), 0);
@@ -354,9 +354,9 @@ fn an_undecodable_entry_does_not_hide_the_configurations_committed_behind_it() {
         "the admission raised the mark even though the step failed"
     );
     assert!(
-        !checkpoint.live_committed_members.contains(&NodeId(5)),
+        !live_of(&checkpoint).contains(&NodeId(5)),
         "and the removal behind it spent the identity: {:?}",
-        checkpoint.live_committed_members
+        live_of(&checkpoint)
     );
     assert_eq!(
         checkpoint.pending_fences,
@@ -365,7 +365,7 @@ fn an_undecodable_entry_does_not_hide_the_configurations_committed_behind_it() {
     );
     assert_eq!(driver.pending_peer_fences(), 1);
     assert_eq!(
-        driver.control_plane_checkpoint().live_committed_members,
+        live_of(&driver.control_plane_checkpoint()),
         [NodeId(1), NodeId(2), NodeId(3)].into_iter().collect()
     );
 }

@@ -150,9 +150,12 @@ fn membership_add_learner_reports_applied_membership() {
                 group_id: 7,
                 index,
                 term,
+                previous,
                 membership,
             } if *index > LogIndex::ZERO
                 && !term.is_zero()
+                && previous.contains_voter(NodeId(1))
+                && !previous.contains_learner(NodeId(2))
                 && membership.contains_voter(NodeId(1))
                 && membership.contains_learner(NodeId(2))
         )),

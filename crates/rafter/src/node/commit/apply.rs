@@ -1,6 +1,6 @@
 //! Commit-index advancement and ordered application output.
 
-use crate::{LogEntryKind, MembershipConfig};
+use crate::{LogEntryKind, LogIndex, MembershipConfig};
 
 use super::super::{Node, Output, Role};
 use super::tracker::CommitTracker;
@@ -96,11 +96,34 @@ impl Node {
                 outputs.push(Output::ConfigurationCommitted {
                     index,
                     term: entry_term,
+                    previous: self.membership_before(index),
                     configuration,
                 });
                 self.step_down_if_removed(&membership, outputs);
             }
         }
+    }
+
+    /// The membership in effect immediately before the entry at `index`.
+    ///
+    /// **The half of a committed transition only this walk can supply**, and the
+    /// reason [`Output::ConfigurationCommitted`] carries a transition rather
+    /// than a state. Here the answer is a lookup against the log this node
+    /// holds; at a consumer it would be a guess about which of its own past
+    /// states corresponds to a historical index, and a consumer replaying old
+    /// entries against a newer state guesses wrong in the direction that retires
+    /// live replicas.
+    ///
+    /// Total by construction, through the three layers
+    /// [`Node::membership_at_index`](crate::Node::membership_at_index) already
+    /// resolves in order: the newest configuration entry strictly below `index`,
+    /// then the boundary configuration of an installed snapshot, then the
+    /// bootstrap membership. `index` is at least
+    /// [`LogIndex::ZERO`](crate::LogIndex)`.next()` here — the walk reads
+    /// `applied_index.next()` and the applied index is never negative — so the
+    /// subtraction below cannot underflow.
+    fn membership_before(&self, index: LogIndex) -> MembershipConfig {
+        self.membership_at_index(LogIndex(index.0.saturating_sub(1)))
     }
 
     fn step_down_if_removed(

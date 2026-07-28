@@ -630,3 +630,20 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
         }
     }
 }
+
+/// The committed membership a recovered record calls live.
+///
+/// A record's current state is one value — a position and the membership
+/// observed there — so reading the membership out is one hop rather than a
+/// field. Shared because four suites ask the same question, and because writing
+/// it inline in each invites a fifth to read the position and the membership
+/// from different records.
+pub(crate) fn live_of<G>(
+    checkpoint: &rafter_service::PeerControlPlaneCheckpoint<G>,
+) -> std::collections::BTreeSet<NodeId> {
+    checkpoint
+        .current_committed
+        .as_ref()
+        .map(|current| current.membership.clone())
+        .unwrap_or_default()
+}

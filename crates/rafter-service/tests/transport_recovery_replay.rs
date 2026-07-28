@@ -19,9 +19,9 @@
 //! admitted, permanently, and the spent filter meant the very next crossing —
 //! the one that re-names them — could not give them back.
 //!
-//! So a checkpoint carries a consumer offset beside the retirement record, the
-//! two move together, and a crossing at or below it is a fact this driver has
-//! already incorporated rather than news.
+//! So each crossing carries the transition the kernel computed where the
+//! chronology is known, and a replayed one proves exactly the removals it
+//! proved the first time — from any state, in any order, however many times.
 
 mod support;
 
@@ -32,8 +32,9 @@ use rafter::{
 use rafter_app::group::RaftGroup;
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
-    AuthenticatedPeerEnvelope, ControlPlaneCheckpointError, DriverServiceState, ManagedDriverError,
-    PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver,
+    AuthenticatedPeerEnvelope, ControlPlaneCheckpointError, CurrentCommittedState,
+    DriverServiceState, ManagedDriverError, PeerControlPlaneCheckpoint, TransportDriverOptions,
+    TransportRaftDriver,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
@@ -52,16 +53,24 @@ fn stable(config_id: u64, node_ids: &[u64]) -> ConfigurationEntry {
 
 /// The applied floor this replica's state machine opens at.
 ///
-/// One application entry below the configurations, so the recovery replay starts
-/// *above* it and the two configuration entries are the whole of what it
-/// replays.
+/// One entry below the two configurations under test, so the recovery replay
+/// starts *above* it and those two are the whole of what it replays.
 const APPLIED_FLOOR: LogIndex = LogIndex(1);
 
-/// One replica's durable state: a seeded application entry, then two committed
-/// configurations above it.
+/// The configuration the histories below start from.
 ///
-/// The application entry is what the applied floor sits on, so the two
-/// configurations are the whole of what recovery replays.
+/// **A configuration entry rather than the replica's bootstrap membership**, and
+/// that is what makes these fixtures state a history a cluster produces. A
+/// committed configuration is a transition from whatever stood immediately
+/// before it, and with nothing beneath index 2 that predecessor would be the
+/// static membership each [`NodeConfig`] declares — which always names the local
+/// replica. The node-5 variants below would then open on a log whose first
+/// committed configuration *removes* node 5, which is the opposite of the
+/// history they mean to state.
+const STARTS_FROM: &[u64] = &[1, 2, 3];
+
+/// One replica's durable state: the starting configuration, then the two
+/// committed configurations under test above it.
 fn durable_state(
     configurations: [&[u64]; 2],
 ) -> (InMemoryRaftHardStateStore, InMemoryRaftLogSegment) {
@@ -77,7 +86,7 @@ fn durable_state(
     let mut log_segment = InMemoryRaftLogSegment::new();
     log_segment
         .append_entries(&[
-            PersistedRaftLogEntry::application(LogIndex(1), Term(1), b"seed\nvalue".to_vec()),
+            PersistedRaftLogEntry::configuration(LogIndex(1), Term(1), stable(0, STARTS_FROM)),
             PersistedRaftLogEntry::configuration(
                 LogIndex(2),
                 Term(1),
@@ -291,7 +300,7 @@ fn a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added() {
 
     let checkpoint = driver.control_plane_checkpoint();
     assert_eq!(
-        checkpoint.live_committed_members,
+        live_of(&checkpoint),
         [NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5)]
             .into_iter()
             .collect(),
@@ -442,7 +451,7 @@ fn a_second_recovery_does_not_make_a_still_committed_local_replica_a_non_member(
     );
 }
 
-/// A final retirement record with no consumer offset is refused before it can
+/// A retirement record with no current committed state is refused before it can
 /// fence a live member.
 ///
 /// **The replay bug, resurrected through a checkpoint shape.** The record here
@@ -468,12 +477,9 @@ fn a_second_recovery_does_not_make_a_still_committed_local_replica_a_non_member(
 /// reason, and until this clause existed the driver accepted the same semantic
 /// shape from any embedder that reached it another way.
 #[test]
-fn a_final_retirement_record_with_no_cursor_is_refused_before_any_transport_call() {
+fn a_retirement_record_with_no_current_state_is_refused_before_any_transport_call() {
     let mut final_state = PeerControlPlaneCheckpoint::empty(GROUP);
     final_state.committed_id_high_water = Some(NodeId(5));
-    final_state.live_committed_members = [NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5)]
-        .into_iter()
-        .collect();
 
     let (refused, transport) = try_recover_node_with(
         NodeId(1),
@@ -486,11 +492,11 @@ fn a_final_retirement_record_with_no_cursor_is_refused_before_any_transport_call
         matches!(
             refused,
             Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
-                reason: ControlPlaneCheckpointError::CommittedStateWithoutEndpoint
+                reason: ControlPlaneCheckpointError::RetirementWithoutCurrentState
             })
         ),
-        "a record that says what it retired and not how far it read is not a \
-         record a driver wrote: got {:?}",
+        "a record that says what it retired and names no committed membership to \
+         read it against is not a record a driver wrote: got {:?}",
         refused.map(|_| "a driver")
     );
     assert!(
@@ -505,68 +511,53 @@ fn a_final_retirement_record_with_no_cursor_is_refused_before_any_transport_call
     );
 }
 
-/// A consumer offset with nothing retired beside it is refused too, whichever
-/// offset it is.
+/// A current committed state with nothing retired beside it is refused too.
 ///
-/// The opposite separation, and the quiet one. The offset says the committed
-/// configuration stream has been consumed through index 3, so recovery skips
-/// both crossings — and with no mark and no live set there is nothing they were
-/// folded into. Here the history admits node 5 and removes it again, so the
-/// endpoint carries no trace of it either: absorbed, this record starts a
-/// replica that has forgotten an identity the cluster spent, with no fence owed
-/// and no later fact to re-derive one from.
+/// The opposite separation, and the quiet one. The record names a committed
+/// membership it claims to have observed, and observing one raises a mark to at
+/// least its greatest identity — so a record holding the observation and no mark
+/// has had its retirement half truncated away. Here the history admits node 5
+/// and removes it again, so the endpoint carries no trace of it either:
+/// absorbed, this record starts a replica that has forgotten an identity the
+/// cluster spent, with no fence owed and no later fact to re-derive one from.
 ///
-/// **Both offsets are checked, because the two clauses are not the same clause.**
-/// The endpoint one is a biconditional and would catch an orphaned endpoint on
-/// its own; an orphaned *crossing* offset satisfies it vacuously — retirement
-/// state and endpoint offset both absent — and needs a clause of its own.
-///
-/// Refusing costs nothing either way, because no driver can produce them: a
-/// committed configuration names at least one replica, so a fold that advanced
-/// any offset raised a mark in the same call.
+/// Refusing costs nothing, because no driver can produce it: a committed
+/// configuration names at least one replica, so an observation that assigned the
+/// current state raised a mark in the same call.
 #[test]
-fn a_consumer_offset_with_nothing_retired_beside_it_is_refused() {
-    let cases = [
-        (
-            ControlPlaneCheckpointError::EndpointWithoutCommittedState,
-            true,
+fn a_current_state_with_nothing_retired_beside_it_is_refused() {
+    let mut orphaned = PeerControlPlaneCheckpoint::empty(GROUP);
+    orphaned.current_committed = Some(CurrentCommittedState::new(
+        LogIndex(3),
+        [NodeId(1), NodeId(2), NodeId(3)].into_iter().collect(),
+    ));
+
+    let (refused, transport) = try_recover_node_with(
+        NodeId(1),
+        &[NodeId(2), NodeId(3)],
+        orphaned,
+        ADMIT_THEN_REMOVE,
+    );
+
+    assert!(
+        matches!(
+            &refused,
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::CurrentStateWithoutRetirement
+            })
         ),
-        (
-            ControlPlaneCheckpointError::CrossingsWithoutCommittedState,
-            false,
-        ),
-    ];
-
-    for (expected, is_endpoint) in cases {
-        let mut orphaned_offset = PeerControlPlaneCheckpoint::empty(GROUP);
-        if is_endpoint {
-            orphaned_offset.committed_endpoint_through = Some(LogIndex(3));
-        } else {
-            orphaned_offset.committed_crossings_through = Some(LogIndex(3));
-        }
-
-        let (refused, transport) = try_recover_node_with(
-            NodeId(1),
-            &[NodeId(2), NodeId(3)],
-            orphaned_offset,
-            ADMIT_THEN_REMOVE,
-        );
-
-        assert!(
-            matches!(
-                &refused,
-                Err(ManagedDriverError::InvalidControlPlaneCheckpoint { reason })
-                    if *reason == expected
-            ),
-            "an offset with no retirement record behind it skips the history and \
-             keeps nothing from it: got {:?}",
-            refused.map(|_| "a driver")
-        );
-        assert!(
-            transport.peer_sets().is_empty(),
-            "and nothing was published from a record that installs nothing"
-        );
-    }
+        "got {:?}",
+        refused.map(|_| "a driver")
+    );
+    assert!(
+        transport.peer_sets().is_empty(),
+        "the refusal landed before the link layer was told anything"
+    );
+    assert!(
+        transport.fence_attempts().is_empty(),
+        "and before any fence was attempted: {:?}",
+        transport.fence_attempts()
+    );
 }
 
 /// A restart still spends an identity its replayed history admitted and removed.
@@ -597,12 +588,12 @@ fn a_restart_still_spends_an_identity_the_replayed_history_admitted_and_removed(
          endpoint does not name node 5"
     );
     assert!(
-        !checkpoint.live_committed_members.contains(&NodeId(5)),
+        !live_of(&checkpoint).contains(&NodeId(5)),
         "and the removal behind it spent the identity: {:?}",
-        checkpoint.live_committed_members
+        live_of(&checkpoint)
     );
     assert_eq!(
-        checkpoint.live_committed_members,
+        live_of(&checkpoint),
         [NodeId(1), NodeId(2), NodeId(3)].into_iter().collect()
     );
     assert!(
@@ -647,9 +638,9 @@ fn an_adoption_still_spends_an_identity_its_recovery_outputs_admitted_and_remove
         "the admission the recovery outputs carried raised the mark"
     );
     assert!(
-        !checkpoint.live_committed_members.contains(&NodeId(5)),
+        !live_of(&checkpoint).contains(&NodeId(5)),
         "and the removal behind it spent the identity: {:?}",
-        checkpoint.live_committed_members
+        live_of(&checkpoint)
     );
     assert!(
         transport.is_fenced(NodeId(5)),

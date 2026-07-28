@@ -151,12 +151,6 @@ pub enum ControlPlaneCheckpointError {
     /// installing it would raise this group's mark past identities it has never
     /// committed, refusing replicas it has.
     ForeignGroup,
-    /// The checkpoint names live committed members but no high-water mark.
-    ///
-    /// The two are read together by the spent test, and a live set without a
-    /// mark is a state no driver produces: an observed committed configuration
-    /// always raises the mark to at least its own greatest identity.
-    LiveMembersWithoutMark { node_id: NodeId },
     /// A live committed member sits above the checkpoint's high-water mark.
     ///
     /// Also a state no driver produces, for the same reason, and the dangerous
@@ -164,14 +158,14 @@ pub enum ControlPlaneCheckpointError {
     /// so a lowered mark is how a corrupted record un-retires everything above
     /// it.
     LiveMemberAboveMark { node_id: NodeId, mark: NodeId },
-    /// A pending fence names a replica the checkpoint also calls live.
+    /// A pending fence names a replica the checkpoint's current state also calls
+    /// live.
     ///
     /// Contradictory by construction: a fence is licensed only by a committed
-    /// removal, and a committed removal is precisely what takes the identity out
-    /// of the live set. Honest checkpoints cannot contain this because the
-    /// driver adds to `pending_fences` from the difference the same assignment
-    /// removes from the live set. Installing it would ask the link layer to
-    /// permanently fence a replica the group still needs.
+    /// removal, and a removal is subtracted from the current state's membership
+    /// in the same call that owes the fence, whatever position the removal
+    /// arrived at. Installing it would ask the link layer to permanently fence a
+    /// replica the group still needs.
     FenceNamesLiveMember { node_id: NodeId },
     /// A pending fence names an identity the checkpoint never saw spent.
     ///
@@ -187,63 +181,44 @@ pub enum ControlPlaneCheckpointError {
     /// replica to the link layer and then permanently fences it — which
     /// [`crate::RaftTransport::fence_peer`] cannot undo.
     FenceNamesUnspentIdentity { node_id: NodeId },
-    /// The checkpoint carries retirement state and no endpoint offset.
+    /// The checkpoint carries retirement state and no current committed state.
     ///
-    /// **The one shape that resurrects the replay bug through a valid-looking
-    /// record.** Both offsets move with the retirement record and never apart
-    /// from it — every committed fact that touches the mark, the live set, or
-    /// the obligations advances its own offset in the same call — and the
-    /// endpoint offset is the one that must always be there: every driver that
-    /// folded anything was constructed or adopted, and both entry points publish
-    /// an endpoint fact unconditionally. So a record holding retirement state
-    /// without one was not produced by a driver.
+    /// **The dangerous half of the coupling, and it is not subtle.** The spent
+    /// test reads the mark against the current membership, so a mark standing
+    /// beside nothing spends every identity at or below it — the whole cluster —
+    /// and the driver refuses every replica it has.
     ///
-    /// Absorbed rather than refused, it is worse than a corruption that names
-    /// the wrong replica. It leaves the endpoint fold ungated, so the next
-    /// adoption takes a fresh retirement diff between a rebuilt runtime's
-    /// committed configuration and a live set that has already moved past it — a
-    /// commit index is volatile, the rebuilt runtime can legitimately be behind,
-    /// and everything the newer configurations added is retired and permanently
-    /// fenced. It is also exactly what a migration of an older single-offset
-    /// file would produce, which is why that migration is refused rather than
-    /// performed.
+    /// Not producible: every observation of a committed configuration raises the
+    /// mark and assigns the current state in the same call, because a first
+    /// observation is always the latest one a record has. A committed
+    /// configuration always names at least one replica —
+    /// [`rafter::MembershipSet`] refuses an empty voter set — so there is no
+    /// observation that raises one without the other.
+    RetirementWithoutCurrentState,
+    /// The checkpoint carries a current committed state and no retirement state.
     ///
-    /// The variant is separate from [`ControlPlaneCheckpointError::LiveMembersWithoutMark`]
-    /// because the two say different things to an operator holding the file: that
-    /// one is a record whose halves disagree about *identities*, and this one is a
-    /// record that is silent about *where it last looked*.
-    CommittedStateWithoutEndpoint,
-    /// The checkpoint carries an endpoint offset and no retirement state.
+    /// The other half, and the quieter loss. A membership this record claims to
+    /// have observed is one whose greatest identity would have raised a mark, so
+    /// a record holding the observation and no mark has had its retirement half
+    /// truncated away. Absorbed, every identity the lost facts spent is
+    /// allocatable again with no fence owed and no later fact to re-derive one
+    /// from.
+    CurrentStateWithoutRetirement,
+    /// Two records disagree about the committed membership at one position.
     ///
-    /// The opposite loss and the quieter one. An offset says "the committed
-    /// configuration was observed at this index and folded in", so recovery
-    /// skips exactly that observation — and with an empty mark and live set
-    /// beside it, there is nothing it was folded *into*. Every identity the
-    /// skipped facts spent silently becomes allocatable again, with no fence
-    /// owed for any of them and no later fact to re-derive one from.
+    /// The join picks the later of two current states, and a tie it cannot break
+    /// is refused rather than broken arbitrarily: the committed membership at
+    /// one log position is one set, so this is not two observations to reconcile
+    /// but two claims about a single fact. Picking either would be choosing
+    /// which record to believe with nothing to decide on, and merging them would
+    /// invent a third that neither record ever held.
     ///
-    /// Not producible either, and for a reason worth stating rather than
-    /// assuming: a committed configuration always names at least one replica —
-    /// [`rafter::MembershipSet`] refuses an empty voter set — so a driver that
-    /// advanced either offset raised its mark in the same call. A consumed
-    /// offset beside no mark is a state no correct cluster can put a driver in.
-    EndpointWithoutCommittedState,
-    /// The checkpoint carries a crossing offset and no retirement state.
-    ///
-    /// The same loss as [`ControlPlaneCheckpointError::EndpointWithoutCommittedState`],
-    /// arriving through the other offset, and it needs a clause of its own
-    /// rather than falling out of the endpoint biconditional. A record with
-    /// neither retirement state nor an endpoint offset satisfies
-    /// `retired ⟺ endpoint` exactly — both sides are absent — so the endpoint
-    /// clause says nothing about the crossing offset sitting beside them.
-    ///
-    /// Absorbed, it makes recovery skip every crossing at or below that index
-    /// with no record of what those configurations spent. The reverse shape — a
-    /// full retirement record with an endpoint offset and **no** crossing offset
-    /// — is deliberately *not* an error: that is a first incarnation over a
-    /// fresh cluster, or a process that recovered from a snapshot, and it is the
-    /// shape splitting the offsets exists to represent honestly.
-    CrossingsWithoutCommittedState,
+    /// Unreachable for a cluster that keeps the single-use contract. Each
+    /// record's membership is its observation less the identities it saw a
+    /// committed removal spend, and under the contract no spent identity is
+    /// named again at a later position — so two records that looked at the same
+    /// position filtered the same nothing and agree.
+    ContradictoryCurrentState { through: LogIndex },
 }
 
 impl fmt::Display for ControlPlaneCheckpointError {
@@ -252,10 +227,6 @@ impl fmt::Display for ControlPlaneCheckpointError {
             Self::ForeignGroup => {
                 formatter.write_str("the checkpoint was written for a different group")
             }
-            Self::LiveMembersWithoutMark { node_id } => write!(
-                formatter,
-                "the checkpoint names live member {node_id} with no high-water mark"
-            ),
             Self::LiveMemberAboveMark { node_id, mark } => write!(
                 formatter,
                 "the checkpoint's live member {node_id} is above its high-water mark {mark}"
@@ -269,20 +240,18 @@ impl fmt::Display for ControlPlaneCheckpointError {
                 "the checkpoint fences {node_id} without ever having seen a committed \
                  configuration that named it"
             ),
-            Self::CommittedStateWithoutEndpoint => formatter.write_str(
-                "the checkpoint records what it retired and not where it last observed \
-                 the committed configuration, so a recovery would re-fold the runtime's \
-                 endpoint against it",
+            Self::RetirementWithoutCurrentState => formatter.write_str(
+                "the checkpoint records what it retired and no committed membership to \
+                 read it against, so every identity at or below its mark would be spent",
             ),
-            Self::EndpointWithoutCommittedState => formatter.write_str(
-                "the checkpoint records where it last observed the committed \
-                 configuration and nothing it retired, so a recovery would skip that \
-                 observation with no record of what it spent",
+            Self::CurrentStateWithoutRetirement => formatter.write_str(
+                "the checkpoint records a committed membership and no high-water mark, \
+                 so the observation that produced it has been lost along with what it \
+                 spent",
             ),
-            Self::CrossingsWithoutCommittedState => formatter.write_str(
-                "the checkpoint records how far it read the crossing history and nothing \
-                 it retired, so a recovery would skip that history with no record of what \
-                 it spent",
+            Self::ContradictoryCurrentState { through } => write!(
+                formatter,
+                "two records disagree about the committed membership at index {through}"
             ),
         }
     }

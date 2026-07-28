@@ -180,11 +180,14 @@ impl InitializedNode {
                 Output::ConfigurationCommitted {
                     index,
                     term,
+                    previous,
                     configuration,
                 } => eprintln!(
-                    "configuration committed index={index} term={term} config={} phase={}",
+                    "configuration committed index={index} term={term} config={} phase={} \
+                     voters_before={:?}",
                     configuration.config_id(),
-                    configuration.phase()
+                    configuration.phase(),
+                    previous.voter_ids()
                 ),
                 Output::LocalProposalAppended { .. }
                 | Output::LocalProposalDropped { .. }

@@ -1,29 +1,30 @@
 #![allow(clippy::wildcard_imports)]
 
-//! The committed floor a driver publishes, and what keeps it level with the
-//! runtime while the cursor says the history is old news.
+//! The committed floor a driver publishes, and why it is not part of the
+//! retirement record.
 //!
-//! Sibling of [`transport_recovery_replay`], split along the line between the
-//! two questions a committed configuration answers. That file asks what a
-//! restart may *fold* — which identities a replayed history spends, and how a
-//! consumer offset keeps a fact from being folded twice. This one asks what the
-//! driver may *publish*: the raw committed membership the peer set and the
-//! inbound check read as the floor an uncommitted change cannot narrow past.
+//! Sibling of [`transport_committed_transition`], split along the line between
+//! the two questions a committed configuration answers. That file asks what a
+//! restart may *conclude*: which identities a replayed history spends, and which
+//! of two observations of the current membership this driver believes. This one
+//! asks what the driver may *publish* — the raw committed membership the peer
+//! set and the inbound check read as the floor an uncommitted change cannot
+//! narrow past.
 //!
-//! The two came apart at the one lifecycle cell where the cursor is ahead of the
-//! runtime. A checkpoint's cursor is a position in the committed configuration
-//! stream and a rebuilt runtime's commit index is volatile, so a supervisor
-//! handing a replica's durable record to a runtime that recovered *behind* it is
-//! ordinary rather than exotic — the public contract says a stale checkpoint is
-//! a legal input, and says nothing that would make an *ahead* one illegal.
+//! The two came apart at the one lifecycle cell where a handed-over record
+//! stands *ahead* of the runtime it is joined into. A rebuilt runtime's commit
+//! index is volatile, so a supervisor handing a replica's durable record to a
+//! runtime that recovered behind it is ordinary rather than exotic — the public
+//! contract says a stale checkpoint is a legal input, and says nothing that
+//! would make an ahead one illegal.
 //!
-//! Under that cursor every step-path committed fact is gated: the crossing the
-//! catch-up produces stands below the cursor, so its retirement fold correctly
-//! does not run, and the raw floor rode along with the fold. The floor is not a
-//! fold. It is the answer to "what does the cluster have committed now", the
-//! cursor has no opinion about that, and a floor left at the pre-catch-up
-//! configuration de-authorized every replica the catch-up admitted the moment an
-//! uncommitted narrowing arrived over it.
+//! Under such a record the retirement derivations correctly conclude nothing
+//! from the runtime's older observations, and the raw floor used to ride along
+//! with them. The floor is not a conclusion. It is the answer to "what does this
+//! replica's own stream say the cluster has committed now", a durable record has
+//! no opinion about that, and a floor left at the pre-catch-up configuration
+//! de-authorized every replica the catch-up admitted the moment an uncommitted
+//! narrowing arrived over it.
 
 mod support;
 
@@ -34,8 +35,8 @@ use rafter::{
 use rafter_app::group::RaftGroup;
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
-    AuthenticatedPeerEnvelope, DriverServiceState, PeerControlPlaneCheckpoint,
-    TransportDriverOptions, TransportRaftDriver,
+    AuthenticatedPeerEnvelope, CurrentCommittedState, DriverServiceState,
+    PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
@@ -53,7 +54,16 @@ fn stable(config_id: u64, node_ids: &[u64]) -> ConfigurationEntry {
 }
 
 /// The applied floor this replica's state machine opens at.
-const APPLIED_FLOOR: LogIndex = LogIndex(1);
+///
+/// **At the configuration entry rather than beneath it**, so recovery replays
+/// nothing and this file measures only what the driver *publishes*. Replaying
+/// the entry at index 2 would state a history it does not mean to: a committed
+/// configuration is a transition from the membership before it, and for a
+/// replica bootstrapped as node 4 that predecessor is the static membership its
+/// own [`NodeConfig`] declares — which names node 4 and would make the entry a
+/// committed removal of it. Whether a replayed transition retires anybody is
+/// [`transport_committed_transition`]'s question; this one starts after it.
+const APPLIED_FLOOR: LogIndex = LogIndex(2);
 
 /// The configuration the recovered runtime opens under.
 const RECOVERED: &[u64] = &[1, 2, 3];
@@ -61,12 +71,13 @@ const RECOVERED: &[u64] = &[1, 2, 3];
 /// The configuration the catch-up commits over it.
 const CAUGHT_UP: &[u64] = &[1, 2, 3, 4];
 
-/// The cursor the handed-over checkpoint carries.
+/// Where the handed-over checkpoint's current state stands.
 ///
 /// Far above every index in the fixture's log, which is the whole point: it
-/// stands for an incarnation that consumed the stream well past what this
-/// runtime rebuilt, so every committed fact the runtime produces is gated.
-const AHEAD_CURSOR: LogIndex = LogIndex(10);
+/// stands for an incarnation that observed the committed configuration well past
+/// what this runtime rebuilt, so every committed fact the runtime produces is an
+/// older observation.
+const AHEAD_OF_RUNTIME: LogIndex = LogIndex(10);
 
 /// One replica's durable state: a seeded application entry, then the one
 /// committed configuration it recovered under.
@@ -103,16 +114,17 @@ fn durable_state() -> (InMemoryRaftHardStateStore, InMemoryRaftLogSegment) {
 fn handed_over_checkpoint() -> PeerControlPlaneCheckpoint<u64> {
     let mut checkpoint = PeerControlPlaneCheckpoint::empty(GROUP);
     checkpoint.committed_id_high_water = Some(NodeId(4));
-    checkpoint.live_committed_members = [NodeId(1), NodeId(2), NodeId(3), NodeId(4)]
-        .into_iter()
-        .collect();
-    checkpoint.committed_crossings_through = Some(AHEAD_CURSOR);
-    checkpoint.committed_endpoint_through = Some(AHEAD_CURSOR);
+    checkpoint.current_committed = Some(CurrentCommittedState::new(
+        AHEAD_OF_RUNTIME,
+        [NodeId(1), NodeId(2), NodeId(3), NodeId(4)]
+            .into_iter()
+            .collect(),
+    ));
     checkpoint
 }
 
 /// Opens one replica over that durable state under the handed-over checkpoint.
-fn recover_under_ahead_cursor(node_id: NodeId, peers: &[NodeId]) -> (Driver, QueueTransport) {
+fn recover_under_ahead_record(node_id: NodeId, peers: &[NodeId]) -> (Driver, QueueTransport) {
     let (hard_state_store, log_segment) = durable_state();
     let (runtime, recovery_outputs) =
         DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
@@ -219,19 +231,19 @@ fn principals(node_ids: &[u64]) -> Vec<Principal> {
         .collect()
 }
 
-/// Construction under an ahead cursor still publishes the configuration the
+/// Construction under an ahead record still publishes the configuration the
 /// runtime actually recovered under.
 ///
 /// The baseline the four cases below are read against. Nothing here is
 /// surprising and that is the point: the endpoint publication assigns its raw
-/// membership whatever the cursor says, so a cursor at 10 over a runtime at
+/// membership whatever the record says, so a record standing at 10 over a runtime at
 /// commit 2 still puts `{1,2,3}` in front of the link layer. The checkpoint's
 /// own live set names node 4 as well, and it is deliberately *not* published —
 /// a retirement record says what this driver has spent, never what the cluster
 /// has committed now.
 #[test]
-fn construction_under_an_ahead_cursor_publishes_the_recovered_configuration() {
-    let (driver, transport) = recover_under_ahead_cursor(NodeId(1), &[NodeId(2), NodeId(3)]);
+fn construction_under_an_ahead_record_publishes_the_recovered_configuration() {
+    let (driver, transport) = recover_under_ahead_record(NodeId(1), &[NodeId(2), NodeId(3)]);
 
     assert_eq!(
         transport.peer_sets().last().expect("a set was published"),
@@ -241,7 +253,11 @@ fn construction_under_an_ahead_cursor_publishes_the_recovered_configuration() {
     );
     assert_eq!(driver.service_state(), DriverServiceState::Serving);
     assert_eq!(
-        driver.control_plane_checkpoint().live_committed_members,
+        driver
+            .control_plane_checkpoint()
+            .current_committed
+            .expect("the driver holds a current state")
+            .membership,
         [NodeId(1), NodeId(2), NodeId(3), NodeId(4)]
             .into_iter()
             .collect(),
@@ -249,21 +265,21 @@ fn construction_under_an_ahead_cursor_publishes_the_recovered_configuration() {
     );
 }
 
-/// A catch-up that commits an addition beneath the cursor publishes it.
+/// A catch-up that commits an addition beneath the record publishes it.
 ///
 /// **The defect, at its first observable moment.** The crossing stands at index
-/// 3 and the cursor at 10, so the retirement fold is skipped — correctly, since
-/// re-folding a consumed configuration manufactures removals. The raw floor was
-/// skipped with it, so the driver kept publishing `{1,2,3}` for a cluster that
-/// had committed `{1,2,3,4}` while it watched.
+/// 3 and the record at 10, so it is an older observation and does not become the
+/// driver's current state — correctly, since the record looked later. The raw
+/// floor was skipped with it, so the driver kept publishing `{1,2,3}` for a
+/// cluster that had committed `{1,2,3,4}` while it watched.
 ///
 /// The union hid it here and only here: the same step moves the *effective*
 /// membership to `{1,2,3,4}`, and a union with one stale half is the other half.
 /// So the peer set below is right for the wrong reason, and the case that
 /// separates them is the next one.
 #[test]
-fn a_catch_up_that_commits_an_addition_beneath_the_cursor_publishes_it() {
-    let (driver, transport) = recover_under_ahead_cursor(NodeId(1), &[NodeId(2), NodeId(3)]);
+fn a_catch_up_that_commits_an_addition_beneath_the_record_publishes_it() {
+    let (driver, transport) = recover_under_ahead_record(NodeId(1), &[NodeId(2), NodeId(3)]);
 
     driver
         .deliver(append(
@@ -283,8 +299,9 @@ fn a_catch_up_that_commits_an_addition_beneath_the_cursor_publishes_it() {
 /// An uncommitted narrowing does not de-authorize a replica the catch-up
 /// committed.
 ///
-/// **The reviewer's case.** Everything above is still true — the crossing was
-/// gated, the floor stayed at `{1,2,3}` — and now the effective half moves out
+/// **The reviewer's case.** Everything above is still true — the crossing did
+/// not move the register, the floor stayed at `{1,2,3}` — and now the effective
+/// half moves out
 /// from under it. A new leader appends a narrowing to `{1,2}` and does not
 /// commit it, which is the ordinary shape of a membership change in flight and
 /// the one shape that puts the effective configuration *below* the committed
@@ -296,7 +313,7 @@ fn a_catch_up_that_commits_an_addition_beneath_the_cursor_publishes_it() {
 /// commit, which is the deadlock the committed floor exists to prevent.
 #[test]
 fn an_uncommitted_narrowing_does_not_de_authorize_the_replica_the_catch_up_committed() {
-    let (driver, transport) = recover_under_ahead_cursor(NodeId(1), &[NodeId(2), NodeId(3)]);
+    let (driver, transport) = recover_under_ahead_record(NodeId(1), &[NodeId(2), NodeId(3)]);
     driver
         .deliver(append(
             NodeId(1),
@@ -326,7 +343,7 @@ fn an_uncommitted_narrowing_does_not_de_authorize_the_replica_the_catch_up_commi
 /// recoverable lag into a replica the cluster cannot reach.
 #[test]
 fn the_newly_committed_replica_is_still_admitted_inbound() {
-    let (driver, _transport) = recover_under_ahead_cursor(NodeId(1), &[NodeId(2), NodeId(3)]);
+    let (driver, _transport) = recover_under_ahead_record(NodeId(1), &[NodeId(2), NodeId(3)]);
     driver
         .deliver(append(
             NodeId(1),
@@ -358,12 +375,12 @@ fn the_newly_committed_replica_is_still_admitted_inbound() {
 /// follows may still be truncated back off the log, so a replica that stops
 /// serving for one abandons work the cluster still expects of it.
 ///
-/// `NotMember` rather than `Decommissioned` is the tell, exactly as in the
-/// second-recovery case: nothing was spent, no fence is owed, and the mark and
-/// the live set are right. Only the floor went missing.
+/// `NotMember` rather than `Decommissioned` is the tell: nothing was spent, no
+/// fence is owed, and the mark and the current state are right. Only the floor
+/// went missing.
 #[test]
 fn a_local_replica_the_catch_up_committed_keeps_serving_under_a_narrowing() {
-    let (driver, _transport) = recover_under_ahead_cursor(NodeId(4), &[NodeId(1), NodeId(2)]);
+    let (driver, _transport) = recover_under_ahead_record(NodeId(4), &[NodeId(1), NodeId(2)]);
     assert_eq!(
         driver.service_state(),
         DriverServiceState::NotMember { node_id: NodeId(4) },

@@ -25,15 +25,17 @@
 //! produces, and two of them did.
 //!
 //! The durable half of the same concern lives in [`super::checkpoint`]: the
-//! record a restart reads back, what makes one valid, how two join, and how far
-//! through the committed configuration stream one has been consumed. The rule
-//! that a replayed configuration is not news is stated there and consulted here.
+//! record a restart reads back, what makes one valid, and how two join. The join
+//! and the fold below are the same algebra reached from two directions — one
+//! merges two records, the other merges a record and a fact — so the rules that
+//! make either safe are stated once, there, and read here.
 
 use std::collections::BTreeSet;
 
 use crate::transport::{AuthenticatedPeerValidator, PeerSet, RaftTransport};
 
 use super::super::*;
+use super::checkpoint::CurrentCommittedState;
 use super::state::TransportDriverState;
 
 /// The membership fact one publication is derived from.
@@ -75,77 +77,95 @@ pub(super) enum MembershipFact {
     /// and publishing the committed set alone would take the joiner's
     /// authorization away and stall the change that needs it.
     Committed {
-        committed: BTreeSet<NodeId>,
+        committed: CommittedObservation,
         effective: BTreeSet<NodeId>,
-        /// The log index this committed fact stands at.
-        ///
-        /// It travels *in* the fact rather than beside it for the reason the two
-        /// membership sets do: a committed configuration only means anything
-        /// together with where it sits in the stream, and a publisher that
-        /// supplied the two separately could supply a configuration from one
-        /// point and a position from another. The retirement diff is licensed by
-        /// the pair or by neither.
-        through: LogIndex,
-        /// Whether this fact is a point in the stream or the end of it.
-        source: CommittedMembershipSource,
     },
 }
 
-/// Where a committed membership fact came from, which decides **which position
-/// answers for it** and what that position is evidence *of*.
+/// One committed membership fact: where it stands, what it names, and what it
+/// proves was removed.
 ///
-/// Both variants carry a position and both are gated on one for the retirement
-/// diff, because re-folding a fact this driver has already consumed computes a
-/// difference between a historical membership and a present one and calls
-/// everything the present added a removal. That much is common.
+/// **A position and a removal set, and the removal set is what a position could
+/// not replace.** This driver used to keep a consumer offset per provenance and
+/// skip any fact at or below it, because folding a historical membership against
+/// a present one reads as a removal of everything the present added. That was
+/// the wrong repair for a real hazard. An offset claims a *prefix* has been
+/// consumed, and nothing a driver observes is a prefix: a snapshot-recovered
+/// process that then folds a crossing at index 8 has consumed neither 6 nor 7,
+/// and an offset reading 8 says it has.
 ///
-/// What is not common is the *reach* of the position. A crossing's index is a
-/// configuration entry's own, so consuming it covers that index; an endpoint's
-/// index is a commit index observed for a move with no entry behind it, and
-/// covers nothing beneath itself. The driver therefore keeps a position per
-/// variant — `committed_crossings_through` and `committed_endpoint_through` —
-/// and neither ever gates the other. One shared position let a
-/// snapshot-recovered record's endpoint at commit 10 suppress real crossings at
-/// 6 and 7, so an identity a committed removal spent was never spent here and
-/// its fence was never owed.
+/// The repair is at the source instead. A crossing arrives as the *transition*
+/// the kernel computed where the chronology is known — see
+/// [`rafter::Output::ConfigurationCommitted`] — so its removal set is exact
+/// wherever, whenever and however often it is folded, and there is nothing left
+/// for an offset to protect.
 ///
-/// **Neither variant governs the raw committed membership, and both used to.**
-/// That value is read — by [`TransportDriverState::is_member`], by
-/// [`TransportDriverState::named_members`], by
-/// [`TransportDriverState::readmitted_retired_peers`] — only as a statement
-/// about the cluster **now**, which no position has an opinion about. It is
-/// assigned on every committed fact whatever the gate says; see
-/// [`TransportDriverState::publish_membership`] for the two lifecycle cells that
-/// tying it to the fold left stale.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum CommittedMembershipSource {
-    /// A configuration the commit index crossed, at that entry's own index.
+/// The position still travels, and it now decides one thing: which of two
+/// observations of the *current* committed membership is later, and therefore
+/// which one this driver believes. That is
+/// [`super::checkpoint::CurrentCommittedState`], and the comparison is the same
+/// one the checkpoint join makes between two records.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CommittedObservation {
+    /// The log position this fact stands at.
     ///
-    /// History, and *checkable* history: a restart replays every crossing above
-    /// the application's applied floor, oldest first, and a driver that folded
-    /// the entry at index *n* has genuinely covered *n*. That is what makes
-    /// `committed_crossings_through` a position a later replay may be skipped
-    /// against.
+    /// A configuration entry's own index for a crossing, this replica's commit
+    /// index for an endpoint observation. Both name a point at which the
+    /// committed membership is exactly `membership`, which is the only property
+    /// the comparison needs — so the two provenances no longer need separate
+    /// positions, and this is where the second cursor went.
+    pub(super) through: LogIndex,
+    /// The committed membership at `through`, raw as the cluster reported it.
+    pub(super) membership: BTreeSet<NodeId>,
+    /// The identities this fact *proves* a committed removal consumed.
     ///
-    /// Carried by [`MembershipEvent::Applied`], and by nothing else.
-    Crossing,
+    /// Non-empty only for a crossing, where it is the kernel's own
+    /// `previous − configuration`. An endpoint carries no transition and proves
+    /// nothing by itself; what it can still contribute is inferred by comparing
+    /// its position against the one this driver holds, which is where the
+    /// removals *between* two observations come from.
+    pub(super) removed: BTreeSet<NodeId>,
+    /// Every identity either end of this fact named, which is what the mark is
+    /// raised over.
+    ///
+    /// A removed identity is in here, and that is the point: an ID the cluster
+    /// committed is allocated whether or not it survives the transition, and a
+    /// mark taken over the surviving membership alone would leave a removed ID
+    /// above the mark and therefore allocatable again.
+    pub(super) named: BTreeSet<NodeId>,
+}
+
+impl CommittedObservation {
+    /// A configuration entry the commit index crossed, as the transition it is.
+    fn crossing(
+        through: LogIndex,
+        previous: &MembershipConfig,
+        committed: &MembershipConfig,
+    ) -> Self {
+        let previous: BTreeSet<NodeId> = previous.replica_ids().into_iter().collect();
+        let membership: BTreeSet<NodeId> = committed.replica_ids().into_iter().collect();
+        Self {
+            through,
+            removed: previous.difference(&membership).copied().collect(),
+            named: previous.union(&membership).copied().collect(),
+            membership,
+        }
+    }
+
     /// The committed membership a runtime holds, at its commit index.
     ///
-    /// The end of the stream, and by construction the cluster's committed
-    /// configuration as that runtime has it. Produced by the two moves with no
-    /// configuration entry to name — a snapshot install, and a group opened over
-    /// a runtime whose commit index had already moved — and by adoption, which
-    /// asks the runtime directly.
-    ///
-    /// **Its position covers nothing beneath itself**, which is the whole reason
-    /// it is kept apart. It still needs gating, because an ungated endpoint fold
-    /// computes a retirement diff against a live set that may have moved past a
-    /// rebuilt runtime's volatile commit index — but it may only gate other
-    /// endpoints.
-    ///
-    /// Carried by [`MembershipEvent::CommittedEndpoint`], and by
-    /// [`TransportDriverState::publish_adopted_membership`].
-    Endpoint,
+    /// It proves no removal on its own — the moves that produce one are exactly
+    /// the moves with no history to carry — so `removed` is empty and `named` is
+    /// the membership itself.
+    fn endpoint(through: LogIndex, committed: &MembershipConfig) -> Self {
+        let membership: BTreeSet<NodeId> = committed.replica_ids().into_iter().collect();
+        Self {
+            through,
+            named: membership.clone(),
+            membership,
+            removed: BTreeSet::new(),
+        }
+    }
 }
 
 impl<G, A, R, T, V> TransportDriverState<G, A, R, T, V>
@@ -187,21 +207,29 @@ where
                 let effective = membership.replica_ids().into_iter().collect();
                 self.publish_membership(MembershipFact::Effective(effective));
             }
-            // The two committed facts, routed apart because their indices are
-            // evidence of different things. `Applied` names the configuration
-            // entry the commit index crossed, so its index really does cover
-            // that point in the stream; `CommittedEndpoint` names this replica's
-            // commit index for a move with no entry behind it — a snapshot
-            // install, or a group opened over a runtime that had already moved —
-            // and covers nothing beneath itself. Routing both under one position
-            // let an endpoint suppress the crossings a later recovery replayed
-            // below it, which spends no identity and owes no fence.
+            // The two committed facts, routed apart because they carry different
+            // evidence. `Applied` is a transition — the configuration entry the
+            // commit index crossed, with the membership that stood before it —
+            // so it proves exactly which identities that entry removed, whatever
+            // state it is folded into. `CommittedEndpoint` is an observation of
+            // the current membership at this replica's commit index, for a move
+            // with no entry behind it: a snapshot install, or a group opened
+            // over a runtime that had already moved. It proves no removal by
+            // itself, and treating it as one is what retired the replicas a
+            // catching-up replica had most recently admitted.
             MembershipEvent::Applied {
-                membership, index, ..
-            } => self.publish_committed(membership, *index, CommittedMembershipSource::Crossing),
+                membership,
+                index,
+                previous,
+                ..
+            } => {
+                self.publish_committed(CommittedObservation::crossing(
+                    *index, previous, membership,
+                ));
+            }
             MembershipEvent::CommittedEndpoint {
                 membership, index, ..
-            } => self.publish_committed(membership, *index, CommittedMembershipSource::Endpoint),
+            } => self.publish_committed(CommittedObservation::endpoint(*index, membership)),
             // A rejected change never entered the log, so there is no membership
             // fact in it to act on.
             MembershipEvent::Rejected { .. } => {}
@@ -218,19 +246,12 @@ where
         }
     }
 
-    /// Routes one committed membership fact under the provenance its event
-    /// carried.
+    /// Routes one committed membership fact, whatever produced it.
     ///
     /// Shared by the two committed arms above because everything except the
-    /// provenance is identical, and the one thing that differs is the one thing
-    /// that must not be decided here.
-    fn publish_committed(
-        &mut self,
-        membership: &MembershipConfig,
-        index: LogIndex,
-        source: CommittedMembershipSource,
-    ) {
-        let committed = membership.replica_ids().into_iter().collect();
+    /// evidence is identical, and the evidence now travels inside the
+    /// observation rather than as a provenance tag the reducer has to interpret.
+    fn publish_committed(&mut self, committed: CommittedObservation) {
         // The runtime is the authority on what is in effect, and it agrees with
         // the effective event that preceded this one in the same report. A
         // driver holding no group keeps what it had rather than assigning an
@@ -242,8 +263,6 @@ where
         self.publish_membership(MembershipFact::Committed {
             committed,
             effective,
-            through: index,
-            source,
         });
     }
 
@@ -278,15 +297,14 @@ where
     /// there is no later event to re-derive it from: the removal is already
     /// behind the committed membership.
     ///
-    /// **Retirement reads the committed stream and only the committed stream.**
-    /// The diff is `previous live committed − new live committed`, with no
-    /// exclusion of any kind — the local node included, which is the point. A
-    /// committed removal of this replica spends this replica's identity exactly
-    /// as it spends a peer's; a driver that filtered itself out of the diff
-    /// observed the cluster remove it and recorded nothing, and could then adopt
-    /// a peer's spent ID as its own with no backstop left anywhere.
+    /// **Retirement reads the committed stream and only the committed stream**,
+    /// with no exclusion of any kind — the local node included, which is the
+    /// point. A committed removal of this replica spends this replica's identity
+    /// exactly as it spends a peer's; a driver that filtered itself out observed
+    /// the cluster remove it and recorded nothing, and could then adopt a peer's
+    /// spent ID as its own with no backstop left anywhere.
     ///
-    /// Taking the diff from the committed fact and not from the union is what
+    /// Reading removals from committed facts and not from the union is what
     /// closes the opposite window: an addition that appended and was then
     /// truncated back off the log was never in a committed configuration, so its
     /// disappearance retires nothing and licenses no fence. Its ID is still
@@ -294,8 +312,8 @@ where
     /// again.
     ///
     /// **Nothing un-spends an identity.** A committed configuration naming an
-    /// already-spent ID is filtered out of the live set rather than obeyed, so
-    /// the ID stays spent and stays refused. A fence is permanent for the
+    /// already-spent ID is filtered out of the current state rather than obeyed,
+    /// so the ID stays spent and stays refused. A fence is permanent for the
     /// principal it names — [`RaftTransport::fence_peer`] has no inverse,
     /// deliberately — so obeying such a fact would promise an authorization the
     /// link layer cannot give back. The raw fact is kept beside the live one so
@@ -311,118 +329,148 @@ where
             MembershipFact::Committed {
                 committed,
                 effective,
-                through,
-                source,
             } => {
                 self.effective_members = effective;
-                // **Two operations, and the position governs one of them.** The
-                // retirement fold is gated in both directions and for both
-                // sources, because a fact already folded in must not be folded
-                // again from either end of the stream — each against the
-                // position kept for its own source.
-                self.observe_committed_members(&committed, through, source);
-                // The raw floor is a different question, and the answer is the
-                // same for both sources: **assign it always**. It is read only
-                // as "what does the cluster have committed now", and a position
-                // answers "have I folded this retirement in" and never that.
-                //
-                // Tying it to the fold was the defect, twice. Gating it for an
-                // endpoint left the floor empty on every second recovery from
-                // one checkpoint; gating it for a crossing left the floor at the
-                // pre-catch-up configuration whenever the restored position ran
-                // ahead of the runtime, which a supervisor handing over a
-                // checkpoint produces routinely. In both cases the union that
-                // keeps an uncommitted narrowing from de-authorizing a committed
-                // replica had one half missing, and a union with an empty half
-                // is the other half.
-                self.committed_members = committed;
+                self.observe_committed_members(committed);
             }
         }
         self.flush_peer_control_plane();
     }
 
-    /// Takes one committed configuration: the retirement diff, the high-water
-    /// mark, and the live set the spent test reads.
+    /// Takes one committed membership fact: the removals it proves, the
+    /// high-water mark, and the current state the spent test reads.
     ///
     /// Split from [`TransportDriverState::publish_membership`] because it is the
     /// only place identity is *consumed*, and everything about consumption is
     /// here: which IDs a removal spends, which a violating fact is refused for,
-    /// how far allocation has got, and how far the stream has been read.
+    /// and how far allocation has got.
     ///
-    /// **A fact at or below the cursor is not news, and returning early for one
-    /// is the whole of the replay fix.** The retirement diff below is taken
-    /// against the live set *as it stands now*, so re-taking it for a
-    /// configuration this driver already folded in does not repeat an
-    /// observation — it computes a difference between a historical membership
-    /// and a present one, and calls everything the present added a removal. That
-    /// is what a restart hands this method: the runtime replays every
-    /// configuration entry above the application's applied floor, oldest first.
+    /// # Why this needs no cursor
     ///
-    /// **Retirement only.** The raw committed membership is the caller's, and
-    /// deliberately: it is not a fold and no position answers for it. A gate
-    /// that returned early from both left the committed floor stale in two
-    /// different lifecycle cells — an endpoint standing at or below its position,
-    /// which is an ordinary second recovery, and a genuinely new crossing
-    /// standing beneath a restored position that had run ahead of the runtime,
-    /// which is an ordinary supervisor handover.
-    /// [`TransportDriverState::publish_membership`] now assigns it
-    /// unconditionally and this method answers only for the fold.
+    /// A restart hands this method the same facts twice: the runtime replays
+    /// every configuration entry above the application's applied floor, oldest
+    /// first, beneath a current state that has already moved past them. What
+    /// made that dangerous was deriving removals by subtraction from the
+    /// driver's own membership, which is right only when that membership stands
+    /// exactly where the fact does. Two cursors were kept so a fact standing
+    /// anywhere else could be skipped.
     ///
-    /// **`source` picks which position gates and which position advances**, and
-    /// nothing here reads the other one. An endpoint covers nothing beneath
-    /// itself, so an endpoint position must never make a crossing look like
-    /// history.
-    fn observe_committed_members(
-        &mut self,
-        committed: &BTreeSet<NodeId>,
-        through: LogIndex,
-        source: CommittedMembershipSource,
-    ) {
-        if self.committed_configuration_is_replayed(through, source) {
-            return;
+    /// Every operation below is now monotone evidence instead, so re-folding one
+    /// changes nothing and there is nothing left to skip:
+    ///
+    /// * **Removals come from the fact.** A crossing carries its own transition,
+    ///   computed by the kernel where the chronology is known, so
+    ///   `previous − configuration` is the same set at every replay. An
+    ///   endpoint carries none and asserts none.
+    /// * **The mark is a maximum**, taken over both ends of the fact.
+    /// * **Obligations are a union**, and one removal contributes at most once —
+    ///   the `∖ spent` below is what makes a re-fold of an already-absorbed
+    ///   removal add nothing.
+    /// * **The current state is a versioned register.** An older observation
+    ///   never displaces a later one; it only contributes what the pair proves,
+    ///   which is the identities it named that the later one does not.
+    ///
+    /// # The removal a later register still names
+    ///
+    /// A crossing beneath the register proves a removal whose ID the register
+    /// may still name, and `spent(id) = id ≤ mark ∧ id ∉ membership` cannot see
+    /// it while the membership does. That gap is closed here without a holding
+    /// set, and the argument is short:
+    ///
+    /// 1. A fact that proves `id` removed named `id`, so it raised the mark to
+    ///    at least `id`.
+    /// 2. `id` is subtracted from the register's membership *whatever the fact's
+    ///    position* — a removal is not an observation of the present, it is a
+    ///    permanent fact about an identity, so the later-wins rule does not
+    ///    apply to it.
+    /// 3. So `id ≤ mark ∧ id ∉ membership` holds the moment the fold returns.
+    /// 4. Every later assignment to the register filters its incoming membership
+    ///    through the spent test, so `id` can never re-enter.
+    ///
+    /// A contract-violating configuration that names `id` again is therefore
+    /// refused at step 4 rather than parked in a set that has to be bounded, and
+    /// the violation stays countable through the raw floor beside the register —
+    /// see [`TransportDriverState::readmitted_retired_peers`].
+    fn observe_committed_members(&mut self, fact: CommittedObservation) {
+        // Read before anything moves, so the epoch below is advanced for exactly
+        // the observations an embedder must persist.
+        let before = self.control_plane_checkpoint();
+
+        // Everything this fact proves was removed: its own transition, plus the
+        // identities the older of the two observations names and the newer does
+        // not. The second half is what one record and one runtime jointly prove
+        // and neither states — the same inference the checkpoint join makes.
+        let mut removed = fact.removed;
+        let held = self.current_committed.as_ref();
+        let is_later = held.is_none_or(|current| fact.through >= current.through);
+        if let Some(current) = held {
+            let (older, newer) = if is_later {
+                (&current.membership, &fact.membership)
+            } else {
+                (&fact.membership, &current.membership)
+            };
+            removed.extend(older.difference(newer).copied());
         }
-        // Anything the fact names that this driver has already watched leave a
-        // committed configuration. Computed against the state *before* the
-        // assignment, which is what makes it stick: once an ID is spent, every
-        // later fact naming it is filtered the same way.
-        let live = committed
-            .iter()
-            .copied()
-            .filter(|node_id| !self.is_spent(*node_id))
-            .collect::<BTreeSet<_>>();
-        let newly_retired = self
-            .live_committed_members
-            .difference(&live)
-            .copied()
-            .collect::<Vec<_>>();
-        // Read before the checkpointable fields move, so the epoch below is
-        // advanced for exactly the observations an embedder must persist. The
-        // fence set only grows here, so its length is a faithful witness and
-        // costs no clone.
-        let previous_mark = self.committed_id_high_water;
-        let previous_fences = self.pending_fences.len();
-        self.pending_fences.extend(newly_retired);
-        // Over the raw fact rather than the live one: an ID the cluster
-        // committed is allocated whether or not this driver will honor it, and a
-        // mark that ignored the violation would leave the ID allocatable again.
-        if let Some(highest) = committed.iter().copied().max() {
+
+        // **Every derivation below reads the spent test as it stood before this
+        // fact**, and that order is load-bearing rather than tidy. The mark
+        // moves first only in wall-clock terms; read against the raised mark,
+        // an identity this driver has simply not observed yet — every identity
+        // at all, on the very first fact — would test as spent, and the
+        // membership the fact names would filter down to nothing.
+        let was_spent = {
+            let mark = self.committed_id_high_water;
+            let live = self.live_committed_members().clone();
+            move |node_id: NodeId| {
+                mark.is_some_and(|mark| node_id <= mark) && !live.contains(&node_id)
+            }
+        };
+
+        // Only what this driver did not already know. A removal it had absorbed
+        // is either still in the obligations or was discharged by the link
+        // layer, and re-deriving it would owe a second fence for one fact.
+        self.pending_fences
+            .extend(removed.iter().copied().filter(|id| !was_spent(*id)));
+        // Over every identity the fact named rather than the survivors: an ID
+        // the cluster committed is allocated whether or not it survived the
+        // transition, and a mark that ignored a removed one would leave it
+        // allocatable again.
+        if let Some(highest) = fact.named.iter().copied().max() {
             self.committed_id_high_water = Some(
                 self.committed_id_high_water
                     .map_or(highest, |mark| mark.max(highest)),
             );
         }
-        // The position is part of the same decision rather than a separate one.
-        // A fact that moved nothing else still moved this, and an embedder that
-        // persisted the retirement record without it would replay from the older
-        // position on the next restart — which is the failure this closes,
-        // arriving one crash later.
-        let position_moved = self.advance_committed_position(through, source);
-        let checkpoint_moved = position_moved
-            || previous_mark != self.committed_id_high_water
-            || previous_fences != self.pending_fences.len()
-            || live != self.live_committed_members;
-        self.live_committed_members = live;
-        if checkpoint_moved {
+
+        if let Some(current) = self.current_committed.as_mut() {
+            // Step 2 above: absorbed at any position, because a removal is not
+            // an observation of the present.
+            current.membership.retain(|id| !removed.contains(id));
+        }
+        if is_later {
+            // Step 4 above: the filter is what keeps a spent identity out
+            // forever, so a violating readmission cannot un-spend one.
+            let membership = fact
+                .membership
+                .iter()
+                .copied()
+                .filter(|id| !was_spent(*id))
+                .collect();
+            self.current_committed = Some(CurrentCommittedState::new(fact.through, membership));
+        }
+        // **The raw floor is not part of the register, and assigning it always
+        // is round 8's rule kept rather than re-litigated.** It answers "what
+        // does this replica's own stream say the cluster has committed", which
+        // no position has an opinion about, and tying it to a gate left it stale
+        // in two lifecycle cells — a second recovery from one checkpoint, and a
+        // supervisor handing a record to a runtime that rebuilt behind it. The
+        // only facts that can leave it historical are recovery outputs, and both
+        // entry points publish the runtime's endpoint after them.
+        //
+        // Raw rather than filtered, which is what makes a readmission countable.
+        self.committed_members = fact.membership;
+
+        if before != self.control_plane_checkpoint() {
             self.advance_checkpoint_epoch();
         }
     }
@@ -453,7 +501,7 @@ where
     pub(super) fn is_spent(&self, node_id: NodeId) -> bool {
         self.committed_id_high_water
             .is_some_and(|mark| node_id <= mark)
-            && !self.live_committed_members.contains(&node_id)
+            && !self.live_committed_members().contains(&node_id)
     }
 
     /// Every replica either membership fact names, which is the set the peer set
@@ -878,18 +926,12 @@ where
             return;
         };
         let runtime = group.runtime();
-        let committed = runtime
-            .committed_membership()
-            .replica_ids()
-            .into_iter()
-            .collect();
+        let committed =
+            CommittedObservation::endpoint(runtime.commit_index(), &runtime.committed_membership());
         let effective = runtime.membership().replica_ids().into_iter().collect();
-        let through = runtime.commit_index();
         self.publish_membership(MembershipFact::Committed {
             committed,
             effective,
-            through,
-            source: CommittedMembershipSource::Endpoint,
         });
     }
 }

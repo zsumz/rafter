@@ -213,11 +213,19 @@ fn final_stable_configuration_commits_with_new_majority_after_joint_commit() {
     // configuration at 3, and names the one entry that carries a configuration.
     // Nothing else is emitted: this leader stays leader and applies no
     // application entry.
+    //
+    // `previous` is the joint configuration at index 1 rather than the effective
+    // membership this node now holds, which is the whole of the transition
+    // claim: the leadership no-op at index 2 carries no configuration, so the
+    // membership in effect immediately before index 3 is the one index 1
+    // committed. Read as a transition, this move leaves the joint consensus for
+    // the stable set it names and removes node 2.
     assert_eq!(
         outputs,
         vec![Output::ConfigurationCommitted {
             index: LogIndex(3),
             term: Term(2),
+            previous: joint_configuration(ConfigurationId(8)).membership_config(),
             configuration: stable_configuration(ConfigurationId(9), &[1, 3, 4]),
         }]
     );

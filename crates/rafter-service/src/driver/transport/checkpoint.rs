@@ -6,28 +6,30 @@
 //! *derivation*. That file answers "who is allowed to send a step" — the
 //! membership facts, the retirement diff, the peer set, the fences the link
 //! layer still owes. This one answers "what does a process that crashed get
-//! back, and what may it conclude from it": the type, what makes one valid, how
-//! two of them join, and how far through the committed configuration stream a
-//! record has already been consumed.
+//! back, and what may it conclude from it": the type, what makes one valid, and
+//! how two of them join.
 //!
-//! The last of those is the newest and the least obvious. Every other field here
-//! is a *state* — a mark, a live set, a set of obligations — and a state can be
-//! restored by assignment. The configuration stream is not a state, it is a
-//! sequence, and a driver that restores the state without also restoring its
-//! position in the sequence will re-consume history against a present that has
-//! moved past it. See [`TransportDriverState::committed_configuration_is_replayed`]
-//! for why that is not a tidiness argument.
+//! **There is no consumer offset here, and there used to be two.** A record kept
+//! a position in the committed configuration stream so a replayed history could
+//! be skipped as already-folded, because folding a historical membership against
+//! a present one reads as a removal of everything the present added. That is a
+//! true hazard and a cursor is the wrong answer to it: a position is a claim
+//! about a *prefix*, and nothing a driver observes is a prefix — a
+//! snapshot-recovered process that then folds a crossing at index 8 has consumed
+//! neither 6 nor 7, and a cursor reading 8 says otherwise. The facts are
+//! monotone evidence now, so re-folding one changes nothing and there is nothing
+//! to skip. See [`super::control_plane`] for the algebra that makes that true.
 //!
 //! The state these rules read still lives on
 //! [`super::state::TransportDriverState`], like every other field behind the one
 //! lock. What lives here is the record's own algebra.
 
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
 use super::super::*;
-use super::control_plane::CommittedMembershipSource;
 use super::state::TransportDriverState;
 
 /// The peer-control-plane state a restarted process cannot re-derive.
@@ -50,14 +52,12 @@ use super::state::TransportDriverState;
 /// never retried, and node 5 is no longer spent, so the identity the cluster
 /// consumed is allocatable again.
 ///
-/// **The four facts.** Three of them are the retirement record — the mark, the
-/// live set, and the obligations — and the fourth is this driver's position in
-/// the stream that produces them. Nothing else is here, because everything else
-/// about the control plane is re-derived at adoption: the effective and raw
-/// committed memberships come from the runtime, and `published_peers`
-/// deliberately does not survive — a new process has a new link layer that has
-/// accepted nothing, and starting from "nothing accepted" is what forces the
-/// first republication.
+/// **The three facts.** The mark, the current committed state, and the
+/// obligations. Nothing else is here, because everything else about the control
+/// plane is re-derived at adoption: the effective membership comes from the
+/// runtime, and `published_peers` deliberately does not survive — a new process
+/// has a new link layer that has accepted nothing, and starting from "nothing
+/// accepted" is what forces the first republication.
 ///
 /// **Bound to one group, and validated against the driver's own at restore.**
 /// Retirement is per `(group_id, NodeId)` pair, so a checkpoint's mark and live
@@ -126,17 +126,25 @@ pub struct PeerControlPlaneCheckpoint<G> {
     /// identity, and with no committed configuration observed nothing has been
     /// spent.
     pub committed_id_high_water: Option<NodeId>,
-    /// The part of the committed configuration whose identities are unspent.
+    /// The committed membership this record believes is current, and where it
+    /// was observed, or `None` before anything was observed.
     ///
     /// The other half of the spent test, and the field the two-fact version of
     /// this checkpoint could not do without. A mark restored beside an empty
     /// live set spends every identity at or below it — the whole cluster — and a
     /// live set re-derived from the adopted group's committed configuration
     /// instead would *un-spend* an identity a violating readmission committed
-    /// while this process was down. Carrying it makes a restore behave exactly
-    /// like the in-process release-and-re-adopt it is standing in for. It is
-    /// bounded by the size of the cluster.
-    pub live_committed_members: BTreeSet<NodeId>,
+    /// while this process was down.
+    ///
+    /// **The position travels inside it**, and that is what the round-8 pair of
+    /// a set beside an offset could not express. Two honest records disagreeing
+    /// about the current membership are two observations from different
+    /// positions, and only the position decides between them; a record that
+    /// carried the two apart could be joined by uniting the memberships and
+    /// taking the greater position, which answers "who is a member now" with the
+    /// union of two different nows. See
+    /// [`TransportDriverState::restore_control_plane_checkpoint`].
+    pub current_committed: Option<CurrentCommittedState>,
     /// Committed removals whose fence the link layer has not accepted.
     ///
     /// One entry per unfenced removal, and nothing here ever discards one: a
@@ -144,98 +152,51 @@ pub struct PeerControlPlaneCheckpoint<G> {
     /// the embedder's, stated at
     /// [`TransportDriverOptions::fence_backlog_service_threshold`].
     pub pending_fences: BTreeSet<NodeId>,
-    /// The log index through which this record has consumed *exact crossings*,
-    /// or `None` before it has consumed any.
+}
+
+/// The committed membership a record believes is current, and where it looked.
+///
+/// **One value rather than a set beside a position, because the two are only
+/// meaningful together.** "Who is committed" is not a fact a record accumulates,
+/// it is an answer that was true somewhere; a membership without its position
+/// cannot be compared against another membership, and a position without its
+/// membership licenses nothing. Carrying them apart let a join take the union of
+/// the memberships and the maximum of the positions, which is a state neither
+/// record ever held and which silently drops every removal that happened between
+/// them.
+///
+/// `membership` is the *live* reading: the observed committed configuration less
+/// every identity a committed removal has spent. An already-spent identity that
+/// a later configuration names again is filtered out here rather than obeyed —
+/// [`RaftTransport::fence_peer`] has no inverse, so re-authorizing it is a
+/// promise the link layer cannot keep — and the raw fact is kept beside it on
+/// the driver so the violation stays countable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct CurrentCommittedState {
+    /// The log position this observation stands at.
     ///
-    /// **A consumer offset, and one of the two fields that make the three above
-    /// replayable.** Those three are a *state*, and a state restores by
-    /// assignment. Committed configurations are a *stream*, and a restart
-    /// re-delivers a suffix of it: the runtime replays every configuration entry
-    /// between the application's applied floor and the durable commit index as
-    /// an ordinary output. Those are historical facts. Computed against a live
-    /// set that has already advanced past them, each one reads as a removal of
-    /// everything the configurations above it added.
+    /// A configuration entry's own index when a crossing produced it, and this
+    /// replica's commit index when an endpoint observation did. The two are
+    /// comparable because both name a point in one log at which the committed
+    /// membership is exactly what this record holds — which is all the ordering
+    /// needs, and is why no separate position per provenance is kept.
+    pub through: LogIndex,
+    /// The committed membership observed there, less every spent identity.
     ///
-    /// So this is not a cache and not an optimization. Without it the replay is
-    /// not even *idempotent*: re-running the same recovery over the same durable
-    /// state manufactures a removal on the second pass that it did not on the
-    /// first, because the first pass moved the live set the second one is
-    /// computed against. A crash during recovery is an ordinary crash, so that
-    /// second pass is a state a correct embedder reaches.
-    ///
-    /// **It advances only for a crossing**, which is a configuration entry the
-    /// commit index crossed, carrying that entry's own index — so a record whose
-    /// crossing offset reads *n* has genuinely folded every crossing at or below
-    /// *n*. It may legitimately be `None` beside a full retirement record; see
-    /// the coupling invariant on
-    /// [`PeerControlPlaneCheckpoint::committed_endpoint_through`].
-    ///
-    /// `None` rather than zero because `LogIndex(0)` is a real position — the
-    /// index before any entry — and "no crossing consumed" has to be
-    /// distinguishable from "consumed through the bottom of the log".
-    pub committed_crossings_through: Option<LogIndex>,
-    /// The log index at which this record last observed the committed
-    /// configuration directly, or `None` before it has observed one.
-    ///
-    /// The other consumer offset, and the one that covers **nothing beneath
-    /// itself**. An endpoint observation is the committed membership a runtime
-    /// holds, read at its commit index, for a move with no configuration entry
-    /// behind it: a snapshot install, or a group opened over a runtime whose
-    /// commit index had already moved. It still needs gating, because an ungated
-    /// endpoint fold computes a retirement diff between a rebuilt runtime's
-    /// committed configuration and a live set that has moved past it — and a
-    /// commit index is volatile enough for a recovered runtime to report a lower
-    /// one than the incarnation that wrote this record reached.
-    ///
-    /// **One offset used to serve both, and the conflation was a false claim of
-    /// coverage.** A process that recovers from a snapshot at commit 10 honestly
-    /// reports observing the committed membership there, and has no idea what
-    /// committed and was superseded below the boundary — the type says so under
-    /// "What a snapshot cannot give back". Joined into a record whose crossings
-    /// really do sit at 6 and 7, a single `max` offset skipped them as
-    /// already-consumed: the identity a removal at 7 spent was never spent, and
-    /// its fence was never owed. The join's premise — a greater offset means
-    /// everything beneath it is already reduced — is true of a crossing and
-    /// false of an endpoint, so the two positions join independently and an
-    /// endpoint never suppresses a crossing.
-    ///
-    /// # The coupling invariant, and which way it points
-    ///
-    /// Both offsets move with the retirement record and never apart from it:
-    /// every committed fact that advances the mark, the live set, or the
-    /// obligations advances its own offset in the same call and under the same
-    /// epoch. But the two are **not** symmetric, and reading the coupling as
-    /// "retirement state implies at least one offset" is too weak to be safe.
-    /// Derived from what a driver's lifecycle can actually produce:
-    ///
-    /// * Every fold — of either kind — raises the mark, because a committed
-    ///   configuration always names at least one replica
-    ///   ([`rafter::MembershipSet`] refuses an empty voter set). So an offset of
-    ///   either kind implies retirement state.
-    /// * Every driver that folded anything was constructed or adopted, and both
-    ///   entry points publish an endpoint fact *unconditionally* with a group in
-    ///   hand, after any recovery outputs. So retirement state implies an
-    ///   **endpoint** offset specifically.
-    /// * The crossing offset carries no such obligation in the other direction.
-    ///   A first incarnation over a fresh cluster, and a process that recovered
-    ///   from a snapshot, both fold an endpoint and no crossing at all.
-    ///
-    /// Which gives `retired ⟺ endpoint.is_some()` as a biconditional, and
-    /// `crossings.is_some() ⟹ retired` one way only. Written as "at least one
-    /// offset", the invariant would accept a crossing offset beside no endpoint
-    /// — a shape no lifecycle produces, and one whose absorption leaves the
-    /// endpoint fold ungated on the very next adoption, which is where a
-    /// volatile commit index manufactures removals.
-    ///
-    /// **That coupling is validated rather than merely documented.** See
-    /// [`ControlPlaneCheckpointError::CommittedStateWithoutEndpoint`],
-    /// [`ControlPlaneCheckpointError::EndpointWithoutCommittedState`], and
-    /// [`ControlPlaneCheckpointError::CrossingsWithoutCommittedState`]. An
-    /// embedder with a format of its own should refuse the same three shapes at
-    /// its own decoder, so the refusal names the file rather than the value.
-    ///
-    /// `None` rather than zero for the reason the crossing offset is.
-    pub committed_endpoint_through: Option<LogIndex>,
+    /// Bounded by the size of the cluster.
+    pub membership: BTreeSet<NodeId>,
+}
+
+impl CurrentCommittedState {
+    /// A committed membership observed at `through`.
+    #[must_use]
+    pub fn new(through: LogIndex, membership: BTreeSet<NodeId>) -> Self {
+        Self {
+            through,
+            membership,
+        }
+    }
 }
 
 impl<G> PeerControlPlaneCheckpoint<G> {
@@ -255,10 +216,8 @@ impl<G> PeerControlPlaneCheckpoint<G> {
         Self {
             group,
             committed_id_high_water: None,
-            live_committed_members: BTreeSet::new(),
+            current_committed: None,
             pending_fences: BTreeSet::new(),
-            committed_crossings_through: None,
-            committed_endpoint_through: None,
         }
     }
 
@@ -273,7 +232,35 @@ impl<G> PeerControlPlaneCheckpoint<G> {
     fn spends(&self, node_id: NodeId) -> bool {
         self.committed_id_high_water
             .is_some_and(|mark| node_id <= mark)
-            && !self.live_committed_members.contains(&node_id)
+            && !self.names(node_id)
+    }
+
+    /// Whether this record's current state names `node_id` as live.
+    fn names(&self, node_id: NodeId) -> bool {
+        self.current_committed
+            .as_ref()
+            .is_some_and(|current| current.membership.contains(&node_id))
+    }
+
+    /// The membership of this record's current state, or the empty set.
+    fn membership(&self) -> BTreeSet<NodeId> {
+        self.current_committed
+            .as_ref()
+            .map(|current| current.membership.clone())
+            .unwrap_or_default()
+    }
+
+    /// Drops a current state that no observation produced.
+    ///
+    /// The join builds one unconditionally so the arithmetic above has somewhere
+    /// to land, and joining two empty records must still yield an empty record
+    /// rather than a state at position zero — which the coupling biconditional
+    /// would then refuse.
+    fn without_empty_state(mut self) -> Self {
+        if self.committed_id_high_water.is_none() && self.pending_fences.is_empty() {
+            self.current_committed = None;
+        }
+        self
     }
 
     /// Refuses a checkpoint that contradicts the invariants a driver maintains.
@@ -308,50 +295,30 @@ impl<G> PeerControlPlaneCheckpoint<G> {
     /// has no inverse, so unlike a stale peer set that is not something a later
     /// flush corrects.
     ///
-    /// * **The offsets and the retirement record are one record, and the two
-    ///   offsets are coupled to it differently.** The asymmetry is derived from
-    ///   the lifecycle rather than assumed, because assuming symmetry here is
-    ///   what makes the clause too weak to be worth having.
+    /// * **The mark and the current state are one record, and the coupling is a
+    ///   biconditional.** Deleting the two offsets collapsed three clauses into
+    ///   this one, and the collapse is a consequence rather than a
+    ///   simplification: what the offsets were coupled *to* is now the only
+    ///   other thing here.
     ///
-    ///   Every fold of either kind raises the mark — a committed configuration
-    ///   always names at least one replica, since [`rafter::MembershipSet`]
-    ///   refuses an empty voter set — so **either offset implies retirement
-    ///   state**. And every driver that folded anything was constructed or
-    ///   adopted, and both entry points publish an endpoint fact
-    ///   unconditionally, with a group in hand, after any recovery outputs — so
-    ///   **retirement state implies the endpoint offset specifically**. The
-    ///   crossing offset has no such converse: a first incarnation over a fresh
-    ///   cluster, and a process that recovered from a snapshot, each fold an
-    ///   endpoint and no crossing at all.
+    ///   Every observation of a committed configuration raises the mark — a
+    ///   committed configuration always names at least one replica, since
+    ///   [`rafter::MembershipSet`] refuses an empty voter set — and assigns the
+    ///   current state in the same call, because a first observation is always
+    ///   the latest one this record has. So `mark.is_some() ⟺
+    ///   current_committed.is_some()`, and the two ways to break it are separate
+    ///   variants because they fail in opposite directions:
+    ///   [`ControlPlaneCheckpointError::RetirementWithoutCurrentState`] leaves a
+    ///   mark and obligations with nothing to compare them against — every
+    ///   identity at or below the mark reads as spent, which is the whole
+    ///   cluster — and
+    ///   [`ControlPlaneCheckpointError::CurrentStateWithoutRetirement`] is a
+    ///   membership this record could not have observed, since observing it
+    ///   would have raised a mark.
     ///
-    ///   `retired ⟺ endpoint.is_some()`, and `crossings.is_some() ⟹ retired`.
-    ///   Three shapes are refused and each loses something different:
-    ///
-    ///   - Retirement state with no endpoint offset
-    ///     ([`ControlPlaneCheckpointError::CommittedStateWithoutEndpoint`]) is
-    ///     the dangerous one and is not subtle. It leaves the endpoint fold
-    ///     ungated, so the next adoption computes a fresh retirement diff
-    ///     between a rebuilt runtime's committed configuration and a live set
-    ///     that has already moved past it. A commit index is volatile, so the
-    ///     rebuilt runtime can legitimately be *behind*, and everything the
-    ///     newer configurations added is retired. It is also the shape a
-    ///     migration of an older single-offset file would produce.
-    ///   - An endpoint offset beside no retirement record
-    ///     ([`ControlPlaneCheckpointError::EndpointWithoutCommittedState`]) is
-    ///     the quiet one: recovery skips exactly the history the offset claims
-    ///     and keeps nothing from it, so every identity those configurations
-    ///     spent is allocatable again with no fence owed.
-    ///   - A crossing offset beside no retirement record
-    ///     ([`ControlPlaneCheckpointError::CrossingsWithoutCommittedState`]) is
-    ///     the same loss through the other position, and it needs its own clause
-    ///     rather than falling out of the biconditional: with no endpoint offset
-    ///     beside it the record is silent about retirement, so the endpoint
-    ///     clause alone would let it through.
-    ///
-    ///   None of the three is producible, so refusing costs nothing. The one
-    ///   shape that *is* newly legal — a full retirement record with an endpoint
-    ///   offset and no crossing offset — is exactly the snapshot-recovered
-    ///   process the split exists for, and it is accepted.
+    ///   An embedder with a format of its own should refuse the same two shapes
+    ///   at its own decoder, so the refusal names the file rather than the
+    ///   value.
     fn validate(&self, group: &G) -> Result<(), ControlPlaneCheckpointError>
     where
         G: Ord,
@@ -359,36 +326,32 @@ impl<G> PeerControlPlaneCheckpoint<G> {
         if &self.group != group {
             return Err(ControlPlaneCheckpointError::ForeignGroup);
         }
-        // **One record, checked as one.** Both offsets document that they move
-        // with the retirement record and never apart from it; until this clause
-        // existed, nothing enforced it, and every way of breaking it was
-        // accepted as ordinary input.
-        let retired_something = self.committed_id_high_water.is_some()
-            || !self.live_committed_members.is_empty()
-            || !self.pending_fences.is_empty();
-        match (self.committed_endpoint_through, retired_something) {
-            (None, true) => return Err(ControlPlaneCheckpointError::CommittedStateWithoutEndpoint),
-            (Some(_), false) => {
-                return Err(ControlPlaneCheckpointError::EndpointWithoutCommittedState)
+        // **One record, checked as one.** A mark is raised by an observation and
+        // an observation assigns the current state, so neither stands alone;
+        // obligations are the residue of a removal, which is an observation too.
+        let retired_something =
+            self.committed_id_high_water.is_some() || !self.pending_fences.is_empty();
+        match (self.current_committed.is_some(), retired_something) {
+            (false, true) => {
+                return Err(ControlPlaneCheckpointError::RetirementWithoutCurrentState)
             }
-            (None, false) | (Some(_), true) => {}
+            (true, false) => {
+                return Err(ControlPlaneCheckpointError::CurrentStateWithoutRetirement)
+            }
+            (false, false) | (true, true) => {}
         }
-        // One way only. A crossing offset is optional beside a full retirement
-        // record — that is the snapshot-recovered shape — but it can no more
-        // stand beside an empty one than an endpoint offset can.
-        if self.committed_crossings_through.is_some() && !retired_something {
-            return Err(ControlPlaneCheckpointError::CrossingsWithoutCommittedState);
-        }
-        for node_id in self.live_committed_members.iter().copied() {
+        for node_id in self.membership() {
             let Some(mark) = self.committed_id_high_water else {
-                return Err(ControlPlaneCheckpointError::LiveMembersWithoutMark { node_id });
+                // Unreachable behind the biconditional above, and kept because
+                // the loop must not read a mark it has not proved is there.
+                return Err(ControlPlaneCheckpointError::RetirementWithoutCurrentState);
             };
             if node_id > mark {
                 return Err(ControlPlaneCheckpointError::LiveMemberAboveMark { node_id, mark });
             }
         }
         for node_id in self.pending_fences.iter().copied() {
-            if self.live_committed_members.contains(&node_id) {
+            if self.names(node_id) {
                 return Err(ControlPlaneCheckpointError::FenceNamesLiveMember { node_id });
             }
             if !self.spends(node_id) {
@@ -396,6 +359,51 @@ impl<G> PeerControlPlaneCheckpoint<G> {
             }
         }
         Ok(())
+    }
+}
+
+/// Chooses between two current states and names what the pair proves.
+///
+/// The later observation wins and the earlier one is not discarded: the
+/// identities it named that the later one does not are the removals that
+/// happened between the two positions. That is the only inference here, and it
+/// is the one neither record can make alone.
+///
+/// # Errors
+///
+/// [`ControlPlaneCheckpointError::ContradictoryCurrentState`] when the two stand
+/// at one position and disagree about the membership there.
+fn join_current_state<G>(
+    held: &PeerControlPlaneCheckpoint<G>,
+    incoming: &PeerControlPlaneCheckpoint<G>,
+) -> Result<(CurrentCommittedState, BTreeSet<NodeId>), ControlPlaneCheckpointError> {
+    match (
+        held.current_committed.as_ref(),
+        incoming.current_committed.as_ref(),
+    ) {
+        (None, None) => Ok((
+            CurrentCommittedState::new(LogIndex::ZERO, BTreeSet::new()),
+            BTreeSet::new(),
+        )),
+        (Some(only), None) | (None, Some(only)) => Ok((only.clone(), BTreeSet::new())),
+        (Some(held), Some(incoming)) => {
+            let (older, newer) = match held.through.cmp(&incoming.through) {
+                Ordering::Less => (held, incoming),
+                Ordering::Greater => (incoming, held),
+                Ordering::Equal if held.membership == incoming.membership => (held, incoming),
+                Ordering::Equal => {
+                    return Err(ControlPlaneCheckpointError::ContradictoryCurrentState {
+                        through: held.through,
+                    })
+                }
+            };
+            let inferred = older
+                .membership
+                .difference(&newer.membership)
+                .copied()
+                .collect();
+            Ok((newer.clone(), inferred))
+        }
     }
 }
 
@@ -430,90 +438,17 @@ where
         PeerControlPlaneCheckpoint {
             group: self.group_id.clone(),
             committed_id_high_water: self.committed_id_high_water,
-            live_committed_members: self.live_committed_members.clone(),
+            current_committed: self.current_committed.clone(),
             pending_fences: self.pending_fences.clone(),
-            committed_crossings_through: self.committed_crossings_through,
-            committed_endpoint_through: self.committed_endpoint_through,
         }
     }
 
-    /// The position this driver holds for facts of `source`.
-    ///
-    /// One accessor rather than two call sites choosing a field, because
-    /// choosing the field *is* the decision the split exists to make and a
-    /// caller that picked it inline could pick the other one.
-    const fn committed_position(&self, source: CommittedMembershipSource) -> Option<LogIndex> {
-        match source {
-            CommittedMembershipSource::Crossing => self.committed_crossings_through,
-            CommittedMembershipSource::Endpoint => self.committed_endpoint_through,
-        }
-    }
-
-    /// Whether a committed configuration fact of `source` standing at `index` is
-    /// one this driver has already taken.
-    ///
-    /// **The gate that makes a replayed stream safe, and it is required rather
-    /// than defensive.** A committed configuration is a permanent fact, so a
-    /// driver that has consumed the crossing stream through index *n* has
-    /// already folded every crossing at or below *n* into its mark, its live
-    /// set, and its obligations. Re-folding one is not a harmless repetition:
-    /// the fold is a *difference* against the live set as it stands now, and the
-    /// live set has moved on. A configuration from index 10 recomputed against
-    /// the state index 11 produced reads as a removal of everything index 11
-    /// added.
-    ///
-    /// That is not a corner case, it is what a restart does. The runtime replays
-    /// every configuration entry between the application's applied floor and the
-    /// durable commit index, so a recovered driver is handed exactly this
-    /// sequence — historical facts, in order, all of them older than the
-    /// endpoint the runtime also reports.
-    ///
-    /// And it cannot be fixed by ordering alone. Replaying before the endpoint
-    /// is observed handles the *first* recovery; the second one, from the same
-    /// durable state and the checkpoint the first one wrote, replays index 10
-    /// against a restored live set that already reflects index 11. Idempotence
-    /// under arbitrary re-replay needs a position, not an order.
-    ///
-    /// **Each source is gated by its own position and never by the other's.** An
-    /// endpoint covers nothing beneath itself, so letting one answer for a
-    /// crossing skipped history that had genuinely never been folded — a
-    /// snapshot-recovered record's endpoint at commit 10 suppressed real
-    /// crossings at 6 and 7, and the identity the removal at 7 spent stayed
-    /// unspent. The converse is harmless but equally unearned, so the gate is
-    /// symmetric in construction and asymmetric only in what it costs.
-    ///
-    /// Strictly at-or-below, because a position names a fact that was taken
-    /// rather than the next one expected.
-    pub(super) fn committed_configuration_is_replayed(
-        &self,
-        index: LogIndex,
-        source: CommittedMembershipSource,
-    ) -> bool {
-        self.committed_position(source)
-            .is_some_and(|position| index <= position)
-    }
-
-    /// Moves `source`'s position to `index`, and reports whether it moved.
-    ///
-    /// Monotone, like every other field of the record. The caller folds the
-    /// answer into the same epoch decision the mark and the live set feed, so a
-    /// fact that advanced only a position still reaches the embedder's next
-    /// persist — a position made durable behind its own retirement record would
-    /// replay on the following restart, which is the whole failure this closes.
-    pub(super) fn advance_committed_position(
-        &mut self,
-        index: LogIndex,
-        source: CommittedMembershipSource,
-    ) -> bool {
-        let held = match source {
-            CommittedMembershipSource::Crossing => &mut self.committed_crossings_through,
-            CommittedMembershipSource::Endpoint => &mut self.committed_endpoint_through,
-        };
-        let advanced = held.is_none_or(|position| index > position);
-        if advanced {
-            *held = Some(index);
-        }
-        advanced
+    /// The membership this driver's current state names, or the empty set.
+    pub(super) fn live_committed_members(&self) -> &BTreeSet<NodeId> {
+        static NONE: BTreeSet<NodeId> = BTreeSet::new();
+        self.current_committed
+            .as_ref()
+            .map_or(&NONE, |current| &current.membership)
     }
 
     /// Joins a recovered checkpoint into what this driver holds, before any
@@ -527,90 +462,85 @@ where
     /// of 5 beats a reconstructed committed set of `{1,2}`, and an identity a
     /// removal spent stays spent even if the cluster names it again.
     ///
-    /// **A lattice join, not four independent merges, and the live set is where
-    /// that matters.** Taking the union of the two live sets was wrong, and
-    /// wrong in the one direction this whole mechanism exists to prevent: a
-    /// stale-but-valid checkpoint holding `{mark 5, live {1,2,5}}` joined into a
-    /// driver holding `{mark 5, live {1,2}}` produced live `{1,2,5}` and
-    /// *un-spent* node 5. Stale checkpoints are explicitly allowed — the public
-    /// contract says so and bounds what staleness costs — so this is reachable
-    /// by a correct embedder that crashed between a removal and its persistence,
-    /// and the identity the cluster consumed became adoptable again.
+    /// **A lattice join, not three independent merges, and the current state is
+    /// where that matters.** Taking the union of the two memberships was wrong
+    /// twice over, in the two directions this mechanism exists to prevent.
     ///
-    /// Write `spent_x(n) = n ≤ mark_x ∧ n ∉ live_x`. Then:
+    /// It un-spent a witnessed removal: a stale-but-valid record holding
+    /// `{mark 5, live {1,2,5}}` joined into a driver holding `{mark 5, live
+    /// {1,2}}` produced live `{1,2,5}`, and the identity the cluster consumed
+    /// became adoptable again. And it dropped a removal *neither* record
+    /// witnessed but the two jointly prove: an older `{through 7, mark 5, live
+    /// {1,2,3,5}}` beside a later snapshot-derived `{through 10, mark 3, live
+    /// {1,2,3}}` says node 5 was in the committed membership at position 7 and
+    /// is not in it at position 10, which is a committed removal — while the
+    /// union kept 5 live, unspent and unfenced. The missing fact was not in
+    /// either record; it was *between* them, and only a positioned current state
+    /// can see it.
+    ///
+    /// Write `spent_x(n) = n ≤ mark_x ∧ n ∉ live_x`, and let `older` and `newer`
+    /// be the two current states ordered by `through`. Then:
     ///
     /// ```text
-    /// mark      = max(mark_a, mark_b)
-    /// fences    = fences_a ∪ fences_b
-    /// live      = { n ∈ live_a ∪ live_b : ¬spent_a(n) ∧ ¬spent_b(n) }
-    /// crossings = max(crossings_a, crossings_b)
-    /// endpoint  = max(endpoint_a, endpoint_b)
+    /// mark     = max(mark_a, mark_b)
+    /// inferred = older.membership \ newer.membership
+    /// spent    = S_a ∪ S_b ∪ inferred
+    /// current  = { through: newer.through, membership: newer.membership \ spent }
+    /// fences   = fences_a ∪ fences_b ∪ (inferred \ (S_a ∪ S_b))
     /// ```
     ///
     /// An identity *above* one side's mark is judged only by the side whose mark
     /// covers it, which is what lets a record that never saw an identity avoid
-    /// overruling one that did.
+    /// overruling one that did. The inferred set is the exception and earns it:
+    /// it is judged by both, because being named at one position and absent at a
+    /// later one is a two-record fact.
     ///
-    /// **Each position is `max` for the same reason the mark is, and the two are
-    /// taken independently because the premise the `max` rests on is true of
-    /// only one of them.** Skipping a replayed fact at or below the joined
-    /// position is safe exactly when the joined *state* already reflects it. For
-    /// a crossing it does: whichever side held the higher crossing position had
-    /// folded that configuration entry, its spent-ness is in `S_a ∪ S_b`, and
-    /// the join preserves the whole union — so the side that had not consumed it
-    /// loses nothing by the join declining to consume it again.
-    ///
-    /// **For an endpoint the premise is false, and one shared position made the
-    /// proof unsound.** An endpoint stands at a commit index and covers nothing
-    /// beneath itself. A process that recovered from a snapshot at commit 10
-    /// honestly reports `{mark 3, live {1,2,3}, endpoint 10}` having never seen
-    /// the `+5` at index 6 or the `−5` at index 7. Joined under one position,
-    /// `max` carried 10 into the crossing gate, another process's real recovery
-    /// outputs for 6 and 7 were skipped as already-consumed, and node 5 was
-    /// never spent and never fenced. Splitting the position restores the
-    /// premise for the field the argument actually reads: `crossings` is a `max`
-    /// over positions each side *earned* by folding entries, and no endpoint can
-    /// raise it.
+    /// **Equal positions with different memberships are refused rather than
+    /// merged** — see [`ControlPlaneCheckpointError::ContradictoryCurrentState`].
+    /// The committed membership at one position is one set, so two records
+    /// disagreeing there are not two observations to reconcile; picking either
+    /// would be choosing which record to believe, and merging them would invent
+    /// a third. Unreachable for a cluster that keeps the single-use contract:
+    /// each side's filter removes only identities a committed removal spent, and
+    /// under the contract no such identity is named again at a later position,
+    /// so the filters agree wherever the positions do.
     ///
     /// **The three properties, which are what make it safe to apply in any
     /// order.** Let `S_x` be the spent set of `x` and `L_x` its live set.
     ///
-    /// 1. *Symmetric.* Every operator above — `max`, `∪`, and a conjunction —
-    ///    is symmetric in `a` and `b`, so `join(a, b) = join(b, a)`.
-    /// 2. *Order-free.* The key step is that the join's own spent set is exactly
-    ///    the union of the two: `S_join = S_a ∪ S_b`. (⊇ is immediate. For ⊆,
-    ///    take `n ≤ max(mark_a, mark_b)` with `n ∉ L_join`. Either `n ∈ S_a ∪
-    ///    S_b` and we are done, or `n ∉ L_a ∪ L_b`; then `n ≤ mark_a` gives
-    ///    `n ∈ S_a` and `n ≤ mark_b` gives `n ∈ S_b`, and one of the two holds
-    ///    because `n ≤ max`.) Substituting, `L_(a∨b)∨c = (L_a ∪ L_b ∪ L_c) \
-    ///    (S_a ∪ S_b ∪ S_c)`, which is symmetric in all three, so the join is
-    ///    associative as well as commutative — any sequence of restores yields
-    ///    the same state. It is idempotent too: `L_a \ S_a = L_a`, because a
-    ///    validated checkpoint's live and spent sets are disjoint.
-    /// 3. *Monotone in spent-ness.* From `S_join = S_a ∪ S_b`, every identity
-    ///    either side had witnessed spent is spent in the join, and by
-    ///    associativity in every later join as well. **A witnessed removal
-    ///    cannot be undone by any merge order.** That is the property the union
-    ///    lacked and the reason this is a join rather than four merges.
+    /// 1. *Symmetric.* Every operator above is symmetric in `a` and `b`: `max`,
+    ///    `∪`, and "the later of the two, refusing a tie that disagrees" — which
+    ///    is symmetric precisely because the tie is refused rather than broken.
+    /// 2. *Order-free.* `S_join ⊇ S_a ∪ S_b` (take `n ∈ S_a`: `n ≤ mark_a ≤
+    ///    mark_join`, and `n` is filtered out of the joined membership by
+    ///    construction). Position is `max`, which is associative, and the joined
+    ///    membership is the newest observation minus an accumulated spent set —
+    ///    so a third record joined afterwards sees the same newest observation
+    ///    and a spent set that only grew, whichever order the first two arrived
+    ///    in. Idempotent: joining `a` with itself leaves the position equal, the
+    ///    memberships equal, `inferred` empty, and `L_a \ S_a = L_a`.
+    /// 3. *Monotone in spent-ness.* From property 2, every identity either side
+    ///    had witnessed spent is spent in the join and in every later join.
+    ///    **A witnessed removal cannot be undone by any merge order**, and an
+    ///    inferred one cannot either: it leaves the joined membership, and the
+    ///    filter above keeps a later observation from putting it back.
     ///
     /// Obligations are still the union, because a driver can hold fences of its
     /// own before a checkpoint is restored and losing either set would be losing
-    /// a fence. The fence set is idempotent under union by contract: it holds
-    /// committed facts, and nothing but an accepted fence removes one.
+    /// a fence. **An inferred removal contributes a fence only when neither side
+    /// already knew the identity was spent**, which is what keeps one committed
+    /// removal to exactly one obligation: a side that knew either still owes the
+    /// fence, and it is in that side's set, or the link layer already accepted
+    /// it and nothing is owed.
     ///
     /// **The joined candidate is validated too, and that is deliberate
     /// redundancy.** The proof above says it cannot fail — `fences ⊆ spent` is
-    /// preserved by the join, because a fence of `a` is in `S_a`, is at or below
-    /// `mark_a ≤ mark_join`, and is excluded from `live_join` by construction.
-    /// The coupling invariant is preserved for the same kind of reason: each
-    /// position is a `max` and the retirement fields are unions or maxima, so a
-    /// joined record has an endpoint position exactly when one of its sides did,
-    /// has a crossing position exactly when one of its sides did, and has
-    /// retirement state exactly when one of its sides did. Each side satisfies
-    /// `retired ⟺ endpoint` and `crossings ⟹ retired` — the incoming one by
-    /// validation and the held one by the invariant this driver maintains — and
-    /// both implications are preserved by taking maxima and unions on every
-    /// term.
+    /// preserved because a fence of `a` is in `S_a` and every element of `S_a`
+    /// is excluded from the joined membership while sitting at or below the
+    /// joined mark, and an inferred fence is spent by the same construction. The
+    /// coupling biconditional is preserved because the mark is a `max` and the
+    /// current state is a choice between two: the join has a mark exactly when a
+    /// side did, and a current state exactly when a side did.
     ///
     /// The properties are nonetheless *executed* rather than only argued,
     /// because the cost is one pass over a cluster-sized set and the thing being
@@ -621,8 +551,9 @@ where
     /// # Errors
     ///
     /// Returns [`ControlPlaneCheckpointError`] when the checkpoint names another
-    /// group or contradicts the invariants a driver maintains for one, and when
-    /// the joined candidate would contradict them. **Nothing is mutated on that
+    /// group or contradicts the invariants a driver maintains for one, when the
+    /// two records contradict each other at one position, and when the joined
+    /// candidate would contradict the invariants. **Nothing is mutated on that
     /// path** — the join is computed into a candidate and validated before the
     /// first field moves — so a caller that refuses to open is left with a driver
     /// in exactly the state it was.
@@ -633,14 +564,6 @@ where
         checkpoint.validate(&self.group_id)?;
 
         let held = self.control_plane_checkpoint();
-        // Computed before the record is taken apart below, because both halves
-        // of the spent filter need the whole of it.
-        let live_committed_members = held
-            .live_committed_members
-            .union(&checkpoint.live_committed_members)
-            .copied()
-            .filter(|node_id| !held.spends(*node_id) && !checkpoint.spends(*node_id))
-            .collect();
         let committed_id_high_water = match (
             held.committed_id_high_water,
             checkpoint.committed_id_high_water,
@@ -649,33 +572,46 @@ where
             (held, None) => held,
             (None, restored) => restored,
         };
-        // Independently, and that independence is the fix. A `max` over the two
-        // kinds together let a position nothing had earned gate a fold that had
-        // never run.
-        let committed_crossings_through = held
-            .committed_crossings_through
-            .max(checkpoint.committed_crossings_through);
-        let committed_endpoint_through = held
-            .committed_endpoint_through
-            .max(checkpoint.committed_endpoint_through);
+        // The two-record fact, and the only thing here that neither record
+        // states on its own: an identity named at one position and absent at a
+        // later one was removed between them.
+        let (current, inferred) = join_current_state(&held, &checkpoint)?;
+        let already_spent = |node_id: NodeId| held.spends(node_id) || checkpoint.spends(node_id);
+        let membership = current
+            .membership
+            .iter()
+            .copied()
+            .filter(|node_id| !already_spent(*node_id))
+            .collect();
+        // Only what neither side already knew. A removal one side had witnessed
+        // is either still owed in that side's obligations or already discharged,
+        // and re-deriving it would owe a second fence for one committed fact.
+        let owed = inferred
+            .into_iter()
+            .filter(|id| !already_spent(*id))
+            .collect::<Vec<_>>();
         let mut pending_fences = checkpoint.pending_fences;
         pending_fences.extend(held.pending_fences);
+        pending_fences.extend(owed);
 
         let joined = PeerControlPlaneCheckpoint {
             group: self.group_id.clone(),
             committed_id_high_water,
-            live_committed_members,
+            current_committed: Some(CurrentCommittedState::new(current.through, membership)),
             pending_fences,
-            committed_crossings_through,
-            committed_endpoint_through,
-        };
+        }
+        .without_empty_state();
         joined.validate(&self.group_id)?;
 
+        // The raw committed floor is deliberately not restored from here. It
+        // answers "what does this replica's own stream say the cluster has
+        // committed now", a record says what this driver has *spent*, and both
+        // entry points that reach this call publish the runtime's endpoint
+        // afterwards — so the floor is assigned from the runtime before the
+        // driver serves anything.
         self.committed_id_high_water = joined.committed_id_high_water;
-        self.live_committed_members = joined.live_committed_members;
+        self.current_committed = joined.current_committed;
         self.pending_fences = joined.pending_fences;
-        self.committed_crossings_through = joined.committed_crossings_through;
-        self.committed_endpoint_through = joined.committed_endpoint_through;
         self.advance_checkpoint_epoch();
         Ok(())
     }

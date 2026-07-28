@@ -21,8 +21,8 @@ mod support;
 use std::collections::BTreeSet;
 
 use rafter_service::{
-    ControlPlaneCheckpointError, ManagedDriverError, PeerControlPlaneCheckpoint,
-    TransportDriverOptions,
+    ControlPlaneCheckpointError, CurrentCommittedState, ManagedDriverError,
+    PeerControlPlaneCheckpoint, TransportDriverOptions,
 };
 use support::scripted::*;
 use support::transport::*;
@@ -32,46 +32,50 @@ fn ids(node_ids: &[u64]) -> BTreeSet<NodeId> {
     node_ids.iter().copied().map(NodeId).collect()
 }
 
-/// Where a hand-built record has consumed the configuration stream through.
+/// Where a hand-built record observed the committed membership.
 ///
 /// Below the scripted runtime's commit index on purpose, so every adoption's
-/// endpoint publication still folds rather than being skipped as replayed. These
-/// tests are about the identity lattice, and a fixture that gated the
-/// publication away would be measuring the gate instead.
-const CONSUMED_THROUGH: LogIndex = LogIndex(1);
+/// endpoint publication is the later observation and still lands. These tests
+/// are about the identity lattice, and a fixture whose record outranked the
+/// runtime would be measuring the register's ordering instead.
+const OBSERVED_AT: LogIndex = LogIndex(1);
 
 /// A checkpoint built by hand, the way a durable file hands one back.
 ///
-/// **Both offsets travel with the retirement record**, because they are one
-/// record and a driver never writes the state without them. A helper that left
-/// them out would be building a shape the validator now refuses — which is the
-/// point of `a_record_that_separates_an_offset_from_what_it_retired_is_refused`
+/// **The current state travels with the retirement record**, because they are
+/// one record and a driver never writes either without the other. A helper that
+/// left it out would be building a shape the validator now refuses — which is
+/// the point of `a_record_that_separates_retirement_from_its_current_state_is_refused`
 /// below, and not something every other case here should be quietly asserting.
 fn checkpoint(mark: Option<u64>, live: &[u64], fences: &[u64]) -> PeerControlPlaneCheckpoint<u64> {
-    checkpoint_through(
-        mark,
-        live,
-        fences,
-        Some(CONSUMED_THROUGH),
-        Some(CONSUMED_THROUGH),
-    )
+    checkpoint_at(mark, live, fences, Some(OBSERVED_AT))
 }
 
-/// The same, with both consumer offsets chosen by the caller.
-fn checkpoint_through(
+/// The same, with the observation's position chosen by the caller.
+///
+/// `None` builds a record with no current state at all, which is the shape the
+/// coupling biconditional refuses beside any retirement state.
+fn checkpoint_at(
     mark: Option<u64>,
     live: &[u64],
     fences: &[u64],
-    crossings: Option<LogIndex>,
-    endpoint: Option<LogIndex>,
+    through: Option<LogIndex>,
 ) -> PeerControlPlaneCheckpoint<u64> {
     let mut checkpoint = PeerControlPlaneCheckpoint::empty(GROUP);
     checkpoint.committed_id_high_water = mark.map(NodeId);
-    checkpoint.live_committed_members = ids(live);
     checkpoint.pending_fences = ids(fences);
-    checkpoint.committed_crossings_through = crossings;
-    checkpoint.committed_endpoint_through = endpoint;
+    checkpoint.current_committed =
+        through.map(|through| CurrentCommittedState::new(through, ids(live)));
     checkpoint
+}
+
+/// The membership a settled record calls live.
+fn live_of(checkpoint: &PeerControlPlaneCheckpoint<u64>) -> BTreeSet<NodeId> {
+    checkpoint
+        .current_committed
+        .as_ref()
+        .map(|current| current.membership.clone())
+        .unwrap_or_default()
 }
 
 /// A driver holding `{mark, live}` and nothing else, ready to be joined into.
@@ -141,10 +145,7 @@ fn a_stale_checkpoint_cannot_un_spend_a_retired_identity() {
          got {refused:?}"
     );
     assert!(
-        !driver
-            .control_plane_checkpoint()
-            .live_committed_members
-            .contains(&NodeId(5)),
+        !live_of(&driver.control_plane_checkpoint()).contains(&NodeId(5)),
         "and the refusal left the identity spent rather than half-installed"
     );
 }
@@ -221,7 +222,7 @@ fn the_join_is_order_free_across_three_records() {
     let settled = settled.expect("four orders were run");
     assert_eq!(settled.committed_id_high_water, Some(NodeId(6)));
     assert_eq!(
-        settled.live_committed_members,
+        live_of(&settled),
         ids(&[1, 2, 5]),
         "3 and 4 were each witnessed spent by one record, and 6 by another"
     );
@@ -273,8 +274,68 @@ fn an_identity_above_a_records_mark_is_not_spent_by_that_record() {
     let settled = driver.control_plane_checkpoint();
     assert_eq!(settled.committed_id_high_water, Some(NodeId(5)));
     assert!(
-        settled.live_committed_members.contains(&NodeId(5)),
+        live_of(&settled).contains(&NodeId(5)),
         "the older record's silence about node 5 is not a removal"
+    );
+}
+
+/// Two honest records jointly prove a removal neither one witnessed.
+///
+/// **The reviewer's counterexample, and the missing fact is *between* the
+/// records.** The older one stands at endpoint 7 and says node 5 was live there;
+/// the later one stands at endpoint 10 and says the committed membership is
+/// `{1,2,3}` — it is snapshot-derived, so the removal that took node 5 out
+/// happened below its boundary and it has no record of it. Neither record is
+/// damaged and neither alone is evidence: the older one's mark is 5 with node 5
+/// live, so it does not spend it, and the later one's mark is 3, so it has no
+/// opinion about node 5 at all.
+///
+/// Together they do prove it. Node 5 was in the committed membership at
+/// position 7 and is not in the committed membership at position 10, and a
+/// committed configuration is permanent — so a committed removal happened
+/// between them.
+///
+/// Treating the current membership as a grow-only set loses exactly that. The
+/// union keeps node 5 live under the joined mark of 5, which leaves it unspent
+/// and unfenced, and the joined endpoint of 10 then makes the runtime's own
+/// index-10 publication look already-consumed so no fold ever runs.
+#[test]
+fn two_records_that_jointly_prove_a_removal_spend_the_identity() {
+    let (driver, _transport) = driver_holding_named(None, &[1, 2, 3], Nameable::only(&[NodeId(2)]));
+    let group = driver.release_group().expect("the driver holds a group");
+    driver
+        .adopt_group_with_checkpoint(
+            group,
+            Vec::new(),
+            checkpoint_at(Some(5), &[1, 2, 3, 5], &[], Some(LogIndex(7))),
+        )
+        .expect("an older honest record");
+
+    let group = driver.release_group().expect("the driver holds a group");
+    driver
+        .adopt_group_with_checkpoint(
+            group,
+            Vec::new(),
+            checkpoint_at(Some(3), &[1, 2, 3], &[], Some(LogIndex(10))),
+        )
+        .expect("a later honest snapshot-derived record");
+
+    let settled = driver.control_plane_checkpoint();
+    assert!(
+        !live_of(&settled).contains(&NodeId(5)),
+        "node 5 was live at position 7 and absent at position 10, which is a \
+         committed removal: {:?}",
+        live_of(&settled)
+    );
+    assert_eq!(
+        settled.committed_id_high_water,
+        Some(NodeId(5)),
+        "and the mark still covers it, so the spent test can see it"
+    );
+    assert!(
+        settled.pending_fences.contains(&NodeId(5)),
+        "and the removal the pair proves owes a permanent fence: {:?}",
+        settled.pending_fences
     );
 }
 
@@ -315,7 +376,7 @@ fn a_contradictory_checkpoint_is_refused_and_installs_nothing() {
     let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 3] = [
         (
             checkpoint(None, &[1, 2], &[]),
-            ControlPlaneCheckpointError::LiveMembersWithoutMark { node_id: NodeId(1) },
+            ControlPlaneCheckpointError::CurrentStateWithoutRetirement,
         ),
         (
             checkpoint(Some(2), &[1, 2, 5], &[]),
@@ -446,70 +507,42 @@ fn a_fence_contradicting_a_live_member_is_refused_before_any_transport_call() {
     );
 }
 
-/// A record that separates an offset from what it retired is refused, every way
-/// round.
+/// A record that separates retirement from its current state is refused, both
+/// ways round.
 ///
-/// The offsets and the retirement record are one record. Each half is
-/// individually well-formed here — every clause the other cases check still
-/// holds — and each pair is a state no driver produces, because every committed
-/// fact that touches the mark, the live set, or the obligations advances its own
-/// offset in the same call.
+/// The mark and the current state are one record. Each half is individually
+/// well-formed here — every clause the other cases check still holds — and each
+/// pair is a state no driver produces, because every observation of a committed
+/// configuration raises the mark and assigns the current state in the same call.
 ///
-/// **The coupling is not symmetric, and stating it as "at least one offset"
-/// would let the dangerous shape through.** Every driver that folded anything
-/// was constructed or adopted, and both entry points publish an endpoint fact
-/// unconditionally — so retirement state implies the *endpoint* offset
-/// specifically, while the crossing offset is genuinely optional beside a full
-/// record. The cases below therefore refuse a crossing offset standing alone
-/// with retirement state, and the case after this one accepts the endpoint-only
-/// record it would otherwise have swept up.
-///
-/// The directions fail differently and an operator needs to know which. A final
-/// live set with no endpoint offset leaves the endpoint fold ungated, so the
-/// next adoption diffs a rebuilt runtime's committed configuration — possibly
-/// *behind*, because a commit index is volatile — against a live set that has
-/// moved past it, and permanently fences everything the newer configurations
-/// added. An offset with nothing behind it makes recovery *skip* that history
-/// and keep nothing from it, so every identity those configurations spent
-/// becomes allocatable again with no fence owed.
+/// The directions fail differently and an operator needs to know which. A mark
+/// with nothing to read it against spends every identity at or below it, so the
+/// driver refuses the whole cluster. A current state with no mark is a record
+/// whose retirement half was truncated away, so every identity the lost facts
+/// spent is allocatable again with no fence owed.
 #[test]
-fn a_record_that_separates_an_offset_from_what_it_retired_is_refused() {
-    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 6] = [
+fn a_record_that_separates_retirement_from_its_current_state_is_refused() {
+    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 4] = [
         (
-            checkpoint_through(Some(3), &[1, 2, 3], &[], None, None),
-            ControlPlaneCheckpointError::CommittedStateWithoutEndpoint,
+            checkpoint_at(Some(3), &[1, 2, 3], &[], None),
+            ControlPlaneCheckpointError::RetirementWithoutCurrentState,
         ),
         // A mark and an obligation with no live set is still retirement state,
-        // so it needs an endpoint offset like any other.
+        // so it needs a current state like any other.
         (
-            checkpoint_through(Some(5), &[], &[5], None, None),
-            ControlPlaneCheckpointError::CommittedStateWithoutEndpoint,
-        ),
-        // **The shape "at least one offset" would have accepted.** A crossing
-        // offset is not a substitute: no lifecycle produces retirement state
-        // without an endpoint observation, and absorbing this one leaves the
-        // endpoint fold ungated for the very next adoption.
-        (
-            checkpoint_through(Some(3), &[1, 2, 3], &[], Some(LogIndex(3)), None),
-            ControlPlaneCheckpointError::CommittedStateWithoutEndpoint,
+            checkpoint_at(Some(5), &[], &[5], None),
+            ControlPlaneCheckpointError::RetirementWithoutCurrentState,
         ),
         (
-            checkpoint_through(None, &[], &[], None, Some(LogIndex(3))),
-            ControlPlaneCheckpointError::EndpointWithoutCommittedState,
-        ),
-        // The same emptiness through the other offset, and it needs its own
-        // clause: with no endpoint offset beside it, the endpoint biconditional
-        // is satisfied by both sides being absent and says nothing about this.
-        (
-            checkpoint_through(None, &[], &[], Some(LogIndex(3)), None),
-            ControlPlaneCheckpointError::CrossingsWithoutCommittedState,
+            checkpoint_at(None, &[], &[], Some(LogIndex(3))),
+            ControlPlaneCheckpointError::CurrentStateWithoutRetirement,
         ),
         // `LogIndex(0)` is a real position rather than an absence, which is why
-        // the offsets are `Option`s — so this is the same separation and not a
-        // zero standing in for `None`.
+        // the current state is an `Option` — so this is the same separation and
+        // not a zero standing in for `None`.
         (
-            checkpoint_through(None, &[], &[], None, Some(LogIndex(0))),
-            ControlPlaneCheckpointError::EndpointWithoutCommittedState,
+            checkpoint_at(None, &[], &[], Some(LogIndex(0))),
+            ControlPlaneCheckpointError::CurrentStateWithoutRetirement,
         ),
     ];
 
@@ -544,12 +577,12 @@ fn a_record_that_separates_an_offset_from_what_it_retired_is_refused() {
 /// driver produced, so if the invariant were not maintained by construction the
 /// refusal would be turning away ordinary output rather than damage.
 ///
-/// **The endpoint offset is the one that must be there**, and this is where that
-/// half of the derivation is checked against the real lifecycle rather than
-/// argued: adoption publishes an endpoint fact unconditionally, so a driver that
-/// holds a group has one whatever else it has done.
+/// **Both halves arrive together or neither does**, and this is where that is
+/// checked against the real lifecycle rather than argued: adoption publishes a
+/// committed fact unconditionally, so a driver that holds a group has a mark and
+/// a current state whatever else it has done.
 #[test]
-fn a_driver_that_has_observed_a_configuration_records_the_endpoint_offset() {
+fn a_driver_that_has_observed_a_configuration_records_its_current_state() {
     let (driver, _transport) = driver_holding(None, &[1, 2, 3]);
 
     let produced = driver.control_plane_checkpoint();
@@ -558,35 +591,28 @@ fn a_driver_that_has_observed_a_configuration_records_the_endpoint_offset() {
         "adoption observed a committed configuration, so it raised the mark"
     );
     assert!(
-        produced.committed_endpoint_through.is_some(),
-        "and advanced the endpoint offset in the same call: {produced:?}"
+        produced.current_committed.is_some(),
+        "and assigned the current state in the same call: {produced:?}"
     );
 
     // And the empty record keeps the other side of the biconditional.
     let empty = PeerControlPlaneCheckpoint::<u64>::empty(GROUP);
     assert!(empty.committed_id_high_water.is_none());
-    assert!(empty.live_committed_members.is_empty());
+    assert!(empty.current_committed.is_none());
     assert!(empty.pending_fences.is_empty());
-    assert!(empty.committed_crossings_through.is_none());
-    assert!(empty.committed_endpoint_through.is_none());
 }
 
-/// A full retirement record with an endpoint offset and no crossing offset is
-/// accepted.
+/// The later of two current states wins, and the earlier is not merged into it.
 ///
-/// **The shape the split exists to represent, and the one a symmetric invariant
-/// would have refused.** A process that recovered from a snapshot folded the
-/// boundary configuration at its commit index and no configuration entry at all,
-/// so it honestly has an endpoint offset, a mark, a live set — and nothing to
-/// put in the crossing offset. A first incarnation over a fresh cluster produces
-/// the same shape for the same reason.
-///
-/// Refusing it would make every such process unable to restart, and accepting it
-/// is only safe because the crossing offset it lacks is exactly the one that
-/// must not be invented: leaving it `None` is what lets a later recovery replay
-/// the crossings this record never saw.
+/// **The rule that replaced two consumer offsets.** A record that looked at
+/// position 9 is believed over one that looked at position 1, whatever each
+/// names, because "who is committed now" is an answer that was true somewhere
+/// rather than a fact to accumulate. The incoming record here is the
+/// snapshot-recovered shape — it observed the boundary configuration at its
+/// commit index and no configuration entry at all — and it is an ordinary input
+/// rather than a special case.
 #[test]
-fn an_endpoint_only_record_is_a_record_a_driver_produces() {
+fn the_later_of_two_current_states_is_the_one_that_is_believed() {
     let (driver, _transport) = driver_holding(Some(3), &[1, 2, 3]);
     let group = driver.release_group().expect("the driver holds a group");
 
@@ -594,21 +620,66 @@ fn an_endpoint_only_record_is_a_record_a_driver_produces() {
         .adopt_group_with_checkpoint(
             group,
             Vec::new(),
-            checkpoint_through(Some(3), &[1, 2, 3], &[], None, Some(LogIndex(9))),
+            checkpoint_at(Some(3), &[1, 2, 3], &[], Some(LogIndex(9))),
         )
-        .expect("a snapshot-recovered record has an endpoint and no crossings");
+        .expect("a snapshot-recovered record is an ordinary input");
 
     let settled = driver.control_plane_checkpoint();
+    let current = settled
+        .current_committed
+        .as_ref()
+        .expect("the driver holds a current state");
     assert_eq!(
-        settled.committed_endpoint_through,
-        Some(LogIndex(9)),
-        "the endpoint offset joined by max like any other position"
+        current.through,
+        LogIndex(9),
+        "the later observation is the one this driver now holds"
+    );
+    assert_eq!(current.membership, ids(&[1, 2, 3]));
+}
+
+/// Two records that disagree at one position are refused rather than merged.
+///
+/// The committed membership at one log index is one set, so this is two claims
+/// about a single fact and not two observations to reconcile. Picking either
+/// would be choosing which record to believe with nothing to decide on; merging
+/// them would invent a third that neither record ever held, and a merged live
+/// set is exactly how a removal gets lost.
+#[test]
+fn two_records_that_disagree_at_one_position_are_refused() {
+    let (driver, transport) = driver_holding(Some(5), &[1, 2, 5]);
+    let before = driver.control_plane_checkpoint();
+    let standing_at = before
+        .current_committed
+        .as_ref()
+        .expect("the driver holds a current state")
+        .through;
+    let fences_before = transport.fence_attempts();
+    let group = driver.release_group().expect("the driver holds a group");
+
+    let refused = driver.adopt_group_with_checkpoint(
+        group,
+        Vec::new(),
+        checkpoint_at(Some(5), &[1, 2], &[], Some(standing_at)),
+    );
+
+    assert!(
+        matches!(
+            refused,
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::ContradictoryCurrentState { through }
+            }) if through == standing_at
+        ),
+        "got {refused:?}"
     );
     assert_eq!(
-        settled.committed_crossings_through,
-        Some(CONSUMED_THROUGH),
-        "and the crossing offset kept what this driver had earned, because the \
-         incoming record contributed none"
+        driver.control_plane_checkpoint(),
+        before,
+        "a refused record moves nothing"
+    );
+    assert_eq!(
+        transport.fence_attempts(),
+        fences_before,
+        "and the link layer was told nothing on the way to the refusal"
     );
 }
 

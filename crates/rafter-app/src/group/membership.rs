@@ -167,6 +167,7 @@ where
                 group_id: self.group_id.clone(),
                 index: crossing.index,
                 term: crossing.term,
+                previous: crossing.previous,
                 membership: crossing.membership.clone(),
             });
             self.reported_membership.committed = crossing.membership;
@@ -212,12 +213,14 @@ where
             if let RaftOutput::ConfigurationCommitted {
                 index,
                 term,
+                previous,
                 configuration,
             } = output
             {
                 self.record_committed_configuration(
                     *index,
                     *term,
+                    previous.clone(),
                     configuration.membership_config(),
                 );
             }
@@ -236,6 +239,7 @@ where
         &mut self,
         index: LogIndex,
         term: Term,
+        previous: MembershipConfig,
         membership: MembershipConfig,
     ) {
         self.reported_membership
@@ -243,6 +247,7 @@ where
             .push(CommittedConfigurationCrossing {
                 index,
                 term,
+                previous,
                 membership,
             });
     }
@@ -302,11 +307,13 @@ where
                 MembershipEvent::Applied {
                     index,
                     term,
+                    previous,
                     membership,
                     ..
                 } => Some(CommittedConfigurationCrossing {
                     index: *index,
                     term: *term,
+                    previous: previous.clone(),
                     membership: membership.clone(),
                 }),
                 MembershipEvent::CommittedEndpoint { .. }

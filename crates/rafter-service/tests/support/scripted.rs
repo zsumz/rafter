@@ -90,11 +90,30 @@ impl ScriptedMembershipRuntime {
     /// The same runtime under a different local replica, for a supervisor that
     /// rebuilds this node under a fresh identity.
     pub(crate) fn for_node(node_id: NodeId, effective: &[u64], committed: &[u64]) -> Self {
+        Self::for_node_at(node_id, effective, committed, INITIAL_COMMIT_INDEX)
+    }
+
+    /// The same, opened at a chosen commit index.
+    ///
+    /// **A replacement incarnation must not claim an older position for a newer
+    /// committed membership.** The committed membership at one log index is one
+    /// set, so a driver holding a later observation reads the difference between
+    /// the two as the removals that happened between them — which is how a
+    /// checkpoint and a runtime jointly prove a removal neither witnessed. A
+    /// fixture that rebuilds a replacement at the default index while the driver
+    /// has already moved past it states a sequence no cluster produces, and
+    /// measures that inference instead of the rule under test.
+    pub(crate) fn for_node_at(
+        node_id: NodeId,
+        effective: &[u64],
+        committed: &[u64],
+        commit_index: LogIndex,
+    ) -> Self {
         Self {
             shared: Arc::new(Mutex::new(ScriptedMembership {
                 effective: effective.to_vec(),
                 committed: committed.to_vec(),
-                commit_index: INITIAL_COMMIT_INDEX,
+                commit_index,
                 change_on_step: None,
                 outputs_on_step: Vec::new(),
             })),

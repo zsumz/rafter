@@ -24,6 +24,16 @@ use support::scripted::*;
 use support::transport::*;
 use support::*;
 
+/// Where a replacement incarnation's runtime opens, for the cases that rebuild
+/// one after a removal has already committed.
+///
+/// Above the position the retired incarnation reached, because that is the only
+/// honest place for it: the committed membership at one log index is one set,
+/// and a replacement claiming an older index for a newer membership would be
+/// stating that everything the newer one names and the older did not had been
+/// removed in between.
+const AFTER_THE_REMOVAL: LogIndex = LogIndex(7);
+
 /// Whether one write refusal names this driver's own service state.
 ///
 /// A typed variant and a typed reason, which is what changed: these refusals
@@ -743,7 +753,12 @@ fn the_local_replicas_fence_is_deferred_until_a_fresh_id_is_adopted() {
             RaftGroup::new(
                 GROUP,
                 NodeId(4),
-                ScriptedMembershipRuntime::for_node(NodeId(4), &[2, 3, 4], &[2, 3, 4]),
+                ScriptedMembershipRuntime::for_node_at(
+                    NodeId(4),
+                    &[2, 3, 4],
+                    &[2, 3, 4],
+                    AFTER_THE_REMOVAL,
+                ),
                 KvStateMachine::default(),
             ),
             Vec::new(),
@@ -785,7 +800,12 @@ fn the_retired_local_id_stays_refused_when_a_later_membership_names_it() {
     let group = driver.release_group().expect("the driver holds a group");
     drop(group);
 
-    let replacement = ScriptedMembershipRuntime::for_node(NodeId(4), &[2, 3, 4], &[2, 3, 4]);
+    let replacement = ScriptedMembershipRuntime::for_node_at(
+        NodeId(4),
+        &[2, 3, 4],
+        &[2, 3, 4],
+        AFTER_THE_REMOVAL,
+    );
     let replacement_handle = replacement.handle();
     driver
         .adopt_group(

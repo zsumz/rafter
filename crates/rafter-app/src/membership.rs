@@ -103,21 +103,25 @@ pub struct MembershipChangeReport<G> {
 ///
 /// **That last split is the newest and the least obvious.** A committed fact is
 /// read by a consumer in two ways at once — "what does the cluster have
-/// committed" and "how far through the committed configuration stream am I" —
-/// and only one of the two variants below answers the second question. An
-/// [`MembershipEvent::Applied`] carries the index of the configuration entry it
-/// crossed, so consuming it really does cover that point in the stream. A
-/// [`MembershipEvent::CommittedEndpoint`] carries the commit index and covers
-/// **nothing beneath itself**: a replica that installs a snapshot at commit 10
-/// learns the boundary configuration and learns nothing about the configurations
-/// that committed and were superseded below it.
+/// committed" and "which identities did this consume" — and only one of the two
+/// variants below answers the second question. An [`MembershipEvent::Applied`]
+/// is a *transition*: it carries the membership that stood immediately before
+/// the configuration entry as well as the entry's own, so the identities it
+/// removed are exactly `previous − membership` wherever it is folded. A
+/// [`MembershipEvent::CommittedEndpoint`] is a positioned *observation* of the
+/// membership now, for a move with no entry behind it, and it removes nothing on
+/// its own — a replica that installs a snapshot at commit 10 learns the boundary
+/// configuration and learns nothing about the configurations that committed and
+/// were superseded below it.
 ///
-/// A consumer that kept one position for both therefore claimed history coverage
-/// it never had, and skipped the real crossings a *later* recovery replayed
-/// beneath it — so an identity a committed removal spent was never spent locally
-/// and its fence was never owed. The two facts are separate variants for the
-/// same reason the effective and committed halves are: they license different
-/// conclusions, and a consumer that cannot tell them apart draws the wrong one.
+/// A consumer that could not tell them apart subtracted every committed fact
+/// from its own current membership. That is right only when the two stand at the
+/// same point, and a replayed history is exactly the case where they do not: a
+/// process holding a later state read each historical configuration as a removal
+/// of everything the later ones added, so a log that only ever *added* replicas
+/// retired them. The two facts are separate variants for the same reason the
+/// effective and committed halves are: they license different conclusions, and a
+/// consumer that cannot tell them apart draws the wrong one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum MembershipEvent<G> {
@@ -157,17 +161,29 @@ pub enum MembershipEvent<G> {
     ///
     /// **`index` and `term` name the configuration entry itself, always.** That
     /// is what separates this variant from
-    /// [`MembershipEvent::CommittedEndpoint`] and what makes the index usable as
-    /// a position in the committed configuration stream: a consumer that has
-    /// taken this fact has genuinely covered `index`, so a later replay of the
-    /// same entry is history it may skip. The variant used to carry the commit
-    /// index instead whenever the kernel could not name an entry, which made the
-    /// two provenances indistinguishable and the position a claim no consumer
-    /// could check.
+    /// [`MembershipEvent::CommittedEndpoint`], whose index is a commit index and
+    /// covers nothing beneath itself. Here the index is a position a committed
+    /// configuration genuinely occupies, so two of these can be ordered against
+    /// each other and against an endpoint observation.
+    ///
+    /// **`previous` and `membership` are the two ends of one transition, and
+    /// that is what makes this event foldable out of order.** A consumer that
+    /// retires identities needs the difference — who this configuration removed
+    /// — and a membership state alone does not carry one. Subtracted from the
+    /// consumer's own current membership it is right only when that membership
+    /// happens to stand immediately before this entry, and a replayed stream is
+    /// exactly the case where it does not: a process holding a later state reads
+    /// each historical configuration as a removal of everything the later ones
+    /// added, so an addition-only history permanently retires the replicas it
+    /// added. With both ends carried, `previous − membership` is the removal set
+    /// this entry actually committed, wherever and however often it is folded.
     Applied {
         group_id: G,
         index: LogIndex,
         term: Term,
+        /// The membership in effect immediately before this entry, as the
+        /// kernel computed it where the chronology is known.
+        previous: MembershipConfig,
         membership: MembershipConfig,
     },
     /// The committed configuration now stands here, with no crossing to replay.
@@ -189,11 +205,13 @@ pub enum MembershipEvent<G> {
     /// no replica can reconstruct them locally. See
     /// [`crate::snapshot::SnapshotEvent::Apply`].
     ///
-    /// So a consumer that keeps a position in the committed configuration stream
-    /// must keep this one **apart from** the position it advances for
-    /// [`MembershipEvent::Applied`], and must never let this one suppress a
-    /// crossing. The events of one report are still in nondecreasing `index`
-    /// order, and this one is last when it appears at all.
+    /// So this carries no `previous`, and its absence is the contract rather
+    /// than an omission: there is no transition to name. A consumer may compare
+    /// this observation against one it already holds and conclude what the pair
+    /// proves — an identity named at the earlier position and absent at the
+    /// later one was removed between them — but it may not read this fact alone
+    /// as a removal of anything. The events of one report are in nondecreasing
+    /// `index` order, and this one is last when it appears at all.
     CommittedEndpoint {
         group_id: G,
         index: LogIndex,

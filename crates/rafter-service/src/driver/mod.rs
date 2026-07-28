@@ -58,7 +58,7 @@ pub use in_memory::InMemoryRaftDriver;
 pub use mapping::{ControlPlaneCheckpointError, ManagedDriverError};
 pub use options::{QueryReceipt, ReadOptions, WriteBatchEntry, WriteOptions, WriteReceipt};
 pub use transport::{
-    AddressedRead, AddressedWrite, DriverServiceState, InboundEnvelopeError,
+    AddressedRead, AddressedWrite, CurrentCommittedState, DriverServiceState, InboundEnvelopeError,
     PeerControlPlaneCheckpoint, PendingWrite, TransportDriverOptions, TransportRaftDriver,
 };
 

@@ -5,8 +5,8 @@
 //! grants.
 
 use crate::{
-    ConfigurationEntry, LocalProposalId, LogIndex, Message, NodeId, RaftSnapshot, ReadId,
-    SharedPayload, SnapshotChunkSend, StagedSnapshotChunk, Term,
+    ConfigurationEntry, LocalProposalId, LogIndex, MembershipConfig, Message, NodeId, RaftSnapshot,
+    ReadId, SharedPayload, SnapshotChunkSend, StagedSnapshotChunk, Term,
 };
 
 use super::rejection::{
@@ -100,9 +100,45 @@ pub enum Output {
     /// are not reconstructible from it. See
     /// [`Output::ApplySnapshot`] and
     /// [`Node::install_local_snapshot`](crate::Node::install_local_snapshot).
+    ///
+    /// # A transition, not a state
+    ///
+    /// `previous` and `configuration` are the two ends of one committed move,
+    /// and carrying both is what makes this output mean the same thing wherever
+    /// it is folded. A consumer that retires identities wants the *difference* —
+    /// which replicas this configuration admitted, which it removed — and a
+    /// membership state alone cannot answer that. It has to be subtracted from
+    /// something, and the only correct something is the membership that stood
+    /// immediately before, which the consumer can supply only if its own state
+    /// happens to sit exactly there.
+    ///
+    /// That "happens to" is the whole problem. These outputs are replayed: a
+    /// process recovering from durable storage receives every configuration
+    /// entry above its applied floor, and a process that already holds a *later*
+    /// membership — from a checkpoint, or from a snapshot boundary — computes
+    /// `later − historical` and reads every replica the newer configurations
+    /// added as a removal. An addition-only history retires replicas that way,
+    /// permanently, which is the opposite of the fact it was handed.
+    ///
+    /// Computed here the difference is chronological by construction, because
+    /// this walk knows the configuration in effect before each entry and the
+    /// consumer does not. So a consumer may fold these in any order, from any
+    /// starting state, any number of times.
     ConfigurationCommitted {
         index: LogIndex,
         term: Term,
+        /// The membership in effect immediately before `configuration`.
+        ///
+        /// A membership rather than a [`ConfigurationEntry`], and that is not a
+        /// loss of provenance — it is the only total answer. The state before
+        /// the first configuration entry of a log is the bootstrap membership,
+        /// and the state before the first one above a snapshot boundary is the
+        /// boundary configuration; neither is an entry in the retained log, so
+        /// an entry-typed field would have to be optional. An `Option` here
+        /// would hand the consumer back exactly the question this field exists
+        /// to answer — "what do I subtract?" — and it would be absent precisely
+        /// at a boundary, which is where a wrong answer costs a live replica.
+        previous: MembershipConfig,
         configuration: ConfigurationEntry,
     },
     /// A snapshot at `snapshot.metadata.last_included_index` replaces the

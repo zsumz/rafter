@@ -16,6 +16,7 @@ use std::{collections::BTreeSet, sync::TryLockError};
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport, SnapshotChunkEnvelope};
 
 use super::super::*;
+use super::checkpoint::CurrentCommittedState;
 use super::waiters::{ReadWaiter, WriteWaiter};
 use super::TransportDriverOptions;
 
@@ -123,25 +124,40 @@ where
     /// and it is the only one retirement reads.
     ///
     /// Raw, exactly as the cluster reported it, including an identity a
-    /// committed removal already spent — see `live_committed_members`, which is
-    /// the part of it this driver can still honor. Keeping the raw fact is what
+    /// committed removal already spent — see `current_committed`, which is the
+    /// part of it this driver can still honor. Keeping the raw fact is what
     /// makes a contract violation *nameable*: `readmitted_retired_peers` counts
     /// spent identities the group's membership names again, and a set that had
     /// quietly filtered them out would have nothing to count.
+    ///
+    /// It moves with `current_committed` and never apart from it: both are
+    /// statements about the same observation, so a fact too old to become the
+    /// current state is too old to become the current raw floor either. Seeded
+    /// from a restored record's membership, which differs from the raw fact only
+    /// by identities this driver already refuses.
     pub(super) committed_members: BTreeSet<NodeId>,
-    /// The part of the committed configuration whose identities are unspent.
+    /// The committed membership this driver believes is current, and where it
+    /// observed it.
     ///
-    /// Equal to `committed_members` on every cluster that keeps the single-use
-    /// contract, which is what makes the difference worth storing. A committed
-    /// fact naming an identity a committed removal already spent is not a fact
-    /// about who may speak — `RaftTransport::fence_peer` has no inverse, so the
-    /// principal is gone — and admitting it here would un-spend the ID and
-    /// re-authorize a replica the link layer will refuse forever.
+    /// **A versioned register, and the version is what makes it a register
+    /// rather than a set.** Two honest records can disagree about the current
+    /// membership without either being damaged — one simply looked later — and
+    /// the only thing that decides between them is where each looked. A
+    /// grow-only union of the two answers "who is a member now" with the union
+    /// of two different nows, which keeps a replica that a committed removal
+    /// took out at whichever position the other record had not reached.
     ///
-    /// This is what `committed_id_high_water` is compared against, and the two
-    /// together are the whole of retirement: a bounded set the size of the
-    /// cluster, and one scalar.
-    pub(super) live_committed_members: BTreeSet<NodeId>,
+    /// Its membership is the *live* one: the observation less every identity a
+    /// committed removal has spent. Equal to `committed_members` on every
+    /// cluster that keeps the single-use contract. A committed fact naming an
+    /// already-spent identity is not a fact about who may speak —
+    /// `RaftTransport::fence_peer` has no inverse, so the principal is gone —
+    /// and admitting it here would un-spend the ID and re-authorize a replica
+    /// the link layer will refuse forever.
+    ///
+    /// With `committed_id_high_water` it is the whole of retirement: one
+    /// scalar, one position, and a bounded set the size of the cluster.
+    pub(super) current_committed: Option<CurrentCommittedState>,
     /// The greatest `NodeId` this driver has ever seen in a committed
     /// configuration.
     ///
@@ -201,54 +217,6 @@ where
     /// [`super::PeerControlPlaneCheckpoint`] is how the set survives a process
     /// restart.
     pub(super) pending_fences: BTreeSet<NodeId>,
-    /// How far this driver has consumed the stream of *exact crossings*.
-    ///
-    /// One of the two fields here that name a *position* rather than a state,
-    /// and the reason a position has to exist at all is that committed
-    /// configurations arrive twice. A live cluster delivers each one once, as it
-    /// commits; a restart delivers a whole suffix of them again, because the
-    /// runtime replays every configuration entry between the application's
-    /// applied floor and the durable commit index. The retirement diff beside it
-    /// is computed against the live set as it stands *now*, so a historical
-    /// configuration folded in a second time does not repeat an observation — it
-    /// reads as a removal of everything the configurations above it added.
-    ///
-    /// Ordering the replay before the endpoint is observed is necessary and not
-    /// sufficient: the second recovery from the same durable state replays the
-    /// same history against a live set the first recovery already advanced.
-    /// Idempotence under arbitrary re-replay needs a position.
-    ///
-    /// **This one is advanced and gated only by
-    /// [`super::control_plane::CommittedMembershipSource::Crossing`] facts**, and
-    /// that is the whole of the split. A crossing carries the index of the
-    /// configuration entry it crossed, so consuming it genuinely covers that
-    /// index and a later replay of the same entry is history.
-    pub(super) committed_crossings_through: Option<LogIndex>,
-    /// How far this driver has consumed the stream of *endpoint observations*.
-    ///
-    /// The other position, advanced and gated only by
-    /// [`super::control_plane::CommittedMembershipSource::Endpoint`] facts. An
-    /// endpoint stands at the commit index and covers **nothing beneath
-    /// itself**: the moves that produce one are exactly the moves with no
-    /// history to carry, so its index says where this driver looked and never
-    /// what it consumed on the way.
-    ///
-    /// It still needs a position of its own, and for the original reason: an
-    /// ungated endpoint fold computes a fresh retirement diff between a rebuilt
-    /// runtime's committed configuration and a live set that has moved past it,
-    /// and a commit index is volatile enough for a recovered runtime to report a
-    /// lower one than the incarnation that wrote the checkpoint reached.
-    ///
-    /// **Keeping the two apart is what makes the gate honest.** One position for
-    /// both let an endpoint at commit 10 — produced by a process that recovered
-    /// from a snapshot and had never seen indices 6 or 7 — suppress the real
-    /// crossings another process replayed at 6 and 7. The identity those spent
-    /// was never spent here and its fence was never owed.
-    ///
-    /// Both move in [`super::control_plane`]'s `observe_committed_members`, under
-    /// the same epoch as the three fields above them, so a checkpoint can never
-    /// carry a retirement record and a stale position for it.
-    pub(super) committed_endpoint_through: Option<LogIndex>,
     /// How many times the checkpointable control-plane state has changed.
     ///
     /// The change signal an embedder persists against. Eq over the checkpoint
