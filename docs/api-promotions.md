@@ -9070,6 +9070,308 @@ record's mark cannot reach the identity at all, so neither side has an opinion t
 filter with. `a_record_whose_mark_explains_its_omission_is_a_removal` is the
 control that pins the line between them.
 
+### Fifteenth revision after adoption (2026-07-28)
+
+An eleventh external review found **three P1s in the interaction of the
+positioned register, the raw runtime membership, and contradiction handling**,
+one P2, and an overdue module split. Every claim was reproduced with a failing
+test before anything changed. Two of the three fixes reverse a decision an
+earlier revision made deliberately, and both reversals are stated as such.
+
+#### 1. An ahead record plus a behind runtime published a retirement over a live
+replica
+
+**The tenth revision separated the raw committed floor from the record, and fixed
+the wrong half of the cell.** The floor answers "what does this replica's own
+stream say the cluster has committed now"; the register answers "what is the
+latest positioned observation of the committed membership this driver has any
+evidence of". Separating them fixed what the driver publishes *after* a catch-up
+and left what it publishes *before* one wrong in the permanent direction.
+
+Checkpoint `{through 10, mark 4, current {1,2,3,4}}` restored beside a recovered
+runtime at `{commit 2, committed/effective {1,2,3}}` — a legal composition, since
+a commit index is volatile and the public contract says so. `desired_peers` drew
+its set from `effective ∪ committed_members` and its floor from the mark, so the
+policy published was **peers `{2,3}`, floor `4`**. An identity at or below the
+floor that the peer set does not name is *retired*: permanent, and stated over a
+replica the driver's own durable record names live. The inbound admission check
+had the same omission and refused node 4's frames at this driver's own door.
+
+If node 4 is the leader, the `AppendEntries` that would advance this runtime past
+the record are exactly the frames being refused. The condition that produced the
+refusal is the condition the refusal prevents ending. That is the whole finding:
+not a stale set, a **self-locking** one.
+
+**Decision: authorize from the union.** Both the published peer set and the local
+inbound admission derive from
+`effective ∪ raw_committed ∪ current_committed.membership − spent − self`. The
+record's later durable observation is sufficient *protocol* authorization for an
+identity while the local runtime catches up — Raft itself validates message
+content, and transport authorization is about identity. It cannot over-authorize:
+the register's membership is the *live* reading, so every identity a committed
+removal spent is already filtered out of it, and a crossing that removes one takes
+it out of the register in the same fold that raises the mark over it.
+
+**The three-state policy was declined.** The reviewer's alternative was to widen
+the boundary vocabulary to *authorized* / *known-live-unauthorized* / *retired*.
+The union makes it unnecessary, and the reason is that the middle state has no
+consumer: a driver never *sends* on the strength of the policy — outbound frames
+follow the kernel's replication set — so authorizing an identity costs no traffic,
+and every reader of the boundary wants exactly the two-valued question "may this
+principal speak". A third state would have to be plumbed through
+`PeerPolicy`, both validator predicates, and every embedder's directory, to
+express something the union expresses by naming the replica.
+
+**What the union deliberately does not move is the local replica's own service
+state.** `DriverServiceState` still reads `effective ∪ raw_committed`, so node 4's
+own driver under this composition reports `NotMember` — the condition that ends by
+itself — and refuses client work, because a replica its own runtime does not name
+is receiving no replication and answering a local read from it is an unboundedly
+stale view with nothing to bound it. Its *identity*, everywhere else, stays
+unretired. That asymmetry is the fix, not a wart in it: admission asks whether an
+identity may speak, and service asks whether this process is being replicated to.
+
+`transport_authorization.rs` is the new file; `transport_committed_floor.rs`'s
+baseline case was rewritten, because its old assertion — that the record's live
+set is deliberately *not* published — is the defect said out loud.
+
+#### 2. Checkpoint contradictions laundered by merge order
+
+Three individually valid records: `A {through 1, mark 2, current {1,2}}`,
+`B {through 1, mark 3, current {1,3}}`, `C {through 2, mark 3, current {1,2,3}}`.
+
+`(A∨B)∨C` refuses at the first step — A and B stand at one position and disagree
+about it. `A∨(B∨C)` never compares A against B at all: `B∨C` moves the register to
+position 2, and A then merges against a register that has left A's position
+behind. One order refuses; the other settles on a record that permanently retires
+node 2, which the latest record in the set names live.
+
+**The cause is structural, not a missing check.** The register keeps *one*
+positioned observation, so the equal-position contradiction arm can only fire
+while the register still stands where the incoming record does. Detecting the
+A/B collision after C has moved the register would need per-position history —
+the unbounded structure this whole design exists without. The order-freedom claim
+was therefore false under conflicting records, and the permutation tests that
+"proved" it used only mutually reconcilable ones.
+
+**Decision: narrow the contract to one authoritative chain per replica.**
+
+1. *Construction-time restore is into empty held state.* Verified: the
+   constructor restores before any membership fact is derived from the group.
+2. *Adoption-time merge is through-monotone.* A record standing before the
+   candidate's own observation is refused with the new
+   `ControlPlaneCheckpointError::StaleCurrentState { held, incoming }`. Equal
+   positions keep the contradiction arm; later positions merge as before. A
+   record with no observation at all carries no position and is not judged, so
+   `adopt_group`'s empty checkpoint stays a no-op.
+3. *The order-freedom claim is narrowed in the docs to records of one chain*,
+   with the fork case documented as out of contract and the supervisor named as
+   the owner of chain identity.
+
+All six permutations of `{A,B,C}` now end in a typed refusal —
+`a_forked_set_of_records_is_refused_in_every_order`.
+
+**Two refutations, both recorded rather than glossed.**
+
+*The rule's stated justification is false.* "Under one chain it carries nothing
+the held state lacks" does not hold: an older record can carry a **mark** a newer
+one lacks, because a snapshot-derived record observes the boundary configuration
+and nothing beneath it. So refusing an older record mid-life gives up a real
+capability — a record that witnessed a retirement the driver has no other source
+for. The capability is not deleted, it moves:
+`with_control_plane_checkpoint` restores into empty held state and keeps
+everything such a record carries. `adopt_group_with_checkpoint`'s own contract
+was rewritten accordingly; a supervisor holding another process's record builds
+a driver around it rather than joining it into one that has already observed
+something. `a_record_from_before_this_drivers_own_observation_is_refused` pins
+both halves in one case.
+
+*The required regression's second clause is unreachable.* "No order produces a
+successful record that retires node 2" cannot hold, and the reason belongs in the
+file rather than in a workaround: **B on its own is a valid single record whose
+mark covers node 2 and whose membership omits it**, so B *is* a witnessed removal
+of node 2. Refusing it would be refusing a legal record for saying what it saw.
+The guarantee the chain rule actually delivers is that no *sequence* of the three
+settles. The test asserts that.
+
+**One alternative was evaluated and rejected**, and it is the better rule on
+every row but one. Refusing the *fork signature* — an identity in the later
+membership that the earlier record's own spent test refuses — closes the
+two-record prefix `B, C` as well, which the monotone rule does not. It was
+rejected because it cannot discriminate: that same signature is what a **cluster
+readmission** looks like when one side of the pair is runtime-derived, and the
+design's answer to a readmission is deliberate and documented — filter it out,
+count it at `readmitted_retired_peers`, keep serving. Turning a counted
+configuration fault into a refusal to open is the wrong direction, and no local
+rule can tell the two apart from the records alone.
+
+#### 3. Contradiction handling was not transactional
+
+Two sites, one shape.
+
+*(3a)* `adopt_group_with_checkpoint` merged the incoming checkpoint into live
+driver state — assigning the mark and the register, advancing the epoch — **before**
+the runtime precheck. A refused adoption therefore retained durable state
+recovered from the very input it had just declared contradictory, with an epoch
+move telling the embedder to write it down. The existing regression could not see
+this: it offered a checkpoint identical to held state, so the join moved nothing
+and a driver that kept the result was indistinguishable from one that rolled back.
+
+*(3b)* Report membership events routed one at a time, each flushing the policy.
+`EffectiveChanged {1,2,3,4}` published a policy authorizing node 4; the
+`CommittedEndpoint` behind it in the same report then revealed the contradiction.
+The link layer kept the early policy, `effective_members` still named node 4, and
+the recovery constructor checked `recorded_contradiction` only after routing the
+whole report.
+
+**Fix: stage the membership transaction.** The four membership fields —
+`effective_members`, `committed_members`, `current_committed`,
+`committed_id_high_water` — are cloned into a `MembershipCandidate`; every fact of
+one batch is folded into it; contradictions are found there; and only a candidate
+that survived the whole batch is installed, with exactly one
+`flush_peer_policy()` behind it. Four sites, one rule: the adoption join and its
+runtime precheck, one live report, a recovery replay's events, and the error-path
+`reconcile_membership`.
+
+**Non-membership report effects stay outside the transaction** — peer sends,
+snapshot directives, proposal and read resolutions — because Raft re-sends a
+dropped frame and a resolved waiter stays resolved. Only the permanent
+control-plane statement is transactional.
+
+**Two consequences worth naming.** A restored record now installs *without*
+publishing: a record says what this driver has spent, and what the link layer is
+owed is derived once the record and the runtime have met, which can still refuse.
+And a batch of *no* membership events installs nothing and states nothing —
+without that, the commonest path in the driver would re-attempt a policy per step
+rather than per entry point.
+
+#### 4. The retirement rejection variant was unreachable (P2)
+
+`validate_inbound_peer_envelope` asked `is_authorized_peer` first. Retirement is
+derived from the published policy — at or below the floor and *not* in the
+authorized set — so a retired identity is unauthorized by construction, and the
+authorization check answered every retired peer with the repairable variant. The
+permanent one was dead at the boundary for every directory that follows the
+contract, which both shipped ones do.
+
+Fixed both ways the reviewer offered. The retirement check runs first, and the
+vocabulary follows the policy model: `AuthenticatedPeerEnvelopeError::FencedPeer`
+→ `RetiredPeer`, `AuthenticatedPeerValidator::is_fenced_peer` → `is_retired_peer`,
+with the `Display` text rewritten from "is fenced" to what a retirement means.
+Every consumer was swept, including both reference directories. The test
+validators were rewritten to hold one published policy rather than two
+independent sets — two sets let a fixture state a pair no deployment can hold,
+retired *and* authorized at once, which is the only way the old arm was ever
+reachable.
+
+**`MembershipStep::FencePeer` is deliberately not renamed.** It is the manual
+membership-flow planning DSL in `rafter-app`, describing an operational act rather
+than this boundary's predicate, and renaming it is a separate public break.
+
+#### 5. The module split
+
+`control_plane.rs` stood at 988 of 1000 lines with a fact, a transaction, and a
+derivation interleaved. Split per the reviewer's sketch, pure-move for everything
+that moved unchanged:
+
+| file | what it owns |
+| --- | --- |
+| `observation.rs` | what a fact *says* — `CommittedObservation`, `MembershipFact`, and the total side-effect-free event conversion |
+| `reconciliation.rs` | what a batch of facts *does* — `MembershipCandidate` and every transaction site |
+| `policy.rs` | what the result *licenses* — the authorized set, the floor, admission, service state |
+| `checkpoint.rs` | what survives a crash — the record, its validation, the one merge, and the chain rule |
+| `control_plane.rs` | the facade: what the parts are and how they compose |
+
+The one place a new `MembershipEvent` variant can be missed is now a match with
+nothing else in it.
+
+`state.rs`'s stale prose was corrected in the same pass: it claimed the raw
+`committed_members` moves with `current_committed` — which was never what the code
+did, and would have left the floor stale across a second recovery from one
+checkpoint — and it referenced the deleted per-principal fencing at three sites.
+
+#### The lifecycle matrix, re-audited
+
+**The merge-sites table gains a transactional column**, and one row's answer
+changed.
+
+| site | proven removals | tie refuses | transactional with | test |
+| --- | --- | --- | --- | --- |
+| checkpoint × checkpoint | none — a record carries no transition | yes, plus the chain rule beneath it | nothing else; installs without publishing | `two_records_that_disagree_at_one_position_are_refused`, `a_record_from_before_this_drivers_own_observation_is_refused` |
+| checkpoint × adopted runtime, before installation | none | yes, with no group installed | **the join, in one candidate** | `a_refused_adoption_keeps_neither_the_record_nor_the_epoch_nor_the_policy` |
+| held state × routed endpoint | none | yes, recorded on the live path | **every membership event of the same report** | `a_contradictory_report_publishes_no_intermediate_policy` |
+| held state × crossing | `previous ∖ configuration` | yes | **every crossing of the same recovery replay** | `a_contradictory_replay_leaves_the_transport_it_was_handed_untouched` |
+
+**Corrected rows in the published-policy table.**
+
+| lifecycle point | fourteenth revision said | now |
+| --- | --- | --- |
+| `with_control_plane_checkpoint` | "the restored mark's floor, before serving" | the restore publishes **nothing**; the endpoint fold that follows it does |
+| recovery-output replay | "published after each fact that moves the record" | published **once per report**, or not at all |
+| an ahead record over a behind runtime | the runtime's set alone — which retires what the record names | the union of both, retiring neither |
+| the inbound check | `is_member` | `is_admitted`, which is the same union the peer set is |
+| `adopt_group_with_checkpoint` with an older record | merged | **refused**; the constructor is the supported path |
+
+**Uncovered, and named rather than omitted:**
+
+- **A record-sourced readmission is not counted.** `readmitted_retired_peers`
+  counts over this replica's *runtime* facts, so a spent identity that a joined
+  *record* names again is filtered out of the register and reported nowhere. It is
+  refused correctly — it never enters the register, never reaches the peer set, and
+  stays beneath the floor — but an operator has no number for it. Under the
+  narrowed contract the pair that produces one is a fork, which the chain rule now
+  refuses in most positions; the residue is the two-record prefix discussed in
+  section 2.
+- **The two-record prefix `B, C`.** Monotone-legal, succeeds, and retires node 2.
+  Not a defect of the rule so much as the readmission carve-out doing what it is
+  documented to do; see the rejected alternative in section 2.
+- **A transport that persists its accepted policy across a process.** Unchanged
+  from the fourteenth revision.
+- **A group whose `NodeId` allocation is non-monotonic across a compaction
+  boundary.** Unchanged: the mark cannot see below a snapshot boundary, and the
+  deployment's allocator is the only backstop.
+
+#### Blast radius of the fifteenth revision
+
+**Kernel: none.** `crates/rafter/` is untouched, and the detector-replay inventory
+is deliberately not re-pinned.
+
+| file | change |
+| --- | --- |
+| `crates/rafter-app/src/transport.rs` | `FencedPeer` → `RetiredPeer`, `is_fenced_peer` → `is_retired_peer`, retirement checked first, `Display` rewritten |
+| `crates/rafter-service/src/transport.rs` | the renamed variant swept; the test validator rebuilt around one published policy |
+| `crates/rafter-service/src/driver/transport/control_plane.rs` | reduced to the facade: what the four parts are and how they compose |
+| `crates/rafter-service/src/driver/transport/observation.rs` | new — the fact and its conversion, moved unchanged |
+| `crates/rafter-service/src/driver/transport/policy.rs` | new — the derivations, with `authorized_members` added and `is_member` split into `is_admitted` and the runtime-local reading |
+| `crates/rafter-service/src/driver/transport/reconciliation.rs` | new — `MembershipCandidate` and the four transaction sites |
+| `crates/rafter-service/src/driver/transport/checkpoint.rs` | the join takes a candidate and gains the chain rule; the order-freedom proof narrowed to one chain |
+| `crates/rafter-service/src/driver/transport/state.rs` | one batched route; three stale-prose corrections |
+| `crates/rafter-service/src/driver/transport.rs` | adoption staged; `is_admitted` at `deliver` |
+| `crates/rafter-service/src/driver/mapping.rs` | `ControlPlaneCheckpointError::StaleCurrentState` added |
+| `reference/fenced-lock/src/bin/lock-node/peer_link.rs` | `is_retired_peer` |
+| `reference/fenced-lock/tests/support/transport.rs` | `is_retired_peer` |
+
+#### Focused-test plan for the fifteenth revision
+
+| mechanism | neutralization | fails |
+| --- | --- | --- |
+| the union derivation | `authorized_members` = the runtime facts alone, and the register dropped from `is_admitted` | 5: all four of `transport_authorization.rs`, plus `construction_under_an_ahead_record_publishes_the_recovered_configuration` |
+| the chain rule | `if false && incoming.through < held.through` | 2: `a_forked_set_of_records_is_refused_in_every_order`, `a_record_from_before_this_drivers_own_observation_is_refused` |
+| the transaction's all-or-nothing install | install the candidate on the refusal path too | 1: `a_refused_report_leaves_the_last_consistent_membership` |
+| the transaction's single publication | install and flush per event, as before the fix | 7: `a_contradictory_report_publishes_no_intermediate_policy`, `a_refused_report_leaves_the_last_consistent_membership`, `a_contradictory_replay_leaves_the_transport_it_was_handed_untouched`, `a_refused_peer_set_publication_is_retried_without_another_membership_event`, `a_refused_retirement_is_retried_until_the_link_accepts_it`, `a_retried_retirement_needs_no_mapping_while_a_fresh_id_joins`, `control_plane_work_still_owed_survives_release_and_adoption` |
+| the reordered retirement check | put the authorization check back in front | 2: `authenticated_envelope_rejects_a_retired_peer_as_retired`, `inbound_validation_rejects_a_retired_peer_as_retired` |
+
+**One near-miss, recorded because the first measurement disagreed with the
+prediction.** Neutralizing only the *install* on the refusal path fails one test,
+not two: `a_contradictory_report_publishes_no_intermediate_policy` still passes,
+because `flush_peer_policy` early-returns once `contradicted_at` is set. The
+transaction is what protects the driver's *state*; the contradiction guard is what
+protects the *publication*, and they are separately load-bearing. Neutralizing the
+single-publication half — which is the shape the defect actually had — fails
+seven, including four that had nothing to do with contradictions: publishing per
+event re-attempts a refused policy per fact rather than per entry point, which
+turns the retry tests' countdown fixtures into successes.
+
 
 ## Terminal Driver Vocabulary
 
