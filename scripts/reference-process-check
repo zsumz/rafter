@@ -47,6 +47,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 suites=(
     "rafter-reference-ledger:process_cluster:reference-process-test-inventory.txt"
     "rafter-reference-fenced-lock:process_cluster:reference-process-test-inventory.fenced-lock.txt"
+    "rafter-reference-fenced-lock:process_control_plane:reference-process-test-inventory.fenced-lock-control-plane.txt"
 )
 
 # A process substitution's exit status is not the command's, so the previous

@@ -167,6 +167,36 @@
 //! are reached on every pass regardless of client load. A production composition
 //! would want all three bounds; this one needs the first.
 //!
+//! ## The inbound peer drain is unbudgeted, and that is a decision
+//!
+//! `PeerLink::drain_inbound` has the shape the client drain used to have: an
+//! unbounded channel, drained until it goes quiet. It is a **named residual**
+//! rather than an oversight, and the one-line `take(n)` that would look like a
+//! fix is deliberately not here.
+//!
+//! **The starvation the client budget closes is not reachable from this side.**
+//! A client flood is unbounded because any number of connections may each keep
+//! one immediately-answered request in flight, and `STATUS` costs the replica
+//! nothing. Peers are not clients: there are exactly as many as the cluster has
+//! replicas, and each one's send rate is bounded by Raft's own in-flight window
+//! — `max_inflight_appends` and `max_inflight_bytes` per peer, released only by
+//! acknowledgements this replica sends. So the drain is bounded by cluster size
+//! times that window and terminates on its own, which is the property the client
+//! budget has to be written by hand to get.
+//!
+//! **And a budget here would bound the wrong thing.** It would cap per-pass
+//! work while leaving the channel itself unbounded — memory would still grow
+//! under a producer this replica cannot outpace, and the appearance of a bound
+//! would be worse than the absence of one. That is the same argument this header
+//! already makes for declining a `sync_channel` on the client side: moving where
+//! a burst accumulates is not bounding it.
+//!
+//! What would actually bound it is refusing a peer connection, and that is out
+//! of scope for the reason the client connection limit is: `CONTRACT.md` scopes
+//! this composition as integration composition over a link that authenticates
+//! nothing, so any peer may already claim any identity, and a bound here would
+//! be a property against an accident rather than against an adversary.
+//!
 //! # Shutdown
 //!
 //! `SHUTDOWN` on the client protocol is the clean path: waiters are released
@@ -208,7 +238,8 @@ use rafter_reference_fenced_lock::{LockConfig, QueryOutcome, SubmitOutcome};
 
 use peer_link::PeerLink;
 use protocol::{
-    parse_request, render_applied, render_lock, render_not_committed, render_status, Request,
+    parse_request, render_applied, render_lock, render_not_committed, render_status, Readiness,
+    Request,
 };
 use replica::{Answer, OpenError, OpenRequest, RecoveryMode, Replica};
 
@@ -535,7 +566,18 @@ fn serve(
             // that is not what the process is for once it has one: the work
             // below is its exit, and a pass that kept answering would postpone
             // the exit for exactly as long as clients kept asking.
-            if stopping || matches!(state, State::Failed { .. }) {
+            //
+            // **A stored persistence failure counts, and counting it here is
+            // what makes the refusal immediate.** `submit` and `query` answer
+            // their client with a value rather than a `Result`, so a persist
+            // failure inside one is *stored* and the state does not move — the
+            // transition below is what moves it, and it is a whole job batch
+            // away. Without this clause the remaining budget was spent
+            // admitting work the process already knew it must not do: writes
+            // started, reads served, and `STATUS` answered as if nothing had
+            // happened, up to sixty-three times. Bounded fail-open is still
+            // fail-open, and the bound is the wrong thing to be proud of.
+            if stopping || pass_is_terminal(&state) {
                 break;
             }
         }
@@ -715,6 +757,35 @@ fn serve(
     Ok(())
 }
 
+/// Whether this state must stop admitting client work for the rest of the pass.
+///
+/// **Two states and one of them does not know it yet.** `State::Failed` is the
+/// terminal state and is obvious. A `State::Serving` replica holding a stored
+/// control-plane persistence failure is *already* terminal and has not been
+/// moved yet, because the entry point that discovered the failure had no error
+/// channel to raise it on — `submit`, `query`, `poll_pending`, and
+/// `abandon_waiters` all answer with a value. The transition runs once per pass,
+/// below the drain, so between the failure and the transition there is a whole
+/// job budget in which this replica would otherwise keep serving.
+///
+/// It serves nothing in that window because there is nothing it can honestly
+/// do: its next restart begins by forgetting whatever it retired, so a write it
+/// accepts is a write whose retirement record may not survive, and a read it
+/// answers is a read from a replica the cluster should stop using. The client
+/// work it refuses will be retried against a replica that can still record what
+/// it retires.
+///
+/// A free function taking the state for the reason [`stop_outcome`] is one: the
+/// rule is the interesting part and it is worth being able to see it without
+/// reading the loop around it.
+fn pass_is_terminal(state: &State) -> bool {
+    match state {
+        State::Failed { .. } => true,
+        State::Serving(replica) => replica.control_plane_failure().is_some(),
+        State::Opening { .. } => false,
+    }
+}
+
 /// What the process reports once the loop has ended.
 ///
 /// **`STOPPED` and a nonzero exit are the two mutually exclusive endings, and
@@ -780,13 +851,36 @@ fn handle_job(state: &mut State, config: &Config, job: &Job, ticket: u64) -> Dis
     let deadline = Instant::now() + config.request_timeout;
     match (&job.request, state) {
         (Request::Shutdown, _) => Disposition::Stop(String::from("BYE")),
-        (Request::Status, State::Opening { .. }) => {
-            Disposition::Answered(render_status(false, rafter::Role::Follower, 0, 0, 0, None))
-        }
-        (Request::Status, State::Serving(replica) | State::Failed { replica, .. }) => {
+        (Request::Status, State::Opening { .. }) => Disposition::Answered(render_status(
+            Readiness::Recovering,
+            rafter::Role::Follower,
+            0,
+            0,
+            0,
+            None,
+        )),
+        (Request::Status, State::Serving(replica)) => {
             let (role, term, leader) = replica.status();
             Disposition::Answered(render_status(
-                replica.is_ready(),
+                Readiness::of_serving(replica.is_ready()),
+                role,
+                term,
+                replica.applied_index().0,
+                replica.committed_application_index().0,
+                leader,
+            ))
+        }
+        // **Not `replica.is_ready()`, which is the readiness gate and is
+        // one-way.** That flag says this replica has applied everything it knows
+        // to be committed, and it never falls — so a replica that reached
+        // readiness and then lost its control plane kept reporting `ready` right
+        // up to its nonzero exit, and every supervisor that polls `STATUS` read
+        // a healthy replica. The state is what decides here, and this state will
+        // not serve again.
+        (Request::Status, State::Failed { replica, .. }) => {
+            let (role, term, leader) = replica.status();
+            Disposition::Answered(render_status(
+                Readiness::Abandoned,
                 role,
                 term,
                 replica.applied_index().0,

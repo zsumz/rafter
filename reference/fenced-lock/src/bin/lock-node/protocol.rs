@@ -59,7 +59,7 @@
 //! # Responses
 //!
 //! ```text
-//! STATUS <ready|recovering> <role> <term> <applied> <committed> <leader|->
+//! STATUS <ready|recovering|abandoned> <role> <term> <applied> <committed> <leader|->
 //! OK <disposition> SESSION <epoch>
 //! OK <disposition> OP ACQUIRED <token> <expiry>
 //! OK <disposition> OP RENEWED <token> <expiry>
@@ -235,9 +235,54 @@ fn parse_u32(token: Option<&&str>, what: &str) -> Result<u32, RequestError> {
         .map_err(|_| bad(format!("{what} must be an integer")))
 }
 
+/// What a replica's `STATUS` says about whether it will serve.
+///
+/// **Three answers rather than two, because the third one is not a stage of the
+/// first two.** `Ready` and `Recovering` are points on one path: a recovering
+/// replica is expected to become ready, and a client that sees `recovering`
+/// should retry here. A replica that cannot make its peer control plane durable
+/// is on no path at all — it is going to exit, and nothing it does next will
+/// make it ready — so reporting `recovering` for it invites exactly the retry
+/// that will never be answered.
+///
+/// `Abandoned` borrows the protocol's own terminal word rather than inventing
+/// one: `ABANDONED` is already what this replica answers every service request
+/// in that state, and `STATUS` is the request that exists to say which state
+/// that is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Readiness {
+    /// Applied everything it knows to be committed, and serving.
+    Ready,
+    /// Not caught up yet, and expected to be.
+    Recovering,
+    /// Will not serve again, whatever a client does.
+    Abandoned,
+}
+
+impl Readiness {
+    /// The wire word for this answer.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Recovering => "recovering",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    /// The answer a serving replica's own readiness gate gives.
+    #[must_use]
+    pub const fn of_serving(ready: bool) -> Self {
+        if ready {
+            Self::Ready
+        } else {
+            Self::Recovering
+        }
+    }
+}
+
 /// Renders the `STATUS` response.
 pub fn render_status(
-    ready: bool,
+    readiness: Readiness,
     role: rafter::Role,
     term: u64,
     applied: u64,
@@ -252,7 +297,7 @@ pub fn render_status(
     };
     format!(
         "STATUS {} {role} {term} {applied} {committed} {}",
-        if ready { "ready" } else { "recovering" },
+        readiness.word(),
         leader.map_or_else(|| String::from("-"), |leader| leader.to_string())
     )
 }

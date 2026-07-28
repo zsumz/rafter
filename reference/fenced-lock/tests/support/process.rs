@@ -699,6 +699,7 @@ fn spawn_lifecycle_reader(stdout: ChildStdout) -> Receiver<String> {
 pub struct StatusFlood {
     stop: Arc<AtomicBool>,
     answered: Arc<AtomicU64>,
+    abandoned: Arc<AtomicU64>,
     threads: Vec<thread::JoinHandle<()>>,
 }
 
@@ -708,10 +709,12 @@ impl StatusFlood {
     pub fn start(addr: SocketAddr, connections: usize) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let answered = Arc::new(AtomicU64::new(0));
+        let abandoned = Arc::new(AtomicU64::new(0));
         let mut threads = Vec::new();
         for _ in 0..connections {
             let stop = Arc::clone(&stop);
             let answered = Arc::clone(&answered);
+            let abandoned = Arc::clone(&abandoned);
             threads.push(thread::spawn(move || {
                 // A connection that cannot be opened, or that the replica drops
                 // as it stops, ends this thread rather than failing the test:
@@ -722,16 +725,26 @@ impl StatusFlood {
                     return;
                 };
                 while !stop.load(Ordering::Relaxed) {
-                    if conn.request("STATUS").is_err() {
+                    let Ok(response) = conn.request("STATUS") else {
                         return;
-                    }
+                    };
                     answered.fetch_add(1, Ordering::Relaxed);
+                    // The terminal readiness word, counted rather than only
+                    // passed over. A flood is the only client that reliably has
+                    // a request in flight during the short window between a
+                    // replica entering its terminal state and the loop ending,
+                    // so it is the only observer that can say what `STATUS`
+                    // answered there.
+                    if response.starts_with("STATUS abandoned") {
+                        abandoned.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }));
         }
         Self {
             stop,
             answered,
+            abandoned,
             threads,
         }
     }
@@ -741,21 +754,69 @@ impl StatusFlood {
         self.answered.load(Ordering::Relaxed)
     }
 
+    /// How many of those answers reported the replica abandoned.
+    pub fn abandoned(&self) -> u64 {
+        self.abandoned.load(Ordering::Relaxed)
+    }
+
     /// Stops every connection and waits for its thread.
     pub fn stop(mut self) -> u64 {
+        self.halt();
+        self.answered()
+    }
+
+    fn halt(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         for thread in self.threads.drain(..) {
             drop(thread.join());
         }
-        self.answered()
     }
 }
 
 impl Drop for StatusFlood {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        for thread in self.threads.drain(..) {
-            drop(thread.join());
+        self.halt();
+    }
+}
+
+/// One client connection whose request is written without waiting for its
+/// answer.
+///
+/// **The primitive a "queued behind" test needs and `NodeProcess::ask` cannot
+/// give.** A connection is strictly sequential, so a client cannot have two
+/// requests outstanding — which means the only way to put a second request in a
+/// replica's job queue *while it is handling the first* is a second connection
+/// whose line has already been written. Splitting the write from the read is
+/// what makes that expressible.
+#[derive(Debug)]
+pub struct QueuedRequest {
+    conn: LockConn,
+}
+
+impl QueuedRequest {
+    /// Opens a connection and leaves it idle, with nothing written yet.
+    ///
+    /// Connecting is the slow half and is deliberately done ahead of time, so
+    /// [`QueuedRequest::send`] is one write on an established socket.
+    pub fn connect(addr: SocketAddr) -> Self {
+        Self {
+            conn: LockConn::connect(addr).expect("the replica accepts a client connection"),
+        }
+    }
+
+    /// Writes one request line and returns without reading the answer.
+    pub fn send(&mut self, line: &str) {
+        writeln!(self.conn.writer, "{line}").expect("the request is written");
+        self.conn.writer.flush().expect("the request is flushed");
+    }
+
+    /// Reads the answer to whatever was sent.
+    pub fn recv(&mut self) -> Result<String, String> {
+        let mut response = String::new();
+        match self.conn.reader.read_line(&mut response) {
+            Ok(0) => Err(String::from("the replica closed the connection")),
+            Ok(_) => Ok(response.trim_end().to_string()),
+            Err(error) => Err(error.to_string()),
         }
     }
 }

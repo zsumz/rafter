@@ -1077,6 +1077,17 @@ here does because nothing here removes anything.
 - **Durability barriers reaching the medium.** Killing a process proves what a
   fresh opener makes of the bytes that reached the file. It does not prove that
   a barrier reached the disk.
+- **A bound on inbound peer frames.** The replica's client drain is budgeted per
+  pass, so no client population can hold the process off its clock or its own
+  terminal exit. The peer drain is not: it takes an unbounded channel until it
+  goes quiet. This is a named residual and not an oversight. Peers are the
+  cluster's own replicas rather than arbitrary clients, so the drain is bounded
+  by cluster size times Raft's per-peer in-flight window and terminates on its
+  own; and a per-pass budget would cap the work while leaving the channel's
+  memory unbounded, which is the appearance of a bound rather than one. The
+  bound that would be real is refusing a peer connection, and it is out of scope
+  on the same terms as the client connection limit — the link authenticates
+  nothing, so any peer may already claim any identity.
 - **Snapshot transfer over the link.** These tests keep short logs and never
   compact, so no replica ever installs a snapshot from a peer. The link refuses
   a leader chunk directive on the ground that `DurableRaftNode` resolves every
