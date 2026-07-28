@@ -7814,6 +7814,396 @@ is the one above it: drop the source from the condition entirely, which is the
 pre-fix code, and both new cases fail. A reviewer who mutated only the
 comparison would have concluded the tag was untested.
 
+### Twelfth revision after adoption (2026-07-27)
+
+An eighth external review read the eleventh revision and found that **both P1
+fixes were the right shape applied to the wrong extent**, plus the same process
+defect one layer further in. The pattern is now three rounds old and worth
+naming: the offset introduced in the tenth revision keeps acquiring obligations
+on paths the matrix has no row for, and each round the fix has been *narrower
+than the mechanism*.
+
+- The eleventh revision made the raw committed floor follow the endpoint. It
+  should have made the floor follow **every** committed fact, because a crossing
+  can be news the offset misjudges as history.
+- The eleventh revision made the offset gate a fold rather than an assignment.
+  It should also have asked what the offset was **evidence of**, because one
+  number was carrying two different claims.
+
+Each was reproduced with a failing test before anything changed.
+
+#### 1. A catch-up beneath an ahead offset lost the committed floor
+
+The eleventh revision's fix reads `folded || source == Endpoint`, and the only
+`Endpoint` publisher is `publish_adopted_membership`. Every step-path fact —
+including the final committed state a lagging runtime reaches while catching up —
+is a `Crossing`, and a crossing assigned the raw floor only when its retirement
+fold ran.
+
+So the same defect survived, shifted one lifecycle cell over. Take a checkpoint
+whose offset is **ahead** of the local runtime, which is an ordinary supervisor
+handover rather than an exotic input: the public contract permits a stale
+checkpoint and says nothing that would make an ahead one illegal, and a commit
+index is volatile enough for a rebuilt runtime to recover behind the incarnation
+that wrote the record. Checkpoint `through = 10`, live `{1,2,3,4}`; local runtime
+at commit 2 under `{1,2,3}`.
+
+- Construction assigns the floor `{1,2,3}` from the endpoint. Correct.
+- The catch-up commits `{1,2,3,4}` at index 3. The crossing is at or below the
+  offset, so the fold is skipped — **correctly**, since re-folding a consumed
+  configuration manufactures removals — and the floor was skipped with it.
+- Nothing shows yet, because the same step moves the effective membership to
+  `{1,2,3,4}` and every derivation reads `effective ∪ committed`.
+- Then a new leader appends an uncommitted narrowing to `{1,2}`. The union
+  collapses to `{1,2,3}`, and node 4 — committed, unspent, and *required by the
+  change that is trying to commit* — leaves the peer set and is refused inbound.
+  A local node 4 reports `NotMember` and stops serving.
+
+**The fix stops conditioning the floor on the fold at all.** `publish_membership`
+assigns `committed_members` for every committed fact, whatever the gate says,
+because the floor answers "what does the cluster have committed now" and no
+position has an opinion about that. `observe_committed_members` no longer returns
+whether it folded, because nothing needs the answer.
+
+**On the reviewer's two shapes, and a deviation.** The review proposed either a
+driver-side `publish_current_membership_endpoint()` sampled after every step, or
+an explicit app-layer endpoint event, and predicted the driver would still need
+sampling "where no event fires". **It does not, and the sampling is not here.**
+The app layer's committed stream is already total over committed-membership
+changes: `record_membership_changes` drains the crossing queue and then runs an
+unconditional comparison against the runtime's committed membership, so either a
+crossing carries the move or the comparison does. The driver reconciles that
+stream after **every** step outcome — `step_group`, `step_transfer`,
+`apply_recovery_outputs`, and both arms of `attempt_read` all call
+`reconcile_membership`, and `drain_membership_events` re-runs the same comparison
+on the error path. So after any step the floor equals the runtime's committed
+membership without anything sampling it.
+
+Adding a sampler anyway would give the floor two sources of truth, one of which
+reads the runtime directly rather than through the event that announced the
+change — which is the coupling `publish_adopted_membership` exists to keep to the
+one moment it is unavoidable, before any step has run. The deviation is recorded
+here rather than taken silently.
+
+#### 2. One offset conflated exact-history coverage with endpoint observation
+
+`MembershipEvent::Applied` carried two different facts. `rafter-app` emits one
+per configuration entry the commit index crossed, at that entry's own index —
+and *also* emits one at the commit index when a move has no entry behind it, for
+a snapshot install or a group opened over a runtime that had already moved. Both
+advanced the same `committed_configuration_through`.
+
+An endpoint-derived offset therefore claimed history coverage it never had.
+Process A recovers from a snapshot at commit 10 under `{1,2,3}`, having never
+seen `+5` at index 6 or `−5` at index 7, and honestly reports
+`{mark 3, live {1,2,3}, through 10}`. The join takes the greater offset. Process
+B's real recovery outputs for 6 and 7 are then skipped as already-consumed: node
+5 is never spent, its fence is never owed, and the identity a committed removal
+consumed is allocatable again.
+
+**The join's premise was false for those offsets.** The proof reads "whichever
+side held the higher offset had consumed that configuration, so its spent-ness is
+already in `S_a ∪ S_b`". That is true of a crossing and false of an endpoint,
+which covers nothing beneath itself — and the checkpoint type's own "What a
+snapshot cannot give back" section already said so, one paragraph away from the
+proof that assumed otherwise.
+
+**The fix splits provenance end to end.**
+
+- **`MembershipEvent` gains a variant.** `Applied` now means an exact crossing
+  and always carries the configuration entry's own index; the new
+  `CommittedEndpoint` carries the commit index as an observation point. Two
+  variants rather than a provenance field, because the two assert different
+  propositions and `Applied`'s doc had been hedging about which one its index
+  meant. Every consumer was audited: the driver's `route_membership_event` routes
+  them to `CommittedMembershipSource::{Crossing, Endpoint}` and now names
+  `Rejected` explicitly instead of sweeping it into `_`; `rafter-multiraft`'s
+  group-stamp check names the new variant; and `restore_membership_report_mark`
+  now **excludes** the endpoint from the rebuilt crossing queue, which is a real
+  fix rather than a rename — putting it back would re-emit it as an `Applied` at
+  an index no configuration entry sits at.
+- **The driver keeps two positions.** `committed_crossings_through` is advanced
+  and gated only by crossings; `committed_endpoint_through` only by endpoints.
+  Neither ever gates the other, and joins take `max` independently per position.
+- **`PeerControlPlaneCheckpoint` carries both**, and the file format moves to
+  **version 4**. A version-3 file is refused rather than migrated, on the same
+  honest-migration argument as v2→v3 and with one addition: there is no derivable
+  value for the split, because a v3 `through` cannot say which meaning it carried.
+  Reading it as a crossing offset skips history that may never have been folded;
+  reading it as an endpoint offset leaves the crossing offset absent; supplying
+  `-` for both is the v2 lie again.
+
+#### The coupling invariant, re-derived — and the review's sketch refuted
+
+The review asked for this to be derived from the mechanics rather than trusted,
+and flagged it as the likeliest place for its own spec to be wrong. It was. The
+sketch reads "retirement state ⟹ at least one offset present", and **that is too
+weak to be worth checking**.
+
+Derived from what the lifecycle can actually produce:
+
+1. Every fold of either kind raises the mark, because a committed configuration
+   always names at least one replica — `MembershipSet` refuses an empty voter
+   set, and `committed_membership()` falls back to the node's static membership.
+   So **either offset ⟹ retirement state**.
+2. Every driver that folded anything was constructed or adopted. Both public
+   constructors funnel through `with_control_plane_checkpoint` and both adoption
+   paths through `adopt_group_with_checkpoint`, and each calls
+   `publish_adopted_membership()` **unconditionally**, with a group in hand,
+   after any recovery outputs. So **retirement state ⟹ the endpoint offset
+   specifically**.
+3. The crossing offset has no converse. A first incarnation over a fresh cluster
+   and a snapshot-recovered process both fold an endpoint and no crossing.
+
+Which gives `retired ⟺ endpoint.is_some()` as a biconditional, and
+`crossings.is_some() ⟹ retired` one way only. Enumerating the eight shapes, three
+are producible and five are refused:
+
+| crossings | endpoint | retired | producible | verdict |
+| --- | --- | --- | --- | --- |
+| `None` | `None` | no | yes — `empty(group)` | accept |
+| `None` | `Some` | yes | yes — fresh cluster, or snapshot recovery | accept |
+| `Some` | `Some` | yes | yes — ordinary recovery | accept |
+| `None` | `None` | yes | no | `CommittedStateWithoutEndpoint` |
+| `Some` | `None` | yes | no | `CommittedStateWithoutEndpoint` |
+| `None` | `Some` | no | no | `EndpointWithoutCommittedState` |
+| `Some` | `Some` | no | no | `EndpointWithoutCommittedState` |
+| `Some` | `None` | no | no | `CrossingsWithoutCommittedState` |
+
+**The "at least one offset" phrasing accepts row 5** — a crossing offset beside a
+full retirement record and no endpoint offset. No lifecycle produces it, and
+absorbing it leaves the endpoint fold ungated on the very next adoption, which is
+exactly where a volatile commit index manufactures removals. It is the dangerous
+shape the review's own next paragraph went on to wonder about, admitted by the
+sentence before it.
+
+`CrossingsWithoutCommittedState` needs a clause of its own rather than falling
+out of the biconditional: a record with neither retirement state nor an endpoint
+offset satisfies `retired ⟺ endpoint` vacuously, so the endpoint clause says
+nothing about a crossing offset sitting beside them.
+
+**The producibility argument is confirmed empirically, not only derived.** A real
+`lock-node` writes `crossings -` beside `endpoint 0`, `high_water 3`, and
+`live 1 2 3` — this cluster never reconfigures, so it folds no crossing at all.
+That is row 2, and it is now asserted in the process suite. A symmetric invariant
+demanding both offsets would refuse every replica in the reference composition.
+
+#### 3. The process acted on a stored persistence failure one batch late
+
+`submit` and `query` answer their client with a value rather than a `Result`, so
+a checkpoint persist failure inside one is *stored* in
+`replica.control_plane_failure` and the state does not move. The transition to
+`State::Failed` runs once per pass, **below** the client drain, and the drain's
+break tested only `stopping || State::Failed`. So up to 63 further jobs were
+admitted after the process knew its control plane was not durable: writes
+started, reads served, `STATUS` answered normally. Bounded fail-open is still
+fail-open, and the bound is the wrong thing to be proud of.
+
+The drain now breaks on a stored failure too, through `pass_is_terminal`, and the
+existing post-drain transition moves the state in the same pass.
+
+**`STATUS` also lied on the way out.** It reported `replica.is_ready()`
+identically for `Serving` and `Failed`, and readiness is one-way by design — it
+says this replica has applied everything it knows to be committed, and catching
+up is not something a replica un-does. A replica that reached readiness and then
+lost its control plane therefore answered `STATUS ready` right up to its nonzero
+exit, and a supervisor that polls readiness rather than watching exit codes saw a
+healthy process.
+
+`render_status` now takes a three-valued `Readiness` and `State::Failed` renders
+**`abandoned`**, borrowing the protocol's own terminal word — `ABANDONED` is
+already what that state answers every service request, and `recovering` would
+invite exactly the retry that will never be answered. The response grammar moves
+to `STATUS <ready|recovering|abandoned> …`.
+
+#### The inbound peer drain: documented as a residual, not budgeted
+
+`PeerLink::drain_inbound` has the shape the client drain used to have — unbounded
+channel, drained until quiet — and the one-line `take(n)` is deliberately **not**
+here. Peers are not clients: there are exactly as many as the cluster has
+replicas, and each one's send rate is bounded by Raft's own per-peer in-flight
+window (`max_inflight_appends`, `max_inflight_bytes`), released only by
+acknowledgements this replica sends. The drain is therefore bounded by cluster
+size times that window and terminates on its own, which is the property the
+client budget has to be written by hand to get.
+
+A budget would also bound the wrong thing: it would cap per-pass work while
+leaving the channel's memory unbounded, which is the appearance of a bound rather
+than one — the same argument the loop's header already makes for declining a
+`sync_channel` on the client side. Recorded in that header and in the
+composition's `CONTRACT.md` under what the suite deliberately does not establish.
+
+#### The lifecycle matrix, re-audited
+
+Every cell either fix touches was re-read against the code. **Delta only**; every
+other row from the eleventh revision stands.
+
+**The raw committed floor** — two rows corrected, one added:
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| `new+ckpt` | endpoint assigns; **crossings assign unconditionally too** | `a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added` |
+| **catch-up crossing beneath an ahead offset** | **assigned; the fold stays gated** | **new** — `a_catch_up_that_commits_an_addition_beneath_the_cursor_publishes_it` |
+| **uncommitted narrowing over an ahead-offset catch-up** | the floor holds | **new** — `an_uncommitted_narrowing_does_not_de_authorize_the_replica_the_catch_up_committed`, `the_newly_committed_replica_is_still_admitted_inbound` |
+| **the same, for the local replica** | `Serving`, not `NotMember` | **new** — `a_local_replica_the_catch_up_committed_keeps_serving_under_a_narrowing` |
+| **per-step endpoint republish** | **not needed; the event stream is total** | argued above from `reconcile_membership`'s call sites; no sampler exists to test |
+
+**New table — offset provenance**, because one position became two:
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| exact crossing | advances and is gated by `committed_crossings_through` only | `a_crossing_position_still_suppresses_the_crossings_beneath_it` |
+| endpoint observation | advances and is gated by `committed_endpoint_through` only | `an_endpoint_position_still_suppresses_the_endpoints_beneath_it` |
+| **endpoint position over unfolded crossings** | **does not suppress them** | **new** — `an_endpoint_position_does_not_suppress_the_crossings_beneath_it` |
+| join of two records | `max` per position, independently | `the_join_is_order_free_across_three_records`, `an_endpoint_only_record_is_a_record_a_driver_produces` |
+| endpoint-only record | accepted; crossing offset stays `None` | **new** — `an_endpoint_only_record_is_a_record_a_driver_produces`, `an_endpoint_only_record_is_accepted` (decoder), and the process suite's `crossings -` assertion |
+| crossings-only record with retirement state | **refused** | **new** — `a_record_that_separates_an_offset_from_what_it_retired_is_refused` |
+| durable round trip | both positions survive encode/decode | `a_round_trip_preserves_every_fact`, `a_sealed_consistent_record_is_accepted` |
+| v3 file offered to a v4 build | refused, not migrated | **new** — `an_older_file_is_refused_rather_than_migrated` |
+| **snapshot install → endpoint event** | reported as `CommittedEndpoint`, not `Applied` | `a_snapshot_install_reports_both_facts`, `a_commit_observed_on_a_peer_step_reports_the_committed_fact` |
+| **discarded report holding an endpoint** | not rebuilt into the crossing queue | `a_rebuild_from_parts_still_owes_a_failed_steps_membership_delta` |
+
+**The reference process loop** — two rows corrected, one added:
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| **persist failure with no error channel** | **the pass breaks at that job; the next request is refused** | **new** — `a_stored_control_plane_failure_refuses_the_requests_queued_behind_it` |
+| **`STATUS` in `State::Failed`** | **renders `abandoned`** | **new** — `a_terminal_replica_stops_reporting_itself_ready` |
+| `STATUS` in `State::Opening` | renders `recovering` | `readiness_refuses_service_until_recovery_completes` |
+
+**Uncovered, and named rather than omitted.** The eleventh revision's list stands
+except where marked; three are new.
+
+- **Crossing stream × shutdown**, **crossing stream × `adopt_group`**, **the raw
+  committed floor × shutdown**, **the value of `MAX_JOBS_PER_PASS`**, **a client
+  flood during `State::Opening`.** *(all unchanged)*
+- **Offset regression across a real snapshot install.** *(unchanged, and now the
+  most interesting one)* The split makes the snapshot case *nameable* — a
+  snapshot install emits `CommittedEndpoint` and advances only the endpoint
+  position — but no test still drives a real snapshot install through a recovery
+  that also replays crossings. `an_endpoint_position_does_not_suppress_the_crossings_beneath_it`
+  simulates the record such a process would write rather than producing it from
+  an actual install.
+- **New: the inbound peer drain's boundedness.** Argued from the per-peer
+  in-flight window and not executed. No test floods a replica with peer frames,
+  and the composition has no seam to do it through without writing a hostile
+  peer.
+- **New: `STATUS abandoned` observed deterministically.** The terminal window is
+  two poll intervals wide, so the assertion is made by a flood that keeps a
+  request in flight rather than by a timed request. A build that emitted
+  `abandoned` only under load would pass; nothing distinguishes that from the
+  fix.
+- **New: the queued-behind regression's arrival order.** The `QUERY` line is
+  written before the local reads and the replica is inside a durable read barrier
+  when they arrive, but nothing *enforces* that the channel receives them in that
+  order. The test states the assumption; a scheduler that delivered a local read
+  first would make it a false negative rather than a false positive.
+
+#### Blast radius of the twelfth revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-app/src/membership.rs`](../crates/rafter-app/src/membership.rs) | `MembershipEvent::CommittedEndpoint`; `Applied` narrowed to exact crossings and its index hedge removed |
+| [`crates/rafter-app/src/group/membership.rs`](../crates/rafter-app/src/group/membership.rs) | the comparison emits `CommittedEndpoint`; `restore_membership_report_mark` excludes it from the crossing queue and matches exhaustively |
+| [`crates/rafter-multiraft/src/validate.rs`](../crates/rafter-multiraft/src/validate.rs) | the group-stamp check names the new variant |
+| [`crates/rafter-service/src/driver/transport/control_plane.rs`](../crates/rafter-service/src/driver/transport/control_plane.rs) | `route_membership_event` routes both committed variants and names `Rejected`; `publish_committed` extracted; the raw floor assigned unconditionally; `observe_committed_members` takes a source and returns nothing |
+| [`crates/rafter-service/src/driver/transport/checkpoint.rs`](../crates/rafter-service/src/driver/transport/checkpoint.rs) | two offset fields; `committed_position`; `advance_committed_position`; the re-derived coupling clauses; the join's corrected premise |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | the two position fields and what each is evidence of |
+| [`crates/rafter-service/src/driver/mapping.rs`](../crates/rafter-service/src/driver/mapping.rs) | `CommittedStateWithoutEndpoint`, `EndpointWithoutCommittedState`, `CrossingsWithoutCommittedState` replace the two single-offset variants |
+| [`crates/rafter-service/tests/transport_committed_floor.rs`](../crates/rafter-service/tests/transport_committed_floor.rs) | new file — the five ahead-offset regressions |
+| [`crates/rafter-service/tests/transport_cursor_provenance.rs`](../crates/rafter-service/tests/transport_cursor_provenance.rs) | new file — the provenance regression and both gating directions |
+| `reference/fenced-lock/src/bin/lock-node/control_plane.rs` | format v4; `crossings` and `endpoint` lines; `position`; the mirrored three-clause invariant |
+| `reference/fenced-lock/src/bin/lock-node/protocol.rs` | `Readiness`; `render_status` takes it; the response grammar |
+| `reference/fenced-lock/src/bin/lock-node/main.rs` | `pass_is_terminal` and the drain break; `State::Failed` renders `abandoned`; the inbound residual |
+| `reference/fenced-lock/tests/support/process.rs` | `StatusFlood::abandoned`; `QueuedRequest` |
+| `reference/fenced-lock/tests/process_control_plane.rs` | new file — the loop and control-plane suite split out of `process_cluster` |
+| `reference/fenced-lock/CONTRACT.md` | the inbound drain as a named residual |
+| [`verification/reference-process-test-inventory.fenced-lock-control-plane.txt`](../verification/reference-process-test-inventory.fenced-lock-control-plane.txt) | new inventory for the split suite |
+
+**No kernel change.** The review also asked for a duplicated explanatory comment
+above `RaftOutput::ConfigurationCommitted` to be removed; there is no duplication
+there. The doc block has four paragraphs — stream completeness, what the index
+names, permanence, and why a snapshot emits none — and none restates another. The
+kernel is untouched and the detector-replay inventory is unchanged.
+
+#### Focused-test plan for the twelfth revision
+
+New, in `crates/rafter-service/tests/transport_committed_floor.rs` — the
+reviewer's five, over a checkpoint whose offset is ahead of the runtime:
+
+- `construction_under_an_ahead_cursor_publishes_the_recovered_configuration` —
+  the baseline the other four are read against.
+- `a_catch_up_that_commits_an_addition_beneath_the_cursor_publishes_it` — the
+  defect at its first observable moment. **Passes before the fix**, because the
+  union's effective half hides it; see the mutation table.
+- `an_uncommitted_narrowing_does_not_de_authorize_the_replica_the_catch_up_committed`
+  — the case that separates the two halves of the union.
+- `the_newly_committed_replica_is_still_admitted_inbound` — the same loss on the
+  inbound path, asserted apart because the two fail apart in a deployment.
+- `a_local_replica_the_catch_up_committed_keeps_serving_under_a_narrowing` —
+  `NotMember` before the fix, `Serving` after.
+
+New, in `crates/rafter-service/tests/transport_cursor_provenance.rs`:
+
+- `an_endpoint_position_does_not_suppress_the_crossings_beneath_it` — the
+  review's case. An endpoint-only record at commit 10 joined into a runtime whose
+  recovery outputs carry `+5@6` and `−5@7`; node 5 becomes spent and its fence is
+  installed or owed. Before the fix the mark stays at 3.
+- `a_crossing_position_still_suppresses_the_crossings_beneath_it` — the other
+  direction, over an addition-only history so that any re-fold manufactures a
+  removal.
+- `an_endpoint_position_still_suppresses_the_endpoints_beneath_it` — the endpoint
+  gate, over a record whose live set is wider than the runtime's committed
+  configuration so an ungated fold would retire two live replicas.
+
+Extended, in `transport_checkpoint_merge.rs` and `transport_recovery_replay.rs`:
+the coupling cases now enumerate six shapes including the crossings-only record,
+and `an_endpoint_only_record_is_a_record_a_driver_produces` is the control that
+keeps the clause from being stated symmetrically.
+
+New, in `reference/fenced-lock/tests/process_control_plane.rs`:
+
+- `a_stored_control_plane_failure_refuses_the_requests_queued_behind_it` — a
+  `QUERY` trips the fault seam with eight `LOCAL` reads already written on
+  established connections. None is served. `LOCAL` is the discriminator because
+  its success is visible in its own answer and it does not count toward the fault
+  ordinal, so the `QUERY` is deterministically the operation that trips the seam.
+- `a_terminal_replica_stops_reporting_itself_ready` — a flood keeps `STATUS` in
+  flight across the terminal window and counts `abandoned` answers.
+
+Mutation check, on the committed implementation:
+
+| Neutralized | Fails |
+| --- | --- |
+| the raw floor's unconditional assignment (round 7's `folded \|\| Endpoint` restored) | `an_uncommitted_narrowing_does_not_de_authorize_the_replica_the_catch_up_committed`, `the_newly_committed_replica_is_still_admitted_inbound`, `a_local_replica_the_catch_up_committed_keeps_serving_under_a_narrowing` |
+| the two positions collapsed into one shared `max` | `an_endpoint_position_does_not_suppress_the_crossings_beneath_it`, `a_crossing_position_still_suppresses_the_crossings_beneath_it` |
+| the coupling clause weakened to "at least one offset" | `a_record_that_separates_an_offset_from_what_it_retired_is_refused` |
+| `pass_is_terminal` returning `false` for a stored failure | `a_stored_control_plane_failure_refuses_the_requests_queued_behind_it` |
+| `State::Failed` rendering `Readiness::of_serving(is_ready())` | `a_terminal_replica_stops_reporting_itself_ready` |
+| the raw floor's assignment, observed through the catch-up alone | **nothing** |
+
+**Two near-misses, and the pattern is the same one round 7 found.** Both are
+about a *union* answering correctly for the wrong reason.
+
+The last row is the important one. Under the round-7 mutation,
+`a_catch_up_that_commits_an_addition_beneath_the_cursor_publishes_it` still
+passes: the step that commits the addition also moves the effective membership,
+and `effective ∪ committed` is right whichever half carries node 4. Only the
+*subsequent* uncommitted narrowing pulls the effective half out from under the
+floor and exposes it. A reviewer who wrote only the catch-up case — which is the
+obvious one to write, and the one the defect is named for — would have concluded
+the floor was covered.
+
+The second is in the collapsed-position mutation. It fails
+`a_crossing_position_still_suppresses_the_crossings_beneath_it` as well as the
+provenance case, but not for the reason that test exists: with one shared `max`
+the *first* recovery's endpoint fold is suppressed by its own crossings, so the
+record it writes has no endpoint offset and the second recovery is refused by the
+coupling clause. The test catches the mutation through the invariant rather than
+through the gate. That is a genuine catch and is reported as an indirect one,
+because a build that fixed the invariant and kept the shared position would slip
+past it.
+
 ## Terminal Driver Vocabulary
 
 ### Origin
