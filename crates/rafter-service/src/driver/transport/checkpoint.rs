@@ -142,8 +142,8 @@ pub struct PeerControlPlaneCheckpoint<G> {
     /// positions, and only the position decides between them; a record that
     /// carried the two apart could be joined by uniting the memberships and
     /// taking the greater position, which answers "who is a member now" with the
-    /// union of two different nows. See
-    /// [`TransportDriverState::restore_control_plane_checkpoint`].
+    /// union of two different nows. The join that does it correctly is the
+    /// crate-internal `restore_control_plane_checkpoint`.
     pub current_committed: Option<CurrentCommittedState>,
     /// Committed removals whose fence the link layer has not accepted.
     ///

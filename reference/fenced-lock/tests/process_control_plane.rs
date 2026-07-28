@@ -107,20 +107,20 @@ fn checkpoint_line<'a>(text: &'a str, field: &str) -> &'a str {
         .unwrap_or_else(|| panic!("the checkpoint has no `{field}` line: {text:?}"))
 }
 
-/// One of the two consumer offsets a checkpoint records, or `None` if it has
-/// consumed nothing of that kind.
+/// Where a checkpoint's current committed state was observed, or `None` if it
+/// has observed nothing.
 ///
-/// `field` is `crossings` or `endpoint`. They are separate positions because
-/// they are evidence of different things: a crossing covers the configuration
-/// entry at its index, and an endpoint observation covers nothing beneath
-/// itself.
-fn checkpoint_offset(text: &str, field: &str) -> Option<u64> {
-    match checkpoint_line(text, field)
-        .strip_prefix(&format!("{field} "))
-        .unwrap_or_else(|| panic!("the `{field}` line names its field"))
+/// One position rather than the two consumer offsets a version-4 file carried.
+/// It is not an offset at all: nothing is skipped against it, and what it
+/// decides is which of two observations of the committed membership is the later
+/// and therefore the one a join believes.
+fn checkpoint_position(text: &str) -> Option<u64> {
+    match checkpoint_line(text, "through")
+        .strip_prefix("through ")
+        .expect("the `through` line names its field")
     {
         "-" => None,
-        value => Some(value.parse().expect("the offset is a log index")),
+        value => Some(value.parse().expect("the position is a log index")),
     }
 }
 
@@ -547,7 +547,7 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
     let before = std::fs::read_to_string(&checkpoint_path)
         .expect("a serving replica has published its control-plane checkpoint");
     assert!(
-        before.starts_with("rafter-lock-control-plane 4\n"),
+        before.starts_with("rafter-lock-control-plane 5\n"),
         "the file names its own format so a later shape is a refusal: {before:?}"
     );
     assert!(
@@ -578,28 +578,15 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
         before.contains("fences\n"),
         "a cluster that removed nobody owes no fence: {before:?}"
     );
-    // **The endpoint-only shape, written by a real replica.** This cluster never
-    // reconfigures, so nothing ever crosses a configuration entry after the
-    // opening one and no crossing is ever folded — the honest record has no
-    // crossing offset at all. It is worth asserting rather than assuming,
-    // because it is the shape the coupling invariant had to be derived carefully
-    // enough to accept: a rule reading "retirement state needs at least one
-    // offset" would pass this file and also pass its dangerous mirror image,
-    // and a rule reading "retirement state needs both" would refuse this file
-    // and stop every replica in this suite from restarting.
-    assert_eq!(
-        checkpoint_offset(&before, "crossings"),
-        None,
-        "a cluster whose membership never changes folds no crossing: {before:?}"
-    );
-    // The endpoint offset rather than the crossing one, because this cluster
-    // never reconfigures: nothing crosses a configuration entry after the
-    // opening one, so the position that moves is the one adoption and the
-    // committed-membership comparison advance. A `crossings` line reading `-`
-    // here is the honest record of a replica that has folded no crossing, and it
-    // is exactly the shape the split exists to be able to write.
-    let consumed_before = checkpoint_offset(&before, "endpoint")
-        .expect("a serving replica records where it last observed the committed configuration");
+    // **The position travels with the membership it dates**, and a real replica
+    // is where that stops being a type-level claim. This cluster never
+    // reconfigures, so nothing crosses a configuration entry after the opening
+    // one and the only observations are the ones adoption and the
+    // committed-membership comparison produce — but the record still has to say
+    // *where* it looked, because a later record's membership is the one a join
+    // believes and there is nothing else to decide it by.
+    let observed_before = checkpoint_position(&before)
+        .expect("a serving replica records where it observed the committed configuration");
 
     cluster.kill(victim);
     cluster.restart(victim);
@@ -607,11 +594,11 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
 
     let after = std::fs::read_to_string(&checkpoint_path)
         .expect("the restarted replica republishes what it restored");
-    // The retirement record is compared line by line rather than the whole file,
-    // because one line is *expected* to move. The three facts below are what a
-    // restart must not re-derive differently; the consumer offset is a position
-    // in a stream the replica keeps reading, so it advances as the commit index
-    // does and would make a byte comparison assert the opposite of the contract.
+    // The record is compared line by line rather than the whole file, because
+    // one line is *expected* to move. The three facts below are what a restart
+    // must not re-derive differently; the position is where this replica last
+    // looked, so it advances as the commit index does and would make a byte
+    // comparison assert the opposite of the contract.
     for fact in ["high_water", "live", "fences"] {
         assert_eq!(
             checkpoint_line(&after, fact),
@@ -620,13 +607,13 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
              carrying what it was handed:\nbefore {before:?}\nafter  {after:?}"
         );
     }
-    let consumed_after =
-        checkpoint_offset(&after, "endpoint").expect("the restarted replica records one too");
+    let observed_after =
+        checkpoint_position(&after).expect("the restarted replica records one too");
     assert!(
-        consumed_after >= consumed_before,
-        "the consumer offset went backwards across a restart, which is how a \
-         replay re-derives removals it already folded in: {consumed_before} then \
-         {consumed_after}"
+        observed_after >= observed_before,
+        "the current state's position went backwards across a restart, which is \
+         how an older observation outranks a newer one and reads what the newer \
+         one added as removed: {observed_before} then {observed_after}"
     );
 
     // The replica is a full member again, which is the point of restoring the

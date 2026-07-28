@@ -7927,11 +7927,18 @@ proof that assumed otherwise.
   Neither ever gates the other, and joins take `max` independently per position.
 - **`PeerControlPlaneCheckpoint` carries both**, and the file format moves to
   **version 4**. A version-3 file is refused rather than migrated, on the same
-  honest-migration argument as v2→v3 and with one addition: there is no derivable
-  value for the split, because a v3 `through` cannot say which meaning it carried.
-  Reading it as a crossing offset skips history that may never have been folded;
-  reading it as an endpoint offset leaves the crossing offset absent; supplying
-  `-` for both is the v2 lie again.
+  honest-migration argument as v2→v3: **the old field's provenance is
+  unknowable**, because a v3 `through` cannot say which of the two meanings it
+  carried. Reading it as a crossing offset claims history coverage the record may
+  never have had; reading it as an endpoint offset discards a crossing position
+  the record may have earned; supplying `-` for both is the v2 lie again.
+
+  *(Corrected in the thirteenth revision. This entry originally gave the second
+  reading a different objection — that leaving the crossing offset absent is a
+  shape the invariant refuses — which was never true: an endpoint-only record is
+  deliberately valid and is the shape the split exists to represent. The refusal
+  stands on provenance alone, and the same argument is what refuses v4 to a v5
+  build.)*
 
 #### The coupling invariant, re-derived — and the review's sketch refuted
 
@@ -7957,36 +7964,22 @@ Derived from what the lifecycle can actually produce:
 
 Which gives `retired ⟺ endpoint.is_some()` as a biconditional, and
 `crossings.is_some() ⟹ retired` one way only. Enumerating the eight shapes, three
-are producible and five are refused:
+are producible and five are refused.
 
-| crossings | endpoint | retired | producible | verdict |
-| --- | --- | --- | --- | --- |
-| `None` | `None` | no | yes — `empty(group)` | accept |
-| `None` | `Some` | yes | yes — fresh cluster, or snapshot recovery | accept |
-| `Some` | `Some` | yes | yes — ordinary recovery | accept |
-| `None` | `None` | yes | no | `CommittedStateWithoutEndpoint` |
-| `Some` | `None` | yes | no | `CommittedStateWithoutEndpoint` |
-| `None` | `Some` | no | no | `EndpointWithoutCommittedState` |
-| `Some` | `Some` | no | no | `EndpointWithoutCommittedState` |
-| `Some` | `None` | no | no | `CrossingsWithoutCommittedState` |
-
-**The "at least one offset" phrasing accepts row 5** — a crossing offset beside a
-full retirement record and no endpoint offset. No lifecycle produces it, and
-absorbing it leaves the endpoint fold ungated on the very next adoption, which is
-exactly where a volatile commit index manufactures removals. It is the dangerous
-shape the review's own next paragraph went on to wonder about, admitted by the
-sentence before it.
-
-`CrossingsWithoutCommittedState` needs a clause of its own rather than falling
-out of the biconditional: a record with neither retirement state nor an endpoint
-offset satisfies `retired ⟺ endpoint` vacuously, so the endpoint clause says
-nothing about a crossing offset sitting beside them.
+*(Table removed in the thirteenth revision. Both offsets are deleted, so its
+eight shapes have collapsed to four and the three coupling clauses to one
+biconditional — see "The current committed state" in
+[Thirteenth revision after adoption (2026-07-28)](#thirteenth-revision-after-adoption-2026-07-28).
+What the argument below establishes about producibility still stands, and is what
+the biconditional is derived from.)*
 
 **The producibility argument is confirmed empirically, not only derived.** A real
-`lock-node` writes `crossings -` beside `endpoint 0`, `high_water 3`, and
-`live 1 2 3` — this cluster never reconfigures, so it folds no crossing at all.
-That is row 2, and it is now asserted in the process suite. A symmetric invariant
-demanding both offsets would refuse every replica in the reference composition.
+`lock-node` writes a record naming `high_water 3` and `live 1 2 3` with no
+crossing folded at all — this cluster never reconfigures — and the process suite
+asserts it. A symmetric invariant demanding both offsets would have refused every
+replica in the reference composition. *(Under version 5 the same replica writes
+`through 0` beside those facts, and the assertion is on the position rather than
+on an offset.)*
 
 #### 3. The process acted on a stored persistence failure one batch late
 
@@ -8043,25 +8036,18 @@ other row from the eleventh revision stands.
 | Path | Behavior | Covered by |
 | --- | --- | --- |
 | `new+ckpt` | endpoint assigns; **crossings assign unconditionally too** | `a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added` |
-| **catch-up crossing beneath an ahead offset** | **assigned; the fold stays gated** | **new** — `a_catch_up_that_commits_an_addition_beneath_the_cursor_publishes_it` |
-| **uncommitted narrowing over an ahead-offset catch-up** | the floor holds | **new** — `an_uncommitted_narrowing_does_not_de_authorize_the_replica_the_catch_up_committed`, `the_newly_committed_replica_is_still_admitted_inbound` |
+| **catch-up crossing beneath an ahead record** | **assigned; the retirement derivation is unaffected** | `a_catch_up_that_commits_an_addition_beneath_the_record_publishes_it` *(renamed in the thirteenth revision)* |
+| **uncommitted narrowing over an ahead-record catch-up** | the floor holds | **new** — `an_uncommitted_narrowing_does_not_de_authorize_the_replica_the_catch_up_committed`, `the_newly_committed_replica_is_still_admitted_inbound` |
 | **the same, for the local replica** | `Serving`, not `NotMember` | **new** — `a_local_replica_the_catch_up_committed_keeps_serving_under_a_narrowing` |
 | **per-step endpoint republish** | **not needed; the event stream is total** | argued above from `reconcile_membership`'s call sites; no sampler exists to test |
 
-**New table — offset provenance**, because one position became two:
+**New table — offset provenance**, because one position became two.
 
-| Path | Behavior | Covered by |
-| --- | --- | --- |
-| exact crossing | advances and is gated by `committed_crossings_through` only | `a_crossing_position_still_suppresses_the_crossings_beneath_it` |
-| endpoint observation | advances and is gated by `committed_endpoint_through` only | `an_endpoint_position_still_suppresses_the_endpoints_beneath_it` |
-| **endpoint position over unfolded crossings** | **does not suppress them** | **new** — `an_endpoint_position_does_not_suppress_the_crossings_beneath_it` |
-| join of two records | `max` per position, independently | `the_join_is_order_free_across_three_records`, `an_endpoint_only_record_is_a_record_a_driver_produces` |
-| endpoint-only record | accepted; crossing offset stays `None` | **new** — `an_endpoint_only_record_is_a_record_a_driver_produces`, `an_endpoint_only_record_is_accepted` (decoder), and the process suite's `crossings -` assertion |
-| crossings-only record with retirement state | **refused** | **new** — `a_record_that_separates_an_offset_from_what_it_retired_is_refused` |
-| durable round trip | both positions survive encode/decode | `a_round_trip_preserves_every_fact`, `a_sealed_consistent_record_is_accepted` |
-| v3 file offered to a v4 build | refused, not migrated | **new** — `an_older_file_is_refused_rather_than_migrated` |
-| **snapshot install → endpoint event** | reported as `CommittedEndpoint`, not `Applied` | `a_snapshot_install_reports_both_facts`, `a_commit_observed_on_a_peer_step_reports_the_committed_fact` |
-| **discarded report holding an endpoint** | not rebuilt into the crossing queue | `a_rebuild_from_parts_still_owes_a_failed_steps_membership_delta` |
+*(Table removed in the thirteenth revision, along with the mechanism it covered.
+Six of its ten rows described gating that no longer exists; the four that
+described real facts — the join, the durable round trip, the snapshot install's
+event, and the discarded report's crossing queue — are restated in the thirteenth
+revision's two new tables.)*
 
 **The reference process loop** — two rows corrected, one added:
 
@@ -8111,7 +8097,7 @@ except where marked; three are new.
 | [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | the two position fields and what each is evidence of |
 | [`crates/rafter-service/src/driver/mapping.rs`](../crates/rafter-service/src/driver/mapping.rs) | `CommittedStateWithoutEndpoint`, `EndpointWithoutCommittedState`, `CrossingsWithoutCommittedState` replace the two single-offset variants |
 | [`crates/rafter-service/tests/transport_committed_floor.rs`](../crates/rafter-service/tests/transport_committed_floor.rs) | new file — the five ahead-offset regressions |
-| [`crates/rafter-service/tests/transport_cursor_provenance.rs`](../crates/rafter-service/tests/transport_cursor_provenance.rs) | new file — the provenance regression and both gating directions |
+| `crates/rafter-service/tests/transport_cursor_provenance.rs` | new file — the provenance regression and both gating directions *(renamed to `transport_committed_transition.rs` in the thirteenth revision)* |
 | `reference/fenced-lock/src/bin/lock-node/control_plane.rs` | format v4; `crossings` and `endpoint` lines; `position`; the mirrored three-clause invariant |
 | `reference/fenced-lock/src/bin/lock-node/protocol.rs` | `Readiness`; `render_status` takes it; the response grammar |
 | `reference/fenced-lock/src/bin/lock-node/main.rs` | `pass_is_terminal` and the drain break; `State::Failed` renders `abandoned`; the inbound residual |
@@ -8143,7 +8129,9 @@ reviewer's five, over a checkpoint whose offset is ahead of the runtime:
 - `a_local_replica_the_catch_up_committed_keeps_serving_under_a_narrowing` —
   `NotMember` before the fix, `Serving` after.
 
-New, in `crates/rafter-service/tests/transport_cursor_provenance.rs`:
+New, in `crates/rafter-service/tests/transport_cursor_provenance.rs` *(all three
+renamed and rewritten against the transition in the thirteenth revision; the file
+is now `transport_committed_transition.rs`)*:
 
 - `an_endpoint_position_does_not_suppress_the_crossings_beneath_it` — the
   review's case. An endpoint-only record at commit 10 joined into a runtime whose
@@ -8175,9 +8163,9 @@ Mutation check, on the committed implementation:
 
 | Neutralized | Fails |
 | --- | --- |
-| the raw floor's unconditional assignment (round 7's `folded \|\| Endpoint` restored) | `an_uncommitted_narrowing_does_not_de_authorize_the_replica_the_catch_up_committed`, `the_newly_committed_replica_is_still_admitted_inbound`, `a_local_replica_the_catch_up_committed_keeps_serving_under_a_narrowing` |
-| the two positions collapsed into one shared `max` | `an_endpoint_position_does_not_suppress_the_crossings_beneath_it`, `a_crossing_position_still_suppresses_the_crossings_beneath_it` |
-| the coupling clause weakened to "at least one offset" | `a_record_that_separates_an_offset_from_what_it_retired_is_refused` |
+| the raw floor's unconditional assignment (round 7's `folded \|\| Endpoint` restored) | `an_uncommitted_narrowing_does_not_de_authorize_the_replica_the_catch_up_committed`, `the_newly_committed_replica_is_still_admitted_inbound`, `a_local_replica_the_catch_up_committed_keeps_serving_under_a_narrowing` *(all still current)* |
+| the two positions collapsed into one shared `max` | the two provenance cases, since renamed — see the thirteenth revision |
+| the coupling clause weakened to "at least one offset" | `a_record_that_separates_an_offset_from_what_it_retired_is_refused`, since renamed |
 | `pass_is_terminal` returning `false` for a stored failure | `a_stored_control_plane_failure_refuses_the_requests_queued_behind_it` |
 | `State::Failed` rendering `Readiness::of_serving(is_ready())` | `a_terminal_replica_stops_reporting_itself_ready` |
 | the raw floor's assignment, observed through the catch-up alone | **nothing** |
@@ -8203,6 +8191,424 @@ coupling clause. The test catches the mutation through the invariant rather than
 through the gate. That is a genuine catch and is reported as an indirect one,
 because a build that fixed the invariant and kept the shared position would slip
 past it.
+
+### Thirteenth revision after adoption (2026-07-28)
+
+A ninth external review found **two algebraic counterexamples in the retirement
+model and one undocumented partial-success contract**, and set the direction that
+made them one change rather than three: *reduce the amount of proof prose rather
+than add another cursor*. This revision deletes a mechanism the last four
+revisions kept repairing and merges two fields into one typed value. Both P1s
+were reproduced with a failing test before anything changed.
+
+The pattern the review named is now closed. Rounds 10 through 12 each made the
+consumer offset *narrower* — gate a fold not an assignment, split one position
+into two — and each round it acquired an obligation the matrix had no row for.
+The offset is gone. What replaced it is not a third repair to the same
+mechanism; it is the observation that an offset was answering a question the
+facts can answer themselves.
+
+#### 1. A crossing carried a state, so replaying it fenced live members
+
+`ConfigurationCommitted` carried a membership, and the driver derived removals by
+subtracting it from its own live set. That is chronologically correct only when
+the live set stands exactly where the crossing does — and a replayed stream is
+precisely where it does not.
+
+The reviewer's counterexample, which is not about positions at all. An
+endpoint-only checkpoint `{mark 5, live {1,2,3,4,5}, endpoint 10}` — the honest
+shape a snapshot-recovered process writes, accepted by the twelfth revision's own
+invariant — adopted over an **addition-only** history `+{1,2,3,4}@6`,
+`+{1,2,3,4,5}@7`:
+
+- The crossing at 6 computes `previous_live − crossing` = `{5}`. Node 5 is spent
+  and owes a permanent fence, for a replica the log only ever *added*.
+- The crossing at 7 cannot give it back. Node 5 is spent by then, so the spent
+  filter drops it out of the live set it would have restored.
+
+The existing `+5 → −5` provenance regression passed **by accident**: there the
+first crossing *introduces* node 5, so the first subtraction is empty and the
+second is the genuine removal. A history that only adds is what separates the two
+readings, and no fixture had one.
+
+**The fix is at the source.** `Output::ConfigurationCommitted` now carries the
+transition — `previous` beside `configuration` — computed by the commit walk,
+which is the only place in the system where the chronology is known. A consumer
+can then take `previous − configuration` and get the same removal set wherever,
+whenever and however often it folds the fact.
+
+`previous` is a `MembershipConfig` rather than a `ConfigurationEntry`, and that
+is not a loss of provenance but the only *total* answer. The state before the
+first configuration entry of a log is the bootstrap membership, and before the
+first one above a snapshot boundary it is the boundary configuration; neither is
+an entry in the retained log. An entry-typed field would have to be an `Option`,
+absent exactly at a boundary — which is where a wrong answer costs a live
+replica, and which is the same ambiguity the field exists to remove.
+
+#### 2. Why deletion beats gating
+
+The second expression of the same defect is the one that shows a cursor could
+never have been repaired. A snapshot-recovered process at endpoint 7 that then
+observes a crossing at 8 records `crossings_through = 8` having seen neither 6
+nor 7. A later merge skips the retained crossings at 6 and 7 as `≤ 8`, so the
+identity the removal at 7 spent is never spent and its fence is never owed.
+
+**A maximum over observed positions is not a contiguous prefix**, and an offset
+is read as though it were one. The twelfth revision split the position by
+*provenance* because the two kinds covered different reaches; this is the same
+unsoundness *within* one kind, and no further split addresses it — the crossing
+stream itself arrives with gaps.
+
+So the cursor is deleted rather than gated harder, and deletion is what the
+transition earns. Every operation the fold performs is now monotone evidence:
+
+- **Removals come from the fact.** Exact, and identical at every replay.
+- **The mark is a maximum**, over both ends of the transition — a removed
+  identity is still an identity the cluster allocated.
+- **Obligations are a union**, and `removed ∖ spent` evaluated *before* the fold
+  keeps one committed removal to exactly one fence.
+- **The current committed membership is a versioned register**, and an older
+  observation cannot pull it backwards.
+
+Re-folding a fact therefore changes nothing, so there is nothing left to skip —
+and the second expression has nowhere to live, because there is no cursor to
+falsely claim contiguity.
+
+#### 3. The join treated current membership as a grow-only set
+
+Two **honest** records: older `{through 7, mark 5, live {1,2,3,5}}` and later
+snapshot-derived `{through 10, mark 3, live {1,2,3}}`. Neither is damaged and
+neither alone is evidence — the older one's mark covers node 5 but calls it live,
+and the later one's mark of 3 has no opinion about node 5 at all.
+
+Together they prove a committed removal: node 5 was in the committed membership
+at position 7 and is not in it at position 10, and a committed configuration is
+permanent. The union kept node 5 live under the joined mark of 5 — unspent,
+unfenced — and the joined endpoint of 10 then made the runtime's own index-10
+publication look already-consumed, so no fold ever ran.
+
+**The missing fact was not in either record; it was between them**, and only a
+positioned current state can see it.
+
+#### The versioned register, and its join
+
+`CurrentCommittedState { through, membership }` **replaces** the
+`(live_committed_members, committed_endpoint_through)` pair. Carrying them apart
+is what let a join unite the memberships and take the maximum of the positions,
+which answers "who is a member now" with the union of two different nows.
+
+Write `spent_x(n) = n ≤ mark_x ∧ n ∉ live_x`, and let `older` and `newer` be the
+two current states ordered by `through`:
+
+```text
+mark     = max(mark_a, mark_b)
+inferred = older.membership \ newer.membership
+spent    = S_a ∪ S_b ∪ inferred
+current  = { through: newer.through, membership: newer.membership \ spent }
+fences   = fences_a ∪ fences_b ∪ (inferred \ (S_a ∪ S_b))
+```
+
+Equal positions with different memberships are **refused** rather than merged
+(`ContradictoryCurrentState`). The committed membership at one log position is
+one set, so two records disagreeing there are not two observations to reconcile:
+picking either chooses which record to believe with nothing to decide on, and
+merging them invents a third neither record held. It is unreachable for a cluster
+that keeps the single-use contract — each side's filter removes only identities a
+committed removal spent, and under the contract no such identity is named again
+at a later position, so the filters agree wherever the positions do.
+
+The inferred set contributes a fence only when **neither** side already knew the
+identity was spent, which is what keeps one committed removal to one obligation:
+a side that knew either still owes it, or the link layer already accepted it.
+
+**The same rule serves the driver's fold**, and that is the simplification the
+deletion bought. A crossing and an endpoint are both positioned observations of
+the current membership; the fold compares the incoming one against the register
+exactly as the join compares two records, and adds the transition's own removal
+set on top. One algebra, reached from two directions.
+
+#### The trap, and why no holding set is needed
+
+The design brief marked this as the place its own derivation could not finish: if
+crossings stop assigning the live register, a removal-crossing whose removed ID is
+still in the current register has a representation gap, because
+`spent(id) = id ≤ mark ∧ id ∉ live` cannot see it while `live` names the ID.
+
+**It is not needed, and the proof is four lines.**
+
+1. A fact that proves `id` removed *named* `id`, so it raised the mark to at
+   least `id`.
+2. `id` is subtracted from the register's membership **whatever the fact's
+   position** — a removal is not an observation of the present, it is a permanent
+   fact about an identity, so the later-wins rule does not apply to it.
+3. So `id ≤ mark ∧ id ∉ membership` holds the moment the fold returns.
+4. Every later assignment to the register filters its incoming membership through
+   the spent test, so `id` can never re-enter.
+
+The window the brief worried about is closed by step 2 rather than by ordering,
+so it is closed on the checkpoint path and the join path as well as within one
+driven step. A contract-violating configuration naming `id` again is refused at
+step 4 — it is filtered out of the register rather than obeyed, exactly as before
+— and stays countable through the raw floor beside the register.
+
+An explicit witnessed-removals set was designed and then discarded. It would have
+been bounded (`⊆ membership`, so cluster-sized) and its entries would have left
+when the register stopped naming them, but every question about its bounds only
+arises because step 2 was not being taken. Absorbing the removal directly needs
+no retention policy at all.
+
+**One order inside the fold is load-bearing.** Every derivation reads the spent
+test as it stood *before* the fact. Read against the raised mark instead, an
+identity this driver has simply not observed yet — every identity at all, on the
+very first fact — tests as spent, and the membership the fact names filters down
+to nothing. That is not a subtlety of the new design; it is the same "computed
+against the state before the assignment" rule the previous fold had, moved to
+where it is now needed.
+
+#### The raw committed floor is kept out of the register
+
+Round 8's rule stands: `committed_members` is assigned on **every** committed
+fact, ungated. It answers "what does this replica's own stream say the cluster
+has committed now", which no position has an opinion about, and tying it to a
+gate left it stale in two lifecycle cells across two revisions.
+
+Making it follow the register was tried and rejected. It would make a handed-over
+record's membership the published floor, which reads better in one case — a
+supervisor's record is genuinely later than a rebuilt runtime — and worse in the
+one that matters: a replica whose runtime has not caught up would report itself
+`Serving` on the strength of a durable record rather than of the log it holds.
+The only facts that can leave the floor historical are recovery outputs, and both
+entry points publish the runtime's endpoint after them.
+
+#### The v5 migration decision, and a refuted premise
+
+The design brief expected v4 → v5 to be the first honest migration, on the
+grounds that `(live, endpoint_through)` maps 1:1 onto `CurrentCommittedState`.
+**It does not, and the mapping that looks obvious is the one that fences
+replicas.**
+
+Version 4's `live` was assigned by a fold of *either* kind while only that kind's
+own offset advanced. Neither offset dates it:
+
+- `through = endpoint` **understates** the position. A driver publishes an
+  endpoint at construction and then follows the cluster through crossings, which
+  move `live` and leave `endpoint` where it was — the ordinary case. A record
+  whose `live` came from index 7 with `endpoint` at 5 migrates to position 5, and
+  the next runtime observation at 6 outranks it and reads everything index 7
+  added as removed.
+- `through = max(crossings, endpoint)` **overstates** it. An endpoint at 10
+  beside a later-folded crossing at 7 leaves `live` from index 7 under a maximum
+  of 10, and a genuine observation at 9 is then treated as older — so everything
+  committed between 7 and 9 reads as removed instead.
+
+Both fence live replicas, in opposite directions, and there is no third reading:
+the record does not say where its membership was observed. That is precisely the
+defect the versioned register exists to fix, so a file written before the fix
+cannot describe the state that fixes it.
+
+**So v4 is refused, on the same rationale v3 was**: the old field's provenance is
+unknowable. The twelfth revision's text gave the v3 refusal a second and weaker
+rationale — that the invariant refuses an endpoint-only record — which was never
+true, since an endpoint-only record is deliberately valid. Both the module header
+and this entry now carry the provenance argument alone.
+
+#### The adoption contract (P2)
+
+`adopt_group_with_checkpoint` joined the checkpoint, installed the group, then
+applied fallible recovery outputs — and on `Err` the group stayed installed, the
+checkpoint stayed merged, and transport calls may have fired, none of which
+`Result<(), _>` says.
+
+**One behavior change and the rest documented.** The publication now runs after
+the recovery outputs whatever they did; the `?` that used to sit on that line was
+the whole of the defect, because a peer set left describing the retired
+incarnation is not stale but wrong about who may speak, and nothing re-derives it
+until the cluster's next configuration change.
+
+The partial adoption is **not** rolled back, and that is the deliberate choice
+rather than the lazy one: rolling back would *drop* the group, and a caller
+holding a unit result has no other way to reach it. So the contract is —
+
+- Every check above the installation is a refusal: the driver holds no group and
+  the next call is another adoption.
+- Only the recovery outputs fail after installation: `with_group` reads the
+  group, `service_state` answers for it, and `release_group` is how a supervisor
+  recovers it and is required before another adoption.
+- Retry is legal. The join is monotone and idempotent, so the merged checkpoint
+  stays merged and the same record offered again adds nothing.
+- Re-sending is sound. Sends that already flew are lost-message-equivalent under
+  `RaftTransport`'s own delivery semantics, which state that Raft safety
+  tolerates dropped, duplicated and reordered peer messages. Verified against
+  that contract rather than assumed.
+
+#### The inbound peer drain, still a named residual
+
+`PeerLink::drain_inbound` remains unbudgeted and remains documented as a
+residual, in the loop's header and in the composition's `CONTRACT.md`. Peers are
+not clients: there are as many as the cluster has replicas and each one's send
+rate is bounded by Raft's own per-peer in-flight window, so the drain terminates
+on its own. A budget would cap per-pass work while leaving the channel's memory
+unbounded — the appearance of a bound rather than one. Restated here because the
+client fairness work is where it would quietly stop being mentioned.
+
+#### The lifecycle matrix, re-audited
+
+**Stale cells removed rather than appended to**, because the mechanisms they
+covered are gone.
+
+**Deleted whole: the twelfth revision's "offset provenance" table.** There are no
+offsets. Six of its ten rows described gating behavior that no longer exists, and
+the four that described real facts are re-stated below against the register.
+
+**Deleted: the eight-row checkpoint-shape table.** Three coupling clauses became
+one biconditional, so the table has four rows and they are in the new one.
+
+**New table — the committed transition:**
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| crossing folded from the state before it | `previous − configuration`; no removal | `replaying_a_history_over_its_own_record_changes_nothing` |
+| crossing folded against a **later** record | same removal set; addition-only history retires nobody | **new** — `an_addition_only_history_retires_nobody_against_a_later_record` |
+| removal crossing beneath a later record | spent and fenced anyway | `a_removal_beneath_a_later_record_is_still_spent_and_fenced` |
+| record standing above history it never saw | folds it; the record's position stands | **new** — `a_record_above_unseen_history_still_folds_it` |
+| the same removal replayed | exactly one fence obligation | **new** — `a_replayed_removal_owes_exactly_one_fence` |
+| observation behind the register | contributes what it names and the later one does not; never the reverse | `an_observation_behind_the_register_manufactures_no_removal` |
+| kernel names the predecessor at a bootstrap boundary | the static membership | fixture self-check in `transport_committed_transition.rs` |
+| kernel names the predecessor across a non-configuration entry | the newest configuration strictly below | `final_stable_configuration_commits_with_new_majority_after_joint_commit` |
+
+**New table — the current committed state:**
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| two records, later position wins | the later membership, spent-filtered | **new** — `the_later_of_two_current_states_is_the_one_that_is_believed` |
+| two records jointly proving a removal | inferred, spent, and fenced | **new** — `two_records_that_jointly_prove_a_removal_spend_the_identity` |
+| equal positions, different memberships | **refused** | **new** — `two_records_that_disagree_at_one_position_are_refused` |
+| retirement state with no current state | refused | `a_record_that_separates_retirement_from_its_current_state_is_refused`, `a_retirement_record_with_no_current_state_is_refused_before_any_transport_call` |
+| current state with no retirement state | refused | same, and `a_current_state_with_nothing_retired_beside_it_is_refused` |
+| a spent identity named again by a later observation | filtered out; stays spent | `the_retired_local_id_stays_refused_when_a_later_membership_names_it` |
+| durable round trip | position and membership survive together | `a_round_trip_preserves_every_fact`, `a_sealed_consistent_record_is_accepted` |
+| membership with no position in a file | refused by the decoder | **new** — case in `a_resealed_contradiction_is_refused` |
+| v4 file offered to a v5 build | refused, not migrated | `an_older_file_is_refused_rather_than_migrated` |
+
+**New table — adoption outcomes:**
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| refusal above the installation | no group held; next call is another adoption | **new** — `a_refusal_before_the_installation_leaves_no_group_behind` |
+| recovery outputs fail after installation | group installed and reachable | **new** — `a_failed_adoption_installs_the_group_and_leaves_it_reachable` |
+| the same | link layer told what the group requires | **new** — `a_failed_adoption_still_publishes_what_the_installed_group_requires` |
+| retry after a failed adoption | legal; same record reached | **new** — `a_retry_after_a_failed_adoption_reaches_the_same_record` |
+
+**The raw committed floor** — the twelfth revision's table stands, with its
+vocabulary corrected: the rows that said "beneath an ahead offset" now read
+"beneath an ahead record", and the mechanism is the register's position rather
+than a cursor.
+
+**Uncovered, and named rather than omitted.**
+
+- **Crossing stream × shutdown**, **crossing stream × `adopt_group`**, **the raw
+  committed floor × shutdown**, **the value of `MAX_JOBS_PER_PASS`**, **a client
+  flood during `State::Opening`**, **the inbound peer drain's boundedness**,
+  **`STATUS abandoned` observed deterministically**, **the queued-behind
+  regression's arrival order.** *(all unchanged)*
+- **Regression across a real snapshot install.** *(unchanged, and still the most
+  interesting)* No test drives a real snapshot install through a recovery that
+  also replays crossings; the suites simulate the record such a process writes.
+  The deletion narrows what this could hide — there is no offset for the install
+  to set wrongly — but the register's position still comes from the install.
+- **New: a transition across a compaction boundary.** The kernel resolves
+  `previous` through the snapshot's boundary configuration, and no test replays a
+  configuration entry whose predecessor is only reachable that way. The bootstrap
+  and in-log cases are covered; the boundary case is argued from
+  `membership_at_index`'s own three-layer resolution.
+- **New: an equal-position contradiction from two real processes.** The refusal
+  is pinned from a hand-built record. Producing it needs a cluster that violates
+  the single-use contract *and* two processes that observed different sides of
+  it, which the composition has no seam for.
+
+#### Blast radius of the thirteenth revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter/src/node/event/output.rs`](../crates/rafter/src/node/event/output.rs) | `ConfigurationCommitted` carries `previous`; the transition rationale |
+| [`crates/rafter/src/node/commit/apply.rs`](../crates/rafter/src/node/commit/apply.rs) | `membership_before`; the walk supplies the transition |
+| [`crates/rafter-app/src/membership.rs`](../crates/rafter-app/src/membership.rs) | `MembershipEvent::Applied` carries `previous`; the two committed facts re-described as transition and observation |
+| [`crates/rafter-app/src/group/types.rs`](../crates/rafter-app/src/group/types.rs) | `CommittedConfigurationCrossing::previous` |
+| [`crates/rafter-app/src/group/membership.rs`](../crates/rafter-app/src/group/membership.rs) | the queue and the mark restore carry it through |
+| [`crates/rafter-service/src/driver/transport/control_plane.rs`](../crates/rafter-service/src/driver/transport/control_plane.rs) | `CommittedObservation` replaces `CommittedMembershipSource`; the monotone fold; the trap proof |
+| [`crates/rafter-service/src/driver/transport/checkpoint.rs`](../crates/rafter-service/src/driver/transport/checkpoint.rs) | `CurrentCommittedState`; `join_current_state`; both cursors and their gating deleted; the re-derived coupling |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | one register field replaces three |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | the adoption contract; the publication no longer behind `?` |
+| [`crates/rafter-service/src/driver/mapping.rs`](../crates/rafter-service/src/driver/mapping.rs) | `RetirementWithoutCurrentState`, `CurrentStateWithoutRetirement`, `ContradictoryCurrentState` replace four variants |
+| [`crates/rafter-service/tests/transport_committed_transition.rs`](../crates/rafter-service/tests/transport_committed_transition.rs) | renamed from `transport_cursor_provenance.rs` and rewritten |
+| [`crates/rafter-service/tests/adoption.rs`](../crates/rafter-service/tests/adoption.rs) | the four adoption-outcome cases |
+| `reference/fenced-lock/src/bin/lock-node/control_plane.rs` | format v5; `through`; the v4 refusal argument; the collapsed invariant |
+
+**The detector inventory rotates** with the kernel vocabulary change and is
+reported rather than re-pinned.
+
+#### Focused-test plan for the thirteenth revision
+
+New, in `crates/rafter-service/tests/transport_committed_transition.rs` (renamed
+from `transport_cursor_provenance.rs`, whose subject no longer exists):
+
+- `an_addition_only_history_retires_nobody_against_a_later_record` — **P1-1's
+  counterexample.** Fails before the fix with node 5 spent and fenced.
+- `a_record_above_unseen_history_still_folds_it` — the second expression, which
+  deletion fixes by construction.
+- `a_replayed_removal_owes_exactly_one_fence` — the removal half of idempotence.
+- `a_removal_beneath_a_later_record_is_still_spent_and_fenced`,
+  `replaying_a_history_over_its_own_record_changes_nothing`,
+  `an_observation_behind_the_register_manufactures_no_removal` — the three
+  properties the deletion must not have cost, rewritten against the transition.
+
+New, in `transport_checkpoint_merge.rs`:
+
+- `two_records_that_jointly_prove_a_removal_spend_the_identity` — **P1-2's
+  counterexample.** Fails before the fix with node 5 live and unfenced.
+- `the_later_of_two_current_states_is_the_one_that_is_believed`,
+  `two_records_that_disagree_at_one_position_are_refused`.
+
+New, in `adoption.rs`: the four outcome cases above.
+
+Mutation check, on the committed implementation:
+
+| Neutralized | Fails |
+| --- | --- |
+| `previous` neutralized to the fact's own membership (full-state fold restored) | `an_addition_only_history_retires_nobody_against_a_later_record`, `replaying_a_history_over_its_own_record_changes_nothing`, `a_second_recovery_from_the_same_durable_state_is_a_no_op`, `a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added` |
+| the join's later-state selection replaced by a union of memberships | `two_records_that_jointly_prove_a_removal_spend_the_identity`, `a_stale_checkpoint_cannot_un_spend_a_retired_identity`, `the_join_is_symmetric_in_the_two_records` |
+| the inferred-removal derivation removed from the join | `two_records_that_jointly_prove_a_removal_spend_the_identity` |
+| the inferred-removal derivation removed from the **fold** | `a_removal_beneath_a_later_record_is_still_spent_and_fenced` |
+| `removed ∖ spent` weakened to `removed` | `a_replayed_removal_owes_exactly_one_fence` |
+| the removal subtracted only when the fact is later (step 2 of the trap proof) | `a_removal_beneath_a_later_record_is_still_spent_and_fenced` |
+| the adoption publication put back behind `?` | `a_failed_adoption_still_publishes_what_the_installed_group_requires` |
+| the spent test read *after* the mark is raised | almost everything — `a_driver_that_has_observed_a_configuration_records_its_current_state` first |
+| equal-position refusal downgraded to "take either" | `two_records_that_disagree_at_one_position_are_refused` |
+
+**Three near-misses.**
+
+The first is the one that cost the most time. Neutralizing `previous` does *not*
+fail `a_removal_beneath_a_later_record_is_still_spent_and_fenced`, which is the
+test the twelfth revision wrote for the provenance defect and the obvious one to
+reach for. There the first crossing introduces node 5, so a state-difference fold
+computes an empty removal and the second crossing computes the genuine one — the
+right answer by accident. Only an **addition-only** history separates the two
+readings. A reviewer who kept the existing regression and added no new fixture
+would have concluded the transition was covered.
+
+The second: removing the inferred-removal derivation from the fold fails only
+`a_removal_beneath_a_later_record_is_still_spent_and_fenced`, and it is easy to
+read that as redundant with the transition's own removal set. It is not. When a
+crossing raises the mark past an identity the register does not name, that
+identity becomes spent *by the mark alone* — and the fence must be derived in the
+same call or it is never owed. The inference is what pairs them.
+
+The third: the trap-proof mutation (subtract the removal only when the fact is
+later) fails the same single test, and passes every checkpoint-join case. The
+join filters by both sides' spent sets and so closes the gap by a different
+route; only a *fold* of a removal beneath a later register exposes it. A build
+that fixed the join and kept the conditional subtraction would look correct
+across the whole merge suite.
 
 ## Terminal Driver Vocabulary
 
