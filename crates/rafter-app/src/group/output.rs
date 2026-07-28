@@ -307,13 +307,31 @@ where
         self.apply_outputs(outputs, membership_request, options)
     }
 
-    /// Builds one report: record, apply, complete reads, then report what the
-    /// membership owes.
+    /// Builds one report: queue the configurations, record, apply, complete
+    /// reads, then report what the membership owes.
     ///
     /// The membership derivation runs last and takes no argument, because it
     /// compares against durable state rather than a pre-step snapshot. Every
     /// fallible statement above it therefore leaves the delta owed rather than
     /// consumed, which is what makes a failed step lossless in membership.
+    ///
+    /// **That argument covers the failures below the loop and not the ones
+    /// inside it, which is why the configurations are queued first.** Applying,
+    /// completing reads, and the readiness probe all run after the whole output
+    /// vector has been walked, so the crossing queue is already full when they
+    /// raise. Decoding does not: it runs once per `Apply`, inside the scan, and
+    /// a payload the state machine refuses abandons the rest of the vector where
+    /// it stands. A configuration behind that `Apply` was never visited, so
+    /// nothing queued it and nothing owed it — and the endpoint comparison
+    /// cannot stand in, because a commit that admits an identity and removes it
+    /// again lands on the membership it started from.
+    ///
+    /// The pre-pass is infallible by construction: it matches one variant and
+    /// pushes onto a queue. Nothing in it can fail, so there is no ordering
+    /// question about what it leaves half-done. It also changes no reported
+    /// order — `record_committed_configuration` never wrote into the report,
+    /// only into the queue that `record_membership_changes` drains at the end —
+    /// so this moves *when* the fact becomes owed and nothing else.
     fn apply_outputs(
         &mut self,
         outputs: Vec<RaftOutput>,
@@ -323,6 +341,7 @@ where
         let mut report = GroupStepReport::new(self.group_id.clone());
         let mut apply_entries = Vec::new();
 
+        self.queue_committed_configurations(&outputs);
         for output in outputs {
             self.record_raft_output(output, membership_request, &mut apply_entries, &mut report)?;
         }
@@ -354,6 +373,12 @@ where
         }
     }
 
+    #[allow(
+        clippy::match_same_arms,
+        reason = "an unaddressed rejection and an already-queued configuration are \
+                  different facts that happen to need nothing here; merging them \
+                  would hide which output each comment is about"
+    )]
     pub(super) fn record_raft_output(
         &mut self,
         output: RaftOutput,
@@ -447,16 +472,17 @@ where
                     chunk,
                 });
             }
-            RaftOutput::ConfigurationCommitted {
-                index,
-                term,
-                configuration,
-            } => {
-                // Queued, not reported here: the report's membership list is
-                // ordered effective-then-committed, and the effective comparison
-                // has not run yet. See `record_committed_configuration`.
-                self.record_committed_configuration(index, term, configuration.membership_config());
-            }
+            // Already queued, by the infallible pre-pass `apply_outputs` runs
+            // over the whole vector before this loop starts. Queueing it here
+            // instead made the fact conditional on every earlier output having
+            // been handled successfully, which an undecodable `Apply` at a lower
+            // index is exactly what prevents. See `apply_outputs`.
+            // Already queued, by the infallible pre-pass `apply_outputs` runs
+            // over the whole vector before this loop starts. Queueing it here
+            // instead made the fact conditional on every earlier output having
+            // been handled successfully, which an undecodable `Apply` at a lower
+            // index is exactly what prevents. See `apply_outputs`.
+            RaftOutput::ConfigurationCommitted { .. } => {}
         }
         Ok(())
     }

@@ -635,3 +635,98 @@ fn the_outcome_only_read_barrier_helper_still_owes_its_membership_delta() {
     );
     assert_eq!(voters(&reported[0]), vec![NodeId(1), NodeId(2), NodeId(3)]);
 }
+
+/// One configuration entry, as a leader would replicate it.
+fn configuration_entry(config_id: u64, node_ids: &[u64]) -> rafter::LogEntry {
+    rafter::LogEntry::configuration(
+        Term(1),
+        rafter::ConfigurationEntry::stable(
+            rafter::ConfigurationId(config_id),
+            MembershipSet::new(node_ids.iter().copied().map(NodeId).collect(), Vec::new())
+                .expect("test membership is valid"),
+        ),
+    )
+}
+
+/// A configuration the same commit crossed survives an entry the state machine
+/// cannot decode.
+///
+/// The producer the other five miss, and the one that needed a real kernel to
+/// state. Every failure above fails *after* the whole output vector has been
+/// walked — `apply_entries` runs past the loop, and so do the read completion
+/// and the readiness probe — so the crossing queue was already full when they
+/// raised. Decoding is different: it runs *inside* the loop, once per `Apply`,
+/// so an undecodable payload at a lower index than a configuration entry
+/// abandons the scan with that configuration still unvisited.
+///
+/// Nothing queued it, so nothing owed it, and the endpoint comparison cannot
+/// rescue it: a commit that admits node 5 and removes it again lands on the
+/// membership it started from, so the comparison sees no move at all. The
+/// identity the cluster spent is spent nowhere here.
+#[test]
+fn a_crossed_configuration_survives_an_undecodable_entry_ahead_of_it() {
+    let mut group = RaftGroup::new(
+        7,
+        NodeId(1),
+        runtime(1, &[2, 3]),
+        RecordingStateMachine {
+            fail_decode: true,
+            ..RecordingStateMachine::default()
+        },
+    );
+
+    let error = group
+        .step(GroupInput::PeerMessage {
+            envelope: PeerEnvelope {
+                group_id: 7,
+                from: NodeId(2),
+                to: NodeId(1),
+                message: Message::AppendEntries(AppendEntries {
+                    term: Term(1),
+                    leader_id: NodeId(2),
+                    prev_log_index: LogIndex::ZERO,
+                    prev_log_term: Term(0),
+                    sequence: 1,
+                    entries: vec![
+                        rafter::LogEntry::application(Term(1), b"command".to_vec()),
+                        configuration_entry(1, &[1, 2, 3, 5]),
+                        configuration_entry(2, &[1, 2, 3]),
+                    ]
+                    .into(),
+                    leader_commit: LogIndex(3),
+                }),
+            },
+        })
+        .expect_err("the state machine refuses to decode the payload");
+    assert!(
+        matches!(
+            error,
+            GroupError::StateMachine {
+                operation: StateMachineOperation::DecodeCommand,
+                ..
+            }
+        ),
+        "the step failed decoding: {error:?}"
+    );
+
+    let owed = group.drain_membership_events();
+
+    assert_eq!(
+        owed.len(),
+        2,
+        "the commit crossed two configurations and the decode failure reported \
+         neither: {owed:?}"
+    );
+    assert!(matches!(owed[0], MembershipEvent::Applied { .. }));
+    assert!(matches!(owed[1], MembershipEvent::Applied { .. }));
+    assert_eq!(
+        voters(&owed[0]),
+        vec![NodeId(1), NodeId(2), NodeId(3), NodeId(5)],
+        "the admission is reported first, in index order"
+    );
+    assert_eq!(
+        voters(&owed[1]),
+        vec![NodeId(1), NodeId(2), NodeId(3)],
+        "the removal that spent node 5 is reported second"
+    );
+}

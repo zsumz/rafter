@@ -1,7 +1,7 @@
 use super::{
     CommittedConfigurationCrossing, Debug, GroupStepReport, LogIndex, MembershipChange,
     MembershipConfig, MembershipEvent, MembershipReportMark, PersistedRaftRuntime,
-    ProposalRejection, RaftGroup, RaftInput, ReplicatedStateMachine, Term,
+    ProposalRejection, RaftGroup, RaftInput, RaftOutput, ReplicatedStateMachine, Term,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -174,6 +174,39 @@ where
             membership: committed_membership.clone(),
         });
         self.reported_membership.committed = committed_membership;
+    }
+
+    /// Queues every committed configuration one step's outputs name, before any
+    /// of them is handled.
+    ///
+    /// **Infallible, and that is its whole job.** The scan that handles outputs
+    /// is fallible per output — decoding an `Apply` payload runs inside it — so
+    /// a configuration entry sitting behind a payload the state machine refuses
+    /// is one the scan never reaches. Queueing here makes "the commit index
+    /// crossed this configuration" a fact of the step rather than a consequence
+    /// of the step succeeding, which is the same promise the mark already makes
+    /// for the two memberships beside it.
+    ///
+    /// It borrows the vector rather than consuming it, so the handling scan
+    /// still sees every output in kernel order. Nothing is reported from here:
+    /// the queue is drained by [`RaftGroup::record_membership_changes`] at the
+    /// end of the step, in index order and after the effective comparison, so
+    /// the reported order is exactly what it was.
+    pub(super) fn queue_committed_configurations(&mut self, outputs: &[RaftOutput]) {
+        for output in outputs {
+            if let RaftOutput::ConfigurationCommitted {
+                index,
+                term,
+                configuration,
+            } = output
+            {
+                self.record_committed_configuration(
+                    *index,
+                    *term,
+                    configuration.membership_config(),
+                );
+            }
+        }
     }
 
     /// Queues one committed configuration the kernel named.
