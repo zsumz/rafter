@@ -221,3 +221,80 @@ fn a_refused_report_leaves_the_last_consistent_membership() {
         "node 3 is still live in the last consistent committed reading"
     );
 }
+
+/// A contradiction outlives the group it was found under, and adoption says so.
+///
+/// Both contradiction states are terminal for the incarnation, and releasing
+/// the group is the prescribed first step of *retiring* that incarnation — not
+/// a way to rearm it. A driver that reported `Released` after a contradiction
+/// read as an ordinary reusable driver, and its next adoption installed a group
+/// and a node ID before the old contradiction resurfaced as an error — a
+/// partially adopted group produced by terminal state that predates the
+/// adoption, which the partial-adoption contract reserves for failures the new
+/// group's own recovery outputs produce.
+#[test]
+fn a_contradicted_driver_refuses_adoption_before_taking_the_group() {
+    let (driver, transport, handle) = driver_over_one_two_three();
+
+    contradict_committed_beneath_effective(&handle, &[1, 2, 3, 4], &[1, 2, 4]);
+    driver.tick().expect("the protocol still advances");
+    assert_eq!(
+        driver.service_state(),
+        DriverServiceState::ContradictoryCurrentState { through: AT },
+        "the report's committed half disagrees with the register at {AT}"
+    );
+
+    driver
+        .release_group()
+        .expect("release the contradicted group");
+    assert_eq!(
+        driver.service_state(),
+        DriverServiceState::ContradictoryCurrentState { through: AT },
+        "releasing the group resolves nothing, so the state must still say so"
+    );
+
+    let record_before = driver.control_plane_checkpoint();
+    let epoch_before = driver.control_plane_checkpoint_epoch();
+    let policies_before = transport.policies();
+
+    let refused = driver.adopt_group_with_checkpoint(
+        RaftGroup::new(
+            GROUP,
+            NodeId(5),
+            ScriptedMembershipRuntime::for_node_at(NodeId(5), &[1, 2, 3], &[1, 2, 3], AT),
+            KvStateMachine::default(),
+        ),
+        Vec::new(),
+        PeerControlPlaneCheckpoint::empty(GROUP),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(ManagedDriverError::ControlPlaneContradicted { .. })
+        ),
+        "the refusal names the driver's own terminal state, got {refused:?}"
+    );
+
+    assert!(
+        matches!(
+            driver.committed_application_index(),
+            Err(ManagedDriverError::NoGroup)
+        ),
+        "nothing about the offered group was taken"
+    );
+    assert_eq!(
+        driver.control_plane_checkpoint(),
+        record_before,
+        "the durable record did not move"
+    );
+    assert_eq!(
+        driver.control_plane_checkpoint_epoch(),
+        epoch_before,
+        "and no epoch move tells an embedder to persist anything"
+    );
+    assert_eq!(
+        transport.policies(),
+        policies_before,
+        "the link layer was told nothing"
+    );
+}

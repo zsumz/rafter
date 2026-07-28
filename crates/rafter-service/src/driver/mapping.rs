@@ -127,6 +127,15 @@ pub enum ManagedDriverError {
     /// identity, a fence against an active member — so it is refused whole
     /// rather than absorbed in part. The driver's own state is untouched.
     InvalidControlPlaneCheckpoint { reason: ControlPlaneCheckpointError },
+    /// This driver already carries an unresolved contradiction, which is
+    /// terminal for the incarnation — including across a group release.
+    ///
+    /// Distinct from [`ManagedDriverError::InvalidControlPlaneCheckpoint`]
+    /// because nothing is wrong with the incoming record: the refusing state
+    /// belongs to the driver already in memory. A supervisor that wants to
+    /// recover builds a new driver from deliberately repaired or reseeded
+    /// state; it does not rearm this one by handing it another group.
+    ControlPlaneContradicted { reason: ControlPlaneCheckpointError },
     /// A group operation failed while the driver was driving it.
     ///
     /// The category is the variant and the detail is the preserved cause; there
@@ -338,9 +347,8 @@ impl fmt::Display for ControlPlaneCheckpointError {
             ),
             Self::ContradictoryTransitionPredecessor { through } => write!(
                 formatter,
-                "the committed transition at index {} declares a membership at index \
-                 {through} that this driver's own record contradicts",
-                through.next()
+                "the committed transition after index {through} declares a membership at \
+                 index {through} that this driver's own record contradicts"
             ),
             Self::StaleCurrentState { held, incoming } => write!(
                 formatter,
@@ -433,6 +441,10 @@ impl fmt::Display for ManagedDriverError {
                 formatter,
                 "managed driver refused the peer control plane checkpoint: {reason}"
             ),
+            Self::ControlPlaneContradicted { reason } => write!(
+                formatter,
+                "managed driver is terminally contradicted and adopts nothing: {reason}"
+            ),
             Self::Group { .. } => formatter.write_str("managed driver group operation failed"),
         }
     }
@@ -442,7 +454,8 @@ impl Error for ManagedDriverError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Group { cause } => Some(cause.as_error()),
-            Self::InvalidControlPlaneCheckpoint { reason } => Some(reason),
+            Self::InvalidControlPlaneCheckpoint { reason }
+            | Self::ControlPlaneContradicted { reason } => Some(reason),
             Self::EmptyCluster
             | Self::MissingPrimary { .. }
             | Self::MissingNode { .. }

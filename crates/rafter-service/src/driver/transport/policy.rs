@@ -344,20 +344,23 @@ where
     ///
     /// **Ordered by what a supervisor can still do about it**, most terminal
     /// first. Shutdown outranks everything because nothing else changes what
-    /// happens next; a released driver is reported before anything derived from
-    /// a group it does not hold; either contradiction outranks both conclusions
-    /// drawn from the membership facts, because it says those facts cannot be
-    /// trusted; and decommissioning outranks the condition that ends, because a
-    /// rollback can be re-proposed and a spent identity cannot.
+    /// happens next. Either contradiction comes next and outranks `Released`,
+    /// because both are terminal for the incarnation and releasing the group
+    /// does not resolve the fork — a driver that reported `Released` after a
+    /// contradiction would read as an ordinary reusable driver, and the next
+    /// adoption would rearm state whose membership facts cannot be trusted.
+    /// A released driver is then reported before anything derived from a group
+    /// it does not hold; and decommissioning outranks the condition that ends,
+    /// because a rollback can be re-proposed and a spent identity cannot.
     pub(super) fn service_state(&self) -> DriverServiceState {
         if self.shutting_down {
             return DriverServiceState::ShuttingDown;
         }
-        if self.group.is_none() {
-            return DriverServiceState::Released;
-        }
         if let Some(contradiction) = self.contradiction {
             return contradiction.service_state();
+        }
+        if self.group.is_none() {
+            return DriverServiceState::Released;
         }
         if self.is_decommissioned() {
             return DriverServiceState::Decommissioned {

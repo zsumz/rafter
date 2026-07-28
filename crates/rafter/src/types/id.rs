@@ -13,12 +13,12 @@ use std::fmt;
 /// ID.
 ///
 /// The reason is that a removal is not only a membership edit. Layers above the
-/// kernel bind durable authorization to the ID: a managed driver fences the
-/// removed replica's transport principal, and a fence is permanent for that
-/// principal by design — the transport boundary offers no inverse of it. An ID
-/// added back after its fence has landed names a replica that can never speak
-/// again, so the change appears to commit and the replica silently never
-/// participates.
+/// kernel bind durable authorization to the ID: a managed driver publishes a
+/// peer policy whose retirement floor rises monotonically over every ID a
+/// committed configuration has named, and it never republishes an identity a
+/// removal spent. An ID added back after its removal names a replica the
+/// published policy classifies as retired, so the change appears to commit and
+/// the replica silently never participates.
 ///
 /// # Allocate monotonically per group
 ///
@@ -40,9 +40,9 @@ use std::fmt;
 /// never admit node 3, whether or not node 3 ever existed. A deployment that
 /// allocates non-monotonically has its "fresh" IDs refused as spent, which is
 /// the fail-closed direction and is deliberate — the alternative reads a
-/// violated precondition as permission and admits a replica whose principal the
-/// link layer may already have fenced. A monotonic per-group counter costs one
-/// number and avoids all of it.
+/// violated precondition as permission and admits a replica the published
+/// retirement policy already classifies as spent. A monotonic per-group counter
+/// costs one number and avoids all of it.
 ///
 /// **Restarting a replica is not removing it.** A replica that crashes, is
 /// killed, or is restarted keeps its ID and its identity: no removal committed,

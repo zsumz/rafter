@@ -200,7 +200,14 @@ impl CommittedObservation {
     /// one arrangement where the two are claims about a single fact, and stays
     /// silent everywhere else rather than guessing.
     pub(super) fn membership_claimed_at(&self, position: LogIndex) -> Option<&BTreeSet<NodeId>> {
-        (position.next() == self.through)
+        // `checked_add` rather than `next`: a position of `u64::MAX` has no
+        // adjacent successor, and an answer that depended on overflow behavior
+        // would differ between build profiles in a correctness kernel.
+        position
+            .0
+            .checked_add(1)
+            .map(LogIndex)
+            .is_some_and(|next| next == self.through)
             .then_some(self.previous.as_ref())
             .flatten()
     }

@@ -577,9 +577,11 @@ where
     /// between the moment the cluster commits a removal and the moment the
     /// transport accepts the policy that retires it, the validator still
     /// authorizes a replica the cluster has retired. The driver knows better
-    /// than its own link layer in that window: its membership is committed ∪
-    /// effective, so it can refuse the frame itself rather than let a transient
-    /// control-plane failure become an authorization.
+    /// than its own link layer in that window: its admission reads the
+    /// effective and raw committed memberships and the positioned committed
+    /// register, less every spent identity, so it can refuse the frame itself
+    /// rather than let a transient control-plane failure become an
+    /// authorization.
     ///
     /// It cannot refuse a legitimate joiner. The membership it checks includes
     /// the effective configuration, so a replica added by a change that has
@@ -826,6 +828,16 @@ where
         // releases, a supervisor stopping one shuts down and then releases —
         // a distinction with no consequence.
         state.reject_if_shutting_down()?;
+        // Before anything about the incoming group is consumed: a contradiction
+        // is terminal for this incarnation, and releasing the old group did not
+        // resolve it. Refusing here keeps the partial-adoption contract exact —
+        // a group is left installed only by a failure the newly adopted group's
+        // own recovery outputs produced, never by terminal state that predates
+        // the adoption. The error names the driver's own condition rather than
+        // the incoming record, because nothing offered here is what is wrong.
+        if let Some(reason) = state.recorded_contradiction() {
+            return Err(ManagedDriverError::ControlPlaneContradicted { reason });
+        }
         if state.group.is_some() {
             return Err(ManagedDriverError::GroupAlreadyAdopted);
         }
