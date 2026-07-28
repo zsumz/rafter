@@ -30,7 +30,16 @@
 //! --max-clients <u32>             RAFTER_LOCK_MAX_CLIENTS       [8]
 //! --max-resources <u32>           RAFTER_LOCK_MAX_RESOURCES     [8]
 //! --recover <open|repair|reseed>  RAFTER_LOCK_RECOVER           [open]
+//! --control-plane-fault-after <n> RAFTER_LOCK_CONTROL_PLANE_FAULT_AFTER
 //! ```
+//!
+//! The last one is a **fault seam, not an operator control**: from the `n`-th
+//! client operation onward this replica cannot make its peer control plane
+//! durable. It exists because the state it produces — a replica that knows its
+//! next restart would forget what it retired — is otherwise unreachable from a
+//! test that spawns this process, and it is the state the shutdown discipline
+//! below is entirely about. See
+//! [`OpenRequest::control_plane_fault_after`](replica::OpenRequest::control_plane_fault_after).
 //!
 //! `--recover` is the only way this process loses acknowledged work, and both
 //! settings above `open` are deliberate operator acts that a restart never
@@ -116,6 +125,48 @@
 //! working, and a non-zero `non_member_frames` says the control plane is
 //! running behind the cluster.
 //!
+//! # The loop, and what bounds it
+//!
+//! One pass answers at most [`MAX_JOBS_PER_PASS`] client requests and then does
+//! everything else it owes: it inspects the stored control-plane failure,
+//! delivers whatever the peer link received, ticks if the clock says so, drives
+//! granted reads, and expires deadlines. **The budget is what makes "and then"
+//! true.** Draining the client channel until it went quiet meant a stream of
+//! immediately-answered requests never let the pass finish, and `STATUS` — which
+//! touches nothing and answers from memory — was enough on its own to hold a
+//! replica off its clock for as long as a client cared to keep asking.
+//!
+//! ## What is *not* bounded here, and why that is the honest answer for v1
+//!
+//! The channel from the client threads is unbounded and the acceptor spawns a
+//! thread per connection, so this process's memory and thread count are bounded
+//! by the operating system rather than by anything in this file. A bounded
+//! `sync_channel` and a connection limit were considered and are deliberately
+//! not here.
+//!
+//! The channel first: its depth is already bounded by the number of live
+//! connections, because a connection is strictly sequential — the reply to a
+//! request is written before the next line is read — so a client cannot queue a
+//! second request until the first is answered. Swapping in a `sync_channel`
+//! would therefore not bound a resource that was actually unbounded; it would
+//! move where a burst blocks, from this loop to the client threads, and leave
+//! the binding resource exactly where it was.
+//!
+//! That binding resource is threads and file descriptors, and a connection limit
+//! is what would bound it. It is out of scope for a different reason: refusing an
+//! accept needs an answer the client protocol does not have, and adding one is a
+//! wire-contract change rather than a loop fix. `CONTRACT.md` scopes this
+//! composition as integration composition over a protocol that authenticates
+//! nothing — any connection may already claim any client identity — so a
+//! resource bound here would not be a property this artifact can claim against
+//! an adversary, only against an accident.
+//!
+//! The per-pass budget is a different kind of statement and that is why it is
+//! here rather than deferred with the rest. It bounds a *correctness* property:
+//! that Raft's clock, its inbound frames, and this process's own terminal exit
+//! are reached on every pass regardless of client load. A production composition
+//! would want all three bounds; this one needs the first.
+//!
 //! # Shutdown
 //!
 //! `SHUTDOWN` on the client protocol is the clean path: waiters are released
@@ -171,6 +222,26 @@ use replica::{Answer, OpenError, OpenRequest, RecoveryMode, Replica};
 /// processes pays this rate per replica.
 const LOOP_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
+/// How many client requests one pass of the loop answers before it goes back to
+/// the protocol.
+///
+/// Sixty-four is comfortably more than the requests a correct client population
+/// can have outstanding at once — a connection is strictly sequential, so the
+/// queue depth is bounded by live connections, and this composition's default
+/// client bound is eight — while still being few enough that a whole pass of
+/// them finishes far inside one tick interval.
+///
+/// **The bound is the fairness property, not a throughput knob.** Draining until
+/// the channel is quiet reads like an optimization and is a liveness bug: a
+/// stream of immediately-answered requests never leaves the drain, so the pass
+/// below never runs, and `STATUS` alone is enough to hold a replica off its
+/// clock indefinitely. Everything the pass owes the cluster is behind it —
+/// detecting a stored control-plane failure, delivering peer frames, ticking,
+/// driving reads, expiring deadlines — and so is this process's own terminal
+/// exit, which is why a replica that already knew its control plane was not
+/// durable would keep answering `ABANDONED` forever instead of stopping nonzero.
+const MAX_JOBS_PER_PASS: usize = 64;
+
 /// How often a replica waiting for directory ownership tries to take it.
 ///
 /// Retrying at the loop's own rate would hammer the lock hundreds of times a
@@ -209,6 +280,7 @@ struct Config {
     request_timeout: Duration,
     lock: LockConfig,
     recover: RecoveryMode,
+    control_plane_fault_after: Option<u64>,
 }
 
 impl Config {
@@ -310,6 +382,20 @@ impl Config {
             )?),
             lock,
             recover,
+            // Absent for every replica an operator starts. See
+            // `OpenRequest::control_plane_fault_after` for why the seam exists
+            // and why it is addressed by client operation rather than by write.
+            control_plane_fault_after: match lookup(
+                "control-plane-fault-after",
+                "RAFTER_LOCK_CONTROL_PLANE_FAULT_AFTER",
+            ) {
+                Some(value) => {
+                    Some(value.parse().map_err(|_| {
+                        String::from("--control-plane-fault-after must be an integer")
+                    })?)
+                }
+                None => None,
+            },
         })
     }
 
@@ -414,8 +500,24 @@ fn serve(
 
     loop {
         // Client requests first, so that a `SHUTDOWN` or a `STATUS` is answered
-        // even when the replica does not exist yet.
-        while let Ok(job) = jobs.recv_timeout(LOOP_POLL_INTERVAL) {
+        // even when the replica does not exist yet — and at most
+        // `MAX_JOBS_PER_PASS` of them, so that everything below this is reached
+        // whatever the clients are doing.
+        for slot in 0..MAX_JOBS_PER_PASS {
+            // The first receive is this loop's idle wait and the rest are not.
+            // Blocking again after a request has been answered would let a
+            // momentary lull cost the protocol a full poll interval it never
+            // needed to pay, and blocking on the first is what keeps an idle
+            // replica off the CPU while still bounding how long an arrived peer
+            // frame waits.
+            let received = if slot == 0 {
+                jobs.recv_timeout(LOOP_POLL_INTERVAL).ok()
+            } else {
+                jobs.try_recv().ok()
+            };
+            let Some(job) = received else {
+                break;
+            };
             let ticket = next_ticket;
             next_ticket += 1;
             match handle_job(&mut state, config, &job, ticket) {
@@ -426,8 +528,15 @@ fn serve(
                 Disposition::Stop(response) => {
                     drop(job.reply.send(response));
                     stopping = true;
-                    break;
                 }
+            }
+            // A terminal state ends the pass rather than spending the budget on
+            // it. `State::Failed` answers every request `ABANDONED`, and doing
+            // that is not what the process is for once it has one: the work
+            // below is its exit, and a pass that kept answering would postpone
+            // the exit for exactly as long as clients kept asking.
+            if stopping || matches!(state, State::Failed { .. }) {
+                break;
             }
         }
         if stopping {
@@ -454,6 +563,7 @@ fn serve(
                     mode: config.recover,
                     transport: link.transport(),
                     validator: link.validator(),
+                    control_plane_fault_after: config.control_plane_fault_after,
                 }) {
                     Ok(replica) => {
                         // The address is published only now, so a peer never

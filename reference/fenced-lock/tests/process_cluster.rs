@@ -102,6 +102,13 @@ fn process_config() -> LockConfig {
     config(4, 4)
 }
 
+/// How many sockets a flood keeps `STATUS` in flight on.
+///
+/// Four is enough that the replica's job queue is essentially never empty — a
+/// loopback round trip is tens of microseconds and the loop's idle wait is two
+/// milliseconds — without spending threads on load that proves nothing more.
+const FLOOD_CONNECTIONS: usize = 4;
+
 /// Asserts a submission committed and returns it.
 #[track_caller]
 fn applied(outcome: &SubmitOutcome) -> (ApplyDisposition, LockResponse) {
@@ -1129,6 +1136,176 @@ fn a_deleted_control_plane_checkpoint_refuses_to_open_as_a_first_boot() {
         !checkpoint_path.exists(),
         "the refusal does not regenerate the file it refused over, which would \
          be the silent forgetting with an extra step"
+    );
+
+    cluster.shutdown();
+}
+
+/// A continuous client flood cannot starve Raft's clock or its inbound frames.
+///
+/// **The loop's fairness property, proved with the protocol rather than with a
+/// counter.** One pass of the process loop answers client requests and then does
+/// everything else it owes — delivering peer frames, ticking, driving reads,
+/// expiring deadlines. Draining the client channel until it went quiet made "and
+/// then" conditional on the clients stopping, and `STATUS` is enough to prevent
+/// that: it answers from memory, so a connection can keep one in flight
+/// perpetually without the replica doing any work that would slow the flood
+/// down.
+///
+/// The leader is killed and **both survivors are flooded**, which is what makes
+/// this a statement about the loop rather than about luck. A three-replica
+/// cluster needs two votes, so neither flooded replica can be carried by the
+/// other: the election requires both of them to reach their own election
+/// timeout, send a poll, and deliver the answer — three separate things that all
+/// live behind the client drain. Starved, no election happens at all and
+/// `wait_for_leader` fails on its deadline.
+///
+/// A linearizable read on a flooded replica follows, because an election proves
+/// ticks and votes and a `ReadIndex` proves the rest: the barrier is granted by
+/// a quorum round the replica must both send and receive, and the grant is
+/// *consumed* by a read call the pass makes after the delivery.
+///
+/// Kill window: the leader is killed while idle, so no write is in flight and
+/// the seal window cannot affect anything — the killed replica is never
+/// restarted.
+#[test]
+#[ignore = "spawns real processes; run with --ignored (see the module docs)"]
+fn a_client_flood_cannot_starve_the_protocol_on_the_replicas_it_floods() {
+    let mut cluster = ProcessCluster::start("client-flood", process_config());
+    let leader = cluster.wait_for_agreed_leader();
+    cluster.submit_to_leader(open_session(0, 1));
+    let acquired = cluster.submit_to_leader(submit(0, 1, 1, acquire("vault", 10)));
+    assert_operation(
+        &acquired,
+        OperationResult::Acquired {
+            token: acquired.acquired_token(),
+            expiry: support::time(10),
+        },
+    );
+
+    let survivors: Vec<NodeId> = cluster
+        .live_nodes()
+        .into_iter()
+        .filter(|node_id| *node_id != leader)
+        .collect();
+    assert_eq!(survivors.len(), 2, "a three-replica cluster has two others");
+
+    // Started before the kill, so the survivors are already saturated when the
+    // election they have to run becomes necessary.
+    let floods: Vec<process::StatusFlood> = survivors
+        .iter()
+        .map(|node_id| {
+            process::StatusFlood::start(cluster.node_mut(*node_id).client_addr(), FLOOD_CONNECTIONS)
+        })
+        .collect();
+    cluster.kill(leader);
+
+    let successor = cluster.wait_for_leader();
+    assert!(
+        survivors.contains(&successor),
+        "a survivor took office: {successor:?}"
+    );
+
+    // And the barrier half, on a replica that is still being flooded.
+    let observed = cluster.get_lock(resource("vault"));
+    assert!(
+        observed.is_held(),
+        "a linearizable read completed under the flood: {observed:?}"
+    );
+
+    let answered: u64 = floods.into_iter().map(process::StatusFlood::stop).sum();
+    assert!(
+        answered > 0,
+        "the flood has to have been real load for this to have proved anything"
+    );
+
+    cluster.shutdown();
+}
+
+/// A replica that cannot make its control plane durable stops serving and exits
+/// nonzero, however many clients keep asking.
+///
+/// **The terminal transition is behind the client drain, and that is the whole
+/// defect.** A replica whose control-plane persistence has failed answers every
+/// service request `ABANDONED` and is going to exit nonzero, because its next
+/// restart would begin by forgetting whatever it retired. Both of those live in
+/// the pass *after* the client drain: the drain answers `ABANDONED` and then
+/// yields to the work that ends the process. When the drain only yielded on a
+/// quiet channel, a replica that already knew its control plane was not durable
+/// kept answering forever — the one process state where continuing to serve is
+/// exactly the wrong thing — and a supervisor watching the exit code never
+/// learned anything had happened.
+///
+/// So the flood runs *through* the failure rather than before it. The fault is
+/// armed at the first client operation, the replica opens and serves normally,
+/// the flood starts, and then one `QUERY` makes it undurable while `STATUS`
+/// requests keep arriving on every other connection.
+///
+/// `STATUS` deliberately still answers in that state and service does not,
+/// which is why the flood cannot mask the assertion: the requests keeping the
+/// queue full are exactly the ones a failed replica is still allowed to answer.
+///
+/// Kill window: the replica is killed while idle and restarts under a plain
+/// `open`, so this asserts nothing about a commit point; the seal window is
+/// handled by `restart_with_control_plane_fault` waiting for readiness, which a
+/// replica that refused would never reach.
+#[test]
+#[ignore = "spawns real processes; run with --ignored (see the module docs)"]
+fn an_unpersistable_control_plane_stops_the_process_under_a_client_flood() {
+    let mut cluster = ProcessCluster::start("unpersistable-control-plane", process_config());
+    let leader = cluster.wait_for_leader();
+    let victim = *cluster
+        .live_nodes()
+        .iter()
+        .find(|node_id| **node_id != leader)
+        .expect("a three-replica cluster has a follower");
+
+    cluster.submit_to_leader(open_session(0, 1));
+    cluster.submit_to_leader(submit(0, 1, 1, acquire("vault", 10)));
+    cluster.wait_applied_through(victim, LogIndex(1));
+
+    cluster.kill(victim);
+    let mut faulted = cluster.restart_with_control_plane_fault(victim, 1);
+    let flood = process::StatusFlood::start(faulted.client_addr(), FLOOD_CONNECTIONS);
+
+    // The client operation the fault is armed at. Its own answer is already the
+    // refusal, because the loop abandons every waiter in the same pass that
+    // discovers the failure.
+    let answer = faulted
+        .ask("QUERY LOCK vault")
+        .expect("the replica answers the request that breaks it");
+    assert!(
+        answer.starts_with("ABANDONED"),
+        "the operation that made the control plane undurable is refused rather \
+         than served: {answer}"
+    );
+
+    // And the process ends, with the flood still running against it.
+    let refused = faulted.wait_refused();
+    let answered = flood.stop();
+    assert!(
+        refused.status.code().is_some_and(|code| code != 0),
+        "a replica that cannot record what it retired must not exit cleanly, \
+         because a supervisor reads exit 0 as a reason to restart it: {refused:?}"
+    );
+    assert!(
+        refused.stdout.contains("CONTROL_PLANE_UNPERSISTED"),
+        "and must say so on its own lifecycle channel: {:?}",
+        refused.stdout
+    );
+    assert!(
+        refused.stdout.contains("FATAL"),
+        "and must not end through STOPPED: {:?}",
+        refused.stdout
+    );
+    assert!(
+        !refused.stdout.contains("STOPPED"),
+        "STOPPED and an unpersisted control plane are mutually exclusive: {:?}",
+        refused.stdout
+    );
+    assert!(
+        answered > 0,
+        "the flood has to have been real load for this to have proved anything"
     );
 
     cluster.shutdown();

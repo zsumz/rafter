@@ -71,7 +71,11 @@ use std::{
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, ChildStdout, Command as OsCommand, Stdio},
-    sync::mpsc::{self, Receiver},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{self, Receiver},
+        Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -351,6 +355,36 @@ impl NodeProcess {
         config: LockConfig,
         mode: &str,
     ) -> Self {
+        Self::spawn_with(cluster_dir, node_id, config, mode, None)
+    }
+
+    /// Spawns one replica whose peer control plane stops being writable after
+    /// `fault_after` client operations.
+    ///
+    /// The one state this suite cannot reach by damaging an artifact from
+    /// outside. A replica that cannot record what it retired must stop serving
+    /// and exit nonzero, and in a cluster whose membership never changes the
+    /// driver's checkpoint epoch stands still after the first write — so no
+    /// later write is attempted, and revoking a permission or filling a disk
+    /// would inject a fault into a call that never happens. The binary carries
+    /// the seam instead, addressed by client operation; see its
+    /// `--control-plane-fault-after` argument.
+    pub fn spawn_with_control_plane_fault(
+        cluster_dir: &Path,
+        node_id: NodeId,
+        config: LockConfig,
+        fault_after: u64,
+    ) -> Self {
+        Self::spawn_with(cluster_dir, node_id, config, "open", Some(fault_after))
+    }
+
+    fn spawn_with(
+        cluster_dir: &Path,
+        node_id: NodeId,
+        config: LockConfig,
+        mode: &str,
+        control_plane_fault_after: Option<u64>,
+    ) -> Self {
         let election_timeout_ticks = ELECTION_TIMEOUT_TICKS
             .iter()
             .find(|(id, _)| *id == node_id)
@@ -386,6 +420,11 @@ impl NodeProcess {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        if let Some(fault_after) = control_plane_fault_after {
+            command
+                .arg("--control-plane-fault-after")
+                .arg(fault_after.to_string());
+        }
 
         let mut child = command
             .spawn()
@@ -641,6 +680,84 @@ fn spawn_lifecycle_reader(stdout: ChildStdout) -> Receiver<String> {
         }
     });
     rx
+}
+
+/// A continuous stream of immediately-answered client requests against one
+/// replica.
+///
+/// **The load a fair loop has to survive.** `STATUS` is the cheapest request
+/// this protocol has — it answers from memory, touches no store, and reaches
+/// neither Raft nor the lock — so a replica that cannot keep serving its
+/// protocol under a flood of them is not being slowed down by work. It is being
+/// starved by a loop that answers clients until they stop asking.
+///
+/// Each connection is strictly sequential, which is what makes the flood
+/// continuous rather than bursty: the next request is written as soon as the
+/// previous answer arrives, so on loopback the replica's job queue is refilled
+/// far faster than its idle poll interval.
+#[derive(Debug)]
+pub struct StatusFlood {
+    stop: Arc<AtomicBool>,
+    answered: Arc<AtomicU64>,
+    threads: Vec<thread::JoinHandle<()>>,
+}
+
+impl StatusFlood {
+    /// Opens `connections` sockets to `addr` and keeps `STATUS` in flight on all
+    /// of them until this is dropped or stopped.
+    pub fn start(addr: SocketAddr, connections: usize) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let answered = Arc::new(AtomicU64::new(0));
+        let mut threads = Vec::new();
+        for _ in 0..connections {
+            let stop = Arc::clone(&stop);
+            let answered = Arc::clone(&answered);
+            threads.push(thread::spawn(move || {
+                // A connection that cannot be opened, or that the replica drops
+                // as it stops, ends this thread rather than failing the test:
+                // the flood is load, and a load generator that panics when its
+                // target legitimately exits would turn every success into a
+                // failure.
+                let Ok(mut conn) = LockConn::connect(addr) else {
+                    return;
+                };
+                while !stop.load(Ordering::Relaxed) {
+                    if conn.request("STATUS").is_err() {
+                        return;
+                    }
+                    answered.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        Self {
+            stop,
+            answered,
+            threads,
+        }
+    }
+
+    /// How many requests this flood has had answered so far.
+    pub fn answered(&self) -> u64 {
+        self.answered.load(Ordering::Relaxed)
+    }
+
+    /// Stops every connection and waits for its thread.
+    pub fn stop(mut self) -> u64 {
+        self.stop.store(true, Ordering::Relaxed);
+        for thread in self.threads.drain(..) {
+            drop(thread.join());
+        }
+        self.answered()
+    }
+}
+
+impl Drop for StatusFlood {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for thread in self.threads.drain(..) {
+            drop(thread.join());
+        }
+    }
 }
 
 /// A submission started but not yet resolved.
@@ -899,6 +1016,40 @@ impl ProcessCluster {
         };
         self.nodes.insert(node_id, process);
         applied
+    }
+
+    /// Starts a replica whose control plane stops being writable after
+    /// `fault_after` client operations, and waits for it to serve.
+    ///
+    /// It opens normally — the fault is armed ahead of it, not at it — so the
+    /// replica really does reach readiness and really is serving when the first
+    /// client operation makes it undurable. That ordering is the point: the
+    /// state under test is a *running* replica that has just learned its next
+    /// restart would forget what it retired, not one that refused to start.
+    ///
+    /// Removed from the cluster on return, like
+    /// [`ProcessCluster::restart_expecting_failure`], because this process is
+    /// going to exit on its own and a later `shutdown` must not try to talk to
+    /// it. The handle is the caller's to drive.
+    #[track_caller]
+    pub fn restart_with_control_plane_fault(
+        &mut self,
+        node_id: NodeId,
+        fault_after: u64,
+    ) -> NodeProcess {
+        assert!(
+            !self.nodes.contains_key(&node_id),
+            "replica {} is still running; kill it before restarting it",
+            node_id.0
+        );
+        let mut process = NodeProcess::spawn_with_control_plane_fault(
+            self.root.path(),
+            node_id,
+            self.config,
+            fault_after,
+        );
+        process.wait_ready();
+        process
     }
 
     /// Restarts a replica that is expected to refuse, and reports how it ended.

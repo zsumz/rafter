@@ -320,6 +320,13 @@ pub struct Replica {
     /// replica keep serving with a control plane it can no longer make durable,
     /// which is the state whose next restart forgets a removal.
     control_plane_failure: Option<String>,
+    /// The client operation from which this replica's control plane is
+    /// undurable, if a fault is armed.
+    ///
+    /// See [`OpenRequest::control_plane_fault_after`].
+    control_plane_fault_after: Option<u64>,
+    /// How many client operations this replica has started.
+    client_operations: u64,
 }
 
 /// Combines a persistence outcome, a carried persistence failure, and an
@@ -346,6 +353,20 @@ fn combine_outcomes(
     }
 }
 
+/// Creates the directories one replica's durable state lives in.
+///
+/// Ahead of the ownership lock, so a first boot has somewhere to take it.
+fn create_replica_directories(directories: &[&Path]) -> Result<(), OpenError> {
+    for directory in directories {
+        std::fs::create_dir_all(directory).map_err(|source| OpenError::Io {
+            operation: "create a replica directory",
+            path: (*directory).to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
 /// Everything opening one replica needs to know.
 ///
 /// A struct rather than eight positional arguments, because two of them are
@@ -369,6 +390,30 @@ pub struct OpenRequest<'a> {
     pub transport: TcpPeerTransport,
     /// The validator this replica refuses inbound frames with.
     pub validator: PeerDirectory,
+    /// The client operation from which this replica's control plane can no
+    /// longer be made durable, if a fault is armed.
+    ///
+    /// **A deterministic fault seam, in the same shape the durable store's
+    /// [`FaultPlan`](rafter_reference_fenced_lock::store::FaultPlan) already
+    /// has and for the same reason.** A test that means to observe what a
+    /// replica does when it cannot record what it retired has to be able to
+    /// produce that state, and the honest ways to produce it from outside — a
+    /// full disk, a revoked directory permission — are not reachable from a test
+    /// that spawns this process, because in a cluster whose membership never
+    /// changes the driver's checkpoint epoch stands still after the first write
+    /// and no later write is attempted at all.
+    ///
+    /// So the fault is armed at a *client operation ordinal* rather than at a
+    /// write ordinal: from the `n`-th operation onward every attempt to make the
+    /// control plane durable fails, and the attempt is made whether or not the
+    /// epoch moved. What is being injected is an artifact this replica can no
+    /// longer write, not one update lost — and a replica in that state must stop
+    /// serving and exit nonzero rather than carry on toward a restart that
+    /// forgets what it retired.
+    ///
+    /// `None` for every replica an operator starts, which is the only value
+    /// [`Config`](super::Config) produces unless the fault argument is given.
+    pub control_plane_fault_after: Option<u64>,
 }
 
 impl Replica {
@@ -391,16 +436,11 @@ impl Replica {
             mode,
             transport,
             validator,
+            control_plane_fault_after,
         } = request;
         let raft_dir = node_dir.join("raft");
         let app_dir = node_dir.join("app");
-        for directory in [node_dir, &raft_dir, &app_dir] {
-            std::fs::create_dir_all(directory).map_err(|source| OpenError::Io {
-                operation: "create a replica directory",
-                path: directory.to_path_buf(),
-                source,
-            })?;
-        }
+        create_replica_directories(&[node_dir, &raft_dir, &app_dir])?;
 
         // Ownership first. Everything below this line assumes this process is
         // the only one publishing into this directory.
@@ -501,6 +541,8 @@ impl Replica {
             refused_frames: 0,
             non_member_frames: 0,
             control_plane_failure: None,
+            control_plane_fault_after,
+            client_operations: 0,
         };
         // The restored checkpoint is written straight back, so the file on disk
         // always describes a driver that has run rather than one that was about
@@ -532,6 +574,17 @@ impl Replica {
     /// is one whose next restart forgets a removal — so it is reported rather
     /// than counted.
     fn persist_control_plane(&mut self) -> Result<(), OpenError> {
+        // Ahead of the epoch comparison, because an armed fault says the
+        // artifact is unwritable rather than that an update was lost; see
+        // [`OpenRequest::control_plane_fault_after`].
+        if self
+            .control_plane_fault_after
+            .is_some_and(|ordinal| self.client_operations >= ordinal)
+        {
+            return Err(OpenError::ControlPlane {
+                detail: String::from("an injected fault makes this checkpoint unwritable"),
+            });
+        }
         let epoch = self.driver.control_plane_checkpoint_epoch();
         if epoch == self.persisted_checkpoint_epoch && self.checkpoint_written {
             return Ok(());
@@ -738,6 +791,7 @@ impl Replica {
         command: rafter_reference_fenced_lock::Command,
         deadline: Instant,
     ) {
+        self.client_operations = self.client_operations.saturating_add(1);
         let started = self.driver.begin_write(command, write_options(&command));
         // Whatever the write did, and before the early return below: starting a
         // write steps the group, and a step routes every membership fact the
@@ -776,6 +830,7 @@ impl Replica {
     ///
     /// Through the driver, for the reason [`Replica::submit`] gives.
     pub fn query(&mut self, ticket: u64, resource: ResourceName, deadline: Instant) {
+        self.client_operations = self.client_operations.saturating_add(1);
         let started = self
             .driver
             .begin_read(LockQuery::GetLock { resource }, ReadOptions::default());
