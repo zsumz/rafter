@@ -25,10 +25,16 @@
 
 mod support;
 
-use rafter::{ConfigurationEntry, ConfigurationId, MembershipSet, NodeConfig};
+use rafter::{
+    AppendEntries, ConfigurationEntry, ConfigurationId, LogEntry, MembershipSet, NodeConfig,
+    SharedEntries,
+};
 use rafter_app::group::RaftGroup;
 use rafter_runtime::DurableRaftNode;
-use rafter_service::{PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver};
+use rafter_service::{
+    AuthenticatedPeerEnvelope, DriverServiceState, PeerControlPlaneCheckpoint,
+    TransportDriverOptions, TransportRaftDriver,
+};
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
     PersistedRaftLogEntry, RaftHardState, RaftHardStateStore, RaftLogSegment,
@@ -94,11 +100,23 @@ fn durable_state(
 /// recovery really does replay both configuration entries, and a change to the
 /// applied floor or the commit floor could silently stop it.
 fn recovered_runtime(configurations: [&[u64]; 2]) -> (DurableRaftNode, Vec<RaftOutput>) {
+    recovered_runtime_for(NodeId(1), &[NodeId(2), NodeId(3)], configurations)
+}
+
+/// The same recovery under a different local replica.
+///
+/// The seam a *local* membership question needs: `service_state` asks what this
+/// driver's own standing in the cluster is, so the replica the effective
+/// narrowing drops has to be the one running the driver.
+fn recovered_runtime_for(
+    node_id: NodeId,
+    peers: &[NodeId],
+    configurations: [&[u64]; 2],
+) -> (DurableRaftNode, Vec<RaftOutput>) {
     let (hard_state_store, log_segment) = durable_state(configurations);
     let (runtime, recovery_outputs) =
         DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
-            NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 5)
-                .expect("test node config is valid"),
+            NodeConfig::new(node_id, peers.to_vec(), 5).expect("test node config is valid"),
             hard_state_store,
             log_segment,
             InMemoryRaftSnapshotStore::new(),
@@ -137,17 +155,33 @@ fn recover_with(
     checkpoint: PeerControlPlaneCheckpoint<u64>,
     configurations: [&[u64]; 2],
 ) -> (Driver, QueueTransport) {
-    let (runtime, recovery_outputs) = recovered_runtime(configurations);
+    recover_node_with(
+        NodeId(1),
+        &[NodeId(2), NodeId(3)],
+        checkpoint,
+        configurations,
+    )
+}
+
+/// The same restart under a chosen local replica.
+fn recover_node_with(
+    node_id: NodeId,
+    peers: &[NodeId],
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
+    configurations: [&[u64]; 2],
+) -> (Driver, QueueTransport) {
+    let (runtime, recovery_outputs) = recovered_runtime_for(node_id, peers, configurations);
     let transport = QueueTransport::default();
     let validator = Validator {
         transport: transport.clone(),
-        authorized: [NodeId(2), NodeId(3), NodeId(4), NodeId(5)]
+        authorized: [NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5)]
             .into_iter()
+            .filter(|authorized| *authorized != node_id)
             .collect(),
         nameable: Nameable::all(),
     };
     let group =
-        RaftGroup::with_applied_index(GROUP, NodeId(1), runtime, recovered_app(), APPLIED_FLOOR);
+        RaftGroup::with_applied_index(GROUP, node_id, runtime, recovered_app(), APPLIED_FLOOR);
     let driver = TransportRaftDriver::with_control_plane_checkpoint(
         group,
         recovery_outputs,
@@ -158,6 +192,62 @@ fn recover_with(
     )
     .expect("a recovered replica opens");
     (driver, transport)
+}
+
+fn principals(node_ids: &[u64]) -> Vec<Principal> {
+    node_ids
+        .iter()
+        .map(|node_id| Principal::for_node(NodeId(*node_id)))
+        .collect()
+}
+
+/// One `AppendEntries` from a leader carrying a configuration it has **not**
+/// committed.
+///
+/// `leader_commit` stays at the recovered commit floor, so the entry appends and
+/// takes effect without the commit index crossing it. That is the whole shape of
+/// a membership change in flight, and the only shape that can move a replica's
+/// effective configuration *below* its committed one.
+fn append_without_committing(
+    to: NodeId,
+    entry: LogEntry,
+) -> AuthenticatedPeerEnvelope<u64, Principal> {
+    AuthenticatedPeerEnvelope {
+        group_id: GROUP,
+        authenticated_peer: Principal::for_node(NodeId(2)),
+        raft_from: NodeId(2),
+        raft_to: to,
+        message: Message::AppendEntries(AppendEntries {
+            term: Term(1),
+            leader_id: NodeId(2),
+            prev_log_index: LogIndex(3),
+            prev_log_term: Term(1),
+            sequence: 1,
+            entries: SharedEntries::from(vec![entry]),
+            leader_commit: LogIndex(3),
+        }),
+    }
+}
+
+/// A frame from `from`, used only to ask whether this driver admits it at all.
+fn a_vote(from: NodeId, to: NodeId) -> AuthenticatedPeerEnvelope<u64, Principal> {
+    AuthenticatedPeerEnvelope {
+        group_id: GROUP,
+        authenticated_peer: Principal::for_node(from),
+        raft_from: from,
+        raft_to: to,
+        message: Message::RequestVote(RequestVote {
+            term: Term(1),
+            candidate_id: from,
+            last_log_index: LogIndex(3),
+            last_log_term: Term(1),
+        }),
+    }
+}
+
+/// The narrowing an in-flight change appends over the recovered log.
+fn narrowing_to_one_and_two() -> LogEntry {
+    LogEntry::configuration(Term(1), stable(3, &[1, 2]))
 }
 
 /// The two configurations an addition-only history commits.
@@ -240,6 +330,102 @@ fn a_second_recovery_from_the_same_durable_state_is_a_no_op() {
         "the second recovery fenced a live member"
     );
     assert_eq!(second.pending_peer_fences(), 0);
+}
+
+/// A second recovery keeps the committed floor an effective narrowing may not
+/// cross.
+///
+/// **The cursor gates a fold, and it was gating an assignment with it.** The
+/// endpoint publication an adoption performs stands at the runtime's commit
+/// index, and on a second recovery that index is exactly where the restored
+/// cursor already sits — so the whole call returned early and the raw committed
+/// membership was never assigned at all. Nothing showed while the effective
+/// configuration agreed with it: the peer set and the inbound check read the
+/// *union* of the two facts, and a union with an empty half is the other half.
+///
+/// A new leader appending an uncommitted narrowing is what separates them. The
+/// committed floor is the whole reason the union exists — an in-flight change
+/// must not de-authorize a replica that is still committed, or the joiner it
+/// needs cannot speak and the change cannot commit — and with the floor empty
+/// the narrowing became authoritative. Nodes 3, 4, and 5 dropped out of the peer
+/// set and were refused inbound while the cluster still had them committed.
+///
+/// The existing second-recovery case cannot catch this. It compares checkpoints
+/// and counts fences, and the raw committed membership is in neither: it is not
+/// a checkpoint field, and losing it retires nothing.
+#[test]
+fn a_second_recovery_keeps_the_committed_floor_an_effective_narrowing_cannot_cross() {
+    let (first, _) = recover_with(PeerControlPlaneCheckpoint::empty(GROUP), ONLY_ADDITIONS);
+    let persisted = first.control_plane_checkpoint();
+    let (second, transport) = recover_with(persisted, ONLY_ADDITIONS);
+
+    second
+        .deliver(append_without_committing(
+            NodeId(1),
+            narrowing_to_one_and_two(),
+        ))
+        .expect("a leader's append is accepted");
+
+    assert_eq!(
+        transport.peer_sets().last().expect("a set was published"),
+        &principals(&[2, 3, 4, 5]),
+        "the narrowing has not committed, so the committed configuration is \
+         still the floor and every replica it names stays authorized"
+    );
+    assert!(
+        matches!(second.deliver(a_vote(NodeId(5), NodeId(1))), Ok(())),
+        "and a frame from a replica the cluster still has committed is admitted"
+    );
+    assert_eq!(
+        second.refused_non_member_frames(),
+        0,
+        "no committed member was turned away"
+    );
+}
+
+/// A second recovery does not make a still-committed local replica a non-member.
+///
+/// The local half of the same loss, and the one a deployment feels first. With
+/// the committed floor empty, an uncommitted narrowing that drops *this* replica
+/// answers `service_state` on its own: the driver reports `NotMember` and every
+/// client surface refuses, so a replica the cluster has not removed stops serving
+/// while the change that would remove it may still be truncated back off the log.
+///
+/// `NotMember` rather than `Decommissioned`, which is the tell: nothing was
+/// spent, no fence was owed, and the mark and live set are exactly right. Only
+/// the raw committed membership went missing.
+#[test]
+fn a_second_recovery_does_not_make_a_still_committed_local_replica_a_non_member() {
+    let peers = [NodeId(1), NodeId(2)];
+    let (first, _) = recover_node_with(
+        NodeId(5),
+        &peers,
+        PeerControlPlaneCheckpoint::empty(GROUP),
+        ONLY_ADDITIONS,
+    );
+    let persisted = first.control_plane_checkpoint();
+    let (second, _transport) = recover_node_with(NodeId(5), &peers, persisted, ONLY_ADDITIONS);
+
+    assert_eq!(
+        second.service_state(),
+        DriverServiceState::Serving,
+        "the recovered replica is a member of the configuration it recovered under"
+    );
+
+    second
+        .deliver(append_without_committing(
+            NodeId(5),
+            narrowing_to_one_and_two(),
+        ))
+        .expect("a leader's append is accepted");
+
+    assert_eq!(
+        second.service_state(),
+        DriverServiceState::Serving,
+        "node 5 is still a committed member: an appended-and-uncommitted removal \
+         is not a removal, and a replica that stops serving for one abandons the \
+         work the cluster still expects of it"
+    );
 }
 
 /// A restart still spends an identity its replayed history admitted and removed.

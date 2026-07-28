@@ -86,7 +86,52 @@ pub(super) enum MembershipFact {
         /// point and a position from another. The retirement diff is licensed by
         /// the pair or by neither.
         through: LogIndex,
+        /// Whether this fact is a point in the stream or the end of it.
+        source: CommittedMembershipSource,
     },
+}
+
+/// Where a committed membership fact came from, which decides what its position
+/// in the stream is evidence *of*.
+///
+/// **The cursor gates a fold, and it was gating an assignment with it.** Both
+/// variants below carry a position and both are gated on it for the retirement
+/// diff, because re-folding a configuration this driver has already consumed
+/// computes a difference between a historical membership and a present one and
+/// calls everything the present added a removal. That much is common.
+///
+/// What is not common is what the *raw* committed membership means. It is read —
+/// by [`TransportDriverState::is_member`], by
+/// [`TransportDriverState::named_members`], by
+/// [`TransportDriverState::readmitted_retired_peers`] — as a statement about the
+/// cluster **now**, and only one of the two variants is one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CommittedMembershipSource {
+    /// A configuration the commit index crossed, at that entry's own index.
+    ///
+    /// History. One point in the stream, which was the present when it happened
+    /// and need not be now: a restart replays every crossing above the
+    /// application's applied floor, oldest first, and each one is older than the
+    /// endpoint the runtime also reports. So a crossing speaks for the present
+    /// only when it is news, and a replayed one assigns nothing.
+    Crossing,
+    /// The committed membership the runtime holds, at its commit index.
+    ///
+    /// The end of the stream, and by construction the cluster's committed
+    /// configuration as it stands. **Its raw membership is therefore assigned
+    /// whatever the cursor says**, because the cursor answers "have I folded
+    /// this retirement in" and never "is this still true".
+    ///
+    /// Conflating the two lost the committed floor on every recovery whose
+    /// restored cursor already covered the runtime's commit index — which is
+    /// every second recovery from one checkpoint, since the first one wrote the
+    /// cursor at exactly that position. Nothing showed while the effective
+    /// configuration agreed with the committed one, because everything derived
+    /// here reads the *union* of the two facts and a union with an empty half is
+    /// the other half. An uncommitted narrowing then had no floor to be held
+    /// above, and de-authorized replicas the cluster still had committed — the
+    /// one thing the union exists to prevent.
+    Endpoint,
 }
 
 impl<G, A, R, T, V> TransportDriverState<G, A, R, T, V>
@@ -141,10 +186,16 @@ where
                 // comparison. Both are positions in the same stream and both are
                 // monotone, so either is a sound cursor: a fact at or below what
                 // this driver has consumed is one it has already folded in.
+                // A crossing, including the app layer's own endpoint comparison:
+                // both are points this replica moved through, and neither is the
+                // runtime's present committed configuration read directly. The
+                // driver gets that from adoption, which is the one publisher
+                // that asks the runtime rather than being told.
                 self.publish_membership(MembershipFact::Committed {
                     committed,
                     effective,
                     through: *index,
+                    source: CommittedMembershipSource::Crossing,
                 });
             }
             // A rejected change never entered the log, and a variant this driver
@@ -218,9 +269,23 @@ where
                 committed,
                 effective,
                 through,
+                source,
             } => {
                 self.effective_members = effective;
-                self.observe_committed_members(committed, through);
+                // **Two operations, and the cursor governs one of them.** The
+                // retirement fold is gated in both directions and for both
+                // sources, because a configuration already folded in must not be
+                // folded again from either end of the stream.
+                let folded = self.observe_committed_members(&committed, through);
+                // The raw floor is a different question. A crossing assigns it
+                // when it is news and stays quiet when it is history; an
+                // endpoint always assigns, because it is what the runtime says
+                // is committed *now* and the cursor has no opinion about that.
+                // See [`CommittedMembershipSource`] for what conflating the two
+                // cost.
+                if folded || source == CommittedMembershipSource::Endpoint {
+                    self.committed_members = committed;
+                }
             }
         }
         self.flush_peer_control_plane();
@@ -243,12 +308,22 @@ where
     /// is what a restart hands this method: the runtime replays every
     /// configuration entry above the application's applied floor, oldest first.
     ///
-    /// The raw committed membership is not assigned on that path either. It is
-    /// the same historical fact by another name, and `readmitted_retired_peers`
-    /// and `is_member` both read it as a statement about the cluster *now*.
-    fn observe_committed_members(&mut self, committed: BTreeSet<NodeId>, through: LogIndex) {
+    /// **Retirement only.** The raw committed membership is the caller's, and
+    /// deliberately: it is not a fold and the cursor does not answer for it. A
+    /// gate that returned early from both made an endpoint standing at or below
+    /// the cursor — an ordinary second recovery — leave the committed floor
+    /// empty. [`CommittedMembershipSource`] carries that distinction, and
+    /// [`TransportDriverState::publish_membership`] applies it to the answer
+    /// below.
+    ///
+    /// Returns whether the fold ran, which is exactly "this fact was news".
+    fn observe_committed_members(
+        &mut self,
+        committed: &BTreeSet<NodeId>,
+        through: LogIndex,
+    ) -> bool {
         if self.committed_configuration_is_replayed(through) {
-            return;
+            return false;
         }
         // Anything the fact names that this driver has already watched leave a
         // committed configuration. Computed against the state *before* the
@@ -291,10 +366,10 @@ where
             || previous_fences != self.pending_fences.len()
             || live != self.live_committed_members;
         self.live_committed_members = live;
-        self.committed_members = committed;
         if checkpoint_moved {
             self.advance_checkpoint_epoch();
         }
+        true
     }
 
     /// Whether a committed removal has already consumed this `(group, NodeId)`.
@@ -705,21 +780,33 @@ where
     /// not discard obligations, which need only the next entry point.
     ///
     /// **This is the endpoint of the stream, so it stands at the commit index
-    /// and is gated like any other committed fact.** The runtime does not
-    /// publish the index of the entry its committed configuration came from, and
-    /// it does not need to: `committed_membership` is by definition the latest
-    /// configuration at or below `commit_index`, so the commit index is a sound
-    /// and monotone position for it. A driver whose cursor already covers that
-    /// position has folded this configuration in and takes no diff.
+    /// and its retirement fold is gated like any other committed fact.** The
+    /// runtime does not publish the index of the entry its committed
+    /// configuration came from, and it does not need to: `committed_membership`
+    /// is by definition the latest configuration at or below `commit_index`, so
+    /// the commit index is a sound and monotone position for it. A driver whose
+    /// cursor already covers that position has folded this configuration in and
+    /// takes no diff.
     ///
     /// The gate is not decoration here. A commit index is *volatile* — a
     /// recovered runtime can legitimately report a lower one than the
-    /// incarnation that wrote the checkpoint had reached — so an ungated
-    /// endpoint would compute a fresh retirement diff between a rebuilt
-    /// runtime's older committed configuration and a restored live set that had
-    /// already moved past it, and retire everything the newer configurations had
-    /// added. That is the same manufactured removal the replay produces,
-    /// arriving through the endpoint instead of through the history.
+    /// incarnation that wrote the checkpoint had reached — so an ungated fold
+    /// would compute a fresh retirement diff between a rebuilt runtime's older
+    /// committed configuration and a restored live set that had already moved
+    /// past it, and retire everything the newer configurations had added. That
+    /// is the same manufactured removal the replay produces, arriving through
+    /// the endpoint instead of through the history.
+    ///
+    /// **What the gate does not cover is the raw committed membership, and that
+    /// is why this fact is tagged [`CommittedMembershipSource::Endpoint`].** The
+    /// cursor answers "have I already folded this retirement in"; it does not
+    /// answer "is this configuration still the cluster's", and the raw floor is
+    /// only ever read as the second question. Gating the assignment on it left
+    /// the floor empty on every second recovery from one checkpoint — the first
+    /// recovery writes the cursor at exactly the commit index the second one
+    /// adopts at — and an empty floor is a union with one half missing, which is
+    /// how an uncommitted narrowing came to de-authorize replicas the cluster
+    /// still had committed.
     pub(super) fn publish_adopted_membership(&mut self) {
         let Some(group) = self.group.as_ref() else {
             return;
@@ -736,6 +823,7 @@ where
             committed,
             effective,
             through,
+            source: CommittedMembershipSource::Endpoint,
         });
     }
 }
