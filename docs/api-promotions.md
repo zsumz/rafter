@@ -9711,9 +9711,38 @@ contradicted instead of refusing. The pre-fix code carried an explicit
 `recorded_contradiction()` check after the replay for that reason; the transaction
 subsumes it, and the coupling is the honest reading of why the check existed.
 
+### Seventeenth revision after adoption (2026-07-28)
 
+A thirteenth external review found one lifecycle hole in the sixteenth
+revision's own terminal state: **a contradiction did not survive a group
+release.** `service_state` answered the empty group slot before the stored
+contradiction, so a released contradicted driver read as an ordinary reusable
+`Released` one; and adoption had no early gate, so the old contradiction
+resurfaced only after the incoming group and node ID were installed — a
+partially adopted group produced by terminal state that predates the adoption,
+which the partial-adoption contract reserves for failures the new group's own
+recovery outputs produce.
 
-## Terminal Driver Vocabulary
+Two changes, one regression that fails against either alone:
+
+- `service_state` reports either contradiction ahead of `Released` — terminal
+  for the incarnation means before and after the group is gone. Shutdown still
+  outranks everything.
+- `adopt_group_with_checkpoint` refuses on the driver's own recorded
+  contradiction before consuming anything of the incoming group, with the new
+  `ManagedDriverError::ControlPlaneContradicted { reason }`. It is deliberately
+  not `InvalidControlPlaneCheckpoint`: nothing offered to the adoption is what
+  is wrong, and an error that blamed the incoming record would send the
+  supervisor to repair the wrong artifact. A supervisor that wants to recover
+  builds a new driver from deliberately repaired or reseeded state; it does not
+  rearm this one.
+
+From the same review, before CI: `membership_claimed_at` derives adjacency
+through `checked_add`, and the predecessor-contradiction display states its
+index instead of computing a successor — a position of `u64::MAX` must not make
+a correctness kernel's answer depend on the build profile. The `NodeId`
+contract and the inbound-admission docs shed the last fence-era prose; both now
+describe the published-policy model.
 
 ### Origin
 
