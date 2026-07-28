@@ -1058,6 +1058,82 @@ fn an_unauthenticated_client_may_claim_any_identity() {
     cluster.shutdown();
 }
 
+/// One line of a checkpoint file, by its leading field name.
+fn checkpoint_line<'a>(text: &'a str, field: &str) -> &'a str {
+    text.lines()
+        .find(|line| line == &field || line.starts_with(&format!("{field} ")))
+        .unwrap_or_else(|| panic!("the checkpoint has no `{field}` line: {text:?}"))
+}
+
+/// The consumer offset a checkpoint records, or `None` if it has consumed
+/// nothing.
+fn checkpoint_cursor(text: &str) -> Option<u64> {
+    match checkpoint_line(text, "through")
+        .strip_prefix("through ")
+        .expect("the `through` line names its field")
+    {
+        "-" => None,
+        value => Some(value.parse().expect("the offset is a log index")),
+    }
+}
+
+/// A replica whose control-plane checkpoint was deleted refuses to open.
+///
+/// **The failure this closes is a deletion that reads as a first boot.** An
+/// absent file used to mean "nothing has been retired here", which is true of a
+/// replica that has never run and false of every other one — so removing one
+/// file downgraded a replica that had been serving for months to a blank
+/// retirement record, and it started cheerfully with no mark, no live set, and
+/// no fence obligations. Every identity the cluster had spent became allocatable
+/// again, and every fence the link layer had refused was forgotten.
+///
+/// The evidence that distinguishes the two is the durable Raft commit floor,
+/// which this replica has because it has been committing this test's own writes.
+/// A directory probe could not answer it: the process creates `raft/` and `app/`
+/// before it writes this file, so a first boot that crashed in its own opening
+/// sequence leaves those behind too.
+///
+/// The refusal is a nonzero exit with the reason on stdout, which is the same
+/// posture the store takes for a slot that should exist and does not.
+#[test]
+#[ignore = "spawns real processes; run with --ignored (see the module docs)"]
+fn a_deleted_control_plane_checkpoint_refuses_to_open_as_a_first_boot() {
+    let mut cluster = ProcessCluster::start("deleted-control-plane", process_config());
+    let leader = cluster.wait_for_leader();
+    let victim = *cluster
+        .live_nodes()
+        .iter()
+        .find(|node_id| **node_id != leader)
+        .expect("a three-replica cluster has a follower");
+
+    cluster.submit_to_leader(open_session(0, 1));
+    cluster.submit_to_leader(submit(0, 1, 1, acquire("vault", 10)));
+    cluster.wait_applied_through(victim, LogIndex(1));
+
+    let checkpoint_path =
+        process::NodeProcess::node_dir(cluster.root(), victim).join("control-plane");
+    cluster.kill(victim);
+    std::fs::remove_file(&checkpoint_path).expect("the replica published one before it was killed");
+
+    let refused = cluster.restart_expecting_failure(victim);
+    assert!(
+        refused.status.code().is_some_and(|code| code != 0),
+        "a replica that lost its retirement record must not start: {refused:?}"
+    );
+    assert!(
+        refused.stdout.contains("FATAL") && refused.stdout.contains("is missing"),
+        "and must say which artifact is gone: {:?}",
+        refused.stdout
+    );
+    assert!(
+        !checkpoint_path.exists(),
+        "the refusal does not regenerate the file it refused over, which would \
+         be the silent forgetting with an extra step"
+    );
+
+    cluster.shutdown();
+}
+
 /// The peer-control-plane checkpoint is durable, and survives a restart.
 ///
 /// Rafter opens no files, so the retirement record and the fence obligations a
@@ -1097,7 +1173,7 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
     let before = std::fs::read_to_string(&checkpoint_path)
         .expect("a serving replica has published its control-plane checkpoint");
     assert!(
-        before.starts_with("rafter-lock-control-plane 2\n"),
+        before.starts_with("rafter-lock-control-plane 3\n"),
         "the file names its own format so a later shape is a refusal: {before:?}"
     );
     assert!(
@@ -1128,6 +1204,8 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
         before.contains("fences\n"),
         "a cluster that removed nobody owes no fence: {before:?}"
     );
+    let consumed_before =
+        checkpoint_cursor(&before).expect("a serving replica records how far it has consumed");
 
     cluster.kill(victim);
     cluster.restart(victim);
@@ -1135,10 +1213,25 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
 
     let after = std::fs::read_to_string(&checkpoint_path)
         .expect("the restarted replica republishes what it restored");
-    assert_eq!(
-        after, before,
-        "the restored driver derived the same control plane it was handed, \
-         rather than starting from nothing"
+    // The retirement record is compared line by line rather than the whole file,
+    // because one line is *expected* to move. The three facts below are what a
+    // restart must not re-derive differently; the consumer offset is a position
+    // in a stream the replica keeps reading, so it advances as the commit index
+    // does and would make a byte comparison assert the opposite of the contract.
+    for fact in ["high_water", "live", "fences"] {
+        assert_eq!(
+            checkpoint_line(&after, fact),
+            checkpoint_line(&before, fact),
+            "the restored driver re-derived `{fact}` differently, rather than \
+             carrying what it was handed:\nbefore {before:?}\nafter  {after:?}"
+        );
+    }
+    let consumed_after = checkpoint_cursor(&after).expect("the restarted replica records one too");
+    assert!(
+        consumed_after >= consumed_before,
+        "the consumer offset went backwards across a restart, which is how a \
+         replay re-derives removals it already folded in: {consumed_before} then \
+         {consumed_after}"
     );
 
     // The replica is a full member again, which is the point of restoring the

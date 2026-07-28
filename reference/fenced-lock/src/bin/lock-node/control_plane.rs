@@ -30,13 +30,41 @@
 //! quietly reinterpreted.
 //!
 //! ```text
-//! rafter-lock-control-plane 2
+//! rafter-lock-control-plane 3
 //! group      <u64>
 //! high_water <u64> | -
 //! live       <u64>*
 //! fences     <u64>*
+//! through    <u64> | -
 //! crc32      <8 hex digits>
 //! ```
+//!
+//! # Version 3, and why an old file is refused rather than migrated
+//!
+//! `through` is the driver's consumer offset into the committed configuration
+//! stream — how far this replica has folded that history in. It arrived with the
+//! field of the same meaning on [`PeerControlPlaneCheckpoint`], and it is the
+//! reason the tag moved from 2 to 3.
+//!
+//! **A version-2 file is refused, and refusing is the honest option rather than
+//! the lazy one.** The obvious migration is to read a version-2 record and
+//! supply `through = -`, meaning "no configuration history consumed". That is a
+//! *lie about a replica that has consumed some*, and it is a lie in the
+//! dangerous direction: with no offset, the next recovery replays every
+//! configuration entry above the applied floor against a live set that already
+//! reflects them, and each one reads as a removal of everything the entries
+//! above it added. The migration would therefore fence live members on the first
+//! restart after the upgrade — precisely the failure the field was added to
+//! close.
+//!
+//! The other candidate, `through = high_water`, is not even type-correct: one is
+//! a `NodeId` and the other a `LogIndex`. There is no honest value to invent,
+//! because the information was genuinely not recorded. Rafter is pre-release and
+//! this composition is an example rather than a deployment, so the cost of
+//! refusing is that an operator deletes a file from a scratch cluster, and the
+//! cost of guessing is a fenced replica in the one artifact whose whole purpose
+//! is to not lose retirement facts. A refusal an operator reads beats a silent
+//! wrong answer.
 //!
 //! The checksum covers every byte before the `crc32` line, which is the whole of
 //! the canonical encoding, and **nothing may follow it**: a file with trailing
@@ -79,10 +107,35 @@
 //! the process loop. The deployment's monotonic `NodeId` allocator remains the
 //! cross-process backstop, exactly as `rafter::NodeId` states.
 //!
-//! # An absent file is a first boot; a damaged one is not repairable here
+//! # An absent file is a first boot only when the replica really is one
 //!
-//! An absent file reads as an empty checkpoint, which is the honest description
-//! of a replica that has retired nothing yet.
+//! An absent file reads as an empty checkpoint **only for a replica whose
+//! durable Raft state proves it has committed nothing**. That qualification is
+//! the whole of the rule, and without it the absence of this file was
+//! indistinguishable from a first boot on a replica that had been running for
+//! months — so deleting one file downgraded a replica to "nothing was ever
+//! retired here" and the process started cheerfully.
+//!
+//! The evidence is the recovered runtime's commit index, taken at
+//! [`load`]'s call site, and it is the right question rather than a convenient
+//! one: retirement is derived from *committed configurations*, so a replica
+//! whose commit index is zero has committed no configuration, retired no
+//! identity, and owes no fence. An empty checkpoint is not a guess for it, it is
+//! the same value the driver would derive anyway.
+//!
+//! Probing the filesystem instead — "does `raft/` exist yet?" — was considered
+//! and is wrong for this composition's layout. [`super::replica::Replica::open`]
+//! creates `raft/` and `app/` and opens both stores *before* it writes this
+//! file, so a genuine first boot that crashed in its own opening sequence leaves
+//! the directories behind with no checkpoint. A directory probe would refuse to
+//! start that replica forever, for a retirement record that never existed.
+//!
+//! This is the store's [`MissingSlot`](rafter_reference_fenced_lock::store::LockStoreError)
+//! posture, in this artifact's own terms: something that should exist and does
+//! not is unreadable rather than absent, and the process refuses with a reason an
+//! operator can act on. A missing checkpoint forgot facts no other artifact
+//! holds, so it is at least as serious as a missing slot — which has a partner
+//! copy and this does not.
 //!
 //! A file that exists and does not verify is a **refusal to open**, and the
 //! process fails closed on it. It is deliberately not offered to the store's
@@ -102,7 +155,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rafter::NodeId;
+use rafter::{LogIndex, NodeId};
 use rafter_reference_fenced_lock::store::crc32;
 use rafter_service::PeerControlPlaneCheckpoint;
 
@@ -112,7 +165,10 @@ use super::replica::{LockGroupId, GROUP_ID};
 const CHECKPOINT_FILE: &str = "control-plane";
 
 /// The format tag, so a later shape is a refusal rather than a misreading.
-const FORMAT_TAG: &str = "rafter-lock-control-plane 2";
+///
+/// Version 3 added `through`. A version-2 file is refused rather than migrated;
+/// the module header says why there is no honest value to invent for it.
+const FORMAT_TAG: &str = "rafter-lock-control-plane 3";
 
 /// Why a checkpoint could not be read or written.
 #[derive(Debug)]
@@ -130,6 +186,18 @@ pub enum CheckpointError {
     /// does not match, trailing bytes after the checksum, a record for another
     /// group, and a record whose own facts contradict each other.
     Malformed { path: PathBuf, detail: String },
+    /// The file is absent from a replica whose durable Raft state says it has
+    /// run before.
+    ///
+    /// Distinct from [`CheckpointError::Malformed`] because the operator's
+    /// question is different: a damaged file is a corruption, and this is a
+    /// *deletion*. It is fatal on the same terms — there is no second copy and
+    /// no way to re-derive what it held — and it is separated so the refusal can
+    /// say which of the two happened.
+    Missing {
+        path: PathBuf,
+        commit_index: LogIndex,
+    },
 }
 
 impl std::fmt::Display for CheckpointError {
@@ -149,6 +217,15 @@ impl std::fmt::Display for CheckpointError {
                 "the control-plane checkpoint at {} is malformed: {detail}",
                 path.display()
             ),
+            Self::Missing { path, commit_index } => write!(
+                formatter,
+                "the control-plane checkpoint at {} is missing, and this replica has \
+                 committed through index {} — so it retired identities whose record \
+                 no other artifact holds; restore the file or reseed this replica \
+                 deliberately",
+                path.display(),
+                commit_index.0
+            ),
         }
     }
 }
@@ -157,19 +234,33 @@ impl std::error::Error for CheckpointError {}
 
 /// Returns the checkpoint this replica last made durable.
 ///
-/// An absent file is a first boot and answers an empty checkpoint, which is what
-/// a driver over empty storage would have derived anyway.
+/// `commit_index` is the recovered runtime's durable commit floor, and it is the
+/// evidence that decides what an *absent* file means. Zero is a replica that has
+/// committed no configuration, so it has retired no identity and owes no fence:
+/// an empty checkpoint is not a guess for it but the same value the driver
+/// derives on its own. Anything above zero is a replica that has run, and an
+/// absent file there is a deleted artifact rather than a first boot — refused,
+/// because there is no second copy and nothing else on disk records what it
+/// held. The module header covers why a directory probe cannot answer this and
+/// the commit floor can.
 ///
 /// # Errors
 ///
-/// Returns an error when the file exists and cannot be read, verified, or
-/// interpreted. Every such refusal is fatal by policy; see the module header for
-/// why this artifact is neither repairable nor regenerable.
-pub fn load(node_dir: &Path) -> Result<PeerControlPlaneCheckpoint<LockGroupId>, CheckpointError> {
+/// Returns [`CheckpointError::Missing`] when the file is absent from a replica
+/// that has committed something, and an error when the file exists and cannot be
+/// read, verified, or interpreted. Every such refusal is fatal by policy; see the
+/// module header for why this artifact is neither repairable nor regenerable.
+pub fn load(
+    node_dir: &Path,
+    commit_index: LogIndex,
+) -> Result<PeerControlPlaneCheckpoint<LockGroupId>, CheckpointError> {
     let path = node_dir.join(CHECKPOINT_FILE);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            if commit_index > LogIndex::ZERO {
+                return Err(CheckpointError::Missing { path, commit_index });
+            }
             return Ok(PeerControlPlaneCheckpoint::empty(GROUP_ID));
         }
         Err(source) => {
@@ -259,6 +350,11 @@ fn encode_body(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> String {
         text.push(' ');
         text.push_str(&node_id.0.to_string());
     }
+    text.push_str("\nthrough ");
+    match checkpoint.committed_configuration_through {
+        Some(index) => text.push_str(&index.0.to_string()),
+        None => text.push('-'),
+    }
     text.push('\n');
     text
 }
@@ -327,6 +423,11 @@ fn decode(text: &str) -> Result<PeerControlPlaneCheckpoint<LockGroupId>, String>
     for value in field(lines.next(), "fences")?.split_whitespace() {
         checkpoint.pending_fences.insert(NodeId(parse_id(value)?));
     }
+    let through = field(lines.next(), "through")?;
+    checkpoint.committed_configuration_through = match through {
+        "-" => None,
+        value => Some(LogIndex(parse_id(value)?)),
+    };
     if lines.next().is_some() {
         return Err("unexpected lines before the checksum".to_owned());
     }
@@ -353,12 +454,32 @@ fn check_invariants(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> Res
             ));
         }
     }
-    if let Some(node_id) = checkpoint
-        .pending_fences
-        .intersection(&checkpoint.live_committed_members)
-        .next()
-    {
-        return Err(format!("{node_id} is fenced and also a live member"));
+    for node_id in &checkpoint.pending_fences {
+        if checkpoint.live_committed_members.contains(node_id) {
+            return Err(format!("{node_id} is fenced and also a live member"));
+        }
+        // Every fence has to sit at or below the mark, because a fence is the
+        // residue of a committed removal and a removal can only have spent an
+        // identity some committed configuration named. An identity *above* the
+        // mark was in no configuration this record saw, so this record cannot
+        // have watched it leave one — and a driver that absorbed the obligation
+        // anyway would raise its mark past a replica another record calls live,
+        // publish that replica, and then fence it forever.
+        match checkpoint.committed_id_high_water {
+            Some(mark) if *node_id <= mark => {}
+            Some(mark) => {
+                return Err(format!(
+                    "{node_id} is fenced and sits above the high-water mark {mark}, \
+                     so no committed removal here spent it"
+                ))
+            }
+            None => {
+                return Err(format!(
+                    "{node_id} is fenced with no high-water mark, so no committed \
+                     configuration here ever named it"
+                ))
+            }
+        }
     }
     Ok(())
 }

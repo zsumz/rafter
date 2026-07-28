@@ -304,6 +304,18 @@ pub enum Started {
     NeedsDecision { line: String, next_mode: String },
 }
 
+/// How a replica that refused to open ended.
+///
+/// Both halves are load-bearing and neither stands alone. The status is the
+/// contract with a supervisor — a refusal that exits zero is read as a clean
+/// stop and restarted into whatever it refused over — and the stdout is what
+/// tells an operator which artifact disagreed.
+#[derive(Debug)]
+pub struct Refusal {
+    pub status: std::process::ExitStatus,
+    pub stdout: String,
+}
+
 /// One `lock-node` process.
 #[derive(Debug)]
 pub struct NodeProcess {
@@ -541,6 +553,36 @@ impl NodeProcess {
             }
         }
         Err(String::from("request failed after one reconnect"))
+    }
+
+    /// Waits for this replica to exit on its own, and reports how it went.
+    ///
+    /// For the refusals that are not [`Started::NeedsDecision`]: a process that
+    /// will not open at all announces `FATAL` and dies rather than reaching
+    /// readiness, so `wait_started` would only ever time out on it. Every line
+    /// the process wrote is collected, because the reader thread runs to EOF and
+    /// the channel closes when the child's stdout does.
+    pub fn wait_refused(&mut self) -> Refusal {
+        let deadline = Instant::now() + WAIT_TIMEOUT;
+        let status = loop {
+            if let Some(status) = self.child.try_wait().expect("the child is waitable") {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "replica {} neither served nor exited; it announced {:?}",
+                self.node_id.0,
+                self.seen
+            );
+            thread::sleep(POLL_INTERVAL);
+        };
+        while let Ok(line) = self.lifecycle.recv_timeout(WAIT_TIMEOUT) {
+            self.seen.push(line);
+        }
+        Refusal {
+            status,
+            stdout: self.seen.join("\n"),
+        }
     }
 
     /// Kills this replica with `SIGKILL` and reaps it.
@@ -857,6 +899,24 @@ impl ProcessCluster {
         };
         self.nodes.insert(node_id, process);
         applied
+    }
+
+    /// Restarts a replica that is expected to refuse, and reports how it ended.
+    ///
+    /// Deliberately not an escalation path. [`ProcessCluster::restart`] escalates
+    /// when a process names the mode that follows, because that refusal has a
+    /// remedy; this is for refusals that do not — a durable artifact is gone, and
+    /// the honest outcome is a process that will not start until somebody
+    /// decides what to do about it. The replica is not added back to the
+    /// cluster, so a later `shutdown` does not try to talk to it.
+    #[track_caller]
+    pub fn restart_expecting_failure(&mut self, node_id: NodeId) -> Refusal {
+        assert!(
+            !self.nodes.contains_key(&node_id),
+            "replica {} is still running; kill it before restarting it",
+            node_id.0
+        );
+        NodeProcess::spawn(self.root.path(), node_id, self.config).wait_refused()
     }
 
     /// Submits one command and waits for its terminal outcome.

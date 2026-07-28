@@ -73,9 +73,19 @@
 //! PEER_LISTENING <id> <peer_addr>  the peer port is published and dialable
 //! READY <id> <client_addr> <applied_index>
 //! LINK <id> dropped=<n> unencodable=<n> refused_chunks=<n> refused_frames=<n> non_member_frames=<n>
-//! STOPPED <id>
+//! CONTROL_PLANE_UNPERSISTED <id> <detail>
+//! STOPPED <id>                     the process stopped cleanly
 //! FATAL <detail>                   followed by a nonzero exit
 //! ```
+//!
+//! `CONTROL_PLANE_UNPERSISTED` and `STOPPED` are mutually exclusive, and that is
+//! the point of the pair. A replica that could not make its peer control plane
+//! durable did not stop cleanly: the record it failed to write is the one no
+//! other artifact holds, so its next start begins by forgetting whatever it
+//! retired. It stops serving at once, prints this line, and the process exits
+//! nonzero through `FATAL` — never through `STOPPED` and exit 0, which a
+//! supervisor would read as a clean stop and restart into exactly that
+//! forgetting.
 //!
 //! `CREATED`, `RECOVERED`, `REPAIRED`, `RESEEDED`, and `NEEDS_DECISION` are the
 //! durable store's recovery report reaching somebody who can act on it. A
@@ -315,7 +325,7 @@ struct Job {
     reply: Sender<String>,
 }
 
-/// Whether the replica exists yet.
+/// Whether the replica exists yet, and whether it will serve again.
 #[derive(Debug)]
 enum State {
     /// The client port is open and every service request is refused while this
@@ -327,6 +337,30 @@ enum State {
     },
     /// The replica is open; readiness is now the replica's own gate.
     Serving(Box<Replica>),
+    /// The replica exists and will not serve again.
+    ///
+    /// **Terminal by policy rather than by exhaustion.** A replica that cannot
+    /// make its peer control plane durable is one whose next restart forgets a
+    /// removal, and that outranks anything it could still do for a client: the
+    /// removals it would forget are permanent, and the client work it is
+    /// refusing will be retried against a replica that can still record what it
+    /// retires.
+    ///
+    /// It is a *state* rather than a flag checked at the next call because of
+    /// where the failure comes from. `submit`, `query`, `poll_pending`, and
+    /// `abandon_waiters` answer their client with a value rather than a
+    /// `Result`, so a persist failure inside one is stored instead of raised —
+    /// and the next call with an error channel of its own is an unbounded number
+    /// of accepted client requests away. Entering this at the top of the loop
+    /// makes the refusal immediate.
+    ///
+    /// The replica is kept rather than dropped so `STATUS` still answers and the
+    /// link counters still reach the `LINK` line. Everything else is refused,
+    /// and `serve` returns the failure, so the process exits nonzero.
+    Failed {
+        replica: Box<Replica>,
+        detail: String,
+    },
 }
 
 fn run(config: &Config) -> Result<(), String> {
@@ -457,7 +491,43 @@ fn serve(
                     Err(error) => return Err(error.to_string()),
                 }
             }
+            // Terminal, and reached only through the arm below. The next pass's
+            // job drain refuses whatever arrived in the meantime, and then this
+            // breaks — so no client request is served after the failure and none
+            // is silently dropped either.
+            State::Failed { .. } => {
+                stopping = true;
+            }
             State::Serving(replica) => {
+                // Before any protocol work this pass, and before the next job
+                // drain. A stored persistence failure is terminal; see
+                // `State::Failed` for why waiting for the next call with an
+                // error channel is waiting too long.
+                if let Some(detail) = replica.control_plane_failure().map(str::to_owned) {
+                    emit(&format!(
+                        "CONTROL_PLANE_UNPERSISTED {} {detail}",
+                        config.node_id.0
+                    ));
+                    replica.abandon_waiters("the replica cannot make its control plane durable");
+                    for answer in replica.take_answers() {
+                        let (ticket, response) = render_answer(answer);
+                        if let Some(reply) = responders.remove(&ticket) {
+                            drop(reply.send(response));
+                        }
+                    }
+                    let State::Serving(replica) = std::mem::replace(
+                        &mut state,
+                        State::Opening {
+                            deadline: now,
+                            next_attempt: now,
+                            announced: true,
+                        },
+                    ) else {
+                        unreachable!("this arm matched `Serving`")
+                    };
+                    state = State::Failed { replica, detail };
+                    continue;
+                }
                 for envelope in link.drain_inbound() {
                     replica.deliver(envelope)?;
                 }
@@ -489,26 +559,36 @@ fn serve(
         }
     }
 
-    let (refused_frames, non_member_frames) = if let State::Serving(replica) = &mut state {
-        replica.abandon_waiters("the replica is shutting down");
-        for answer in replica.take_answers() {
-            let (ticket, response) = render_answer(answer);
-            if let Some(reply) = responders.remove(&ticket) {
-                drop(reply.send(response));
+    // Whatever the terminal state already knows, plus whatever the shutdown
+    // flush discovers. Either one means the same thing and both end the same
+    // way; they differ only in when the replica stopped serving.
+    let mut unpersisted = match &state {
+        State::Failed { detail, .. } => Some(detail.clone()),
+        _ => None,
+    };
+    let (refused_frames, non_member_frames) = match &mut state {
+        State::Serving(replica) => {
+            replica.abandon_waiters("the replica is shutting down");
+            for answer in replica.take_answers() {
+                let (ticket, response) = render_answer(answer);
+                if let Some(reply) = responders.remove(&ticket) {
+                    drop(reply.send(response));
+                }
             }
+            // The shutdown flush has no later entry point to raise it, so the
+            // process says so on its own channel rather than stopping quietly
+            // over a control plane it could not make durable.
+            if let Some(failure) = replica.control_plane_failure() {
+                emit(&format!(
+                    "CONTROL_PLANE_UNPERSISTED {} {failure}",
+                    config.node_id.0
+                ));
+                unpersisted = Some(failure.to_owned());
+            }
+            (replica.refused_frames(), replica.non_member_frames())
         }
-        // The shutdown flush has no later entry point to raise it, so the
-        // process says so on its own channel rather than stopping quietly over a
-        // control plane it could not make durable.
-        if let Some(failure) = replica.control_plane_failure() {
-            emit(&format!(
-                "CONTROL_PLANE_UNPERSISTED {} {failure}",
-                config.node_id.0
-            ));
-        }
-        (replica.refused_frames(), replica.non_member_frames())
-    } else {
-        (0, 0)
+        State::Failed { replica, .. } => (replica.refused_frames(), replica.non_member_frames()),
+        State::Opening { .. } => (0, 0),
     };
     let (dropped, unencodable, refused_chunks) = link.counts();
     emit(&format!(
@@ -517,8 +597,62 @@ fn serve(
          non_member_frames={non_member_frames}",
         config.node_id.0
     ));
+    // Before `STOPPED`, and instead of it: `stop_outcome` returns `Err` for an
+    // unpersisted control plane, and this only announces a clean stop when it
+    // does not.
+    stop_outcome(unpersisted)?;
     emit(&format!("STOPPED {}", config.node_id.0));
     Ok(())
+}
+
+/// What the process reports once the loop has ended.
+///
+/// **`STOPPED` and a nonzero exit are the two mutually exclusive endings, and
+/// which one applies turns on a single fact.** A replica that could not make its
+/// peer control plane durable did not stop cleanly: the record it failed to
+/// write is the one no other artifact holds, so the next start of this replica
+/// begins by forgetting whatever it retired — an identity a committed removal
+/// spent becomes allocatable again, and a fence the link layer refused is never
+/// retried. A supervisor reading exit 0 restarts it into exactly that.
+///
+/// A free function for the reason `replica::combine_outcomes` is one: the rule
+/// is checkable without three processes and a filesystem that can be made to
+/// fail at the one moment that matters.
+fn stop_outcome(unpersisted: Option<String>) -> Result<(), String> {
+    match unpersisted {
+        Some(detail) => Err(format!(
+            "the peer control plane could not be made durable: {detail}"
+        )),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stop_outcome;
+
+    #[test]
+    fn a_clean_stop_is_ok() {
+        assert_eq!(stop_outcome(None), Ok(()));
+    }
+
+    /// An unpersisted control plane ends the process with a reason, which `main`
+    /// turns into `FATAL` and a nonzero exit.
+    ///
+    /// The half that used to be missing: the failure was announced on
+    /// `CONTROL_PLANE_UNPERSISTED` and then the process printed `STOPPED` and
+    /// returned success, so every supervisor that watched the exit code — which
+    /// is every supervisor — saw a clean shutdown.
+    #[test]
+    fn an_unpersisted_control_plane_is_a_failure_with_its_reason() {
+        let outcome = stop_outcome(Some(String::from("no space left on device")));
+        let detail = outcome.expect_err("an unpersisted control plane is not a clean stop");
+        assert!(
+            detail.contains("could not be made durable")
+                && detail.contains("no space left on device"),
+            "the reason reaches the operator: {detail}"
+        );
+    }
 }
 
 /// What handling one client request decided.
@@ -539,7 +673,7 @@ fn handle_job(state: &mut State, config: &Config, job: &Job, ticket: u64) -> Dis
         (Request::Status, State::Opening { .. }) => {
             Disposition::Answered(render_status(false, rafter::Role::Follower, 0, 0, 0, None))
         }
-        (Request::Status, State::Serving(replica)) => {
+        (Request::Status, State::Serving(replica) | State::Failed { replica, .. }) => {
             let (role, term, leader) = replica.status();
             Disposition::Answered(render_status(
                 replica.is_ready(),
@@ -552,6 +686,9 @@ fn handle_job(state: &mut State, config: &Config, job: &Job, ticket: u64) -> Dis
         }
         // Everything below is service, and service is what readiness gates.
         (_, State::Opening { .. }) => Disposition::Answered(String::from("NOTREADY 0 0")),
+        // A terminal refusal rather than `NOTREADY`, because `NOTREADY` invites
+        // a retry against this replica and nothing here will become ready.
+        (_, State::Failed { detail, .. }) => Disposition::Answered(format!("ABANDONED {detail}")),
         (_, State::Serving(replica)) if !replica.is_ready() => Disposition::Answered(format!(
             "NOTREADY {} {}",
             replica.applied_index().0,

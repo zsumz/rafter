@@ -454,9 +454,18 @@ impl Replica {
         // the driver applies it before it derives its first membership fact from
         // the recovered group — a mark of 5 has to beat a reconstructed
         // committed set of {1,2} rather than lose to it.
+        //
+        // The commit floor travels with the call because it is what decides
+        // whether an *absent* file is a first boot or a deleted artifact. It is
+        // read from the recovered runtime rather than probed off the filesystem:
+        // this method creates `raft/` and `app/` before it ever writes the
+        // checkpoint, so their presence proves nothing, while a commit index of
+        // zero proves there is no retirement to have lost.
         let checkpoint =
-            super::control_plane::load(node_dir).map_err(|error| OpenError::ControlPlane {
-                detail: error.to_string(),
+            super::control_plane::load(node_dir, raft.commit_index()).map_err(|error| {
+                OpenError::ControlPlane {
+                    detail: error.to_string(),
+                }
             })?;
 
         // The driver takes the recovery *outputs* rather than an already-applied
