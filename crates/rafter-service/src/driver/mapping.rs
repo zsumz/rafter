@@ -187,6 +187,42 @@ pub enum ControlPlaneCheckpointError {
     /// replica to the link layer and then permanently fences it — which
     /// [`crate::RaftTransport::fence_peer`] cannot undo.
     FenceNamesUnspentIdentity { node_id: NodeId },
+    /// The checkpoint carries retirement state and no consumer offset.
+    ///
+    /// **The one shape that resurrects the replay bug through a valid-looking
+    /// record.** The offset moves with the retirement record and never apart
+    /// from it — every committed fact that touches the mark, the live set, or
+    /// the obligations advances it in the same call — so a record holding the
+    /// one without the other was not produced by a driver.
+    ///
+    /// Absorbed rather than refused, it is worse than a corruption that names
+    /// the wrong replica. Recovery replays every committed configuration above
+    /// the application's applied floor, and with no offset to gate them each one
+    /// is re-folded against a live set that already reflects it: every
+    /// configuration below the last reads as a removal of everything the ones
+    /// above it added, and the replicas the cluster most recently admitted are
+    /// permanently fenced on the first restart.
+    ///
+    /// The variant is separate from [`ControlPlaneCheckpointError::LiveMembersWithoutMark`]
+    /// because the two say different things to an operator holding the file: that
+    /// one is a record whose halves disagree about *identities*, and this one is a
+    /// record that is silent about *how much history it has read*.
+    CommittedStateWithoutCursor,
+    /// The checkpoint carries a consumer offset and no retirement state.
+    ///
+    /// The opposite loss and the quieter one. An offset says "every committed
+    /// configuration through this index has been folded in", so recovery skips
+    /// exactly that history — and with an empty mark and live set beside it,
+    /// there is nothing the history was folded *into*. Every identity the
+    /// skipped configurations spent silently becomes allocatable again, with no
+    /// fence owed for any of them and no later fact to re-derive one from.
+    ///
+    /// Not producible either, and for a reason worth stating rather than
+    /// assuming: a committed configuration always names at least one replica —
+    /// [`rafter::MembershipSet`] refuses an empty voter set — so a driver that
+    /// advanced its cursor raised its mark in the same call. A consumed offset
+    /// beside no mark is a state no correct cluster can put a driver in.
+    CursorWithoutCommittedState,
 }
 
 impl fmt::Display for ControlPlaneCheckpointError {
@@ -211,6 +247,14 @@ impl fmt::Display for ControlPlaneCheckpointError {
                 formatter,
                 "the checkpoint fences {node_id} without ever having seen a committed \
                  configuration that named it"
+            ),
+            Self::CommittedStateWithoutCursor => formatter.write_str(
+                "the checkpoint records what it retired and not how far it read, so a \
+                 recovery would re-fold the whole configuration history against it",
+            ),
+            Self::CursorWithoutCommittedState => formatter.write_str(
+                "the checkpoint records how far it read and nothing it retired, so a \
+                 recovery would skip that history with no record of what it spent",
             ),
         }
     }

@@ -142,12 +142,41 @@ fn a_resealed_contradiction_is_refused() {
             "is fenced and sits above the high-water mark",
         ),
         // The same clause with no mark at all, which is the shape a truncated
-        // record takes.
+        // record takes. It carries an offset because a record that retired
+        // something and read nothing is refused a clause earlier, by the case
+        // below.
         (
             resealed(
-                "rafter-lock-control-plane 3\ngroup 1\nhigh_water -\nlive\nfences 7\nthrough -\n",
+                "rafter-lock-control-plane 3\ngroup 1\nhigh_water -\nlive\nfences 7\nthrough 4\n",
             ),
             "no high-water mark",
+        ),
+        // A final retirement record with no offset. The shape a migration of an
+        // older file would have produced, and the reason there is no honest
+        // value to invent for `through`: recovery re-folds every committed
+        // configuration above the applied floor against a live set that already
+        // reflects them, and fences the replicas most recently admitted.
+        (
+            resealed(
+                "rafter-lock-control-plane 3\ngroup 1\nhigh_water 5\nlive 1 2 5\nfences\nthrough -\n",
+            ),
+            "not how far it read",
+        ),
+        // The opposite separation: an offset with nothing retired behind it, so
+        // recovery skips that history and keeps nothing from it. `LogIndex(0)`
+        // is a real position rather than an absence, so this is a separation and
+        // not a zero standing in for `-`.
+        (
+            resealed(
+                "rafter-lock-control-plane 3\ngroup 1\nhigh_water -\nlive\nfences\nthrough 0\n",
+            ),
+            "names nothing it retired",
+        ),
+        (
+            resealed(
+                "rafter-lock-control-plane 3\ngroup 1\nhigh_water -\nlive\nfences\nthrough 9\n",
+            ),
+            "read through index 9",
         ),
     ];
 

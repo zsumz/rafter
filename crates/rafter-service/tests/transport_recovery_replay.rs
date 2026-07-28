@@ -32,8 +32,8 @@ use rafter::{
 use rafter_app::group::RaftGroup;
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
-    AuthenticatedPeerEnvelope, DriverServiceState, PeerControlPlaneCheckpoint,
-    TransportDriverOptions, TransportRaftDriver,
+    AuthenticatedPeerEnvelope, ControlPlaneCheckpointError, DriverServiceState, ManagedDriverError,
+    PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
@@ -170,6 +170,21 @@ fn recover_node_with(
     checkpoint: PeerControlPlaneCheckpoint<u64>,
     configurations: [&[u64]; 2],
 ) -> (Driver, QueueTransport) {
+    let (opened, transport) = try_recover_node_with(node_id, peers, checkpoint, configurations);
+    (opened.expect("a recovered replica opens"), transport)
+}
+
+/// The same restart, with the refusal left for the caller to inspect.
+///
+/// The transport comes back either way, which is the point: a checkpoint refused
+/// at the door must leave the link layer untouched, and that is only checkable
+/// against the transport the failed open was given.
+fn try_recover_node_with(
+    node_id: NodeId,
+    peers: &[NodeId],
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
+    configurations: [&[u64]; 2],
+) -> (Result<Driver, ManagedDriverError>, QueueTransport) {
     let (runtime, recovery_outputs) = recovered_runtime_for(node_id, peers, configurations);
     let transport = QueueTransport::default();
     let validator = Validator {
@@ -182,16 +197,15 @@ fn recover_node_with(
     };
     let group =
         RaftGroup::with_applied_index(GROUP, node_id, runtime, recovered_app(), APPLIED_FLOOR);
-    let driver = TransportRaftDriver::with_control_plane_checkpoint(
+    let opened = TransportRaftDriver::with_control_plane_checkpoint(
         group,
         recovery_outputs,
         transport.clone(),
         validator,
         TransportDriverOptions::default(),
         checkpoint,
-    )
-    .expect("a recovered replica opens");
-    (driver, transport)
+    );
+    (opened, transport)
 }
 
 fn principals(node_ids: &[u64]) -> Vec<Principal> {
@@ -425,6 +439,111 @@ fn a_second_recovery_does_not_make_a_still_committed_local_replica_a_non_member(
         "node 5 is still a committed member: an appended-and-uncommitted removal \
          is not a removal, and a replica that stops serving for one abandons the \
          work the cluster still expects of it"
+    );
+}
+
+/// A final retirement record with no consumer offset is refused before it can
+/// fence a live member.
+///
+/// **The replay bug, resurrected through a checkpoint shape.** The record here
+/// is exactly what a migration of an older file would produce: the retirement
+/// state this replica really reached — mark 5, every replica the log admitted
+/// still live — beside `through: None`, meaning "no configuration history
+/// consumed". Every field of it is individually plausible and the whole is a
+/// lie, because the state proves history *was* consumed.
+///
+/// Absorbed, it does not merely lose a fact. With no offset to gate them, the
+/// two crossings replay against a live set that already reflects both: the
+/// configuration at index 2 — `{1,2,3,4}` — reads as a removal of node 5, spends
+/// the identity, and owes a permanent fence for a replica the cluster requires.
+/// The log only ever adds, so every retirement derived from it is manufactured.
+///
+/// So the assertion is about *when*. The record is refused at the door, ahead of
+/// the replay and ahead of the first transport call, which is what makes a
+/// damaged file a replica that will not start rather than one this process has
+/// already helped destroy.
+///
+/// This is also the gap between the two layers worth naming: the reference
+/// consumer's decoder refuses its own older file format for precisely this
+/// reason, and until this clause existed the driver accepted the same semantic
+/// shape from any embedder that reached it another way.
+#[test]
+fn a_final_retirement_record_with_no_cursor_is_refused_before_any_transport_call() {
+    let mut final_state = PeerControlPlaneCheckpoint::empty(GROUP);
+    final_state.committed_id_high_water = Some(NodeId(5));
+    final_state.live_committed_members = [NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5)]
+        .into_iter()
+        .collect();
+
+    let (refused, transport) = try_recover_node_with(
+        NodeId(1),
+        &[NodeId(2), NodeId(3)],
+        final_state,
+        ONLY_ADDITIONS,
+    );
+
+    assert!(
+        matches!(
+            refused,
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::CommittedStateWithoutCursor
+            })
+        ),
+        "a record that says what it retired and not how far it read is not a \
+         record a driver wrote: got {:?}",
+        refused.map(|_| "a driver")
+    );
+    assert!(
+        transport.peer_sets().is_empty(),
+        "the refusal landed before the link layer was told anything"
+    );
+    assert!(
+        transport.fence_attempts().is_empty(),
+        "and before it was asked to permanently fence a replica the log only \
+         ever added: {:?}",
+        transport.fence_attempts()
+    );
+}
+
+/// A consumer offset with nothing retired beside it is refused too.
+///
+/// The opposite separation, and the quiet one. The offset says every committed
+/// configuration through index 3 has been folded in, so recovery skips both
+/// crossings — and with no mark and no live set there is nothing they were
+/// folded into. Here the history admits node 5 and removes it again, so the
+/// endpoint carries no trace of it either: absorbed, this record starts a
+/// replica that has forgotten an identity the cluster spent, with no fence owed
+/// and no later fact to re-derive one from.
+///
+/// Refusing costs nothing, because no driver can produce it: a committed
+/// configuration names at least one replica, so a cursor that advanced raised a
+/// mark in the same call.
+#[test]
+fn a_consumer_offset_with_nothing_retired_beside_it_is_refused() {
+    let mut orphaned_cursor = PeerControlPlaneCheckpoint::empty(GROUP);
+    orphaned_cursor.committed_configuration_through = Some(LogIndex(3));
+
+    let (refused, transport) = try_recover_node_with(
+        NodeId(1),
+        &[NodeId(2), NodeId(3)],
+        orphaned_cursor,
+        ADMIT_THEN_REMOVE,
+    );
+
+    assert!(
+        matches!(
+            refused,
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::CursorWithoutCommittedState
+            })
+        ),
+        "an offset with no retirement record behind it skips the history and \
+         keeps nothing from it: got {:?}",
+        refused.map(|_| "a driver")
+    );
+    assert!(
+        transport.peer_sets().is_empty(),
+        "and nothing was published from a record that installs nothing"
     );
 }
 

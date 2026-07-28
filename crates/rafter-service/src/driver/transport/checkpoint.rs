@@ -167,6 +167,16 @@ pub struct PeerControlPlaneCheckpoint<G> {
     /// advances this in the same call and under the same epoch, so the two
     /// cannot be persisted out of step with one another.
     ///
+    /// **That coupling is validated rather than merely documented**, in both
+    /// directions: `None` here means nothing has been retired, and anything
+    /// retired means this is `Some`. A record that breaks it was not written by
+    /// a driver, and each way of breaking it loses a different half of what this
+    /// type exists for — see
+    /// [`ControlPlaneCheckpointError::CommittedStateWithoutCursor`] and
+    /// [`ControlPlaneCheckpointError::CursorWithoutCommittedState`]. An embedder
+    /// with a format of its own should refuse the same two shapes at its own
+    /// decoder, so the refusal names the file rather than the value.
+    ///
     /// `None` rather than zero because `LogIndex(0)` is a real position — the
     /// index before any entry — and "no configuration fact consumed" has to be
     /// distinguishable from "consumed through the bottom of the log".
@@ -241,12 +251,48 @@ impl<G> PeerControlPlaneCheckpoint<G> {
     /// the link layer and then permanently fences it. [`RaftTransport::fence_peer`]
     /// has no inverse, so unlike a stale peer set that is not something a later
     /// flush corrects.
+    ///
+    /// * **The cursor and the retirement record are one record**, so
+    ///   `through == None ⟺ nothing retired`. The field's own documentation
+    ///   already said the two move together and never apart; this is the clause
+    ///   that makes the claim checkable rather than merely stated, and both
+    ///   directions of breaking it are reachable through a damaged or
+    ///   hand-written file.
+    ///
+    ///   The forward direction is the dangerous one and is not subtle: a record
+    ///   holding a final live set with no offset makes recovery replay the whole
+    ///   configuration history against a live set that already reflects it,
+    ///   which fences the replicas the cluster most recently admitted. That is
+    ///   the exact failure the offset was added to close, re-entering through a
+    ///   checkpoint shape instead of through a missing gate.
+    ///
+    ///   The reverse direction is the quiet one — an offset beside no retirement
+    ///   record skips that history and keeps nothing from it — and it is worth
+    ///   saying why refusing it costs nothing. It is not a producible state: a
+    ///   committed configuration always names at least one replica, because
+    ///   [`rafter::MembershipSet`] refuses an empty voter set, so a driver whose
+    ///   cursor advanced raised its mark in the same call. There is no legitimate
+    ///   record this clause turns away.
     fn validate(&self, group: &G) -> Result<(), ControlPlaneCheckpointError>
     where
         G: Ord,
     {
         if &self.group != group {
             return Err(ControlPlaneCheckpointError::ForeignGroup);
+        }
+        // **One record, checked as one.** `committed_configuration_through`
+        // documents that it moves with the retirement record and never apart
+        // from it; until this clause existed, nothing enforced it, and both ways
+        // of breaking it were accepted as ordinary input.
+        let retired_something = self.committed_id_high_water.is_some()
+            || !self.live_committed_members.is_empty()
+            || !self.pending_fences.is_empty();
+        match (self.committed_configuration_through, retired_something) {
+            (None, true) => return Err(ControlPlaneCheckpointError::CommittedStateWithoutCursor),
+            (Some(_), false) => {
+                return Err(ControlPlaneCheckpointError::CursorWithoutCommittedState)
+            }
+            (None, false) | (Some(_), true) => {}
         }
         for node_id in self.live_committed_members.iter().copied() {
             let Some(mark) = self.committed_id_high_water else {
@@ -425,8 +471,15 @@ where
     /// redundancy.** The proof above says it cannot fail — `fences ⊆ spent` is
     /// preserved by the join, because a fence of `a` is in `S_a`, is at or below
     /// `mark_a ≤ mark_join`, and is excluded from `live_join` by construction.
-    /// The property is nonetheless *executed* rather than only argued, because
-    /// the cost is one pass over a cluster-sized set and the thing being
+    /// The cursor coupling is preserved for the same kind of reason: `through`
+    /// is a `max` and the retirement fields are unions or maxima, so a joined
+    /// record has an offset exactly when one of its sides did, and has
+    /// retirement state exactly when one of its sides did — and each side has
+    /// both or neither, the incoming one by validation and the held one by the
+    /// invariant this driver maintains.
+    ///
+    /// The properties are nonetheless *executed* rather than only argued,
+    /// because the cost is one pass over a cluster-sized set and the thing being
     /// protected is a permanent, uninvertible fence on a live replica. A proof
     /// that stops holding because someone edited the join is a proof that fails
     /// silently; this one fails loudly.

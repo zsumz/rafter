@@ -66,6 +66,17 @@
 //! is to not lose retirement facts. A refusal an operator reads beats a silent
 //! wrong answer.
 //!
+//! **The version tag refuses the shape and [`check_invariants`] refuses the
+//! semantics**, and both are needed because they catch it arriving by different
+//! routes. The tag turns away a version-2 *file*; nothing about a tag stops a
+//! well-formed version-3 file whose `through` line has been flipped to `-`, and
+//! that record is the migration this module declined to perform, written by
+//! hand. So the coupling — retirement state and consumer offset are present
+//! together or absent together — is checked as a record invariant here, and
+//! again at [`PeerControlPlaneCheckpoint`] for a value that reached the driver
+//! by another route. Until the driver carried the same clause, it accepted the
+//! exact semantic shape this file's version gate exists to refuse.
+//!
 //! The checksum covers every byte before the `crc32` line, which is the whole of
 //! the canonical encoding, and **nothing may follow it**: a file with trailing
 //! bytes is refused rather than truncated to the part that verified. A checksum
@@ -442,6 +453,36 @@ fn decode(text: &str) -> Result<PeerControlPlaneCheckpoint<LockGroupId>, String>
 /// catch, or that a hand-edited file is being offered. Each one moves a
 /// retirement record in the unsafe direction.
 fn check_invariants(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> Result<(), String> {
+    // **The offset and the retirement record are one record.** A file carrying
+    // one without the other is the same semantic damage the version gate above
+    // refuses a version-2 file for, arriving inside a well-formed version-3
+    // file — a flipped `through` line is syntactically valid and does exactly
+    // this. Checked first, because it is the clause that decides whether the
+    // fields below describe a replica that has read any history at all.
+    let retired_something = checkpoint.committed_id_high_water.is_some()
+        || !checkpoint.live_committed_members.is_empty()
+        || !checkpoint.pending_fences.is_empty();
+    match (
+        checkpoint.committed_configuration_through,
+        retired_something,
+    ) {
+        (None, true) => {
+            return Err(String::from(
+                "the record says what it retired and not how far it read, so a \
+                 recovery would re-fold the whole configuration history against it \
+                 and fence the replicas the cluster most recently admitted",
+            ))
+        }
+        (Some(index), false) => {
+            return Err(format!(
+                "the record says it read through index {} and names nothing it \
+                 retired, so a recovery would skip that history with no record of \
+                 what it spent",
+                index.0
+            ))
+        }
+        (None, false) | (Some(_), true) => {}
+    }
     for node_id in &checkpoint.live_committed_members {
         let Some(mark) = checkpoint.committed_id_high_water else {
             return Err(format!(

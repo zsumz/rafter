@@ -32,12 +32,37 @@ fn ids(node_ids: &[u64]) -> BTreeSet<NodeId> {
     node_ids.iter().copied().map(NodeId).collect()
 }
 
+/// Where a hand-built record has consumed the configuration stream through.
+///
+/// Below the scripted runtime's commit index on purpose, so every adoption's
+/// endpoint publication still folds rather than being skipped as replayed. These
+/// tests are about the identity lattice, and a fixture that gated the
+/// publication away would be measuring the gate instead.
+const CONSUMED_THROUGH: LogIndex = LogIndex(1);
+
 /// A checkpoint built by hand, the way a durable file hands one back.
+///
+/// **The offset travels with the retirement record**, because the two are one
+/// record and a driver never writes one without the other. A helper that left it
+/// out would be building a shape the validator now refuses — which is the point
+/// of `a_record_that_separates_the_cursor_from_what_it_retired_is_refused`
+/// below, and not something every other case here should be quietly asserting.
 fn checkpoint(mark: Option<u64>, live: &[u64], fences: &[u64]) -> PeerControlPlaneCheckpoint<u64> {
+    checkpoint_through(mark, live, fences, Some(CONSUMED_THROUGH))
+}
+
+/// The same, with the consumer offset chosen by the caller.
+fn checkpoint_through(
+    mark: Option<u64>,
+    live: &[u64],
+    fences: &[u64],
+    through: Option<LogIndex>,
+) -> PeerControlPlaneCheckpoint<u64> {
     let mut checkpoint = PeerControlPlaneCheckpoint::empty(GROUP);
     checkpoint.committed_id_high_water = mark.map(NodeId);
     checkpoint.live_committed_members = ids(live);
     checkpoint.pending_fences = ids(fences);
+    checkpoint.committed_configuration_through = through;
     checkpoint
 }
 
@@ -411,6 +436,100 @@ fn a_fence_contradicting_a_live_member_is_refused_before_any_transport_call() {
         !transport.is_fenced(NodeId(7)),
         "node 7 is live in this driver's own committed configuration"
     );
+}
+
+/// A record that separates the cursor from what it retired is refused, both
+/// ways round.
+///
+/// The offset and the retirement record are one record. Each half is
+/// individually well-formed here — every clause the other cases check still
+/// holds — and the pair is a state no driver produces, because every committed
+/// fact that touches the mark, the live set, or the obligations advances the
+/// offset in the same call.
+///
+/// The two directions fail differently and an operator needs to know which. A
+/// final live set with no offset makes the next recovery re-fold the whole
+/// configuration history against a live set that already reflects it, which
+/// permanently fences the replicas the cluster most recently admitted. An offset
+/// with nothing behind it makes recovery *skip* that history and keep nothing
+/// from it, so every identity those configurations spent becomes allocatable
+/// again with no fence owed.
+#[test]
+fn a_record_that_separates_the_cursor_from_what_it_retired_is_refused() {
+    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 4] = [
+        (
+            checkpoint_through(Some(3), &[1, 2, 3], &[], None),
+            ControlPlaneCheckpointError::CommittedStateWithoutCursor,
+        ),
+        // A mark and an obligation with no live set is still retirement state,
+        // so it needs an offset like any other.
+        (
+            checkpoint_through(Some(5), &[], &[5], None),
+            ControlPlaneCheckpointError::CommittedStateWithoutCursor,
+        ),
+        (
+            checkpoint_through(None, &[], &[], Some(LogIndex(3))),
+            ControlPlaneCheckpointError::CursorWithoutCommittedState,
+        ),
+        // `LogIndex(0)` is a real position rather than an absence, which is why
+        // the offset is an `Option` — so this is the same separation and not a
+        // zero standing in for `None`.
+        (
+            checkpoint_through(None, &[], &[], Some(LogIndex(0))),
+            ControlPlaneCheckpointError::CursorWithoutCommittedState,
+        ),
+    ];
+
+    for (damaged, expected) in cases {
+        let (driver, transport) = driver_holding(Some(3), &[1, 2, 3]);
+        let before = driver.control_plane_checkpoint();
+        let fences_before = transport.fence_attempts();
+        let group = driver.release_group().expect("the driver holds a group");
+
+        let refused = driver.adopt_group_with_checkpoint(group, Vec::new(), damaged);
+        let Err(ManagedDriverError::InvalidControlPlaneCheckpoint { reason }) = refused else {
+            panic!("expected a typed checkpoint refusal, got {refused:?}");
+        };
+        assert_eq!(reason, expected);
+        assert_eq!(
+            driver.control_plane_checkpoint(),
+            before,
+            "a refused record moves nothing, so nothing is half-installed"
+        );
+        assert_eq!(
+            transport.fence_attempts(),
+            fences_before,
+            "and the link layer was told nothing on the way to the refusal"
+        );
+    }
+}
+
+/// A driver's own checkpoint keeps the coupling the validator now checks.
+///
+/// The control the clause needs, and the one that would catch it being stated
+/// backwards. Every record this suite feeds back through the join is one a
+/// driver produced, so if the invariant were not maintained by construction the
+/// refusal would be turning away ordinary output rather than damage.
+#[test]
+fn a_driver_that_has_observed_a_configuration_records_both_halves() {
+    let (driver, _transport) = driver_holding(None, &[1, 2, 3]);
+
+    let produced = driver.control_plane_checkpoint();
+    assert!(
+        produced.committed_id_high_water.is_some(),
+        "adoption observed a committed configuration, so it raised the mark"
+    );
+    assert!(
+        produced.committed_configuration_through.is_some(),
+        "and advanced the offset in the same call: {produced:?}"
+    );
+
+    // And the empty record keeps the other side of the biconditional.
+    let empty = PeerControlPlaneCheckpoint::<u64>::empty(GROUP);
+    assert!(empty.committed_id_high_water.is_none());
+    assert!(empty.live_committed_members.is_empty());
+    assert!(empty.pending_fences.is_empty());
+    assert!(empty.committed_configuration_through.is_none());
 }
 
 /// The control: a valid stale record still contributes everything it knows.
