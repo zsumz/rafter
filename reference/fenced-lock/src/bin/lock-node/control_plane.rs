@@ -30,49 +30,55 @@
 //! quietly reinterpreted.
 //!
 //! ```text
-//! rafter-lock-control-plane 4
+//! rafter-lock-control-plane 5
 //! group      <u64>
 //! high_water <u64> | -
+//! through    <u64> | -
 //! live       <u64>*
 //! fences     <u64>*
-//! crossings  <u64> | -
-//! endpoint   <u64> | -
 //! crc32      <8 hex digits>
 //! ```
 //!
-//! # Version 4, and why an old file is refused rather than migrated
+//! # Version 5, and why a version-4 file is refused rather than migrated
 //!
-//! `crossings` and `endpoint` are the driver's two consumer offsets into the
-//! committed configuration stream. They arrived with the fields of the same
-//! meaning on [`PeerControlPlaneCheckpoint`], replacing the single `through` of
-//! version 3, and they are the reason the tag moved from 3 to 4.
+//! `through` and `live` are one fact written on two lines: the committed
+//! membership this replica believes is current, and the log position it was
+//! observed at. They replace version 4's `live` beside its two consumer offsets,
+//! and they are the reason the tag moved from 4 to 5.
 //!
-//! **They are two fields because one number could not say what it was evidence
-//! of.** A crossing is a configuration entry the commit index crossed, carrying
-//! that entry's own index, so consuming it really covers that index. An endpoint
-//! is the committed membership a runtime holds, read at its commit index, for a
-//! move with no entry behind it — and it covers nothing beneath itself. A
-//! replica that recovers from a snapshot at commit 10 honestly records an
-//! endpoint there and knows nothing about what committed and was superseded
-//! below the boundary. Under one offset that record suppressed another
-//! process's real crossings at 6 and 7, so an identity a committed removal spent
-//! was never spent and its fence was never owed.
+//! **The offsets are gone rather than merged.** They existed so a replayed
+//! configuration could be skipped as already-folded, and the driver no longer
+//! needs that: a committed configuration reaches it as a *transition*, so its
+//! removal set is the same wherever it is folded and re-folding one changes
+//! nothing. What is left is the question the offsets were never answering —
+//! which of two observations of the current membership is the later — and that
+//! needs the position to travel *with* the membership rather than beside it.
 //!
-//! **A version-3 file is refused, and refusing is the honest option rather than
-//! the lazy one.** There is no derivable value for the split: a version-3
-//! `through` cannot say which meaning it carried, because the format that wrote
-//! it did not distinguish them. Both migrations are lies and both are dangerous.
-//! Reading it as a crossing offset claims history coverage the record may never
-//! have had, and skips the crossings a recovery replays beneath it — the exact
-//! failure the split closes. Reading it as an endpoint offset leaves the
-//! crossing offset absent, which the invariant below refuses outright for a
-//! record that retired something.
+//! **A version-4 file is refused, and the reason is the same shape as version
+//! 3's: the old field's provenance is unknowable.** It is worth stating
+//! carefully, because the mapping looks obvious and is not. Version 4's `live`
+//! was assigned by a fold of *either* kind while only that kind's own offset
+//! advanced, so neither offset dates it:
 //!
-//! Supplying `-` for both is the same lie version 2 offered, in the other
-//! direction: with no offsets, the next recovery replays every configuration
-//! entry above the applied floor against a live set that already reflects them,
-//! and each one reads as a removal of everything the entries above it added. It
-//! would fence live members on the first restart after the upgrade.
+//! * `through = endpoint` understates it. A driver publishes an endpoint at
+//!   construction and then follows the cluster through crossings, which move
+//!   `live` and leave `endpoint` where it was — the ordinary case, not an exotic
+//!   one. A record whose `live` came from index 7 and whose `endpoint` reads 5
+//!   would be migrated to position 5, and the next runtime observation at 6
+//!   would then outrank it and read everything index 7 had added as removed.
+//! * `through = max(crossings, endpoint)` overstates it. An endpoint at 10
+//!   beside a later-folded crossing at 7 leaves `live` from index 7 under a
+//!   maximum of 10, and a genuine observation at 9 is then treated as older —
+//!   so everything committed between 7 and 9 reads as removed instead.
+//!
+//! Both readings fence live replicas, in opposite directions, and there is no
+//! third: the record simply does not say where its membership was observed. That
+//! is the defect the versioned register exists to fix, so a file written before
+//! the fix cannot describe the state that fixes it.
+//!
+//! Supplying `-` is not available either. A record with no current state and a
+//! mark beside it is the shape the invariant below refuses outright, because a
+//! mark read against no membership spends every identity at or below it.
 //!
 //! Rafter is pre-release and this composition is an example rather than a
 //! deployment, so the cost of refusing is that an operator deletes a file from a
@@ -82,13 +88,12 @@
 //!
 //! **The version tag refuses the shape and [`check_invariants`] refuses the
 //! semantics**, and both are needed because they catch it arriving by different
-//! routes. The tag turns away a version-3 *file*; nothing about a tag stops a
-//! well-formed version-4 file whose `endpoint` line has been flipped to `-`, and
+//! routes. The tag turns away a version-4 *file*; nothing about a tag stops a
+//! well-formed version-5 file whose `through` line has been flipped to `-`, and
 //! that record is a migration this module declined to perform, written by hand.
 //! So the coupling is checked as a record invariant here, and again at
 //! [`PeerControlPlaneCheckpoint`] for a value that reached the driver by another
-//! route. Until the driver carried the same clause, it accepted the exact
-//! semantic shape this file's version gate exists to refuse.
+//! route.
 //!
 //! The checksum covers every byte before the `crc32` line, which is the whole of
 //! the canonical encoding, and **nothing may follow it**: a file with trailing
@@ -174,6 +179,7 @@
 //! decision made with the deployment's own record of what was retired.
 
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -181,7 +187,7 @@ use std::{
 
 use rafter::{LogIndex, NodeId};
 use rafter_reference_fenced_lock::store::crc32;
-use rafter_service::PeerControlPlaneCheckpoint;
+use rafter_service::{CurrentCommittedState, PeerControlPlaneCheckpoint};
 
 use super::replica::{LockGroupId, GROUP_ID};
 
@@ -190,10 +196,11 @@ const CHECKPOINT_FILE: &str = "control-plane";
 
 /// The format tag, so a later shape is a refusal rather than a misreading.
 ///
-/// Version 4 split `through` into `crossings` and `endpoint`. A version-3 file
-/// is refused rather than migrated; the module header says why neither reading
-/// of the old field is honest.
-const FORMAT_TAG: &str = "rafter-lock-control-plane 4";
+/// Version 5 replaced version 4's `live` and its two consumer offsets with one
+/// positioned current state. A version-4 file is refused rather than migrated;
+/// the module header says why no reading of the old fields dates the membership
+/// they carry.
+const FORMAT_TAG: &str = "rafter-lock-control-plane 5";
 
 /// Why a checkpoint could not be read or written.
 #[derive(Debug)]
@@ -365,25 +372,24 @@ fn encode_body(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> String {
         Some(node_id) => text.push_str(&node_id.0.to_string()),
         None => text.push('-'),
     }
+    // The position and the membership are one fact on two lines, and the
+    // position is written first so a reader meets it before the set it dates.
+    text.push_str("\nthrough ");
+    match checkpoint.current_committed.as_ref() {
+        Some(current) => text.push_str(&current.through.0.to_string()),
+        None => text.push('-'),
+    }
     text.push_str("\nlive");
-    for node_id in &checkpoint.live_committed_members {
-        text.push(' ');
-        text.push_str(&node_id.0.to_string());
+    if let Some(current) = checkpoint.current_committed.as_ref() {
+        for node_id in &current.membership {
+            text.push(' ');
+            text.push_str(&node_id.0.to_string());
+        }
     }
     text.push_str("\nfences");
     for node_id in &checkpoint.pending_fences {
         text.push(' ');
         text.push_str(&node_id.0.to_string());
-    }
-    text.push_str("\ncrossings ");
-    match checkpoint.committed_crossings_through {
-        Some(index) => text.push_str(&index.0.to_string()),
-        None => text.push('-'),
-    }
-    text.push_str("\nendpoint ");
-    match checkpoint.committed_endpoint_through {
-        Some(index) => text.push_str(&index.0.to_string()),
-        None => text.push('-'),
     }
     text.push('\n');
     text
@@ -445,16 +451,30 @@ fn decode(text: &str) -> Result<PeerControlPlaneCheckpoint<LockGroupId>, String>
         "-" => None,
         value => Some(NodeId(parse_id(value)?)),
     };
+    let through = position(field(lines.next(), "through")?)?;
+    let mut membership = BTreeSet::new();
     for value in field(lines.next(), "live")?.split_whitespace() {
-        checkpoint
-            .live_committed_members
-            .insert(NodeId(parse_id(value)?));
+        membership.insert(NodeId(parse_id(value)?));
+    }
+    // A membership with no position is not half a fact, it is a fact this format
+    // cannot represent: the two lines are one value, and a reader that accepted
+    // the set alone would have to invent a position to date it by.
+    match through {
+        Some(through) => {
+            checkpoint.current_committed = Some(CurrentCommittedState::new(through, membership));
+        }
+        None if membership.is_empty() => {}
+        None => {
+            return Err(String::from(
+                "the record names live members and no position to date them, so \
+                 nothing says which of two observations of the committed \
+                 membership this one is",
+            ))
+        }
     }
     for value in field(lines.next(), "fences")?.split_whitespace() {
         checkpoint.pending_fences.insert(NodeId(parse_id(value)?));
     }
-    checkpoint.committed_crossings_through = position(field(lines.next(), "crossings")?)?;
-    checkpoint.committed_endpoint_through = position(field(lines.next(), "endpoint")?)?;
     if lines.next().is_some() {
         return Err("unexpected lines before the checksum".to_owned());
     }
@@ -469,56 +489,43 @@ fn decode(text: &str) -> Result<PeerControlPlaneCheckpoint<LockGroupId>, String>
 /// catch, or that a hand-edited file is being offered. Each one moves a
 /// retirement record in the unsafe direction.
 fn check_invariants(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> Result<(), String> {
-    // **The offsets and the retirement record are one record, and the coupling
-    // is not symmetric.** A file carrying one without the other is the same
-    // semantic damage the version gate above refuses a version-3 file for,
-    // arriving inside a well-formed version-4 file — a flipped `endpoint` line
-    // is syntactically valid and does exactly this. Checked first, because it is
-    // the clause that decides whether the fields below describe a replica that
-    // has read any history at all.
+    // **The current state and the retirement record are one record, and the
+    // coupling is a biconditional.** A file carrying one without the other is
+    // the same semantic damage the version gate above refuses a version-4 file
+    // for, arriving inside a well-formed version-5 file — a flipped `through`
+    // line is syntactically valid and does exactly this. Checked first, because
+    // it is the clause that decides whether the fields below describe a replica
+    // that has observed anything at all.
     //
-    // The asymmetry is the driver's, mirrored: every fold raises the mark, and
-    // every driver that folded anything was constructed or adopted — and both
-    // publish an endpoint observation unconditionally. So retirement state
-    // implies the *endpoint* offset specifically, while the crossing offset is
-    // legitimately absent on a replica that recovered from a snapshot or has
-    // only ever seen its own opening configuration. Writing this as "at least
-    // one offset" would accept a crossing offset standing alone with a
-    // retirement record, which no replica produces and whose absorption leaves
-    // the endpoint fold ungated on the next open.
-    let retired_something = checkpoint.committed_id_high_water.is_some()
-        || !checkpoint.live_committed_members.is_empty()
-        || !checkpoint.pending_fences.is_empty();
-    match (checkpoint.committed_endpoint_through, retired_something) {
+    // The driver's derivation, mirrored: every observation of a committed
+    // configuration raises the mark to at least its greatest identity, and
+    // assigns the current state in the same call because a first observation is
+    // always the latest one a record has. Neither can stand alone.
+    let retired_something =
+        checkpoint.committed_id_high_water.is_some() || !checkpoint.pending_fences.is_empty();
+    let live = checkpoint
+        .current_committed
+        .as_ref()
+        .map(|current| &current.membership);
+    match (checkpoint.current_committed.as_ref(), retired_something) {
         (None, true) => {
             return Err(String::from(
-                "the record says what it retired and not where it last observed the \
-                 committed configuration, so a recovery would re-fold the runtime's \
-                 endpoint against it and fence the replicas a rebuilt runtime has \
-                 not caught up to",
+                "the record says what it retired and names no committed membership to \
+                 read it against, so every identity at or below its mark would be \
+                 spent and the replica would refuse the whole cluster",
             ))
         }
-        (Some(index), false) => {
+        (Some(current), false) => {
             return Err(format!(
                 "the record says it observed the committed configuration at index {} \
-                 and names nothing it retired, so a recovery would skip that \
-                 observation with no record of what it spent",
-                index.0
+                 and names no high-water mark, so the observation that produced it \
+                 has been lost along with what it spent",
+                current.through.0
             ))
         }
         (None, false) | (Some(_), true) => {}
     }
-    if let Some(index) = checkpoint.committed_crossings_through {
-        if !retired_something {
-            return Err(format!(
-                "the record says it read the crossing history through index {} and \
-                 names nothing it retired, so a recovery would skip that history with \
-                 no record of what it spent",
-                index.0
-            ));
-        }
-    }
-    for node_id in &checkpoint.live_committed_members {
+    for node_id in live.into_iter().flatten() {
         let Some(mark) = checkpoint.committed_id_high_water else {
             return Err(format!(
                 "live member {node_id} is recorded with no high-water mark"
@@ -531,7 +538,7 @@ fn check_invariants(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> Res
         }
     }
     for node_id in &checkpoint.pending_fences {
-        if checkpoint.live_committed_members.contains(node_id) {
+        if live.is_some_and(|live| live.contains(node_id)) {
             return Err(format!("{node_id} is fenced and also a live member"));
         }
         // Every fence has to sit at or below the mark, because a fence is the
