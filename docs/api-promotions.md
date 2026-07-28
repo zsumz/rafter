@@ -8347,7 +8347,10 @@ still in the current register has a representation gap, because
 
 The window the brief worried about is closed by step 2 rather than by ordering,
 so it is closed on the checkpoint path and the join path as well as within one
-driven step. A contract-violating configuration naming `id` again is refused at
+driven step. Step 2 is *executed* rather than only argued —
+`a_removal_is_absorbed_even_when_a_later_record_still_names_it` — and it had to
+be, because the mutation check found that removing it broke nothing the suite
+was already asserting. A contract-violating configuration naming `id` again is refused at
 step 4 — it is filtered out of the register rather than obeyed, exactly as before
 — and stays countable through the raw floor beside the register.
 
@@ -8561,6 +8564,10 @@ from `transport_cursor_provenance.rs`, whose subject no longer exists):
   `replaying_a_history_over_its_own_record_changes_nothing`,
   `an_observation_behind_the_register_manufactures_no_removal` — the three
   properties the deletion must not have cost, rewritten against the transition.
+- `a_removal_replayed_without_its_admission_is_still_fenced` and
+  `a_removal_is_absorbed_even_when_a_later_record_still_names_it` — **written
+  after the mutation check**, which found the transition and the trap
+  resolution's own step both unguarded. See the mutation table.
 
 New, in `transport_checkpoint_merge.rs`:
 
@@ -8571,44 +8578,68 @@ New, in `transport_checkpoint_merge.rs`:
 
 New, in `adoption.rs`: the four outcome cases above.
 
-Mutation check, on the committed implementation:
+Mutation check, on the committed implementation. Every row was executed; the
+"fails" column is measured rather than predicted, and two rows are here because
+the measurement disagreed with the prediction.
 
 | Neutralized | Fails |
 | --- | --- |
-| `previous` neutralized to the fact's own membership (full-state fold restored) | `an_addition_only_history_retires_nobody_against_a_later_record`, `replaying_a_history_over_its_own_record_changes_nothing`, `a_second_recovery_from_the_same_durable_state_is_a_no_op`, `a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added` |
-| the join's later-state selection replaced by a union of memberships | `two_records_that_jointly_prove_a_removal_spend_the_identity`, `a_stale_checkpoint_cannot_un_spend_a_retired_identity`, `the_join_is_symmetric_in_the_two_records` |
+| the kernel's `previous`, set to the entry's own membership | `final_stable_configuration_commits_with_new_majority_after_joint_commit`, `membership_add_learner_reports_applied_membership`, and all eight of `transport_committed_transition.rs` — the last through the fixture self-check rather than through behavior |
+| the **consumer** ignoring the transition (`crossing(index, membership, membership)`) | `a_removal_replayed_without_its_admission_is_still_fenced`, `a_removal_is_absorbed_even_when_a_later_record_still_names_it` |
+| the join's later-state selection replaced by a union of memberships | `two_records_that_jointly_prove_a_removal_spend_the_identity` |
 | the inferred-removal derivation removed from the join | `two_records_that_jointly_prove_a_removal_spend_the_identity` |
-| the inferred-removal derivation removed from the **fold** | `a_removal_beneath_a_later_record_is_still_spent_and_fenced` |
+| the inferred-removal derivation removed from the **fold** | 22 cases across `transport_identity.rs`, `transport_membership.rs` and `transport_committed_transition.rs` |
 | `removed ∖ spent` weakened to `removed` | `a_replayed_removal_owes_exactly_one_fence` |
-| the removal subtracted only when the fact is later (step 2 of the trap proof) | `a_removal_beneath_a_later_record_is_still_spent_and_fenced` |
+| the removal absorbed only when the fact is later (step 2 of the trap proof) | `a_removal_is_absorbed_even_when_a_later_record_still_names_it` |
 | the adoption publication put back behind `?` | `a_failed_adoption_still_publishes_what_the_installed_group_requires` |
-| the spent test read *after* the mark is raised | almost everything — `a_driver_that_has_observed_a_configuration_records_its_current_state` first |
+| the spent test read *after* the mark is raised | `a_readmitted_retired_replica_is_refused_and_its_fence_stays_owed`, `a_readmitted_retired_replica_never_asks_for_an_unfence`, `a_replayed_removal_owes_exactly_one_fence`, `an_id_allocated_into_a_gap_below_the_high_water_mark_is_refused`, `the_join_is_order_free_across_three_records`, `the_retired_local_id_stays_refused_when_a_later_membership_names_it` |
 | equal-position refusal downgraded to "take either" | `two_records_that_disagree_at_one_position_are_refused` |
 
-**Three near-misses.**
+**Two rows are here because the mutation check found the suite unguarded**, and
+both were written after it rather than before. That is the finding worth
+recording: each is the load-bearing half of a claim this revision makes, and each
+looked covered.
 
-The first is the one that cost the most time. Neutralizing `previous` does *not*
-fail `a_removal_beneath_a_later_record_is_still_spent_and_fenced`, which is the
-test the twelfth revision wrote for the provenance defect and the obvious one to
-reach for. There the first crossing introduces node 5, so a state-difference fold
-computes an empty removal and the second crossing computes the genuine one — the
-right answer by accident. Only an **addition-only** history separates the two
-readings. A reviewer who kept the existing regression and added no new fixture
-would have concluded the transition was covered.
+- **The transition, neutralized at the consumer, failed nothing.** Everywhere the
+  admission crossing is replayed beside the removal, the removal is already
+  derivable by comparing the admission's membership against a record that no
+  longer names the identity — so the inference covered every case and the
+  kernel's exactness looked free. It is not. An applied floor that lands
+  *between* the admission and the removal replays only the removal, whose
+  membership is exactly what the record already names, and the inference has
+  nothing to compare. Without `previous` the identity still becomes spent, and no
+  fence is ever owed.
+- **The trap resolution's own step failed nothing.** Subtracting a removal from
+  the register only when the fact is the later observation passes every case,
+  because no fixture had a later record that still named a removed identity. That
+  shape is reachable exactly when the single-use contract is already broken,
+  which is the condition the spent-and-refused path exists for.
 
-The second: removing the inferred-removal derivation from the fold fails only
-`a_removal_beneath_a_later_record_is_still_spent_and_fenced`, and it is easy to
-read that as redundant with the transition's own removal set. It is not. When a
-crossing raises the mark past an identity the register does not name, that
-identity becomes spent *by the mark alone* — and the fence must be derived in the
-same call or it is never owed. The inference is what pairs them.
+**Three near-misses**, all of the same kind: a neighbouring mechanism answering
+correctly for the wrong reason.
 
-The third: the trap-proof mutation (subtract the removal only when the fact is
-later) fails the same single test, and passes every checkpoint-join case. The
-join filters by both sides' spent sets and so closes the gap by a different
-route; only a *fold* of a removal beneath a later register exposes it. A build
-that fixed the join and kept the conditional subtraction would look correct
-across the whole merge suite.
+The first is the kernel row. Neutralizing `previous` fails the whole transition
+suite, and every one of those failures is the fixture's own self-check on the
+kernel's output rather than a statement about the driver. A build that changed
+the fixture's expectation to match would leave the behavioral coverage resting
+entirely on the two rows below it.
+
+The second: the join's later-state selection, replaced by a union, fails only
+`two_records_that_jointly_prove_a_removal_spend_the_identity`. It does **not**
+fail `a_stale_checkpoint_cannot_un_spend_a_retired_identity` or
+`the_join_is_symmetric_in_the_two_records`, which were predicted and which are
+the obvious join regressions. The `already_spent` filter catches those on its
+own, whatever the selection rule does — so the two cases that look like they
+cover the register's ordering are covering the spent filter instead.
+
+The third: removing the inferred-removal derivation from the fold fails 22 cases,
+which reads as thorough coverage and is mostly one cause. Almost all of them are
+ordinary committed removals routed through the event stream, where the endpoint's
+comparison against the register *is* the removal. Only
+`a_record_above_unseen_history_still_folds_it` and
+`a_removal_beneath_a_later_record_is_still_spent_and_fenced` exercise the
+inference against a record standing later, which is the case the derivation was
+added for.
 
 ## Terminal Driver Vocabulary
 
