@@ -13,7 +13,8 @@ fn sample() -> PeerControlPlaneCheckpoint<LockGroupId> {
     checkpoint.committed_id_high_water = Some(NodeId(5));
     checkpoint.live_committed_members = [NodeId(1), NodeId(2)].into_iter().collect();
     checkpoint.pending_fences = [NodeId(5)].into_iter().collect();
-    checkpoint.committed_configuration_through = Some(LogIndex(11));
+    checkpoint.committed_crossings_through = Some(LogIndex(9));
+    checkpoint.committed_endpoint_through = Some(LogIndex(11));
     checkpoint
 }
 
@@ -45,12 +46,16 @@ fn a_flipped_bit_in_any_field_is_refused_by_the_checksum() {
         ("fences 5", "fences  "),
         // The group binding, moved to another group's identities.
         ("group 1", "group 9"),
-        // The consumer offset, rewound — the corruption that replays committed
+        // The crossing offset, rewound — the corruption that replays committed
         // configuration history the driver has already folded in, which
         // manufactures a removal for everything the later entries added.
-        ("through 11", "through 4"),
+        ("crossings 9", "crossings 4"),
+        // The endpoint offset, rewound — the same rewind through the other
+        // position, which re-folds a runtime's endpoint against a live set that
+        // has moved past it.
+        ("endpoint 11", "endpoint 4"),
         // The version tag.
-        ("control-plane 3", "control-plane 4"),
+        ("control-plane 4", "control-plane 5"),
     ];
 
     for (from, to) in corruptions {
@@ -111,7 +116,7 @@ fn a_resealed_contradiction_is_refused() {
         // mark-less record spends nothing at all.
         (
             resealed(
-                "rafter-lock-control-plane 3\ngroup 1\nhigh_water -\nlive 1 2\nfences\nthrough 4\n",
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water -\nlive 1 2\nfences\ncrossings 4\nendpoint 4\n",
             ),
             "no high-water mark",
         ),
@@ -119,7 +124,7 @@ fn a_resealed_contradiction_is_refused() {
         // shape a lowered mark produces.
         (
             resealed(
-                "rafter-lock-control-plane 3\ngroup 1\nhigh_water 2\nlive 1 2 5\nfences\nthrough 4\n",
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water 2\nlive 1 2 5\nfences\ncrossings 4\nendpoint 4\n",
             ),
             "above the high-water mark",
         ),
@@ -127,7 +132,7 @@ fn a_resealed_contradiction_is_refused() {
         // permanently fence a replica the group still needs.
         (
             resealed(
-                "rafter-lock-control-plane 3\ngroup 1\nhigh_water 5\nlive 1 2\nfences 2\nthrough 4\n",
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water 5\nlive 1 2\nfences 2\ncrossings 4\nendpoint 4\n",
             ),
             "fenced and also a live member",
         ),
@@ -137,46 +142,63 @@ fn a_resealed_contradiction_is_refused() {
         // replica another record still calls live, publish it, and fence it.
         (
             resealed(
-                "rafter-lock-control-plane 3\ngroup 1\nhigh_water 5\nlive 1 2\nfences 7\nthrough 4\n",
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water 5\nlive 1 2\nfences 7\ncrossings 4\nendpoint 4\n",
             ),
             "is fenced and sits above the high-water mark",
         ),
         // The same clause with no mark at all, which is the shape a truncated
-        // record takes. It carries an offset because a record that retired
-        // something and read nothing is refused a clause earlier, by the case
-        // below.
+        // record takes. It carries offsets because a record that retired
+        // something and observed nothing is refused a clause earlier, by the
+        // case below.
         (
             resealed(
-                "rafter-lock-control-plane 3\ngroup 1\nhigh_water -\nlive\nfences 7\nthrough 4\n",
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water -\nlive\nfences 7\ncrossings 4\nendpoint 4\n",
             ),
             "no high-water mark",
         ),
-        // A final retirement record with no offset. The shape a migration of an
-        // older file would have produced, and the reason there is no honest
-        // value to invent for `through`: recovery re-folds every committed
-        // configuration above the applied floor against a live set that already
-        // reflects them, and fences the replicas most recently admitted.
+        // A final retirement record with no endpoint offset. The shape a
+        // migration of an older file would have produced, and the reason there
+        // is no honest value to invent: with the endpoint fold ungated, the next
+        // open re-folds the runtime's committed configuration against a live set
+        // that has moved past it and fences what the newer configurations added.
         (
             resealed(
-                "rafter-lock-control-plane 3\ngroup 1\nhigh_water 5\nlive 1 2 5\nfences\nthrough -\n",
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water 5\nlive 1 2 5\nfences\ncrossings 4\nendpoint -\n",
             ),
-            "not how far it read",
+            "not where it last observed",
         ),
-        // The opposite separation: an offset with nothing retired behind it, so
-        // recovery skips that history and keeps nothing from it. `LogIndex(0)`
-        // is a real position rather than an absence, so this is a separation and
-        // not a zero standing in for `-`.
+        // The same record with neither offset, which is what supplying `-` for
+        // both during a migration would produce.
         (
             resealed(
-                "rafter-lock-control-plane 3\ngroup 1\nhigh_water -\nlive\nfences\nthrough 0\n",
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water 5\nlive 1 2 5\nfences\ncrossings -\nendpoint -\n",
+            ),
+            "not where it last observed",
+        ),
+        // The opposite separation: an endpoint offset with nothing retired
+        // behind it, so recovery skips that observation and keeps nothing from
+        // it. `LogIndex(0)` is a real position rather than an absence, so this
+        // is a separation and not a zero standing in for `-`.
+        (
+            resealed(
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water -\nlive\nfences\ncrossings -\nendpoint 0\n",
             ),
             "names nothing it retired",
         ),
         (
             resealed(
-                "rafter-lock-control-plane 3\ngroup 1\nhigh_water -\nlive\nfences\nthrough 9\n",
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water -\nlive\nfences\ncrossings -\nendpoint 9\n",
             ),
-            "read through index 9",
+            "observed the committed configuration at index 9",
+        ),
+        // The same emptiness through the crossing offset. It needs a clause of
+        // its own: with no endpoint offset beside it, the endpoint biconditional
+        // is satisfied by both sides being absent and says nothing about this.
+        (
+            resealed(
+                "rafter-lock-control-plane 4\ngroup 1\nhigh_water -\nlive\nfences\ncrossings 9\nendpoint -\n",
+            ),
+            "read the crossing history through index 9",
         ),
     ];
 
@@ -189,22 +211,32 @@ fn a_resealed_contradiction_is_refused() {
     }
 }
 
-/// A version-2 file is refused rather than migrated.
+/// An older file is refused rather than migrated, whichever older version it is.
 ///
-/// The record is otherwise well formed and would have verified under the build
-/// that wrote it. It is refused because there is no honest value to invent for
-/// `through`: supplying "nothing consumed" tells the next recovery to replay
-/// every committed configuration above the applied floor against a live set that
-/// already reflects them, which fences live members. See the module header.
+/// Each record is otherwise well formed and would have verified under the build
+/// that wrote it. They are refused because no honest value can be invented for
+/// what they do not record. A version-2 file has no offset at all, and supplying
+/// "nothing consumed" tells the next recovery to replay every committed
+/// configuration above the applied floor against a live set that already
+/// reflects them. A version-3 file has one offset that cannot say which of the
+/// two meanings it carried, and both readings are wrong in a different
+/// direction. See the module header.
 #[test]
-fn a_version_two_file_is_refused_rather_than_migrated() {
-    let text = resealed("rafter-lock-control-plane 2\ngroup 1\nhigh_water 7\nlive 1 3\nfences 7\n");
-    let refused = decode(&text).expect_err("an older format is not this format");
-    assert!(
-        refused.contains("rafter-lock-control-plane 3")
-            && refused.contains("rafter-lock-control-plane 2"),
-        "the refusal should name both versions: {refused}"
-    );
+fn an_older_file_is_refused_rather_than_migrated() {
+    let older = [
+        resealed("rafter-lock-control-plane 2\ngroup 1\nhigh_water 7\nlive 1 3\nfences 7\n"),
+        resealed(
+            "rafter-lock-control-plane 3\ngroup 1\nhigh_water 7\nlive 1 3\nfences 7\nthrough 12\n",
+        ),
+    ];
+
+    for text in older {
+        let refused = decode(&text).expect_err("an older format is not this format");
+        assert!(
+            refused.contains("rafter-lock-control-plane 4"),
+            "the refusal should name the version this build reads: {refused}"
+        );
+    }
 }
 
 /// The control: a record that verifies and is consistent is accepted whole.
@@ -213,7 +245,7 @@ fn a_version_two_file_is_refused_rather_than_migrated() {
 #[test]
 fn a_sealed_consistent_record_is_accepted() {
     let text = resealed(
-        "rafter-lock-control-plane 3\ngroup 1\nhigh_water 7\nlive 1 3\nfences 7\nthrough 12\n",
+        "rafter-lock-control-plane 4\ngroup 1\nhigh_water 7\nlive 1 3\nfences 7\ncrossings 9\nendpoint 12\n",
     );
     let decoded = decode(&text).expect("a well-formed record");
     assert_eq!(decoded.committed_id_high_water, Some(NodeId(7)));
@@ -223,10 +255,33 @@ fn a_sealed_consistent_record_is_accepted() {
     );
     assert_eq!(decoded.pending_fences, [NodeId(7)].into_iter().collect());
     assert_eq!(
-        decoded.committed_configuration_through,
-        Some(LogIndex(12)),
-        "the consumer offset survives the round trip that matters"
+        decoded.committed_crossings_through,
+        Some(LogIndex(9)),
+        "the crossing offset survives the round trip that matters"
     );
+    assert_eq!(
+        decoded.committed_endpoint_through,
+        Some(LogIndex(12)),
+        "and so does the endpoint offset, which is a different position"
+    );
+}
+
+/// A record with an endpoint offset and no crossing offset is accepted.
+///
+/// **The shape the split exists to carry, and the one a symmetric invariant
+/// would refuse.** A replica that recovered from a snapshot folded the boundary
+/// configuration at its commit index and no configuration entry at all, so it
+/// has an endpoint offset, a mark, a live set — and nothing honest to put in
+/// `crossings`. Leaving it `-` is what lets a later recovery replay the
+/// crossings this record never saw.
+#[test]
+fn an_endpoint_only_record_is_accepted() {
+    let text = resealed(
+        "rafter-lock-control-plane 4\ngroup 1\nhigh_water 3\nlive 1 2 3\nfences\ncrossings -\nendpoint 10\n",
+    );
+    let decoded = decode(&text).expect("a snapshot-recovered replica writes exactly this");
+    assert_eq!(decoded.committed_crossings_through, None);
+    assert_eq!(decoded.committed_endpoint_through, Some(LogIndex(10)));
 }
 
 /// An absent file is a first boot only for a replica that has committed
