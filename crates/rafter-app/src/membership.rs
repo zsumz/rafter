@@ -95,11 +95,29 @@ pub struct MembershipChangeReport<G> {
 
 /// Membership side effects observed by a manual group driver.
 ///
-/// Two facts and a refusal. The two facts are reported separately because a
-/// consumer may do opposite things with them: an effective configuration may
-/// still be uncommitted and may still be taken back, so it may only *widen* a
-/// peer set; a committed one is the only fact that licenses narrowing it or
-/// fencing what left.
+/// Three facts and a refusal, and every one of them is a different *kind* of
+/// evidence. An effective configuration may still be uncommitted and may still
+/// be taken back, so it may only *widen* a peer set; a committed one is the only
+/// fact that licenses narrowing it or fencing what left; and the two committed
+/// facts differ in what their position in the log is evidence *of*.
+///
+/// **That last split is the newest and the least obvious.** A committed fact is
+/// read by a consumer in two ways at once — "what does the cluster have
+/// committed" and "how far through the committed configuration stream am I" —
+/// and only one of the two variants below answers the second question. An
+/// [`MembershipEvent::Applied`] carries the index of the configuration entry it
+/// crossed, so consuming it really does cover that point in the stream. A
+/// [`MembershipEvent::CommittedEndpoint`] carries the commit index and covers
+/// **nothing beneath itself**: a replica that installs a snapshot at commit 10
+/// learns the boundary configuration and learns nothing about the configurations
+/// that committed and were superseded below it.
+///
+/// A consumer that kept one position for both therefore claimed history coverage
+/// it never had, and skipped the real crossings a *later* recovery replayed
+/// beneath it — so an identity a committed removal spent was never spent locally
+/// and its fence was never owed. The two facts are separate variants for the
+/// same reason the effective and committed halves are: they license different
+/// conclusions, and a consumer that cannot tell them apart draws the wrong one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum MembershipEvent<G> {
@@ -125,7 +143,7 @@ pub enum MembershipEvent<G> {
         term: Term,
         membership: MembershipConfig,
     },
-    /// The configuration the cluster has committed changed.
+    /// The commit index crossed this exact configuration entry.
     ///
     /// **One of these per configuration the commit index crossed, in index
     /// order, and not one per step.** A step can commit several configurations
@@ -137,19 +155,46 @@ pub enum MembershipEvent<G> {
     /// difference of endpoints reports nothing at all while an identity was
     /// consumed in the middle.
     ///
-    /// `index` and `term` name the configuration entry that carried the
-    /// membership, whenever the kernel could name one. Two moves cannot be
-    /// attributed to an entry — a snapshot install, whose boundary configuration
-    /// replaces the state machine, and a group opened over a runtime whose
-    /// commit index had already moved — and those carry the commit index and its
-    /// term as an observation point instead. Either way the events of one report
-    /// are in nondecreasing `index` order.
-    ///
-    /// A snapshot install therefore reports the boundary configuration and
-    /// nothing about the configurations that committed and were superseded below
-    /// it: those are not in the snapshot, and no replica can reconstruct them
-    /// locally. See [`crate::snapshot::SnapshotEvent::Apply`].
+    /// **`index` and `term` name the configuration entry itself, always.** That
+    /// is what separates this variant from
+    /// [`MembershipEvent::CommittedEndpoint`] and what makes the index usable as
+    /// a position in the committed configuration stream: a consumer that has
+    /// taken this fact has genuinely covered `index`, so a later replay of the
+    /// same entry is history it may skip. The variant used to carry the commit
+    /// index instead whenever the kernel could not name an entry, which made the
+    /// two provenances indistinguishable and the position a claim no consumer
+    /// could check.
     Applied {
+        group_id: G,
+        index: LogIndex,
+        term: Term,
+        membership: MembershipConfig,
+    },
+    /// The committed configuration now stands here, with no crossing to replay.
+    ///
+    /// The end of the stream rather than a point in it, and the two moves that
+    /// produce it are exactly the two the kernel cannot attribute to an entry: a
+    /// snapshot install, whose boundary configuration replaces the state
+    /// machine, and a group opened over a runtime whose commit index had already
+    /// moved. Both are real committed facts — they authorized replicas and spent
+    /// identities — and both are reported, because a consumer that missed them
+    /// would keep publishing a configuration the cluster has left behind.
+    ///
+    /// **`index` and `term` are an observation point, and the index covers
+    /// nothing beneath itself.** It is this replica's commit index when the
+    /// comparison ran, which is a sound and monotone position *for this fact*
+    /// and evidence of nothing about the configurations below it. A snapshot
+    /// install reports the boundary configuration and nothing about what
+    /// committed and was superseded below it: those are not in the snapshot, and
+    /// no replica can reconstruct them locally. See
+    /// [`crate::snapshot::SnapshotEvent::Apply`].
+    ///
+    /// So a consumer that keeps a position in the committed configuration stream
+    /// must keep this one **apart from** the position it advances for
+    /// [`MembershipEvent::Applied`], and must never let this one suppress a
+    /// crossing. The events of one report are still in nondecreasing `index`
+    /// order, and this one is last when it appears at all.
+    CommittedEndpoint {
         group_id: G,
         index: LogIndex,
         term: Term,

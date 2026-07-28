@@ -131,6 +131,9 @@ where
     | MembershipEvent::Applied {
         group_id: actual, ..
     }
+    | MembershipEvent::CommittedEndpoint {
+        group_id: actual, ..
+    }
     | MembershipEvent::Rejected {
         group_id: actual, ..
     }) = event

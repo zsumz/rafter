@@ -76,9 +76,24 @@ fn replicated_frame() -> GroupInput<u64, Vec<u8>> {
 fn effective_voters(event: &MembershipEvent<u64>) -> Vec<NodeId> {
     match event {
         MembershipEvent::EffectiveChanged { membership, .. }
-        | MembershipEvent::Applied { membership, .. } => membership.replica_ids(),
+        | MembershipEvent::Applied { membership, .. }
+        | MembershipEvent::CommittedEndpoint { membership, .. } => membership.replica_ids(),
         other => panic!("expected a membership configuration event, got {other:?}"),
     }
+}
+
+/// Whether an event is one of the two committed facts.
+///
+/// **This file asks whether the committed fact is reported at all**, and both
+/// variants are that fact. Which one a case produces is decided by whether the
+/// kernel could name a configuration entry for the move, so pinning the variant
+/// here would pin the fixture's runtime rather than the stream's completeness.
+/// The cases that turn on provenance say so in their own names.
+fn is_committed_fact(event: &MembershipEvent<u64>) -> bool {
+    matches!(
+        event,
+        MembershipEvent::Applied { .. } | MembershipEvent::CommittedEndpoint { .. }
+    )
 }
 
 /// A follower that receives a configuration entry by replication reports it.
@@ -186,10 +201,7 @@ fn one_step_that_moves_both_facts_reports_both() {
         report.membership_events[0]
     );
     assert!(
-        matches!(
-            &report.membership_events[1],
-            MembershipEvent::Applied { .. }
-        ),
+        is_committed_fact(&report.membership_events[1]),
         "and the committed one after it, got {:?}",
         report.membership_events[1]
     );
@@ -225,10 +237,7 @@ fn a_local_request_that_commits_immediately_still_reports_the_effective_change()
         &report.membership_events[0],
         MembershipEvent::EffectiveChanged { .. }
     ));
-    assert!(matches!(
-        &report.membership_events[1],
-        MembershipEvent::Applied { .. }
-    ));
+    assert!(is_committed_fact(&report.membership_events[1]));
 }
 
 /// A commit observed on a peer step reports the committed fact.
@@ -251,10 +260,15 @@ fn a_commit_observed_on_a_peer_step_reports_the_committed_fact() {
         "the effective configuration did not move, so only the commit is news: {:?}",
         report.membership_events
     );
-    assert!(matches!(
-        &report.membership_events[0],
-        MembershipEvent::Applied { group_id: 7, .. }
-    ));
+    assert!(
+        matches!(
+            &report.membership_events[0],
+            MembershipEvent::CommittedEndpoint { group_id: 7, .. }
+        ),
+        "this fixture's runtime names no configuration entry for the move, so \
+         the committed fact arrives as an endpoint observation: {:?}",
+        report.membership_events[0]
+    );
     assert_eq!(
         effective_voters(&report.membership_events[0]),
         vec![NodeId(1), NodeId(2)],

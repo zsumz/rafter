@@ -98,7 +98,10 @@ fn begin_read_barrier_preserves_coemitted_report_streams() {
     );
     // The scripted step moves both facts at once, so both are reported and the
     // effective one comes first; a read-barrier step carries membership events
-    // like any other, which is the clause under test here.
+    // like any other, which is the clause under test here. The committed one is
+    // an endpoint observation because this scripted runtime emits no
+    // `ConfigurationCommitted` output for the move, so there is no configuration
+    // entry to name and the comparison at the commit index is what reports it.
     assert_eq!(
         full.report.membership_events,
         vec![
@@ -108,7 +111,7 @@ fn begin_read_barrier_preserves_coemitted_report_streams() {
                 term: Term(2),
                 membership: updated_membership.clone(),
             },
-            MembershipEvent::Applied {
+            MembershipEvent::CommittedEndpoint {
                 group_id: 7,
                 index: LogIndex(5),
                 term: Term(1),

@@ -99,6 +99,19 @@ where
     /// boundary configuration and no history, and a group opened over a runtime
     /// whose commit index already moved has no output to replay.
     ///
+    /// **The two halves of that are different events, and used to be one.** The
+    /// queue emits [`MembershipEvent::Applied`], which carries the crossed
+    /// entry's own index; the comparison emits
+    /// [`MembershipEvent::CommittedEndpoint`], which carries this replica's
+    /// commit index as an observation point. Both are committed facts and both
+    /// must be reported, but only the first is evidence that the stream has been
+    /// consumed *through* its index — the second covers nothing beneath itself,
+    /// because the moves that produce it are precisely the ones with no history
+    /// to carry. A consumer holding one position for both claimed coverage it
+    /// never had and then skipped the crossings a later recovery replayed
+    /// beneath it, which spends no identity and owes no fence. The variants say
+    /// which is which so the consumer does not have to guess.
+    ///
     /// Sampling the committed membership once per step was the defect. A replica
     /// catching up receives several configuration entries under one commit floor,
     /// and if an intermediate one added a replica that a later one removed, the
@@ -167,12 +180,14 @@ where
             .raft
             .term_at_index(index)
             .unwrap_or_else(|| self.raft.current_term());
-        report.membership_events.push(MembershipEvent::Applied {
-            group_id: self.group_id.clone(),
-            index,
-            term,
-            membership: committed_membership.clone(),
-        });
+        report
+            .membership_events
+            .push(MembershipEvent::CommittedEndpoint {
+                group_id: self.group_id.clone(),
+                index,
+                term,
+                membership: committed_membership.clone(),
+            });
         self.reported_membership.committed = committed_membership;
     }
 
@@ -259,6 +274,21 @@ where
     /// Re-reporting it produces the same event sequence: the final comparison
     /// then finds the committed membership already accounted for and adds
     /// nothing.
+    ///
+    /// **Only the crossings are put back, and an endpoint observation must not
+    /// be.** The discarded report can end with a
+    /// [`MembershipEvent::CommittedEndpoint`], and that fact is *already*
+    /// restored by the line above: `mark.committed` is the pre-report value, so
+    /// the comparison re-derives the endpoint on the next report by itself.
+    /// Pushing it into the crossing queue as well would re-emit it as an
+    /// `Applied` — a crossing at an index no configuration entry sits at, which
+    /// is exactly the provenance lie the two variants exist to prevent, and a
+    /// consumer would advance its crossing position over history it never saw.
+    ///
+    /// The match names every variant rather than ending in a wildcard, and
+    /// within the defining crate `#[non_exhaustive]` does not license one. So a
+    /// fourth variant stops the build here and is classified deliberately,
+    /// instead of defaulting into the queue or silently out of it.
     pub(super) fn restore_membership_report_mark(
         &mut self,
         mark: MembershipReportMark,
@@ -279,7 +309,9 @@ where
                     term: *term,
                     membership: membership.clone(),
                 }),
-                _ => None,
+                MembershipEvent::CommittedEndpoint { .. }
+                | MembershipEvent::EffectiveChanged { .. }
+                | MembershipEvent::Rejected { .. } => None,
             })
             .collect();
     }

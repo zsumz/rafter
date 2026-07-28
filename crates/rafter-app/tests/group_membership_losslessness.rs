@@ -71,12 +71,35 @@ fn replicated_frame() -> GroupInput<u64, Vec<u8>> {
     }
 }
 
+/// The membership any of the three configuration-carrying events names.
+///
+/// All three are accepted because this file asks what a *delta survives*, not
+/// which provenance carried it. The distinction between an exact crossing and an
+/// endpoint observation is asserted where it changes a consumer's conclusion —
+/// `crates/rafter-service/tests/transport_cursor_provenance.rs` — and here it
+/// would only make every case restate its fixture's shape.
 fn voters(event: &MembershipEvent<u64>) -> Vec<NodeId> {
     match event {
         MembershipEvent::EffectiveChanged { membership, .. }
-        | MembershipEvent::Applied { membership, .. } => membership.replica_ids(),
+        | MembershipEvent::Applied { membership, .. }
+        | MembershipEvent::CommittedEndpoint { membership, .. } => membership.replica_ids(),
         other => panic!("expected a membership configuration event, got {other:?}"),
     }
+}
+
+/// Whether an event is one of the two committed facts.
+///
+/// **Both, deliberately.** These fixtures drive a scripted runtime that emits no
+/// `ConfigurationCommitted` output, so every committed fact they produce reaches
+/// the report through the endpoint comparison — the shape a snapshot install and
+/// a group opened over an already-moved runtime also produce. Asserting
+/// `Applied` here would have been asserting the fixture rather than the
+/// property, which is that a committed membership move is never lost.
+fn is_committed_fact(event: &MembershipEvent<u64>) -> bool {
+    matches!(
+        event,
+        MembershipEvent::Applied { .. } | MembershipEvent::CommittedEndpoint { .. }
+    )
 }
 
 /// Leaves the group holding a granted barrier this replica has not applied
@@ -180,7 +203,7 @@ fn a_committed_removal_survives_a_step_that_failed_after_it_moved() {
     assert_eq!(voters(&owed[0]), vec![NodeId(1), NodeId(2)]);
     assert_eq!(voters(&owed[1]), vec![NodeId(1), NodeId(2)]);
     assert!(matches!(owed[0], MembershipEvent::EffectiveChanged { .. }));
-    assert!(matches!(owed[1], MembershipEvent::Applied { .. }));
+    assert!(is_committed_fact(&owed[1]));
 }
 
 /// The same removal survives an intervening step that reported nothing.
@@ -220,7 +243,7 @@ fn a_committed_removal_survives_a_later_step_that_moved_nothing() {
         reported[0],
         MembershipEvent::EffectiveChanged { .. }
     ));
-    assert!(matches!(reported[1], MembershipEvent::Applied { .. }));
+    assert!(is_committed_fact(&reported[1]));
     assert!(
         group.drain_membership_events().is_empty(),
         "and that report advanced the mark, so it is owed once"
@@ -375,10 +398,7 @@ fn the_raw_output_pump_discharges_a_membership_delta_a_failed_step_left_owed() {
         report.membership_events[0],
         MembershipEvent::EffectiveChanged { .. }
     ));
-    assert!(matches!(
-        report.membership_events[1],
-        MembershipEvent::Applied { .. }
-    ));
+    assert!(is_committed_fact(&report.membership_events[1]));
     assert!(
         group.drain_membership_events().is_empty(),
         "and the pump's report advanced the mark, so nothing is owed twice"
@@ -522,7 +542,7 @@ fn a_rebuild_from_parts_still_owes_a_failed_steps_membership_delta() {
     );
     assert_eq!(voters(&owed[0]), vec![NodeId(1), NodeId(2)]);
     assert!(matches!(owed[0], MembershipEvent::EffectiveChanged { .. }));
-    assert!(matches!(owed[1], MembershipEvent::Applied { .. }));
+    assert!(is_committed_fact(&owed[1]));
     assert!(
         rebuilt.drain_membership_events().is_empty(),
         "and the drain advanced the rebuilt group's mark"
@@ -602,7 +622,7 @@ fn the_outcome_only_proposal_helper_still_owes_its_membership_delta() {
         reported[0],
         MembershipEvent::EffectiveChanged { .. }
     ));
-    assert!(matches!(reported[1], MembershipEvent::Applied { .. }));
+    assert!(is_committed_fact(&reported[1]));
 }
 
 /// The outcome-only read-barrier helper leaves its membership delta owed.
