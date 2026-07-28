@@ -6963,6 +6963,403 @@ exactly what left, recommitting the same membership still retires nothing, a
 rebuild that owed nothing still owes nothing, a stale record still contributes
 its fence, and a sealed consistent file is still accepted.
 
+### Tenth revision after adoption (2026-07-27)
+
+A sixth external review read the ninth revision's model and found three
+blockers with one shape between them: **every one is an interaction between a
+mechanism this entry recently built and a lifecycle path nobody re-walked.** The
+crossing stream was built for `deliver` and never re-read on the recovery path.
+The mark's save/restore discipline was built for failures *after* the output
+scan and never re-read for one *inside* it. The checkpoint's validation was
+built against the shapes a driver produces and never re-read against the shapes
+a join produces. Each was reproduced with a failing test before anything
+changed.
+
+So this revision owes a **lifecycle matrix** as well as three fixes, and the
+matrix is the deliverable rather than the fixes: a mechanism is not finished when
+its own path works, it is finished when every producer and consumer of it has
+been named and the uncovered cells are written down as uncovered.
+
+#### 1. Recovery replayed configuration history with no consumer offset
+
+The constructor's order was: restore the checkpoint, publish the recovered
+runtime's committed membership, then apply the recovery outputs. The recovery
+outputs are the committed configurations this replica crossed — every one of them
+*older* than the membership just published. `observe_committed_members` computes
+a retirement diff against the live set as it stands now, so each replayed
+configuration read as a removal of everything the endpoint had that it did not.
+
+A log that admits node 4 and then node 5 therefore came back from a restart with
+node 5 **spent and permanently fenced**, and the crossing that re-names it could
+not undo that: nothing un-spends an identity, so the spent filter dropped node 5
+out of the very fact that would have restored it. A restart fenced the replica
+the cluster had most recently admitted, and an empty checkpoint was enough to
+trigger it — the ordering alone was sufficient.
+
+**Order is necessary and is not sufficient, and that is the substance of the
+fix.** Replaying before the endpoint handles a *first* recovery. It does nothing
+for the second, from the same durable state and the checkpoint the first one
+wrote: index 10 is recomputed against a restored live set that already reflects
+index 11, and manufactures the same removal. Replay is not idempotent without a
+position, and a crash during recovery is an ordinary crash — so the second pass
+is a state a correct embedder reaches.
+
+`PeerControlPlaneCheckpoint` gains
+**`committed_configuration_through: Option<LogIndex>`**, the consumer offset.
+The rules are:
+
+1. restore the checkpoint first, offset included;
+2. fold in only committed facts standing **above** the offset, in index order,
+   each against the checkpoint's own live set, advancing the offset with each;
+3. then reconcile with the runtime's final committed membership, **gated the same
+   way** — a fact at or below the offset is already incorporated and is a no-op.
+
+`observe_committed_members` takes the index, and `MembershipFact::Committed`
+carries it so a publisher cannot supply a configuration from one point and a
+position from another. Live `deliver`-time crossings advance the offset too, so
+the offset and the retirement record move under one epoch and persist together
+in one record.
+
+**The reconcile's index is the commit index, which is a deviation from the
+review's parenthetical and a sound one.** The review assumed the runtime knows
+its committed configuration's index; `PersistedRaftRuntime` exposes
+`commit_index`, `membership`, and `committed_membership`, and no index for the
+third. The commit index is the right substitute rather than a fallback:
+`committed_membership` is by definition the latest configuration at or below the
+commit index, and a committed log entry is never truncated, so one commit index
+names one committed membership for good. It is also what the app layer already
+stamps on its endpoint comparison, so the two agree by construction.
+
+The gate does real work on that path rather than merely being consistent. A
+commit index is *volatile* — a runtime rebuilt from durable storage can report a
+lower one than the incarnation that wrote the checkpoint reached — so an ungated
+endpoint would diff a rebuilt runtime's older committed configuration against a
+restored live set that had moved past it, and retire everything the newer
+configurations added. Same manufactured removal, arriving through the endpoint
+instead of the history.
+
+**The join takes `max` on the offset**, and the soundness argument is worth
+stating because it is not the same as the mark's. Skipping a replayed
+configuration at or below the joined offset is safe only if the joined *state*
+already reflects it — and it does: whichever side held the higher offset had
+consumed that configuration, its spent-ness is in `S_a ∪ S_b`, and the join
+preserves the whole union. The side that had not consumed it loses nothing by the
+join declining to consume it again.
+
+#### 2. An early decode failure hid configuration outputs behind it
+
+`apply_outputs` consumed the output vector in one fallible loop. Decoding runs
+*inside* that loop, once per `Apply`, so a payload the state machine refuses
+abandoned the scan where it stood — and a `ConfigurationCommitted` at a higher
+index was never visited, never queued, and therefore never owed. The
+error-path companion found nothing.
+
+This is a different class from the five producers the ninth revision closed.
+Every one of those fails *after* the whole vector has been walked —
+`apply_entries` runs past the loop, and so do the read completion and the
+readiness probe — so the crossing queue was already full when they raised. The
+existing failing-apply test could not catch this, and neither could the endpoint
+comparison: a commit that admits node 5 and removes it again lands on the
+membership it started from, so a suffix of `[undecodable entry, +5, −5]` lost
+node 5's whole admission and retirement and reported nothing at all.
+
+**An infallible pre-pass over the whole vector queues every
+`ConfigurationCommitted` before any fallible work**, and the fallible loop skips
+the variant. The pre-pass matches one variant and pushes onto a queue, so there
+is no ordering question about what it leaves half-done, and it **changes no
+reported order**: `record_committed_configuration` never wrote into the report,
+only into the queue `record_membership_changes` drains at the end. It moves when
+the fact becomes owed and nothing else.
+
+It composes with the five mark sites without touching them. On an `Err` from the
+scan the mark is never restored, so the queued crossings stay owed and
+`drain_membership_events` collects them. On the `ProposalDidNotStart` path the
+crossings were already drained into the report, and the round-5 restore rebuilds
+the queue *from that report* — so they survive the discard exactly as the
+comparison-derived delta does.
+
+#### 3. Validation accepted a fence above the mark
+
+`validate` checked the group binding, that a live set has a mark, that live
+members sit at or below it, and that no fence names a live member. It did not
+check that a fence is **covered** by the mark. `{mark: 5, live: {1,2,5},
+fences: {7}}` passed: node 7 is above the mark, so it is not live and not spent
+either — the record simply has no opinion about it, while also demanding it be
+fenced forever.
+
+That is the one contradiction that survives the join intact rather than being
+caught by it. Joined into a driver whose own committed configuration names node 7
+as live, the mark rises to cover it, the obligation travels with it, and the next
+flush makes two contradictory statements about one replica: publish it, then
+fence it. `RaftTransport::fence_peer` has no inverse, so unlike a stale peer set
+that is not something a later flush corrects.
+
+Validation now requires **`pending_fences ⊆ spent`**. The two ways to break it
+stay separate variants because they fail in opposite directions and an operator
+needs to know which: `FenceNamesLiveMember` for a fence naming an identity the
+record calls live, and the new
+**`ControlPlaneCheckpointError::FenceNamesUnspentIdentity`** for one naming an
+identity above the mark — or any identity at all when there is no mark — which no
+committed configuration in this record ever named. A fence is the residue of a
+committed removal or it is nothing.
+
+**The joined candidate is validated too, and it is deliberately redundant.** The
+lattice proof says it cannot fail: a fence of `a` is in `S_a`, sits at or below
+`mark_a ≤ mark_join`, and is excluded from `live_join` by construction, so
+`fences ⊆ spent` is preserved. The review asked for the safety property to be
+executable rather than argued, and that is the right call — the cost is one pass
+over a cluster-sized set, and the thing being protected is a permanent
+uninvertible fence on a live replica. A proof that stops holding because someone
+edited the join is a proof that fails silently; this one fails loudly. The
+mutation check below reports honestly that neutralizing it fails nothing, which
+is what "redundant" means and not a reason to remove it.
+
+The reference decoder's `check_invariants` had the same hole and gains the same
+clause, so the refusal can name the *file* rather than only the value.
+
+#### The lifecycle matrix
+
+Three mechanisms, every producer and consumer path, and the regression that
+covers each cell. **Uncovered cells are listed as uncovered.** `new` means
+`TransportRaftDriver::new`, `new+ckpt` means
+`with_control_plane_checkpoint`, `adopt+ckpt` means
+`adopt_group_with_checkpoint`.
+
+The crossing stream — `RaftOutput::ConfigurationCommitted` through the mark's
+queue to `MembershipEvent::Applied`:
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| fresh `new` | empty outputs; nothing queued | `construction_owes_no_event_for_the_configuration_it_opened_over` |
+| `new+ckpt` | replayed history folded in **before** the endpoint | `a_restart_still_spends_an_identity_the_replayed_history_admitted_and_removed` |
+| `adopt_group` | empty checkpoint, same order as `adopt+ckpt` | *(shares the `adopt+ckpt` path; no separate case)* |
+| `adopt+ckpt` | same order at the second call site | `an_adoption_still_spends_an_identity_its_recovery_outputs_admitted_and_removed` |
+| recovery-output replay | one `Applied` per crossing, index order | `a_multi_configuration_step_is_reported_in_index_order` (via `deliver`), `recovered_runtime`'s own fixture assertion (via recovery) |
+| live `deliver`/`tick` | one `Applied` per crossing | `one_append_crossing_two_configurations_spends_the_intermediate_identity` |
+| failed step — after the scan | queue survives; drained by the companion | `a_membership_move_survives_a_failing_apply`, `a_membership_move_survives_a_failing_snapshot_install` |
+| failed step — **inside** the scan | pre-pass queued it first | `a_crossed_configuration_survives_an_undecodable_entry_ahead_of_it` |
+| discarded report | queue rebuilt from the report | `a_report_discarded_by_a_proposal_verdict_still_owes_its_membership_delta` |
+| `into_parts`/rebuild | queue travels in `MembershipReportMark` | `a_rebuild_from_parts_still_owes_a_failed_steps_membership_delta` |
+| shutdown | not a producer; the group is untouched | **uncovered** — see below |
+
+The checkpoint, offset included:
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| fresh `new` | `empty(group)`; offset `None` | `the_checkpoint_epoch_moves_only_when_the_checkpoint_does` |
+| `new+ckpt` | restore, then history, then gated endpoint | `a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added` |
+| `new+ckpt`, twice over one durable state | second pass is a no-op | `a_second_recovery_from_the_same_durable_state_is_a_no_op` |
+| `adopt_group` | joins `empty`; offset unchanged | `releasing_and_re_adopting_the_same_id_stays_valid` |
+| `adopt+ckpt` | lattice join, `max` on the offset | `the_join_is_order_free_across_three_records`, `joining_the_same_record_twice_is_the_same_as_once` |
+| invalid record, either call site | refused whole, nothing installed | `a_contradictory_checkpoint_is_refused_and_installs_nothing`, `a_fence_naming_an_identity_the_record_never_spent_is_refused` |
+| recovery-output replay | facts above the offset only | `a_restart_still_spends_an_identity_the_replayed_history_admitted_and_removed` |
+| live `deliver`/`tick` | offset advances with the record, one epoch | `the_checkpoint_epoch_moves_only_when_the_checkpoint_does` |
+| failed step | record moves; epoch moves; nothing rolls back | `a_failed_step_still_routes_the_membership_it_moved_through` |
+| `into_parts`/rebuild | driver-side, not group-side; survives release | `a_rebuilt_driver_retries_the_fence_and_keeps_the_identity_spent` |
+| shutdown | still readable; nothing discharged | `a_shut_down_driver_still_reports_what_its_embedder_must_persist` |
+| durable round trip | offset survives encode/decode | `a_round_trip_preserves_every_fact`, `a_sealed_consistent_record_is_accepted` |
+| durable absence | first boot only below the commit floor | `an_absent_file_is_a_first_boot_only_below_the_commit_floor`, `a_deleted_control_plane_checkpoint_refuses_to_open_as_a_first_boot` |
+
+The fence set:
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| fresh `new` | empty | `recommitting_the_same_membership_retires_nothing` |
+| `new+ckpt` | restored, then extended by replayed removals | `a_restart_still_spends_an_identity_the_replayed_history_admitted_and_removed` |
+| `adopt_group` | obligations are the driver's, not the group's | `control_plane_work_still_owed_survives_release_and_adoption` |
+| `adopt+ckpt` | union, and every member covered by the joined mark | `a_stale_record_still_contributes_the_fence_it_witnessed`, `a_fence_contradicting_a_live_member_is_refused_before_any_transport_call` |
+| recovery-output replay | a replayed removal owes a fence like any other | `an_adoption_still_spends_an_identity_its_recovery_outputs_admitted_and_removed` |
+| live `deliver`/`tick` | flushed from every entry point; retried | `a_refused_fence_is_retried_until_the_link_accepts_it` |
+| failed step | the obligation outlives the failure | `an_undecodable_entry_does_not_hide_the_configurations_committed_behind_it` |
+| local node | deferred, not dropped | `the_local_replicas_fence_is_deferred_until_a_fresh_id_is_adopted` |
+| `into_parts`/rebuild | survives the rebuild and is retried | `a_rebuilt_driver_retries_the_fence_and_keeps_the_identity_spent` |
+| shutdown | not discharged; still owed and still reported | `a_shut_down_driver_still_reports_what_its_embedder_must_persist` |
+
+**Uncovered, and named rather than omitted:**
+
+- **Crossing stream × shutdown.** `shutdown` releases waiters and closes the
+  metrics watch; it never touches the group, so it can neither produce nor
+  consume a crossing. There is no test because there is no behavior — but a
+  future `shutdown` that drained the group would silently discard an owed
+  crossing, and nothing would fail.
+- **Crossing stream × `adopt_group`.** `adopt_group` is `adopt+ckpt` with an
+  empty checkpoint and shares its body, so the ordering case above covers the
+  code. A separate case would pin the delegation rather than the behavior.
+- **The reference process's live terminal transition.** The `State::Failed`
+  transition below has no process-level trigger in this composition: the lock
+  cluster never reconfigures, so after the opening write the checkpoint epoch
+  stands still and nothing can make a persist fail at a moment the loop reaches.
+  The *verdict* is unit-tested through `stop_outcome`; the transition itself is
+  reachable only by a consumer that reconfigures.
+- **Offset regression across a real snapshot install.** The snapshot-boundary
+  path reaches `observe_committed_members` as an ordinary committed fact and is
+  gated like any other, but no test drives a real snapshot install through a
+  recovery that also replays crossings. The two mechanisms are exercised
+  separately and their composition is argued rather than executed.
+
+#### Reference-process hardening
+
+**A missing checkpoint is not a first boot.** `load` mapped every `NotFound` to
+an empty checkpoint, while `Replica::open` had already created `raft/` and `app/`
+and opened both stores — so deleting one file from a replica that had been
+serving for months read as a fresh one, and it started with no mark, no live set,
+and no obligations. Every identity the cluster had spent became allocatable
+again.
+
+The evidence is **the recovered runtime's durable commit floor**, which is the
+right question rather than a convenient one: retirement is derived from committed
+configurations, so a replica whose commit index is zero has committed none,
+retired nothing, and owes nothing — an empty checkpoint is what its driver
+derives anyway. Above zero, absence is a deleted artifact and the process refuses
+with `CheckpointError::Missing`.
+
+This is a deliberate deviation from the review's suggested detection. A
+filesystem probe — "does `raft/` exist?" — is wrong for this composition's
+layout, because `Replica::open` creates both store directories *before* it writes
+the checkpoint: a genuine first boot that crashed in its own opening sequence
+leaves them behind with no file, and a directory probe would refuse to start that
+replica forever over a retirement record that never existed. The commit floor has
+no such false positive and is in hand at the same call site.
+
+**A known persistence failure no longer exits clean.** A stored
+`control_plane_failure` printed `CONTROL_PLANE_UNPERSISTED`, then `STOPPED`, and
+`serve` returned `Ok` — so every supervisor that watches an exit code saw a clean
+shutdown of a replica whose next start begins by forgetting what it retired. Two
+changes: `stop_outcome` turns any unpersisted control plane into an `Err`, which
+`main` renders as `FATAL` and a nonzero exit, and `STOPPED` is now mutually
+exclusive with `CONTROL_PLANE_UNPERSISTED` rather than following it.
+
+The state vocabulary gains **`State::Failed { replica, detail }`**, entered at
+the top of the loop rather than at the next call with an error channel. The
+distinction matters because of where the failure comes from: `submit`, `query`,
+`poll_pending`, and `abandon_waiters` answer their client with a value rather
+than a `Result`, so a persist failure inside one is *stored*, and the next
+raising call is an unbounded number of accepted client requests away. In
+`Failed`, `STATUS` still answers and everything else is refused with `ABANDONED`;
+the replica is kept so the link counters still reach the `LINK` line.
+
+**The file format moves to version 3** for the `through` line, and a version-2
+file is **refused rather than migrated**. There is no honest value to invent:
+supplying "nothing consumed" tells the next recovery to replay every committed
+configuration above the applied floor against a live set that already reflects
+them, which fences live members — precisely the failure the field closes — and
+`through = high_water` is not even type-correct, one being a `NodeId` and the
+other a `LogIndex`. Rafter is pre-release and this composition is an example, so
+refusing costs an operator a deleted file on a scratch cluster while guessing
+costs a fenced replica in the one artifact whose whole purpose is not to lose
+retirement facts.
+
+#### Maintainability
+
+`transport/control_plane.rs` reached 984 lines against a 1000-line hard limit.
+The checkpoint concern moves to **`transport/checkpoint.rs`** — the type, its
+validation, the lattice algebra, and the offset and replay rules, which live
+there from birth rather than being moved in later. The split line is *record*
+versus *derivation*: that file answers "who may send a step", this one answers
+"what does a process that crashed get back, and what may it conclude from it".
+Everything that moved unchanged moved unchanged. `control_plane.rs` ends at 741
+and `checkpoint.rs` at 483, both under the hard limit and the first now within
+one line-budget review of the 700 soft limit.
+
+#### Blast radius of the tenth revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-app/src/group/output.rs`](../crates/rafter-app/src/group/output.rs) | the infallible pre-pass in `apply_outputs`; the `ConfigurationCommitted` arm becomes a no-op |
+| [`crates/rafter-app/src/group/membership.rs`](../crates/rafter-app/src/group/membership.rs) | `queue_committed_configurations` |
+| [`crates/rafter-service/src/driver/transport/checkpoint.rs`](../crates/rafter-service/src/driver/transport/checkpoint.rs) | **new**: the type, `validate` with the coverage clause, the join with the offset, the epoch, `committed_configuration_is_replayed`, `advance_committed_configuration_cursor` |
+| [`crates/rafter-service/src/driver/transport/control_plane.rs`](../crates/rafter-service/src/driver/transport/control_plane.rs) | the checkpoint concern moves out; `MembershipFact::Committed` carries `through`; `observe_committed_members` gates and advances; `publish_adopted_membership` stands at the commit index |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | `committed_configuration_through` |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | history before endpoint in both constructors; the module registration |
+| [`crates/rafter-service/src/driver/mapping.rs`](../crates/rafter-service/src/driver/mapping.rs) | `ControlPlaneCheckpointError::FenceNamesUnspentIdentity` |
+| [`crates/rafter-service/tests/support/scripted.rs`](../crates/rafter-service/tests/support/scripted.rs) | the scripted commit index advances with the committed membership, as a real runtime's must |
+| `reference/fenced-lock/src/bin/lock-node/control_plane.rs` | version 3 and the `through` line; the fence-coverage clause; `load` takes the commit floor; `CheckpointError::Missing` |
+| `reference/fenced-lock/src/bin/lock-node/main.rs` | `State::Failed`; the loop's terminal transition; `stop_outcome`; the stdout contract |
+| `reference/fenced-lock/src/bin/lock-node/replica.rs` | `load`'s call site passes `raft.commit_index()` |
+| `reference/fenced-lock/tests/support/process.rs` | `Refusal`, `wait_refused`, `restart_expecting_failure` |
+| [`verification/reference-process-test-inventory.fenced-lock.txt`](../verification/reference-process-test-inventory.fenced-lock.txt) | re-pinned; it was already two names behind before this round |
+
+#### Focused-test plan for the tenth revision
+
+New, in `crates/rafter-service/tests/transport_recovery_replay.rs` — the first
+suite in this crate to perform a **real recovery**, with durable Raft state on
+one side and `recover_*` on the other, because a live `deliver` carries its
+configurations forward from state that cannot have moved past them:
+
+- `a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added` —
+  the review's case. The log only ever adds, so every retirement derived from it
+  is manufactured.
+- `a_second_recovery_from_the_same_durable_state_is_a_no_op` — the offset's own
+  case, and the one the order cannot answer.
+- `a_restart_still_spends_an_identity_the_replayed_history_admitted_and_removed`
+  — the order's own case, and the one the offset cannot answer. **Added because
+  a mutation found it missing**: with the offset in place, reverting the
+  constructor's order failed nothing, because an addition-only history has an
+  endpoint that happens to contain everything the history did.
+- `an_adoption_still_spends_an_identity_its_recovery_outputs_admitted_and_removed`
+  — the same, at the second call site. Also added from a mutation.
+
+New, in `crates/rafter-app/tests/group_membership_losslessness.rs`:
+
+- `a_crossed_configuration_survives_an_undecodable_entry_ahead_of_it` — a real
+  kernel follower committing `[undecodable entry, +5, −5]`; both crossings arrive
+  in index order after the decode error. Before the fix it yielded nothing at
+  all.
+
+New, in `crates/rafter-service/tests/transport_configuration_history.rs`:
+
+- `an_undecodable_entry_does_not_hide_the_configurations_committed_behind_it` —
+  the service-layer half: node 5 is spent and its fence is owed, with the link
+  refusing so the obligation is observable rather than discharged in passing.
+
+New, in `crates/rafter-service/tests/transport_checkpoint_merge.rs`:
+
+- `a_fence_naming_an_identity_the_record_never_spent_is_refused` — both shapes,
+  `{mark: None, fences: {7}}` and `{mark: 5, fences: {7}}`.
+- `a_fence_contradicting_a_live_member_is_refused_before_any_transport_call` —
+  the cross-record case, asserting *when* as well as what: no fence attempt
+  reaches the link layer.
+
+New, in `crates/rafter-service/tests/transport_service_state.rs`:
+
+- `a_shut_down_driver_still_reports_what_its_embedder_must_persist` — the last
+  lifecycle cell, and the one where forgetting costs most.
+
+New, in the reference process:
+
+- `an_absent_file_is_a_first_boot_only_below_the_commit_floor` and
+  `a_version_two_file_is_refused_rather_than_migrated`, in the decoder's tests.
+- Two more resealed contradictions for the fence-coverage clause.
+- `a_deleted_control_plane_checkpoint_refuses_to_open_as_a_first_boot`, in
+  `process_cluster.rs` — a real replica, a real deletion, a nonzero exit.
+- `a_clean_stop_is_ok` and
+  `an_unpersisted_control_plane_is_a_failure_with_its_reason`, pinning
+  `stop_outcome`.
+
+Mutation check, on the committed implementation:
+
+| Neutralized | Fails |
+| --- | --- |
+| the offset gate in `observe_committed_members` | `a_second_recovery_from_the_same_durable_state_is_a_no_op` |
+| the constructor's history-before-endpoint order | `a_restart_still_spends_an_identity_the_replayed_history_admitted_and_removed` |
+| the same order in `adopt_group_with_checkpoint` | `an_adoption_still_spends_an_identity_its_recovery_outputs_admitted_and_removed` |
+| the infallible pre-pass (queueing returned to the fallible loop) | `a_crossed_configuration_survives_an_undecodable_entry_ahead_of_it`, `an_undecodable_entry_does_not_hide_the_configurations_committed_behind_it` |
+| the fence-coverage clause in `validate` | `a_fence_naming_an_identity_the_record_never_spent_is_refused`, `a_fence_contradicting_a_live_member_is_refused_before_any_transport_call` |
+| the post-merge validation of the joined candidate | **nothing** |
+
+The last row is reported rather than hidden. The lattice proof says
+`fences ⊆ spent` is preserved by the join, so there is no reachable input that
+distinguishes the checked version from the unchecked one — which is what
+"redundant" means. It stays because the property is worth executing rather than
+arguing, and because the next edit to the join is exactly the event that would
+make it non-redundant.
+
+The first two rows are the pair worth reading together: **each half of fix 1
+fails a different test and neither fails the other's.** A reviewer checking only
+the addition-only case would have shipped the offset and lost the order; a
+reviewer checking only the admit-then-remove case would have shipped the order
+and lost idempotence.
+
 ## Terminal Driver Vocabulary
 
 ### Origin
