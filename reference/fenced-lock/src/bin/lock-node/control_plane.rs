@@ -1,21 +1,21 @@
 //! The peer-control-plane checkpoint, made durable beside this replica's log.
 //!
 //! Rafter opens no files, so a driver's peer control plane is a value its
-//! embedder persists. This is that embedder. The facts it carries — which
-//! `NodeId`s a committed removal has spent, how far identity allocation has got,
-//! and which fences the link layer has not accepted — cannot be rebuilt from the
-//! Raft log: retirement is the *difference* between two committed
-//! configurations, a restarted process sees only the latest one, and compaction
-//! erases the rest. A process that dropped them would stop retrying a refused
-//! fence and would let a spent identity be allocated again.
+//! embedder persists. This is that embedder. The two facts it carries — how far
+//! identity allocation has got, and which committed membership this replica
+//! believes is current, at what position — cannot be rebuilt from the Raft log:
+//! retirement is the *difference* between two committed configurations, a
+//! restarted process sees only the latest one, and compaction erases the rest. A
+//! process that dropped them would publish a retirement floor that covers
+//! nothing, and would let a spent identity be allocated again.
 //!
 //! # This cluster's membership never changes
 //!
 //! `CONTRACT.md` says so, and it is why this file is short. With a static
 //! configuration the checkpoint holds one committed set and one high-water mark
-//! and never grows a fence obligation, so what is exercised here is that the
-//! *plumbing* is real: the mark survives a restart, the live set survives with
-//! it, and a replica that reopens is refused an identity the cluster spent. A
+//! and never records a removal, so what is exercised here is that the *plumbing*
+//! is real: the mark survives a restart, the live set survives with it, and a
+//! replica that reopens is refused an identity the cluster spent. A
 //! consumer whose cluster did reconfigure would write exactly this file and get
 //! exactly this behavior — which is the point of wiring it in a consumer that
 //! does not need it.
@@ -30,68 +30,51 @@
 //! quietly reinterpreted.
 //!
 //! ```text
-//! rafter-lock-control-plane 5
+//! rafter-lock-control-plane 6
 //! group      <u64>
 //! high_water <u64> | -
 //! through    <u64> | -
 //! live       <u64>*
-//! fences     <u64>*
 //! crc32      <8 hex digits>
 //! ```
 //!
-//! # Version 5, and why a version-4 file is refused rather than migrated
+//! # Version 6, and why a version-5 file is refused rather than migrated
 //!
-//! `through` and `live` are one fact written on two lines: the committed
-//! membership this replica believes is current, and the log position it was
-//! observed at. They replace version 4's `live` beside its two consumer offsets,
-//! and they are the reason the tag moved from 4 to 5.
+//! The `fences` line is gone. It held the committed removals whose per-principal
+//! fence the previous process's link layer had not accepted, and there is no
+//! such call any more: a driver publishes an authorization *policy* — the
+//! authorized principals beside the greatest identity the group has ever
+//! committed — and every identity at or below that floor the policy does not
+//! name is retired by it. The obligation is re-derived from the mark at every
+//! entry point, so there is nothing left to persist about it.
 //!
-//! **The offsets are gone rather than merged.** They existed so a replayed
-//! configuration could be skipped as already-folded, and the driver no longer
-//! needs that: a committed configuration reaches it as a *transition*, so its
-//! removal set is the same wherever it is folded and re-folding one changes
-//! nothing. What is left is the question the offsets were never answering —
-//! which of two observations of the current membership is the later — and that
-//! needs the position to travel *with* the membership rather than beside it.
+//! **This time the mapping is knowable, and the file is still refused.** That is
+//! worth saying plainly, because it is the opposite of versions 3 and 4, where
+//! the refusal was forced: those files carried a field whose provenance nothing
+//! could recover. A version-5 record's `fences` line is provably *redundant* —
+//! its own invariant check required every fence to name an identity at or below
+//! the mark that the live set does not name, which is exactly the set the floor
+//! retires — so dropping it loses nothing a version-6 reader needs.
 //!
-//! **A version-4 file is refused, and the reason is the same shape as version
-//! 3's: the old field's provenance is unknowable.** It is worth stating
-//! carefully, because the mapping looks obvious and is not. Version 4's `live`
-//! was assigned by a fold of *either* kind while only that kind's own offset
-//! advanced, so neither offset dates it:
+//! What refusing protects is the reader, not the record. A migration would have
+//! to accept a seventh line where six are expected, and "unexpected lines before
+//! the checksum" is a refusal this format keeps deliberately: a reader that
+//! stops at the first complete record cannot tell a finished write from a
+//! partial overwrite of a longer one. Teaching this decoder to skip one line it
+//! did not expect is teaching it to skip the line that says a write was
+//! truncated.
 //!
-//! * `through = endpoint` understates it. A driver publishes an endpoint at
-//!   construction and then follows the cluster through crossings, which move
-//!   `live` and leave `endpoint` where it was — the ordinary case, not an exotic
-//!   one. A record whose `live` came from index 7 and whose `endpoint` reads 5
-//!   would be migrated to position 5, and the next runtime observation at 6
-//!   would then outrank it and read everything index 7 had added as removed.
-//! * `through = max(crossings, endpoint)` overstates it. An endpoint at 10
-//!   beside a later-folded crossing at 7 leaves `live` from index 7 under a
-//!   maximum of 10, and a genuine observation at 9 is then treated as older —
-//!   so everything committed between 7 and 9 reads as removed instead.
-//!
-//! Both readings fence live replicas, in opposite directions, and there is no
-//! third: the record simply does not say where its membership was observed. That
-//! is the defect the versioned register exists to fix, so a file written before
-//! the fix cannot describe the state that fixes it.
-//!
-//! Supplying `-` is not available either. A record with no current state and a
-//! mark beside it is the shape the invariant below refuses outright, because a
-//! mark read against no membership spends every identity at or below it.
-//!
+//! The cost is bounded and the trade is the one this artifact has made before.
 //! Rafter is pre-release and this composition is an example rather than a
-//! deployment, so the cost of refusing is that an operator deletes a file from a
-//! scratch cluster, and the cost of guessing is a fenced replica in the one
-//! artifact whose whole purpose is to not lose retirement facts. A refusal an
-//! operator reads beats a silent wrong answer.
+//! deployment, so refusing costs an operator a deleted file from a scratch
+//! cluster. Weakening the trailing-bytes check costs every later reader.
 //!
 //! **The version tag refuses the shape and [`check_invariants`] refuses the
-//! semantics**, and both are needed because they catch it arriving by different
-//! routes. The tag turns away a version-4 *file*; nothing about a tag stops a
-//! well-formed version-5 file whose `through` line has been flipped to `-`, and
-//! that record is a migration this module declined to perform, written by hand.
-//! So the coupling is checked as a record invariant here, and again at
+//! semantics**, and both are needed because they catch damage arriving by
+//! different routes. The tag turns away a version-5 *file*; nothing about a tag
+//! stops a well-formed version-6 file whose `through` line has been flipped to
+//! `-`, and that record — a mark read against no membership, which spends every
+//! identity at or below it — is refused as a record invariant here, and again at
 //! [`PeerControlPlaneCheckpoint`] for a value that reached the driver by another
 //! route.
 //!
@@ -109,10 +92,11 @@
 //!
 //! # What a syntactically valid corruption must not do
 //!
-//! The three properties this file exists to protect, in the order they cost:
-//! **the mark must not fall**, **a live identity must not appear**, and **an
-//! active member must not be fenced**. A flipped bit inside a number is
-//! syntactically valid and does all three, which is why a version tag and a
+//! The two properties this file exists to protect, in the order they cost:
+//! **the mark must not fall**, and **a live identity must not disappear from the
+//! set the mark is read against** — which is the same as saying an active member
+//! must not be retired by the floor this record produces. A flipped bit inside a
+//! number is syntactically valid and does both, which is why a version tag and a
 //! parser were not enough. The checksum catches the flipped bit; the
 //! [invariant checks](decode) catch a record that is internally contradictory;
 //! and the driver refuses the same contradictions again at
@@ -132,8 +116,8 @@
 //! it was last written.** A crash between a change and its persistence loses
 //! that change and no more. This process writes whenever the driver's epoch
 //! moves, which is on every committed configuration that moves the retirement
-//! record and every fence the link layer accepts — so the window is one tick of
-//! the process loop. The deployment's monotonic `NodeId` allocator remains the
+//! record and on nothing else — so the window is one tick of the process
+//! loop. The deployment's monotonic `NodeId` allocator remains the
 //! cross-process backstop, exactly as `rafter::NodeId` states.
 //!
 //! # An absent file is a first boot only when the replica really is one
@@ -148,9 +132,9 @@
 //! The evidence is the recovered runtime's commit index, taken at
 //! [`load`]'s call site, and it is the right question rather than a convenient
 //! one: retirement is derived from *committed configurations*, so a replica
-//! whose commit index is zero has committed no configuration, retired no
-//! identity, and owes no fence. An empty checkpoint is not a guess for it, it is
-//! the same value the driver would derive anyway.
+//! whose commit index is zero has committed no configuration and retired no
+//! identity. An empty checkpoint is not a guess for it, it is the same value the
+//! driver would derive anyway.
 //!
 //! Probing the filesystem instead — "does `raft/` exist yet?" — was considered
 //! and is wrong for this composition's layout. [`super::replica::Replica::open`]
@@ -196,11 +180,13 @@ const CHECKPOINT_FILE: &str = "control-plane";
 
 /// The format tag, so a later shape is a refusal rather than a misreading.
 ///
-/// Version 5 replaced version 4's `live` and its two consumer offsets with one
-/// positioned current state. A version-4 file is refused rather than migrated;
-/// the module header says why no reading of the old fields dates the membership
-/// they carry.
-const FORMAT_TAG: &str = "rafter-lock-control-plane 5";
+/// Version 6 dropped version 5's `fences` line, because a driver no longer makes
+/// a per-principal fence: retirement is published as a floor and re-derived from
+/// the mark. A version-5 file is refused rather than migrated, and the module
+/// header says why — not because the mapping is unknowable this time, but
+/// because a decoder that learns to skip an unexpected line stops being able to
+/// refuse a truncated one.
+const FORMAT_TAG: &str = "rafter-lock-control-plane 6";
 
 /// Why a checkpoint could not be read or written.
 #[derive(Debug)]
@@ -268,8 +254,8 @@ impl std::error::Error for CheckpointError {}
 ///
 /// `commit_index` is the recovered runtime's durable commit floor, and it is the
 /// evidence that decides what an *absent* file means. Zero is a replica that has
-/// committed no configuration, so it has retired no identity and owes no fence:
-/// an empty checkpoint is not a guess for it but the same value the driver
+/// committed no configuration, so it has retired no identity: an empty
+/// checkpoint is not a guess for it but the same value the driver
 /// derives on its own. Anything above zero is a replica that has run, and an
 /// absent file there is a deleted artifact rather than a first boot — refused,
 /// because there is no second copy and nothing else on disk records what it
@@ -386,11 +372,6 @@ fn encode_body(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> String {
             text.push_str(&node_id.0.to_string());
         }
     }
-    text.push_str("\nfences");
-    for node_id in &checkpoint.pending_fences {
-        text.push(' ');
-        text.push_str(&node_id.0.to_string());
-    }
     text.push('\n');
     text
 }
@@ -472,9 +453,6 @@ fn decode(text: &str) -> Result<PeerControlPlaneCheckpoint<LockGroupId>, String>
             ))
         }
     }
-    for value in field(lines.next(), "fences")?.split_whitespace() {
-        checkpoint.pending_fences.insert(NodeId(parse_id(value)?));
-    }
     if lines.next().is_some() {
         return Err("unexpected lines before the checksum".to_owned());
     }
@@ -501,13 +479,14 @@ fn check_invariants(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> Res
     // configuration raises the mark to at least its greatest identity, and
     // assigns the current state in the same call because a first observation is
     // always the latest one a record has. Neither can stand alone.
-    let retired_something =
-        checkpoint.committed_id_high_water.is_some() || !checkpoint.pending_fences.is_empty();
     let live = checkpoint
         .current_committed
         .as_ref()
         .map(|current| &current.membership);
-    match (checkpoint.current_committed.as_ref(), retired_something) {
+    match (
+        checkpoint.current_committed.as_ref(),
+        checkpoint.committed_id_high_water.is_some(),
+    ) {
         (None, true) => {
             return Err(String::from(
                 "the record says what it retired and names no committed membership to \
@@ -535,33 +514,6 @@ fn check_invariants(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> Res
             return Err(format!(
                 "live member {node_id} is above the high-water mark {mark}"
             ));
-        }
-    }
-    for node_id in &checkpoint.pending_fences {
-        if live.is_some_and(|live| live.contains(node_id)) {
-            return Err(format!("{node_id} is fenced and also a live member"));
-        }
-        // Every fence has to sit at or below the mark, because a fence is the
-        // residue of a committed removal and a removal can only have spent an
-        // identity some committed configuration named. An identity *above* the
-        // mark was in no configuration this record saw, so this record cannot
-        // have watched it leave one — and a driver that absorbed the obligation
-        // anyway would raise its mark past a replica another record calls live,
-        // publish that replica, and then fence it forever.
-        match checkpoint.committed_id_high_water {
-            Some(mark) if *node_id <= mark => {}
-            Some(mark) => {
-                return Err(format!(
-                    "{node_id} is fenced and sits above the high-water mark {mark}, \
-                     so no committed removal here spent it"
-                ))
-            }
-            None => {
-                return Err(format!(
-                    "{node_id} is fenced with no high-water mark, so no committed \
-                     configuration here ever named it"
-                ))
-            }
         }
     }
     Ok(())

@@ -27,7 +27,7 @@ use std::{
 
 use rafter::NodeId;
 use rafter_service::{
-    AuthenticatedPeerEnvelope, AuthenticatedPeerValidator, PeerEnvelope, PeerSet, RaftTransport,
+    AuthenticatedPeerEnvelope, AuthenticatedPeerValidator, PeerEnvelope, PeerPolicy, RaftTransport,
     SnapshotChunkEnvelope,
 };
 
@@ -260,24 +260,13 @@ impl RaftTransport<LockGroupId> for NodeTransport {
     fn update_peers(
         &self,
         group_id: &LockGroupId,
-        peers: PeerSet<Self::PeerPrincipal>,
+        policy: PeerPolicy<Self::PeerPrincipal>,
     ) -> Result<(), Self::Error> {
         if *group_id != GROUP_ID {
             return Err(TransportError::UnknownGroup);
         }
-        self.directory.replace_authorized(peers.into_peers());
-        Ok(())
-    }
-
-    fn fence_peer(
-        &self,
-        group_id: &LockGroupId,
-        peer: Self::PeerPrincipal,
-    ) -> Result<(), Self::Error> {
-        if *group_id != GROUP_ID {
-            return Err(TransportError::UnknownGroup);
-        }
-        self.directory.fence(&peer);
+        self.directory
+            .install_policy(policy.retirement_floor(), policy.into_peers());
         Ok(())
     }
 }
@@ -294,8 +283,12 @@ struct DirectoryState {
     known: BTreeMap<PeerPrincipal, NodeId>,
     /// The principals currently allowed to speak, set through `update_peers`.
     authorized: BTreeSet<PeerPrincipal>,
-    /// Principals refused regardless of authorization.
-    fenced: BTreeSet<PeerPrincipal>,
+    /// The greatest identity the group has ever committed, as last published.
+    ///
+    /// An identity at or below this that `authorized` does not name is retired.
+    /// Kept as a maximum, so a link that misses a publication retires fewer
+    /// identities rather than un-retiring one.
+    retirement_floor: Option<NodeId>,
 }
 
 impl PeerDirectory {
@@ -319,16 +312,11 @@ impl PeerDirectory {
         directory
     }
 
-    fn replace_authorized(&self, peers: Vec<PeerPrincipal>) {
-        let mut state = lock(&self.shared);
-        state.authorized = peers.into_iter().collect();
-    }
-
     /// Names and authorizes one principal the cluster's membership does not.
     ///
     /// The deployment knowing about a replica the cluster does not name is the
     /// ordinary state of affairs in the window between a committed removal and
-    /// a fence the link layer has accepted — and this lock cluster's membership
+    /// the policy the link layer has accepted — and this lock cluster's membership
     /// never changes, so the window cannot be produced by reconfiguring it.
     /// Widening the directory by hand puts the validator and the group in
     /// exactly the disagreement a late frame from a retired replica creates.
@@ -342,8 +330,14 @@ impl PeerDirectory {
         state.authorized.insert(principal);
     }
 
-    fn fence(&self, peer: &PeerPrincipal) {
-        lock(&self.shared).fenced.insert(peer.clone());
+    fn install_policy(&self, retirement_floor: Option<NodeId>, peers: Vec<PeerPrincipal>) {
+        let mut state = lock(&self.shared);
+        state.authorized = peers.into_iter().collect();
+        state.retirement_floor = match (state.retirement_floor, retirement_floor) {
+            (Some(held), Some(published)) => Some(held.max(published)),
+            (held, None) => held,
+            (None, published) => published,
+        };
     }
 }
 
@@ -384,12 +378,14 @@ impl AuthenticatedPeerValidator<LockGroupId, PeerPrincipal> for PeerDirectory {
             .any(|peer| state.known.get(peer) == Some(&node_id))
     }
 
+    /// Derived from the published policy rather than recorded per principal.
     fn is_fenced_peer(&self, _group_id: &LockGroupId, node_id: NodeId) -> bool {
         let state = lock(&self.shared);
-        state
-            .fenced
-            .iter()
-            .any(|peer| state.known.get(peer) == Some(&node_id))
+        state.retirement_floor.is_some_and(|floor| node_id <= floor)
+            && !state
+                .authorized
+                .iter()
+                .any(|peer| state.known.get(peer) == Some(&node_id))
     }
 }
 

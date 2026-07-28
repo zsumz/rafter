@@ -406,8 +406,9 @@ criterion.
 The allocation clause is the deployment's half of a contract Rafter states and
 cannot enforce for it. A `NodeId` is single-use within its group: a committed
 removal retires it, and a replacement replica joins under a fresh one, because
-the transport fence that removal installs is permanent for the removed
-replica's principal. Rafter enforces this within one driver's lifetime and says
+the retirement floor a driver publishes to its link layer covers every identity
+at or below the greatest the group has ever committed that the peer set does not
+name. Rafter enforces this within one driver's lifetime and says
 so in `rafter::NodeId`'s own documentation; enforcing it across restarts needs
 a durable record of what has been allocated, and how long to keep one is a
 retention decision — classification 2, the same ground on which the counter's
@@ -436,13 +437,13 @@ nothing retires and nothing changes for it. That is the lock's process suite
 working as intended, not an exception to the rule above.
 
 **A production composition persists the driver's peer control plane.** The
-derivation above reads a high-water mark, the live committed set, and the fences
-the link layer has not accepted, and a restarted process can rebuild none of
-them: retirement is the *difference* between two committed configurations, a new
-process observes only the latest, and compaction erases the rest. A process that
-dropped them would stop retrying a refused fence and would let an identity a
-committed removal spent be allocated again — the same window the monotonic
-allocator is the last backstop for. So the composition reads
+derivation above reads a high-water mark and the live committed set it is judged
+against, and a restarted process can rebuild neither: retirement is the
+*difference* between two committed configurations, a new process observes only
+the latest, and compaction erases the rest. A process that dropped them would
+publish a floor that covers nothing and would let an identity a committed removal
+spent be allocated again — the same window the monotonic allocator is the last
+backstop for. So the composition reads
 `TransportRaftDriver::control_plane_checkpoint`, makes it durable under whatever
 crash discipline it already uses for small metadata, and hands it back at
 `TransportRaftDriver::with_control_plane_checkpoint`. Persist on
@@ -452,7 +453,7 @@ more.
 
 The fenced lock is where this is wired, and it is wired in the consumer that does
 not need it. Its contract says its cluster performs no membership changes, so its
-checkpoint names one committed set and one mark and never grows an obligation —
+checkpoint names one committed set and one mark and never records a removal —
 which is the point: a persistence path that exists only in the consumer that
 exercises it is a path nobody has run. What a *removal* costs across a restart is
 proven where a driver can be destroyed and rebuilt at all,
@@ -461,8 +462,8 @@ proven where a driver can be destroyed and rebuilt at all,
 **A consumer that drives `rafter-app` directly has no control plane to persist.**
 The ledger is deliberately built on `rafter`, `rafter-app`, `rafter-runtime`, and
 `rafter-storage` and not on `rafter-service`, which is what makes it independent
-acceptance evidence for the app layer. Peer sets, fences, and identity retirement
-are the managed driver's, so none of this section's driver-level obligations
+acceptance evidence for the app layer. Peer authorization policy and identity
+retirement are the managed driver's, so none of this section's driver-level obligations
 reach it; its process composition owns the equivalent decisions itself.
 
 ## Verification Lanes

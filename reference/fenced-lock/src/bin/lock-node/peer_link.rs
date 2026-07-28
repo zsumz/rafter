@@ -15,7 +15,7 @@
 //! therefore always agrees with the message, and the mismatch check that exists
 //! in the validator contract can never fire here. Two of the validator's four
 //! questions are still answered for real — an unrouted group is refused, and a
-//! fenced member is refused — and the identity question is not answered at all.
+//! retired member is refused — and the identity question is not answered at all.
 //!
 //! That is stated rather than dressed up because dressing it up is the failure
 //! mode: a principal derived from the claim it is supposed to check looks like
@@ -104,7 +104,7 @@ use std::{
 
 use rafter::NodeId;
 use rafter_service::{
-    AuthenticatedPeerEnvelope, AuthenticatedPeerValidator, PeerEnvelope, PeerSet, RaftTransport,
+    AuthenticatedPeerEnvelope, AuthenticatedPeerValidator, PeerEnvelope, PeerPolicy, RaftTransport,
     SnapshotChunkEnvelope,
 };
 use rafter_transport_tcp_insecure::{message_sender, read_message_frame, write_message_frame_into};
@@ -271,27 +271,28 @@ impl RaftTransport<LockGroupId> for TcpPeerTransport {
         Err(LinkError::UnresolvedSnapshotChunk { to: envelope.to })
     }
 
+    /// Installs the whole policy, and never lowers the floor.
+    ///
+    /// One statement where there were two. The driver used to publish a peer set
+    /// here and retire replicas through a separate permanent `fence_peer` call;
+    /// it now hands over the authorized principals beside the greatest identity
+    /// the group has ever committed, and this directory derives both halves of
+    /// its inbound check from that one value.
+    ///
+    /// The floor is kept as a maximum because the trait allows it and because a
+    /// link that lowered one would re-authorize an identity the cluster spent
+    /// every time it fell behind a publication. The driver's floor is monotone,
+    /// so for a link that keeps up this is the value it was handed.
     fn update_peers(
         &self,
         group_id: &LockGroupId,
-        peers: PeerSet<Self::PeerPrincipal>,
+        policy: PeerPolicy<Self::PeerPrincipal>,
     ) -> Result<(), Self::Error> {
         if *group_id != GROUP_ID {
             return Err(LinkError::UnknownGroup);
         }
-        self.directory.replace_authorized(peers.into_peers());
-        Ok(())
-    }
-
-    fn fence_peer(
-        &self,
-        group_id: &LockGroupId,
-        peer: Self::PeerPrincipal,
-    ) -> Result<(), Self::Error> {
-        if *group_id != GROUP_ID {
-            return Err(LinkError::UnknownGroup);
-        }
-        self.directory.fence(&peer);
+        self.directory
+            .install_policy(policy.retirement_floor(), policy.into_peers());
         Ok(())
     }
 }
@@ -308,8 +309,13 @@ struct DirectoryState {
     known: BTreeMap<PeerPrincipal, NodeId>,
     /// The principals currently allowed to speak, set through `update_peers`.
     authorized: BTreeSet<PeerPrincipal>,
-    /// Principals refused regardless of authorization.
-    fenced: BTreeSet<PeerPrincipal>,
+    /// The greatest identity the group has ever committed, as last published.
+    ///
+    /// The other half of the same statement. An identity at or below this that
+    /// `authorized` does not name is one a committed removal spent, and it is
+    /// refused as retired rather than as merely unauthorized. Kept as a maximum:
+    /// this deployment never lowers a floor it has accepted.
+    retirement_floor: Option<NodeId>,
 }
 
 impl PeerDirectory {
@@ -331,12 +337,14 @@ impl PeerDirectory {
         directory
     }
 
-    fn replace_authorized(&self, peers: Vec<PeerPrincipal>) {
-        lock(&self.shared).authorized = peers.into_iter().collect();
-    }
-
-    fn fence(&self, peer: &PeerPrincipal) {
-        lock(&self.shared).fenced.insert(peer.clone());
+    fn install_policy(&self, retirement_floor: Option<NodeId>, peers: Vec<PeerPrincipal>) {
+        let mut state = lock(&self.shared);
+        state.authorized = peers.into_iter().collect();
+        state.retirement_floor = match (state.retirement_floor, retirement_floor) {
+            (Some(held), Some(published)) => Some(held.max(published)),
+            (held, None) => held,
+            (None, published) => published,
+        };
     }
 }
 
@@ -378,12 +386,19 @@ impl AuthenticatedPeerValidator<LockGroupId, PeerPrincipal> for PeerDirectory {
             .any(|peer| state.known.get(peer) == Some(&node_id))
     }
 
+    /// Derived from the published policy rather than recorded per principal.
+    ///
+    /// Retired means "at or below the floor and not authorized". The two halves
+    /// arrived together, so this cannot disagree with
+    /// [`PeerDirectory::is_authorized_peer`] about a replica the way a separate
+    /// fence set could.
     fn is_fenced_peer(&self, _group_id: &LockGroupId, node_id: NodeId) -> bool {
         let state = lock(&self.shared);
-        state
-            .fenced
-            .iter()
-            .any(|peer| state.known.get(peer) == Some(&node_id))
+        state.retirement_floor.is_some_and(|floor| node_id <= floor)
+            && !state
+                .authorized
+                .iter()
+                .any(|peer| state.known.get(peer) == Some(&node_id))
     }
 }
 

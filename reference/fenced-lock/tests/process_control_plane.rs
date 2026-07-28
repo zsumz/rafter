@@ -547,7 +547,7 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
     let before = std::fs::read_to_string(&checkpoint_path)
         .expect("a serving replica has published its control-plane checkpoint");
     assert!(
-        before.starts_with("rafter-lock-control-plane 5\n"),
+        before.starts_with("rafter-lock-control-plane 6\n"),
         "the file names its own format so a later shape is a refusal: {before:?}"
     );
     assert!(
@@ -575,8 +575,10 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
         "and the live committed set is this cluster's configuration: {before:?}"
     );
     assert!(
-        before.contains("fences\n"),
-        "a cluster that removed nobody owes no fence: {before:?}"
+        !before.contains("fences"),
+        "and carries no obligation ledger: retirement is the mark read against \
+         the live set, and version 6 dropped the line that used to say what a \
+         link layer had accepted: {before:?}"
     );
     // **The position travels with the membership it dates**, and a real replica
     // is where that stops being a type-level claim. This cluster never
@@ -595,11 +597,11 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
     let after = std::fs::read_to_string(&checkpoint_path)
         .expect("the restarted replica republishes what it restored");
     // The record is compared line by line rather than the whole file, because
-    // one line is *expected* to move. The three facts below are what a restart
+    // one line is *expected* to move. The two facts below are what a restart
     // must not re-derive differently; the position is where this replica last
     // looked, so it advances as the commit index does and would make a byte
     // comparison assert the opposite of the contract.
-    for fact in ["high_water", "live", "fences"] {
+    for fact in ["high_water", "live"] {
         assert_eq!(
             checkpoint_line(&after, fact),
             checkpoint_line(&before, fact),
