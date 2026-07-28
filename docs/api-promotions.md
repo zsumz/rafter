@@ -9373,6 +9373,346 @@ event re-attempts a refused policy per fact rather than per entry point, which
 turns the retry tests' countdown fixtures into successes.
 
 
+### Sixteenth revision after adoption (2026-07-28)
+
+A twelfth external review found **three completion items in the control plane** —
+construction atomicity, executable ancestry, and the contradiction lifecycle — one
+process-health P2, and three stale paragraphs. The reviewer states the model needs
+no further redesign, and every item below is a rule the model already implies that
+the code did not yet enforce. All four claims were reproduced with a failing test
+before anything changed, and the reproductions are quoted where the measurement
+disagreed with the prediction.
+
+#### 1. Construction published a policy licensed by an input it then refused
+
+**The staged transaction from the fifteenth revision was per batch, and
+construction is three batches.** A constructor over a recovered checkpoint reads
+three inputs in sequence: the durable record, every crossing the replay produces,
+and the runtime's final committed endpoint. Report routing ran one transaction and
+`publish_adopted_membership` ran another, so a replay whose crossings all folded
+cleanly *installed and published* — and the endpoint then refused the construction.
+
+The reviewer's counterexample, reproduced verbatim as
+`a_construction_whose_endpoint_refuses_publishes_nothing_its_replay_licensed`:
+durable log `[config {1,2,3,5}@8, config {1,2,3}@9, no-op@10]`, commit 10; record
+`{through 10, mark 4, current {1,2,3,4}}`. Both crossings stand *beneath* the
+record's position, so neither ties with it and both merge; the batch installs and
+the link layer is handed `peers {2,3,4}, floor 5`. Only then does the endpoint
+`{1,2,3}@10` meet the record's `{1,2,3,4}@10`, tie, and refuse. The measured
+failure was exactly that: `policies() == [([2,3,4], Some(5))]` on a constructor
+that returned `Err`.
+
+The trailing no-op is what makes the case reachable and is stated rather than
+tuned: with the commit index equal to the last configuration entry's index, the
+final crossing ties with the record and the batch refuses on its own. A leader's
+own election entry produces the gap in every real cluster.
+
+**`update_peers` is the external installation of the whole admission policy**, not
+scratch state. Nothing takes one back, and the process that stated it never
+started.
+
+**Decision: one construction-wide membership transaction.** The record, every
+recovery membership event, and the runtime's endpoint fold into one
+`MembershipCandidate`, with one installation and one `flush_peer_policy` behind
+it. `StagedMembership` holds the candidate and the first refusal on the driver,
+because construction's inputs are separated by the group's own stepping machinery
+and a local cannot span them. Everything loss-tolerant the replay produces — peer
+messages, snapshot directives, proposal and read resolutions — routes normally
+throughout, which is the same line the per-batch transaction already drew.
+
+**Adoption keeps the probe rather than the transaction, and that is a decision.**
+`adoption_candidate` runs the record's join and the runtime's endpoint check
+side-effect-free before the group is installed, so the pair that refuses
+construction here is refused there *before* anything can be published. What
+remains reachable at an adoption is a contradiction the recovery outputs
+themselves introduce, and that batch refuses whole and publishes nothing. Widening
+the transaction to span adoption would also have to preserve adoption's documented
+rule that the publication runs **whether or not the outputs applied** — the group
+is installed by then, so a policy describing the retired incarnation is wrong
+rather than stale — and the probe already buys the property without that
+interaction.
+
+#### 2. The transition's declared predecessor was discarded before it could
+validate ancestry
+
+The kernel computes `previous` on every crossing where the chronology is known;
+`MembershipEvent::Applied` carries it; `CommittedObservation::crossing` reduced it
+to `removed` and `named` and dropped the predecessor itself. So the merge never
+compared the held register against the transition's own claim about the position
+one below it.
+
+Reproduced on both paths. Checkpoint `{through 10, mark 3, current {1,2,3}}` with
+the next crossing `{index 11, previous {1,2,4}, membership {1,2}}`: no index exists
+between 10 and 11, so these are two claims about the committed configuration at 10.
+The measured result before the fix was mark 4 and live `{1,2}` — node 3 retired by
+the record-minus-transition inference *and* node 4 by the exact removal. Two
+identities consumed on the strength of a pair that proves the record and the log
+are not one chain.
+
+**Decision: retain `previous`, and check it where and only where it is adjacent.**
+`CommittedObservation` carries `previous: Option<BTreeSet<NodeId>>` — `None` for an
+endpoint, which declares no transition — and
+`CommittedObservation::membership_claimed_at` answers with the claim only when
+`held.through.next() == crossing.through`. `MembershipCandidate::check_ancestry`
+runs **before any mark, register, or policy change**, on both the folding path and
+the adoption probe, and compares the two spent-normalized memberships.
+
+**Why non-adjacent gaps are uncheckable, said out loud.** A crossing's `previous`
+is the membership in effect immediately before its own entry and is a claim about
+that position and no other. A register standing anywhere else is separated from
+the transition by entries this driver cannot see — ordinarily application entries,
+across which the committed membership does not move at all, and possibly
+configuration entries a compaction erased. Comparing across a gap would
+manufacture the contradiction rather than detect it, so the check stays silent
+there rather than guessing.
+
+**A new variant rather than reuse.** `ContradictoryTransitionPredecessor { through }`
+carries the *register's* position — the committed configuration the two disagree
+about, one below the transition — and is kept apart from
+`ContradictoryCurrentState` because the two point an operator at different
+artifacts. Two colliding observations could each be the damaged one; a transition
+colliding with a record is the log's own account of its own history, computed
+where the chronology was known, so what is wrong is the record beside the log. It
+is wired through `DriverServiceState` and `DriverUnavailableReason` on identical
+terms, and every refusal it produces is the same.
+
+#### 3. Terminal contradiction evidence was overwritten and then forgotten
+
+`contradicted_at` stopped the flush and nothing else. `route_membership_events`
+had no guard, so later batches kept installing candidates and advancing the
+checkpoint epoch; the embedder persisted the newer record; a crash restored it
+into a clean driver; and where the rebuilt runtime agreed at the newer position
+the replica went back to serving and to publishing retirement floors.
+
+Measured before the fix: the record moved from `{mark 3, through 10, {1,2,3}}` to
+`{mark 4, through 11, {1,2,3,4}}`, the epoch moved 1 → 2, and the reconstructed
+driver reported `Serving` and published `([2,3,4], floor 4)`. The unresolved
+same-position fork disappeared across a restart.
+
+**Decision, both halves of the lifecycle.**
+
+**The durable record freezes.** `assign_membership` — the one installer every
+other path goes through — writes the two runtime facts and then returns without
+touching the mark, the register, or the epoch once a contradiction is recorded.
+
+**The live half deliberately does not freeze with it**, and this is a deviation
+from the literal instruction worth naming. The reviewer asked that ordinary
+reconciliation not modify *the checkpointable control-plane fields*, which is
+exactly what is implemented; the first attempt froze the whole reconciliation and
+was measured to be wrong. `effective_members` and `committed_members` are what the
+inbound admission check reads, and a contradicted driver is explicitly still a
+useful follower that keeps stepping — freezing them refuses frames from every
+replica the cluster admits afterwards, which stops the catch-up the terminal state
+allows. Nothing is derived from the two halves jointly: the flush is guarded, so
+they cannot come apart in anything this driver *states*. The measurement that
+caught it was
+`a_runtime_that_contradicts_the_register_stops_serving_and_stops_publishing`,
+whose second half widens the effective membership after the contradiction and
+asserts the driver knows its link layer is behind.
+
+**The marker becomes durable.** `PeerControlPlaneCheckpoint` gains
+`contradicted_at: Option<LogIndex>`, and `record_contradiction` moves the
+checkpoint epoch — it is the *only* checkpointable change a contradiction makes,
+since the batch that produced it installed nothing, so an embedder persisting on
+the epoch would otherwise never write the one record that says this replica must
+not serve again. A restored marker starts the driver in
+`ContradictoryCurrentState`: refusing clients, publishing nothing, stepping Raft.
+
+**The record carries the position and not which comparison found it**, and the
+narrowing is deliberate. Both terminal shapes mean the same thing to a restarted
+process; which one it was is a diagnosis the process that found it already
+emitted, and a durable field for it would be one more thing a hand-edited file can
+lie about without changing the answer.
+
+**Two new validation invariants**, refused at the driver and again at the
+reference decoder. `contradicted_at.is_some() ⟹ current_committed.is_some()`,
+because a contradiction is a disagreement *between* the register and something
+else and a driver that observed nothing cannot record one. And
+`contradicted_at ≥ current_committed.through`, because the register freezes the
+moment the marker is set — the inequality rather than an equality, since the
+candidate that found the contradiction may already have folded earlier facts of
+the same batch and stood ahead of the register the driver kept.
+
+**The join rule: resumed, never merged.** A marked record may be restored by
+`with_control_plane_checkpoint`, which takes it into empty held state and is this
+chain resuming itself — the marker has to survive that or the terminal state ends
+at the next crash. It is refused by `adopt_group_with_checkpoint` with
+`ContradictedRecordMerged { through }`, because a marked record is evidence of an
+unresolved fork and merging one into a running driver takes that chain's
+retirement conclusions on trust while losing the marker in the join. The line falls
+exactly where the fifteenth revision's chain rule already put it, and refusing
+costs nothing: the file is still on the embedder's disk and the constructor is the
+supported way to read one back.
+
+**The version-6 decision, weighed honestly.** The reference's control-plane format
+goes to **v7** with a `contradicted` line, and a v6 file is refused rather than
+migrated. The obvious migration — "no marker, so read it as uncontradicted" — is
+precisely the statement a v6 file cannot support: before the marker existed a
+contradicted driver went on folding later facts into its record and advancing its
+epoch, so a v6 file may have been written *past* a contradiction in a format with
+nowhere to say so, and nothing distinguishes such a file from an honest one.
+Reading either as clean is the forgetting v7 exists to end. The reader argument
+version 6 made about version 5 stands beside it and is now the weaker of the two.
+
+#### 4. The reference process reported ready while terminally contradicted
+
+`STATUS` rendered the application-floor readiness bit without consulting
+`driver.service_state()`, and the loop moved to `State::Failed` only for
+persistence failures. A replica whose driver had declared its own inputs
+untrustworthy went on answering `ready`, went on accepting client work, and never
+exited.
+
+**Decision: contradiction terminates the process, on the persistence-failure
+path.** `TerminalFailure` names the two endings — `Unpersisted` and
+`Contradicted` — with a lifecycle line each (`CONTROL_PLANE_UNPERSISTED`,
+`CONTROL_PLANE_CONTRADICTED`), an `ABANDONED` detail for clients, and one
+`stop_outcome` that turns either into `FATAL` and a nonzero exit. `STOPPED` and
+both terminal failures stay mutually exclusive.
+
+**Only the two contradictions terminate**, and the predicate says why:
+`NotMember` and `Released` end by themselves, `Decommissioned` is a replica the
+cluster deliberately removed — an operator retires that process, and dying here
+would turn an orderly removal into a crash — and `ShuttingDown` is this process
+already stopping. `DriverServiceState` is `#[non_exhaustive]`, so a variant this
+build cannot name lands in a wildcard that deliberately does **not** terminate: a
+state it cannot name is not a state it can claim is unrecoverable.
+
+**Readiness folds the driver in**, as a free function `readiness(caught_up,
+service_state)` beside `combine_outcomes` and `stop_outcome`. The applied-floor
+gate stays one-way; the conjunction can fall, which is correct, because what it
+answers is "may a client use this replica now" and that is not a property that
+only ever improves. The match is written so an unknown variant reads as *not*
+ready.
+
+#### Doc cleanup
+
+| site | was | now |
+| --- | --- | --- |
+| `InboundEnvelopeError::NotInMembership` | "the fence for it has not been accepted yet" | the link layer holds a stale `PeerPolicy` whose floor does not yet reach the spent identity |
+| `Replica::non_member_frames`, `LINK` line | "a fence the transport has accepted" | the policy publication whose retirement floor reaches it |
+| `Replica::persist_control_plane` | "a fence the link layer finally accepted" | the marker a contradiction sets; and why a publication moves no epoch |
+| `PeerControlPlaneCheckpoint` | "a stale checkpoint is a legal, order-free input" | a stale **prefix of the same authoritative chain**, **at construction** — both qualifications load-bearing, with the adoption-side `StaleCurrentState` named |
+| `PeerControlPlaneCheckpoint` × 2 | `observe_committed_members`, `restore_control_plane_checkpoint` | the names those items actually have |
+
+#### The lifecycle matrix, re-audited
+
+**The merge-sites table gains an ancestry column**, and two rows' transactional
+answer changed.
+
+| site | proven removals | predecessor checked | tie refuses | transactional with | test |
+| --- | --- | --- | --- | --- | --- |
+| checkpoint × checkpoint | none — a record carries no transition | no — a record declares no predecessor | yes, plus the chain rule beneath it | nothing else; installs without publishing | `two_records_that_disagree_at_one_position_are_refused`, `a_record_from_before_this_drivers_own_observation_is_refused` |
+| checkpoint × adopted runtime, before installation | none | yes — the probe runs the same check | yes, with no group installed | the join, in one candidate | `a_refused_adoption_keeps_neither_the_record_nor_the_epoch_nor_the_policy` |
+| held state × routed endpoint | none | no — an endpoint carries no `previous` | yes, recorded on the live path | every membership event of the same report | `a_contradictory_report_publishes_no_intermediate_policy` |
+| held state × crossing | `previous ∖ configuration` | **yes, when adjacent** | yes | **every input of the whole construction** | `a_crossing_whose_predecessor_contradicts_the_record_refuses_to_open`, `a_live_crossing_whose_predecessor_contradicts_the_register_stops_the_driver` |
+| held state × runtime endpoint at construction | none | no | yes | **every input of the whole construction** | `a_construction_whose_endpoint_refuses_publishes_nothing_its_replay_licensed` |
+
+**Corrected rows in the published-policy table.**
+
+| lifecycle point | fifteenth revision said | now |
+| --- | --- | --- |
+| recovery-output replay at construction | "published once per report" | published **once per construction**, or not at all |
+| `with_control_plane_checkpoint` | "the endpoint fold that follows the restore publishes" | the endpoint fold **closes one transaction spanning the record, the replay, and itself** |
+| a contradicted driver's later batches | absorbed; the record moved and the epoch advanced | the **durable record freezes**; the two runtime facts keep tracking |
+| a contradicted driver's checkpoint epoch | moved on every later fact | moves **once**, when the marker is recorded |
+| a restored record carrying a marker | not representable | starts the driver in `ContradictoryCurrentState`, refusing and publishing nothing |
+| `adopt_group_with_checkpoint` with a marked record | not representable | **refused** with `ContradictedRecordMerged` |
+| the reference process on a contradiction | `STATUS ready`, no exit | `CONTROL_PLANE_CONTRADICTED`, `FATAL`, nonzero exit, never ready |
+
+**New cells.**
+
+| cell | answer |
+| --- | --- |
+| crossing at `n+1`, register at `n`, predecessors differ | refused as `ContradictoryTransitionPredecessor { through: n }`, before any field moves |
+| crossing at `n+2` or beyond, register at `n` | **not checked**, and named as uncheckable: the entries between them may be application entries |
+| endpoint at any position | never checked for ancestry; it declares no predecessor |
+| a marked record offered to a constructor | resumed, marker carried, nothing published |
+| a marked record offered to an adoption | refused; the driver keeps its own state and its group slot stays empty |
+| a marked record with no register | refused, `ContradictionWithoutCurrentState` |
+| a marker beneath its own register | refused, `ContradictionBeneathCurrentState` |
+| a marker above its own register | **accepted** — the candidate that refused may have folded earlier facts of the batch first |
+| a v6 control-plane file | refused; it may have been written past a contradiction it could not record |
+
+**Uncovered, and named rather than omitted:**
+
+- **A record-sourced readmission is not counted.** Unchanged from the fifteenth
+  revision.
+- **The two-record prefix `B, C`.** Unchanged.
+- **A transport that persists its accepted policy across a process.** Unchanged.
+- **A group whose `NodeId` allocation is non-monotonic across a compaction
+  boundary.** Unchanged.
+- **A contradiction found across a non-adjacent gap.** By construction: see
+  section 2. A crossing separated from the register by any distance makes no claim
+  the register can be compared against, so a fork whose only evidence is such a
+  pair is not detected here. The chain rule, the equal-position tie, and the
+  adjacent-predecessor check are the three detectors; a fork that evades all three
+  is one no local reasoning can see.
+- **Which of the two contradictions a restored marker was.** Deliberate: the
+  record carries the position only, and a restored marker reports the general
+  variant.
+- **A reference process contradicted *while running*.** The process suite reaches
+  the terminal state through a hand-written marker, because a contradiction needs
+  a runtime that breaks its own contract and a spawned process cannot be asked to.
+  The live path is covered at the driver level, where a runtime can be scripted.
+
+#### Blast radius of the sixteenth revision
+
+**Kernel: none.** `crates/rafter/` and `crates/rafter-app/` are untouched, and the
+detector-replay inventory is deliberately not re-pinned.
+
+| file | change |
+| --- | --- |
+| `crates/rafter-service/src/driver/transport/observation.rs` | `CommittedObservation` retains `previous`; `membership_claimed_at` added |
+| `crates/rafter-service/src/driver/transport/reconciliation.rs` | `StagedMembership`; `open_membership_transaction` / `commit_membership_transaction`; `fold_membership_events` split out; `check_ancestry`; the freeze in `assign_membership`; `assign_runtime_membership` |
+| `crates/rafter-service/src/driver/transport/checkpoint.rs` | `contradicted_at` on the record, its two invariants, `RecordJoin`, the restored marker returned; the stale-checkpoint paragraph qualified |
+| `crates/rafter-service/src/driver/transport/condition.rs` | new — `Contradiction` and `DriverServiceState`, split out of `state.rs` under the size guard |
+| `crates/rafter-service/src/driver/transport/sender.rs` | new — the `DriverCommandSender` impl, split out of `transport.rs` under the size guard |
+| `crates/rafter-service/src/driver/transport/state.rs` | `contradicted_at` → `contradiction`; `staged_membership` added |
+| `crates/rafter-service/src/driver/transport/policy.rs` | the new variant in `service_state` and `reject_if_not_serving` |
+| `crates/rafter-service/src/driver/transport/error.rs` | the `NotInMembership` prose correction |
+| `crates/rafter-service/src/driver/transport.rs` | the constructor opens and commits one transaction |
+| `crates/rafter-service/src/driver/mapping.rs` | four `ControlPlaneCheckpointError` variants added |
+| `crates/rafter-service/src/error/vocabulary.rs` | `DriverUnavailableReason::ContradictoryTransitionPredecessor` |
+| `reference/fenced-lock/src/bin/lock-node/control_plane.rs` | format v7: the `contradicted` line, its two invariants, the v6 refusal argument |
+| `reference/fenced-lock/src/bin/lock-node/replica.rs` | `readiness`, `terminal_control_plane_failure`, two prose corrections |
+| `reference/fenced-lock/src/bin/lock-node/main.rs` | `TerminalFailure`, `terminal_failure`, the contradiction arm of the loop, `stop_outcome` |
+
+#### Focused-test plan for the sixteenth revision
+
+| mechanism | neutralization | fails |
+| --- | --- | --- |
+| the construction-wide staging | restore the record and publish the endpoint separately, as before the fix | 2: `a_construction_whose_endpoint_refuses_publishes_nothing_its_replay_licensed`, `a_crossing_whose_predecessor_contradicts_the_record_refuses_to_open` |
+| the predecessor adjacency check | `check_ancestry` returns `Ok(())` | 2: `a_crossing_whose_predecessor_contradicts_the_record_refuses_to_open`, `a_live_crossing_whose_predecessor_contradicts_the_register_stops_the_driver` |
+| the frozen-fields guard | drop the `contradiction.is_some()` early return in `assign_membership` | 1: `a_contradicted_driver_freezes_its_record_and_carries_the_marker_across_a_restart` |
+| the durable marker restore | `restore_checkpoint` returns `Ok(None)` | 3: `a_contradicted_driver_freezes_its_record_and_carries_the_marker_across_a_restart`, `a_marked_record_is_refused_at_an_adoption_and_resumed_by_a_constructor`, `a_resumed_marked_driver_still_admits_the_cluster_it_belongs_to` |
+| the process terminal policy | `terminal_control_plane_failure` returns `None` | 1: `a_contradicted_control_plane_record_stops_the_process` |
+| the readiness fold | `readiness` ignores the service state | 1: `no_refusing_driver_state_reports_ready` |
+| persisting the marker | `encode_body` always writes `contradicted -` | 1: `a_contradicted_record_round_trips` |
+
+**Two near-misses, both recorded because the first measurement disagreed with the
+prediction.**
+
+**The readiness fold was uncovered when it was first written.** Neutralizing it
+failed *nothing*: the process-level regression asserts that no `READY` line is
+emitted, and the loop's terminal check runs at the top of the `Serving` arm while
+the readiness announcement sits at the bottom — so the process transitions to
+`Failed` before the announcement is ever reached, whatever `is_ready` answers. The
+assertion measured the terminal check twice and the readiness rule not at all. The
+repair is the repo's own idiom for exactly this: `readiness` became a free
+function beside `combine_outcomes` and `stop_outcome`, and
+`no_refusing_driver_state_reports_ready` pins every arm of it. It kills the
+mutation.
+
+**Neutralizing the construction-wide staging fails a P1-2 test as well as its
+own.** That is the two items meeting rather than a stray coupling: with the
+transaction gone, a crossing that refuses during the replay records on the driver
+and nothing asks about it before the constructor returns, so the driver *opens*
+contradicted instead of refusing. The pre-fix code carried an explicit
+`recorded_contradiction()` check after the replay for that reason; the transaction
+subsumes it, and the coupling is the honest reading of why the check existed.
+
+
+
 ## Terminal Driver Vocabulary
 
 ### Origin
