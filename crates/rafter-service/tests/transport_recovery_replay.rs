@@ -648,3 +648,58 @@ fn an_adoption_still_spends_an_identity_its_recovery_outputs_admitted_and_remove
         "and the link layer took the fence the removal licensed"
     );
 }
+
+/// A replay whose second crossing contradicts the restored record tells the link
+/// layer nothing, including what its first crossing licensed.
+///
+/// **The recovery half of the staged membership transaction.** One recovery
+/// report carries every crossing the replay produced, in index order, and the
+/// constructor asks whether any of them contradicted the record only after the
+/// whole report has been routed. A driver that installed and published each
+/// crossing as it read it therefore stated a peer set and a floor from crossing 1
+/// and *then* refused to open on crossing 2 — leaving the transport it was handed
+/// holding a permanent statement made by a process that never started.
+///
+/// The record here stands at index 3 and calls the committed membership
+/// `{1,2,3,4}` there; the kernel's own transition at index 3 says `{1,2,3}`. That
+/// is a record disagreeing with the log about a single fact, which is what the
+/// equal-position arm exists to refuse — and the crossing at index 2 beneath it
+/// is entirely valid, which is what makes the report a prefix worth protecting.
+#[test]
+fn a_contradictory_replay_leaves_the_transport_it_was_handed_untouched() {
+    let mut record = PeerControlPlaneCheckpoint::empty(GROUP);
+    record.committed_id_high_water = Some(NodeId(4));
+    record.current_committed = Some(CurrentCommittedState::new(
+        LogIndex(3),
+        [1, 2, 3, 4].into_iter().map(NodeId).collect(),
+    ));
+
+    let (opened, transport) = try_recover_node_with(
+        NodeId(1),
+        &[NodeId(2), NodeId(3)],
+        record,
+        [&[1, 2, 3, 4], &[1, 2, 3]],
+    );
+
+    assert!(
+        matches!(
+            opened,
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::ContradictoryCurrentState {
+                    through: LogIndex(3)
+                }
+            })
+        ),
+        "got {opened:?}"
+    );
+    assert!(
+        transport.policies().is_empty(),
+        "a process that refused to open published nothing, and the valid crossing \
+         beneath the contradiction is not an exception: {:?}",
+        transport.policies()
+    );
+    assert!(
+        !transport.retires(NodeId(4)),
+        "so no floor was raised over an identity this process never settled on"
+    );
+}

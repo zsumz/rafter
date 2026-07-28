@@ -25,6 +25,16 @@
 //! no opinion about that, and a floor left at the pre-catch-up configuration
 //! de-authorized every replica the catch-up admitted the moment an uncommitted
 //! narrowing arrived over it.
+//!
+//! **The eleventh round found the other half of the same cell.** Separating the
+//! floor from the record fixed what the driver publishes *after* the catch-up and
+//! left what it publishes *before* one wrong in the permanent direction: with the
+//! runtime's `{1,2,3}` as the whole peer set and the record's mark of 4 as the
+//! floor, node 4 is beneath the floor and outside the set, which is the wire
+//! definition of retired. The record's own later observation names it live. So
+//! authorization is the union of the two runtime facts *and* the register, while
+//! the raw floor stays the runtime's alone — the fields keep their separate
+//! meanings, and only the derivation over them widened.
 
 mod support;
 
@@ -231,25 +241,42 @@ fn principals(node_ids: &[u64]) -> Vec<Principal> {
         .collect()
 }
 
-/// Construction under an ahead record still publishes the configuration the
-/// runtime actually recovered under.
+/// Construction under an ahead record publishes the runtime's configuration and
+/// the record's together.
 ///
-/// The baseline the four cases below are read against. Nothing here is
-/// surprising and that is the point: the endpoint publication assigns its raw
-/// membership whatever the record says, so a record standing at 10 over a runtime at
-/// commit 2 still puts `{1,2,3}` in front of the link layer. The checkpoint's
-/// own live set names node 4 as well, and it is deliberately *not* published —
-/// a retirement record says what this driver has spent, never what the cluster
-/// has committed now.
+/// The baseline the four cases below are read against, and **the tenth round's
+/// answer here was the wrong half of the truth.** The raw floor does come from
+/// the runtime — `{1,2,3}` is what this replica's own stream says the cluster has
+/// committed — and the record's live set was withheld from the peer set on the
+/// grounds that a retirement record says what has been *spent* rather than what
+/// is committed now.
+///
+/// That reading published a policy retiring node 4: the floor is the mark, the
+/// mark is 4, and an identity at or below the floor that the peer set does not
+/// name is retired by definition. So the driver stated permanently that a replica
+/// its own durable record calls live may never speak again — and if node 4 were
+/// the leader, the frames that would have advanced this runtime past the record
+/// were exactly the frames being refused.
+///
+/// The record's positioned observation is the later one, so it is the better
+/// evidence about who is committed, and authorization takes all three sets in
+/// union. What the record still does not do is become the raw floor: the two
+/// questions stay separate, which the cases below depend on.
 #[test]
 fn construction_under_an_ahead_record_publishes_the_recovered_configuration() {
     let (driver, transport) = recover_under_ahead_record(NodeId(1), &[NodeId(2), NodeId(3)]);
 
     assert_eq!(
         transport.peer_sets().last().expect("a set was published"),
-        &principals(&[2, 3]),
-        "the runtime recovered under {RECOVERED:?}, and that is what the link \
-         layer is owed"
+        &principals(&[2, 3, 4]),
+        "the runtime recovered under {RECOVERED:?} and the record observed node 4 \
+         committed later, so the link layer is owed both"
+    );
+    assert!(
+        !transport.retires(NodeId(4)),
+        "and above all node 4 is not retired, which is what publishing the \
+         runtime's set alone beneath a mark of 4 amounts to: {:?}",
+        transport.policies().last()
     );
     assert_eq!(driver.service_state(), DriverServiceState::Serving);
     assert_eq!(

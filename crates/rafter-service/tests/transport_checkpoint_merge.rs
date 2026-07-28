@@ -1,28 +1,34 @@
 //! Joining a recovered checkpoint into a driver, and what a join must never do.
 //!
-//! A checkpoint is allowed to be stale — the public contract says so, and bounds
-//! what staleness costs — so a *valid* record that predates a removal is an
-//! ordinary input rather than a corruption. The join therefore has to be a
-//! lattice join and not three independent merges: taking the union of the two
-//! live sets makes a stale record's memory of a since-removed replica outrank
-//! the removal the driver actually watched, and the identity the cluster
-//! consumed becomes adoptable again.
+//! A checkpoint is allowed to be behind the runtime it is restored beside — the
+//! public contract says so, and bounds what that costs — so a *valid* record that
+//! predates a removal is an ordinary input rather than a corruption. The join
+//! therefore has to be a lattice join and not three independent merges: taking
+//! the union of the two live sets makes a record's memory of a since-removed
+//! replica outrank the removal the driver actually watched, and the identity the
+//! cluster consumed becomes adoptable again.
 //!
-//! The three properties the join is written to have — symmetric, order-free,
-//! monotone in spent-ness — are argued at
-//! `TransportDriverState::restore_control_plane_checkpoint`. This file is the
-//! evidence for them, plus the validation that keeps a damaged record from being
-//! absorbed in part.
+//! The properties the join is written to have — symmetric, monotone in
+//! spent-ness, and order-free *along one chain* — are argued at the
+//! crate-internal `restore_checkpoint`. This file is the evidence for them, plus
+//! the validation that keeps a damaged record from being absorbed in part.
 //!
-//! **Order-freedom is asserted over the *effects*, not only over the settled
-//! record**, and that is what it was missing. The join used to have one output
-//! that was not a lattice operation — the fence obligations it derived, which
-//! were filtered by how much spent-ness had accumulated by the time the
-//! inference fired — so three records could reach the same state by two orders
-//! and owe different fences. There is no such output now: retirement is a floor
-//! the driver republishes from state it still holds. The permutation test below
-//! asserts the identities the *link layer* ends up retiring as well as the record
-//! the driver ends up holding.
+//! **Order-freedom is claimed over one chain and no wider, and that narrowing is
+//! the eleventh round's.** It used to be claimed over arbitrary records, and was
+//! only ever checked against mutually reconcilable ones. It is false for records
+//! that conflict: the register keeps one positioned observation, so two records
+//! that contradict each other are compared only while the register still stands
+//! where they do, and any later record moves it past them. `(A∨B)∨C` refuses at
+//! the collision while `A∨(B∨C)` never sees it.
+//!
+//! What replaces the wider claim is a rule on the *input*: a record standing
+//! before what the driver already observed is refused, because along one chain it
+//! cannot arise and across a fork it is exactly that laundering vector. The
+//! supervisor owns chain identity; a record from before this driver existed goes
+//! to the constructor, which restores into empty state. The chain property that
+//! survives is the one an embedder depends on — a crash loses a suffix of its own
+//! writes, and which prefix of its chain it kept does not change where it
+//! settles.
 
 #![allow(clippy::wildcard_imports)]
 
@@ -44,11 +50,19 @@ fn ids(node_ids: &[u64]) -> BTreeSet<NodeId> {
 
 /// Where a hand-built record observed the committed membership.
 ///
-/// Below the scripted runtime's commit index on purpose, so every adoption's
-/// endpoint publication is the later observation and still lands. These tests
-/// are about the identity lattice, and a fixture whose record outranked the
-/// runtime would be measuring the register's ordering instead.
-const OBSERVED_AT: LogIndex = LogIndex(1);
+/// **Above the scripted runtime's commit index on purpose**, which is the
+/// inversion the chain rule forces. A driver's register ends up at the later of
+/// its record and its runtime, so a record at or after this position is the one a
+/// mid-life adoption may still offer — and every adoption's endpoint publication
+/// is then the older observation, which contributes nothing and leaves these
+/// cases measuring the identity lattice rather than the register's ordering.
+const OBSERVED_AT: LogIndex = LogIndex(9);
+
+/// Where a record offered *after* one at [`OBSERVED_AT`] stands.
+///
+/// The next link of one chain. Records at one position meet the contradiction
+/// arm, which is a different rule and has its own cases.
+const LATER_AT: LogIndex = LogIndex(12);
 
 /// A checkpoint built by hand, the way a durable file hands one back.
 ///
@@ -189,122 +203,138 @@ fn the_join_is_symmetric_in_the_two_records() {
     );
 }
 
-/// Three records in any order reach the same state.
+/// One chain settles the same wherever its own prefix was lost.
 ///
-/// Order-freedom is what makes a supervisor's recovery sequence unimportant: a
-/// takeover that reads two peers' checkpoints and its own has no correct order
-/// to apply them in, and must not need one.
+/// **The order-freedom claim, narrowed to what is true and to what an embedder
+/// depends on.** A replica's records form a chain — each incarnation is handed
+/// the previous record before it observes anything — and a crash can lose any
+/// suffix of its own writes. So the question that matters is not "any order" but
+/// "which links survived": a supervisor that persisted `R1, R2, R3` and one that
+/// lost `R2` must settle on the same record, and the one that lost `R2` must
+/// still spend everything `R2` witnessed.
+///
+/// That is the property the register buys and the union could not. `R2` names
+/// nodes 3 and 4 nowhere and stands at 10; `R3` names them nowhere either and
+/// stands at 12. A driver that skipped straight from `R1` to `R3` infers both
+/// removals from the pair it does have, because being named at 7 and absent at 12
+/// is a committed removal whichever record in between it never saw.
+///
+/// The runtime stands at commit 0 naming `{1}`, beneath every record and inside
+/// every one of them, so the adoption publication contributes no inference of its
+/// own and this is measuring the join.
 #[test]
-fn the_join_is_order_free_across_three_records() {
-    let records = [
-        checkpoint(Some(4), &[1, 2, 3, 4]),
-        checkpoint(Some(6), &[1, 2, 3, 5, 6]),
-        checkpoint(Some(6), &[1, 2, 5]),
-    ];
-    let orders = [[0, 1, 2], [2, 1, 0], [1, 0, 2], [0, 2, 1]];
-
-    // The runtime's committed configuration names every identity any record
-    // mentions, so the publication each adoption performs is a no-op and the only
-    // thing moving state is the join. A narrower runtime would retire identities
-    // between joins and measure the publication instead.
-    let mut settled: Option<PeerControlPlaneCheckpoint<u64>> = None;
-    for order in orders {
-        let (driver, _transport) =
-            driver_holding_named(None, &[1, 2, 3, 4, 5, 6], Nameable::only(&[NodeId(2)]));
-        for index in order {
-            let group = driver.release_group().expect("the driver holds a group");
-            driver
-                .adopt_group_with_checkpoint(group, Vec::new(), records[index].clone())
-                .expect("each record is valid for this group");
-        }
-        let reached = driver.control_plane_checkpoint();
-        match &settled {
-            None => settled = Some(reached),
-            Some(first) => assert_eq!(
-                &reached, first,
-                "the order {order:?} reached a different state"
-            ),
-        }
-    }
-
-    let settled = settled.expect("four orders were run");
-    assert_eq!(settled.committed_id_high_water, Some(NodeId(6)));
-    assert_eq!(
-        live_of(&settled),
-        ids(&[1, 2, 5]),
-        "3 and 4 were each witnessed spent by one record, and 6 by another"
-    );
-}
-
-/// Three positioned records reach the same *effects* in any order, not only the
-/// same spent set.
-///
-/// **The tenth reviewer's second counterexample.** `the_join_is_order_free_across_three_records`
-/// keeps every record at one position, so the only thing it can vary is which
-/// record's mark arrives first. The inference that makes the current state a
-/// *register* — an identity named at one position and absent at a later one was
-/// removed between them — never fires there, and it was the one output the
-/// order-freedom proof did not cover.
-///
-/// Here the three records stand at 7, 10 and 12 and each pair proves something
-/// the third does not. Under the old join, whose fence obligations were filtered
-/// by accumulated spent-ness, `(A∨B)∨C` derived node 4's removal from the A/B
-/// pair while `A∨(B∨C)` never did: joining B and C first raised the mark to 6,
-/// which made node 4 test as already-spent by the time A arrived, and an
-/// inference filtered by spent-ness produced nothing. Two orders, one settled
-/// record, two different sets of replicas the link layer was told to refuse.
-///
-/// There is no filtered output left to diverge. The floor is the mark, the mark
-/// is a `max`, and the link layer refuses node 4 in every order because 4 is
-/// beneath the floor and the peer set does not name it.
-///
-/// The runtime stands at commit 1 naming `{1}`, beneath every record, so the
-/// adoption publication contributes no inference of its own and the orders are
-/// measuring the join.
-#[test]
-fn three_positioned_records_retire_the_same_identities_in_any_order() {
-    let records = [
-        checkpoint_at(Some(4), &[1, 4], Some(LogIndex(7))),
-        checkpoint_at(Some(3), &[1, 3], Some(LogIndex(10))),
+fn one_chain_settles_the_same_whatever_prefix_survived() {
+    // One replica's own chain: `{1,2,3,4}` at 7, then 3 and 4 out and 5 in at 10,
+    // then 2 and 5 out and 6 in at 12. Each record's mark covers everything the
+    // previous ones named, which is what makes it a chain rather than a fork.
+    let chain = [
+        checkpoint_at(Some(4), &[1, 2, 3, 4], Some(LogIndex(7))),
+        checkpoint_at(Some(5), &[1, 2, 5], Some(LogIndex(10))),
         checkpoint_at(Some(6), &[1, 6], Some(LogIndex(12))),
     ];
-    let orders = [[0, 1, 2], [1, 2, 0], [2, 1, 0], [1, 0, 2]];
+    let surviving_prefixes: [&[usize]; 4] = [&[0, 1, 2], &[0, 2], &[1, 2], &[2]];
 
     let mut settled: Option<PeerControlPlaneCheckpoint<u64>> = None;
-    for order in orders {
+    for surviving in surviving_prefixes {
         let (driver, transport) = scripted_driver_with_checkpoint(
-            ScriptedMembershipRuntime::for_node_at(NodeId(1), &[1], &[1], LogIndex(1)),
-            Nameable::only(&[NodeId(2)]),
-            &[NodeId(2)],
+            ScriptedMembershipRuntime::for_node_at(NodeId(1), &[1], &[1], LogIndex(0)),
+            Nameable::all(),
+            &[NodeId(2), NodeId(3), NodeId(4), NodeId(5), NodeId(6)],
             TransportDriverOptions::default(),
             PeerControlPlaneCheckpoint::empty(GROUP),
         );
-        for index in order {
+        for index in surviving {
             let group = driver.release_group().expect("the driver holds a group");
             driver
-                .adopt_group_with_checkpoint(group, Vec::new(), records[index].clone())
-                .expect("each record is valid for this group");
+                .adopt_group_with_checkpoint(group, Vec::new(), chain[*index].clone())
+                .expect("each record of one chain is valid for this group");
         }
+
         let reached = driver.control_plane_checkpoint();
         assert!(
-            transport.retires(NodeId(4)),
-            "the pair standing at 7 and 10 proves node 4 was removed between \
-             them, whatever order the three arrive in: order {order:?} left the \
-             link layer holding {:?}",
+            transport.retires(NodeId(2)),
+            "node 2 was committed at 10 and absent at 12, so it is retired \
+             however much of the chain survived: {surviving:?} left the link \
+             layer holding {:?}",
             transport.policies().last()
         );
         match &settled {
             None => settled = Some(reached),
             Some(first) => assert_eq!(
                 &reached, first,
-                "the order {order:?} reached a different state"
+                "the surviving prefix {surviving:?} settled somewhere else"
             ),
         }
     }
 
-    let settled = settled.expect("four orders were run");
+    let settled = settled.expect("four prefixes were run");
     assert_eq!(settled.committed_id_high_water, Some(NodeId(6)));
     assert_eq!(live_of(&settled), ids(&[1, 6]));
+}
+
+/// A record standing before what this driver already observed is refused, and the
+/// constructor is where it still belongs.
+///
+/// **The chain rule and its cost, in one case.** The record here is valid and
+/// carries a mark of 9 that the driver has no other source for — a
+/// snapshot-derived incarnation observes the boundary configuration and nothing
+/// beneath it, so an *earlier* record genuinely can know a retirement a later one
+/// does not. Refusing it mid-life is therefore a real capability given up, not a
+/// no-op, and the second half of this case is where it went: restored into empty
+/// held state by the constructor, the same record contributes everything it
+/// witnessed.
+///
+/// What the refusal buys is that a record can never merge against a position it
+/// never saw. That is the only way the register — which keeps one observation —
+/// can be kept from laundering a fork, and the supervisor owns the chain identity
+/// the rule assumes.
+#[test]
+fn a_record_from_before_this_drivers_own_observation_is_refused() {
+    let (driver, transport) = driver_holding(Some(3), &[1, 2, 3]);
+    let before = driver.control_plane_checkpoint();
+    let policies_before = transport.policies();
+    let group = driver.release_group().expect("the driver holds a group");
+
+    let earlier = checkpoint_at(Some(9), &[1, 2, 3], Some(LogIndex(2)));
+    let refused = driver.adopt_group_with_checkpoint(group, Vec::new(), earlier.clone());
+
+    assert!(
+        matches!(
+            refused,
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::StaleCurrentState {
+                    held: OBSERVED_AT,
+                    incoming: LogIndex(2),
+                }
+            })
+        ),
+        "got {refused:?}"
+    );
+    assert_eq!(
+        driver.control_plane_checkpoint(),
+        before,
+        "a refused record moves nothing"
+    );
+    assert_eq!(
+        transport.policies(),
+        policies_before,
+        "and the link layer was told nothing on the way to the refusal"
+    );
+
+    // And the supported path for exactly this record: a driver built around it,
+    // which restores into empty held state and keeps the mark it carries.
+    let (opened, _fresh_transport) = try_scripted_driver_with_checkpoint(
+        ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]),
+        Nameable::all(),
+        &[NodeId(2), NodeId(3)],
+        earlier,
+    );
+    let opened = opened.expect("the constructor restores a record into empty held state");
+    assert_eq!(
+        opened.control_plane_checkpoint().committed_id_high_water,
+        Some(NodeId(9)),
+        "so the retirement that record witnessed is not lost, only relocated"
+    );
 }
 
 /// Joining the same record twice changes nothing.
@@ -333,23 +363,30 @@ fn joining_the_same_record_twice_is_the_same_as_once() {
 /// An identity above one record's mark is judged only by the record that covers
 /// it.
 ///
-/// The clause that keeps the join from over-retiring. A record whose mark is 2
-/// has no opinion about node 5 — it never saw the configuration that admitted
-/// it — and must not be read as evidence that node 5 is spent just because its
-/// live set does not name it.
+/// The clause that keeps the join from over-retiring. The driver's own record has
+/// a mark of 2, so it has no opinion about node 5 at all — it never saw the
+/// configuration that admitted it — and its silence must not be read as evidence
+/// that node 5 was removed. The later record's mark of 5 is what gives anything
+/// an opinion, and it names node 5 live.
 #[test]
 fn an_identity_above_a_records_mark_is_not_spent_by_that_record() {
-    let (driver, _transport) = driver_holding(Some(5), &[1, 2, 5]);
+    let (driver, _transport) = driver_holding(Some(2), &[1, 2]);
     let group = driver.release_group().expect("the driver holds a group");
     driver
-        .adopt_group_with_checkpoint(group, Vec::new(), checkpoint(Some(2), &[1, 2]))
-        .expect("an older record is valid");
+        .adopt_group_with_checkpoint(
+            group,
+            Vec::new(),
+            checkpoint_at(Some(5), &[1, 2, 5], Some(LATER_AT)),
+        )
+        .expect("the next record of one chain is valid");
 
     let settled = driver.control_plane_checkpoint();
     assert_eq!(settled.committed_id_high_water, Some(NodeId(5)));
     assert!(
         live_of(&settled).contains(&NodeId(5)),
-        "the older record's silence about node 5 is not a removal"
+        "the held record's mark of 2 gives it no opinion about node 5, so its \
+         silence is not a removal: {:?}",
+        live_of(&settled)
     );
 }
 
@@ -648,7 +685,7 @@ fn the_later_of_two_current_states_is_the_one_that_is_believed() {
         .adopt_group_with_checkpoint(
             group,
             Vec::new(),
-            checkpoint_at(Some(3), &[1, 2, 3], Some(LogIndex(9))),
+            checkpoint_at(Some(3), &[1, 2, 3], Some(LATER_AT)),
         )
         .expect("a snapshot-recovered record is an ordinary input");
 
@@ -658,8 +695,7 @@ fn the_later_of_two_current_states_is_the_one_that_is_believed() {
         .as_ref()
         .expect("the driver holds a current state");
     assert_eq!(
-        current.through,
-        LogIndex(9),
+        current.through, LATER_AT,
         "the later observation is the one this driver now holds"
     );
     assert_eq!(current.membership, ids(&[1, 2, 3]));
@@ -758,13 +794,95 @@ fn a_record_whose_mark_explains_its_omission_is_a_removal() {
     );
 }
 
-/// The control: a valid stale record still contributes everything it knows.
+/// Three records no one chain produces are refused in every order, and no order
+/// retires a member the latest of them names live.
 ///
-/// Without it, a join that refused every stale record would pass every clause
-/// above and lose the whole point of the checkpoint. A record whose mark reaches
-/// further than this driver's own still raises the floor this driver publishes.
+/// **The eleventh reviewer's counterexample.** Each record is individually valid.
+/// `A {through 1, mark 2, {1,2}}` and `B {through 1, mark 3, {1,3}}` stand at one
+/// position and disagree about it; `C {through 2, mark 3, {1,2,3}}` stands later
+/// and names node 2 live.
+///
+/// `(A∨B)∨C` refuses at the first step, because the collision is right there.
+/// `A∨(B∨C)` never compares A against B at all: `B∨C` moves the register to
+/// position 2 — spending node 2 on the way, since B's mark covers it and B's
+/// membership omits it — and A then merges against a register that has already
+/// left A's position behind. One order refuses; the other settles on a record
+/// that permanently retires a replica the latest record calls live.
+///
+/// The register keeps one observation, so the equal-position check can only ever
+/// fire while the register still stands where the incoming record does. That
+/// makes contradiction detection order-dependent by construction, and no rule
+/// short of keeping per-position history restores it. What is withdrawn instead
+/// is the input: one authoritative chain per replica, and a record older than
+/// what this driver holds is refused rather than merged.
+///
+/// **What is asserted is that every order refuses, and not that no order retires
+/// node 2.** The stronger claim is unreachable and the reason is worth having in
+/// the file: `B` on its own is a valid single record whose mark covers node 2 and
+/// whose membership omits it, so `B` *is* a witnessed removal of node 2. Refusing
+/// that would be refusing a legal record for saying what it saw. What the chain
+/// rule guarantees is that no *sequence* of these three settles — the fork is
+/// always found, at a collision or at a position it cannot merge across.
 #[test]
-fn a_stale_record_still_contributes_the_retirement_it_witnessed() {
+fn a_forked_set_of_records_is_refused_in_every_order() {
+    // `A` and `B` collide at position 1; `C` stands at 2 and readmits node 2.
+    let forked = [
+        checkpoint_at(Some(2), &[1, 2], Some(LogIndex(1))),
+        checkpoint_at(Some(3), &[1, 3], Some(LogIndex(1))),
+        checkpoint_at(Some(3), &[1, 2, 3], Some(LogIndex(2))),
+    ];
+    let orders = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+
+    for order in orders {
+        // A runtime standing at position 0 over `{1}`, which every record names:
+        // it can neither win a comparison nor infer a removal, so the orders are
+        // measuring the join and nothing else.
+        let (driver, _transport) = scripted_driver_with_checkpoint(
+            ScriptedMembershipRuntime::for_node_at(NodeId(1), &[1], &[1], LogIndex(0)),
+            Nameable::all(),
+            &[NodeId(2), NodeId(3)],
+            TransportDriverOptions::default(),
+            PeerControlPlaneCheckpoint::empty(GROUP),
+        );
+
+        let mut refused = None;
+        for index in order {
+            let group = driver.release_group().expect("the driver holds a group");
+            let outcome =
+                driver.adopt_group_with_checkpoint(group, Vec::new(), forked[index].clone());
+            if let Err(error) = outcome {
+                refused = Some(error);
+                break;
+            }
+        }
+
+        assert!(
+            matches!(
+                refused,
+                Some(ManagedDriverError::InvalidControlPlaneCheckpoint { .. })
+            ),
+            "order {order:?} settled instead of refusing: {refused:?}"
+        );
+    }
+}
+
+/// The control: a record that saw further still contributes everything it knows.
+///
+/// Without it, a join that refused every record whose reading differs from the
+/// driver's would pass every clause above and lose the whole point of the
+/// checkpoint. This one stands exactly where the driver does and agrees about the
+/// membership there, so the chain rule and the contradiction arm both let it
+/// through — and its mark reaches past anything the driver has seen, which is the
+/// retirement it exists to carry.
+#[test]
+fn a_record_that_saw_further_contributes_the_retirement_it_witnessed() {
     let (driver, transport) = driver_holding(Some(3), &[1, 2, 3]);
     let group = driver.release_group().expect("the driver holds a group");
 

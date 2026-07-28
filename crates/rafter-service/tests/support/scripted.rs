@@ -196,6 +196,26 @@ pub(crate) fn contradict_committed_in_place(
     state.committed = committed.to_vec();
 }
 
+/// Widens the effective membership *and* contradicts the committed one, both
+/// visible to one step and neither advancing the commit index.
+///
+/// The one-report shape the staged transaction exists for: a step reports the
+/// effective change first and the committed observation second, so a driver that
+/// installed each event as it arrived published a peer set from the first half of
+/// a report whose second half it then refused. Dishonest in exactly the way
+/// [`contradict_committed_in_place`] is, and for the same reason — the committed
+/// half is what no correct runtime produces.
+pub(crate) fn contradict_committed_beneath_effective(
+    handle: &Arc<Mutex<ScriptedMembership>>,
+    effective: &[u64],
+    committed: &[u64],
+) {
+    let mut state = lock_membership(handle);
+    state.change_on_step = None;
+    state.effective = effective.to_vec();
+    state.committed = committed.to_vec();
+}
+
 /// Arms outputs the runtime releases from its next `step`.
 ///
 /// Paired with [`change_on_step`] to script the one shape a per-step membership
