@@ -30,39 +30,44 @@
 //! quietly reinterpreted.
 //!
 //! ```text
-//! rafter-lock-control-plane 6
-//! group      <u64>
-//! high_water <u64> | -
-//! through    <u64> | -
-//! live       <u64>*
-//! crc32      <8 hex digits>
+//! rafter-lock-control-plane 7
+//! group        <u64>
+//! high_water   <u64> | -
+//! through      <u64> | -
+//! live         <u64>*
+//! contradicted <u64> | -
+//! crc32        <8 hex digits>
 //! ```
 //!
-//! # Version 6, and why a version-5 file is refused rather than migrated
+//! # Version 7, and why a version-6 file is refused rather than migrated
 //!
-//! The `fences` line is gone. It held the committed removals whose per-principal
-//! fence the previous process's link layer had not accepted, and there is no
-//! such call any more: a driver publishes an authorization *policy* — the
-//! authorized principals beside the greatest identity the group has ever
-//! committed — and every identity at or below that floor the policy does not
-//! name is retired by it. The obligation is re-derived from the mark at every
-//! entry point, so there is nothing left to persist about it.
+//! The `contradicted` line is new. It records the log position at which this
+//! replica's driver found two irreconcilable claims about the committed
+//! membership — see
+//! [`PeerControlPlaneCheckpoint::contradicted_at`](rafter_service::PeerControlPlaneCheckpoint::contradicted_at)
+//! — and a record carrying it starts the next incarnation refusing clients and
+//! publishing nothing. It is the control plane's `NEEDS_REPAIR`: the one state
+//! this file can describe that no restart clears and only an operator can.
 //!
-//! **This time the mapping is knowable, and the file is still refused.** That is
-//! worth saying plainly, because it is the opposite of versions 3 and 4, where
-//! the refusal was forced: those files carried a field whose provenance nothing
-//! could recover. A version-5 record's `fences` line is provably *redundant* —
-//! its own invariant check required every fence to name an identity at or below
-//! the mark that the live set does not name, which is exactly the set the floor
-//! retires — so dropping it loses nothing a version-6 reader needs.
+//! **The mapping looks knowable and the file is still refused, and this time the
+//! reason is not only the reader.** The obvious migration is "a version-6 record
+//! has no marker, so read it as `contradicted -`", and that is precisely the
+//! statement a version-6 file cannot support. Before this line existed, a
+//! contradicted driver went on folding later facts into its mark and register
+//! and went on advancing its epoch — so a version-6 file may have been written
+//! *past* a contradiction, by a process that had already stopped serving, in a
+//! format with nowhere to say so. Reading one as unmarked would take the record
+//! that overwrote the evidence and call it clean, which is the exact forgetting
+//! version 7 exists to end. There is no way to tell such a file from an honest
+//! one, so the honest answer is that this build cannot interpret either.
 //!
-//! What refusing protects is the reader, not the record. A migration would have
-//! to accept a seventh line where six are expected, and "unexpected lines before
-//! the checksum" is a refusal this format keeps deliberately: a reader that
-//! stops at the first complete record cannot tell a finished write from a
-//! partial overwrite of a longer one. Teaching this decoder to skip one line it
-//! did not expect is teaching it to skip the line that says a write was
-//! truncated.
+//! The reader argument stands beside it and is the same one version 6 made about
+//! version 5. A migration would have to accept six lines where seven are
+//! expected, and "the `contradicted` line is missing" is a refusal this format
+//! keeps deliberately: a reader that stops at the first complete record cannot
+//! tell a finished write from a partial overwrite of a longer one. Teaching this
+//! decoder to supply a line it did not find is teaching it to accept a truncated
+//! write.
 //!
 //! The cost is bounded and the trade is the one this artifact has made before.
 //! Rafter is pre-release and this composition is an example rather than a
@@ -71,12 +76,13 @@
 //!
 //! **The version tag refuses the shape and [`check_invariants`] refuses the
 //! semantics**, and both are needed because they catch damage arriving by
-//! different routes. The tag turns away a version-5 *file*; nothing about a tag
-//! stops a well-formed version-6 file whose `through` line has been flipped to
+//! different routes. The tag turns away a version-6 *file*; nothing about a tag
+//! stops a well-formed version-7 file whose `through` line has been flipped to
 //! `-`, and that record — a mark read against no membership, which spends every
 //! identity at or below it — is refused as a record invariant here, and again at
 //! [`PeerControlPlaneCheckpoint`] for a value that reached the driver by another
-//! route.
+//! route. The marker has invariants of its own for the same reason: it is
+//! coupled to the observation it contradicted, and it never stands beneath it.
 //!
 //! The checksum covers every byte before the `crc32` line, which is the whole of
 //! the canonical encoding, and **nothing may follow it**: a file with trailing
@@ -180,13 +186,13 @@ const CHECKPOINT_FILE: &str = "control-plane";
 
 /// The format tag, so a later shape is a refusal rather than a misreading.
 ///
-/// Version 6 dropped version 5's `fences` line, because a driver no longer makes
-/// a per-principal fence: retirement is published as a floor and re-derived from
-/// the mark. A version-5 file is refused rather than migrated, and the module
-/// header says why — not because the mapping is unknowable this time, but
-/// because a decoder that learns to skip an unexpected line stops being able to
-/// refuse a truncated one.
-const FORMAT_TAG: &str = "rafter-lock-control-plane 6";
+/// Version 7 adds the `contradicted` line, which records where this replica's
+/// driver found two irreconcilable claims about the committed membership. A
+/// version-6 file is refused rather than migrated, and the module header says
+/// why: such a file may have been written *past* a contradiction it had no field
+/// to record, so reading one as unmarked would take the record that overwrote
+/// the evidence and call it clean.
+const FORMAT_TAG: &str = "rafter-lock-control-plane 7";
 
 /// Why a checkpoint could not be read or written.
 #[derive(Debug)]
@@ -372,6 +378,14 @@ fn encode_body(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> String {
             text.push_str(&node_id.0.to_string());
         }
     }
+    // Last, and after the fact it is about. The marker is a statement over the
+    // observation above it — it names where that observation was contradicted —
+    // so a reader meets the record before the verdict on it.
+    text.push_str("\ncontradicted ");
+    match checkpoint.contradicted_at {
+        Some(through) => text.push_str(&through.0.to_string()),
+        None => text.push('-'),
+    }
     text.push('\n');
     text
 }
@@ -453,6 +467,7 @@ fn decode(text: &str) -> Result<PeerControlPlaneCheckpoint<LockGroupId>, String>
             ))
         }
     }
+    checkpoint.contradicted_at = position(field(lines.next(), "contradicted")?)?;
     if lines.next().is_some() {
         return Err("unexpected lines before the checksum".to_owned());
     }
@@ -516,6 +531,31 @@ fn check_invariants(checkpoint: &PeerControlPlaneCheckpoint<LockGroupId>) -> Res
             ));
         }
     }
+    // **The marker is a statement about the observation beside it**, so the two
+    // are coupled the way the mark and the live set are. A contradiction is a
+    // disagreement *between* the register and something else, so there is no
+    // marker without a register to have disagreed with; and the register freezes
+    // the moment the marker is set, so the marker never stands beneath it. Both
+    // clauses hold by construction for a record this process wrote, and both are
+    // refused again at the driver for a value that reached it another way.
+    if let Some(contradicted_at) = checkpoint.contradicted_at {
+        let Some(current) = checkpoint.current_committed.as_ref() else {
+            return Err(format!(
+                "the record says it was contradicted at index {} and names no committed \
+                 membership for that to have contradicted, so the two facts did not come \
+                 from one driver",
+                contradicted_at.0
+            ));
+        };
+        if contradicted_at < current.through {
+            return Err(format!(
+                "the record says it was contradicted at index {} and observed the committed \
+                 configuration at the later index {}, but a record stops moving where it is \
+                 contradicted",
+                contradicted_at.0, current.through.0
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -533,11 +573,14 @@ fn parse_id(value: &str) -> Result<u64, String> {
         .map_err(|_| format!("`{value}` is not a node id"))
 }
 
-/// One consumer offset, where `-` is "nothing of this kind consumed".
+/// One optional log position, where `-` is "there is none".
 ///
 /// `-` rather than `0`, because `LogIndex(0)` is a real position — the index
-/// before any entry — and an absent offset has to be distinguishable from one
-/// that has read through the bottom of the log.
+/// before any entry — and "this replica has observed nothing" has to be
+/// distinguishable from "this replica observed the bottom of the log". Both
+/// optional positions this record carries read the same way, and for the same
+/// reason: an unobserved register and an uncontradicted record are absences
+/// rather than zeroes.
 fn position(value: &str) -> Result<Option<LogIndex>, String> {
     match value {
         "-" => Ok(None),

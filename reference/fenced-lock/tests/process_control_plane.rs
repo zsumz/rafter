@@ -547,7 +547,7 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
     let before = std::fs::read_to_string(&checkpoint_path)
         .expect("a serving replica has published its control-plane checkpoint");
     assert!(
-        before.starts_with("rafter-lock-control-plane 6\n"),
+        before.starts_with("rafter-lock-control-plane 7\n"),
         "the file names its own format so a later shape is a refusal: {before:?}"
     );
     assert!(
@@ -579,6 +579,12 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
         "and carries no obligation ledger: retirement is the mark read against \
          the live set, and version 6 dropped the line that used to say what a \
          link layer had accepted: {before:?}"
+    );
+    assert!(
+        before.contains("contradicted -"),
+        "and says it has not been contradicted, which is a fact rather than an \
+         absence: a record with no field for it cannot be told from one written \
+         past a fork it could not record: {before:?}"
     );
     // **The position travels with the membership it dates**, and a real replica
     // is where that stops being a type-level claim. This cluster never
@@ -637,5 +643,132 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
     // structural check on the *recorder* rather than on the replicas, and it
     // belongs with the suite whose subject is the lock protocol; this suite's
     // writes exist only to give the replicas something to commit.
+    cluster.shutdown();
+}
+
+/// Re-seals a control-plane record with its `contradicted` line set.
+///
+/// **A hand-written file is the only seam that reaches this state from
+/// outside.** A contradiction needs two irreconcilable claims about one committed
+/// membership, and a correct runtime cannot produce them — the driver-level
+/// suites reach it by scripting a runtime that breaks its own contract, which is
+/// not something a spawned process can be asked to do. What *is* reachable is the
+/// durable half: a record carrying the marker is exactly what the previous
+/// incarnation of a contradicted replica leaves behind, and reading one back is
+/// the behaviour under test.
+///
+/// The checksum is recomputed, because a file that failed its seal would be
+/// refused before any of this mattered and the test would prove nothing about the
+/// marker.
+fn contradicted(text: &str, through: u64) -> String {
+    let body = text
+        .split_inclusive('\n')
+        .take_while(|line| !line.starts_with("crc32 "))
+        .collect::<String>();
+    assert!(
+        body.contains("\ncontradicted -\n"),
+        "the fixture rewrites an uncontradicted record: {text:?}"
+    );
+    let marked = body.replacen(
+        "\ncontradicted -\n",
+        &format!("\ncontradicted {through}\n"),
+        1,
+    );
+    format!(
+        "{marked}crc32 {:08x}\n",
+        rafter_reference_fenced_lock::store::crc32(marked.as_bytes())
+    )
+}
+
+/// A replica whose control-plane record records a contradiction refuses to serve
+/// and exits nonzero.
+///
+/// **The terminal state used to last exactly as long as the process that found
+/// it.** A driver whose licensing inputs contradict each other stops serving and
+/// publishes nothing, but the record it wrote said nothing about that — so a
+/// crash and a restart produced a clean driver, and where the rebuilt runtime
+/// agreed at the record's position the replica went straight back to serving. The
+/// marker is what makes the refusal outlive the incarnation.
+///
+/// **And the process used to report itself ready through all of it.** `STATUS`
+/// rendered the application-floor readiness bit without consulting the driver at
+/// all, and the loop moved to its terminal state only for persistence failures.
+/// A supervisor polling readiness saw a healthy replica; a supervisor watching
+/// exit codes saw nothing, because the process never exited.
+///
+/// The readiness half is asserted through the `READY` line rather than through a
+/// client flood, and that is a stronger observation rather than a weaker one:
+/// `READY` and the `STATUS` readiness word are the same `Replica::is_ready` call,
+/// so a run that never announced readiness is a run in which `STATUS` could not
+/// have claimed it. A flood would only be able to sample the few milliseconds
+/// before the exit.
+///
+/// Kill window: the replica is killed while idle and the file is rewritten by the
+/// test rather than by the kill, so both windows are shut — exactly as in
+/// `a_deleted_control_plane_checkpoint_refuses_to_open_as_a_first_boot`.
+#[test]
+#[ignore = "spawns real processes; run with --ignored (see the module docs)"]
+fn a_contradicted_control_plane_record_stops_the_process() {
+    let mut cluster = ProcessCluster::start("contradicted-control-plane", process_config());
+    let leader = cluster.wait_for_leader();
+    let victim = *cluster
+        .live_nodes()
+        .iter()
+        .find(|node_id| **node_id != leader)
+        .expect("a three-replica cluster has a follower");
+
+    cluster.submit_to_leader(open_session(0, 1));
+    cluster.submit_to_leader(submit(0, 1, 1, acquire("vault", 10)));
+    cluster.wait_applied_through(victim, LogIndex(1));
+
+    let checkpoint_path =
+        process::NodeProcess::node_dir(cluster.root(), victim).join("control-plane");
+    cluster.kill(victim);
+
+    let before = std::fs::read_to_string(&checkpoint_path)
+        .expect("a serving replica has published its control-plane checkpoint");
+    let observed = checkpoint_position(&before)
+        .expect("a serving replica records where it observed the committed configuration");
+    std::fs::write(&checkpoint_path, contradicted(&before, observed))
+        .expect("the marker is written where the replica's own record is");
+
+    let refused = cluster.restart_expecting_failure(victim);
+    assert!(
+        refused.status.code().is_some_and(|code| code != 0),
+        "a replica whose control plane is contradicted must not exit cleanly, \
+         because a supervisor reads exit 0 as a reason to restart it: {refused:?}"
+    );
+    assert!(
+        refused.stdout.contains("CONTROL_PLANE_CONTRADICTED"),
+        "and must say so on its own lifecycle channel, apart from the \
+         unpersisted line: {:?}",
+        refused.stdout
+    );
+    assert!(
+        refused.stdout.contains("FATAL"),
+        "and must not end through STOPPED: {:?}",
+        refused.stdout
+    );
+    assert!(
+        !refused.stdout.contains("STOPPED"),
+        "STOPPED and a contradicted control plane are mutually exclusive: {:?}",
+        refused.stdout
+    );
+    assert!(
+        !refused
+            .stdout
+            .lines()
+            .any(|line| line.starts_with("READY ")),
+        "and the readiness gate never opened, so no supervisor polling STATUS \
+         could have read this replica as ready: {:?}",
+        refused.stdout
+    );
+    assert!(
+        !refused.stdout.contains("could not be made durable"),
+        "the refusal names the contradiction rather than a persistence failure: \
+         {:?}",
+        refused.stdout
+    );
+
     cluster.shutdown();
 }

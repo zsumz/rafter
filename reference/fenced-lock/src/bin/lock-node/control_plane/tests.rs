@@ -56,7 +56,7 @@ fn a_flipped_bit_in_any_field_is_refused_by_the_checksum() {
         // reads as a committed removal.
         ("through 11", "through 4"),
         // The version tag.
-        ("control-plane 6", "control-plane 7"),
+        ("control-plane 7", "control-plane 8"),
     ];
 
     for (from, to) in corruptions {
@@ -116,13 +116,13 @@ fn a_resealed_contradiction_is_refused() {
         // A live set with no mark: the spent test reads both together, and a
         // mark-less record spends nothing at all.
         (
-            resealed("rafter-lock-control-plane 6\ngroup 1\nhigh_water -\nthrough 4\nlive 1 2\n"),
+            resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water -\nthrough 4\nlive 1 2\ncontradicted -\n"),
             "names no high-water mark",
         ),
         // A live member above the mark: unjudgeable by the spent test, and the
         // shape a lowered mark produces.
         (
-            resealed("rafter-lock-control-plane 6\ngroup 1\nhigh_water 2\nthrough 4\nlive 1 2 5\n"),
+            resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water 2\nthrough 4\nlive 1 2 5\ncontradicted -\n"),
             "above the high-water mark",
         ),
         // A retirement record with no current state, which is both what a
@@ -131,7 +131,7 @@ fn a_resealed_contradiction_is_refused() {
         // identity at or below it, so this record starts a replica that refuses
         // its whole cluster.
         (
-            resealed("rafter-lock-control-plane 6\ngroup 1\nhigh_water 5\nthrough -\nlive\n"),
+            resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water 5\nthrough -\nlive\ncontradicted -\n"),
             "names no committed membership to read it against",
         ),
         // The opposite separation: a current state with nothing retired behind
@@ -139,19 +139,34 @@ fn a_resealed_contradiction_is_refused() {
         // spent. `LogIndex(0)` is a real position rather than an absence, so
         // this is a separation and not a zero standing in for `-`.
         (
-            resealed("rafter-lock-control-plane 6\ngroup 1\nhigh_water -\nthrough 0\nlive\n"),
+            resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water -\nthrough 0\nlive\ncontradicted -\n"),
             "names no high-water mark",
         ),
         (
-            resealed("rafter-lock-control-plane 6\ngroup 1\nhigh_water -\nthrough 9\nlive\n"),
+            resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water -\nthrough 9\nlive\ncontradicted -\n"),
             "observed the committed configuration at index 9",
         ),
         // A membership with no position to date it. Refused in the decoder
         // rather than by an invariant, because the two lines are one value and
         // there is no half of it to hand on.
         (
-            resealed("rafter-lock-control-plane 6\ngroup 1\nhigh_water 5\nthrough -\nlive 1 2\n"),
+            resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water 5\nthrough -\nlive 1 2\ncontradicted -\n"),
             "no position to date them",
+        ),
+        // A contradiction marker with nothing to have contradicted. A
+        // contradiction is a disagreement *between* the register and something
+        // else, so a record that observed nothing cannot have recorded one.
+        (
+            resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water -\nthrough -\nlive\ncontradicted 9\n"),
+            "names no committed membership for that to have contradicted",
+        ),
+        // A marker beneath the observation it is about. The register stops
+        // moving the moment the marker is set, so this pair describes no state
+        // any driver reached — and reading it would freeze a replica at a
+        // position nothing disagreed at.
+        (
+            resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water 5\nthrough 12\nlive 1 2\ncontradicted 4\n"),
+            "a record stops moving where it is contradicted",
         ),
     ];
 
@@ -179,11 +194,19 @@ fn a_resealed_contradiction_is_refused() {
 /// required to be at or below the mark and absent from the live set, which is
 /// exactly what a retirement floor covers — so ignoring it would lose nothing.
 ///
-/// What would be lost is the reader. Accepting a seventh line here means
-/// accepting a line this format did not expect, and refusing exactly that is how
-/// a partial overwrite of a longer record is told from a finished write. See
-/// `trailing_bytes_after_the_checksum_are_refused`, which is the same rule
-/// arriving from the other side.
+/// What would be lost is the reader. Accepting a line this format did not expect
+/// is exactly what refusing tells a partial overwrite of a longer record from a
+/// finished write. See `trailing_bytes_after_the_checksum_are_refused`, which is
+/// the same rule arriving from the other side.
+///
+/// **Version 6 is refused for a third reason, and it is the strongest of the
+/// three.** Its missing line is the contradiction marker, and a version-6 file
+/// cannot support the one migration that looks obvious — "no marker, so read it
+/// as uncontradicted". Before the marker existed a contradicted driver went on
+/// folding later facts into its record and went on advancing its epoch, so a
+/// version-6 file may have been written *past* a contradiction by a process that
+/// had already stopped serving. Nothing distinguishes such a file from an honest
+/// one, so reading either as clean is the forgetting version 7 exists to end.
 #[test]
 fn an_older_file_is_refused_rather_than_migrated() {
     let older = [
@@ -197,12 +220,13 @@ fn an_older_file_is_refused_rather_than_migrated() {
         resealed(
             "rafter-lock-control-plane 5\ngroup 1\nhigh_water 7\nthrough 12\nlive 1 3\nfences 7\n",
         ),
+        resealed("rafter-lock-control-plane 6\ngroup 1\nhigh_water 7\nthrough 12\nlive 1 3\n"),
     ];
 
     for text in older {
         let refused = decode(&text).expect_err("an older format is not this format");
         assert!(
-            refused.contains("rafter-lock-control-plane 6"),
+            refused.contains("rafter-lock-control-plane 7"),
             "the refusal should name the version this build reads: {refused}"
         );
     }
@@ -214,7 +238,7 @@ fn an_older_file_is_refused_rather_than_migrated() {
 #[test]
 fn a_sealed_consistent_record_is_accepted() {
     let text =
-        resealed("rafter-lock-control-plane 6\ngroup 1\nhigh_water 7\nthrough 12\nlive 1 3\n");
+        resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water 7\nthrough 12\nlive 1 3\ncontradicted -\n");
     let decoded = decode(&text).expect("a well-formed record");
     assert_eq!(decoded.committed_id_high_water, Some(NodeId(7)));
     let current = decoded
@@ -242,7 +266,7 @@ fn a_sealed_consistent_record_is_accepted() {
 #[test]
 fn a_snapshot_recovered_record_is_accepted() {
     let text =
-        resealed("rafter-lock-control-plane 6\ngroup 1\nhigh_water 3\nthrough 10\nlive 1 2 3\n");
+        resealed("rafter-lock-control-plane 7\ngroup 1\nhigh_water 3\nthrough 10\nlive 1 2 3\ncontradicted -\n");
     let decoded = decode(&text).expect("a snapshot-recovered replica writes exactly this");
     let current = decoded.current_committed.expect("a current state");
     assert_eq!(current.through, LogIndex(10));
@@ -300,5 +324,48 @@ fn an_empty_checkpoint_round_trips() {
     assert_eq!(
         decode(&encode(&checkpoint)).expect("an empty record is a record"),
         checkpoint
+    );
+}
+
+/// A contradicted record round-trips, marker and all.
+///
+/// **The one fact in this file that no restart re-derives and no fact clears.**
+/// A replica whose driver found two irreconcilable claims about one committed
+/// configuration stops serving and stops publishing; the record it writes is what
+/// makes the next incarnation start in the same posture rather than clean. A
+/// round trip that lost the line would leave the terminal state lasting exactly
+/// as long as the process that discovered it.
+#[test]
+fn a_contradicted_record_round_trips() {
+    let mut checkpoint = sample();
+    checkpoint.contradicted_at = Some(LogIndex(11));
+    let decoded = decode(&encode(&checkpoint)).expect("this build reads what it writes");
+    assert_eq!(decoded, checkpoint);
+    assert_eq!(
+        decoded.contradicted_at,
+        Some(LogIndex(11)),
+        "the marker is the whole point of the round trip"
+    );
+}
+
+/// A marker standing above the observation it contradicts is accepted.
+///
+/// The clause is an inequality rather than an equality, and this is why: the
+/// candidate that found the contradiction may already have folded earlier facts
+/// of the same batch, so it stood ahead of the register the driver kept. Refusing
+/// that would refuse records real drivers write.
+#[test]
+fn a_marker_above_the_observation_is_accepted() {
+    let text = resealed(
+        "rafter-lock-control-plane 7\ngroup 1\nhigh_water 5\nthrough 12\nlive 1 2\ncontradicted 14\n",
+    );
+    let decoded = decode(&text).expect("a driver that folded a later fact before refusing");
+    assert_eq!(decoded.contradicted_at, Some(LogIndex(14)));
+    assert_eq!(
+        decoded
+            .current_committed
+            .expect("a marked record has an observation")
+            .through,
+        LogIndex(12)
     );
 }

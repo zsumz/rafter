@@ -91,7 +91,8 @@ use rafter_reference_fenced_lock::{
 };
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
-    InboundEnvelopeError, MetricsWatch, ReadOptions, TransportDriverOptions, TransportRaftDriver,
+    DriverServiceState, InboundEnvelopeError, MetricsWatch, ReadOptions, TransportDriverOptions,
+    TransportRaftDriver,
 };
 use rafter_storage::{
     FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
@@ -353,6 +354,34 @@ fn combine_outcomes(
     }
 }
 
+/// Whether a replica may report itself ready.
+///
+/// **Two facts, and the second one used to be missing.** `caught_up` is the
+/// application-floor gate — this replica has applied everything it knows to be
+/// committed — and it is deliberately one-way: catching up is not something a
+/// replica un-does, and a flapping gate would refuse service every time a write
+/// landed. But a driver refuses client work for reasons the applied floor knows
+/// nothing about, and readiness derived from the floor alone reported `ready` for
+/// every one of them. A supervisor that polls readiness rather than watching exit
+/// codes saw a healthy replica refusing everything.
+///
+/// The conjunction can fall, and that is correct rather than a regression in the
+/// gate: what it answers is "may a client use this replica now", which is not a
+/// property that only ever improves.
+///
+/// **`DriverServiceState` is `#[non_exhaustive]`, and the match is written so a
+/// variant this build does not know reads as *not* ready.** That is the
+/// fail-closed direction: a new refusal this process cannot name is still a
+/// refusal, and claiming readiness through it would be exactly the defect above
+/// arriving by a different route.
+///
+/// A free function for the reason [`combine_outcomes`] is one: the rule is
+/// checkable without a driver, a directory, and three processes, and the tests
+/// beneath this file pin every arm of it.
+fn readiness(caught_up: bool, service_state: DriverServiceState) -> bool {
+    caught_up && matches!(service_state, DriverServiceState::Serving)
+}
+
 /// Creates the directories one replica's durable state lives in.
 ///
 /// Ahead of the ownership lock, so a first boot has somewhere to take it.
@@ -558,8 +587,11 @@ impl Replica {
     /// Called from every entry point of the process loop, and it costs a `u64`
     /// comparison on the passes where nothing changed. The driver's epoch moves
     /// on exactly the facts a restart cannot rebuild — a committed configuration
-    /// that retires an identity, and a fence the link layer finally accepted —
+    /// that moves the retirement record, and the marker a contradiction sets —
     /// so writing on that signal writes what must not be lost and nothing else.
+    /// It deliberately does *not* move for a policy publication: retirement is
+    /// published as a floor re-derived from the mark, so what a link layer has
+    /// accepted is not a fact this file has to carry.
     ///
     /// **This cluster never reconfigures**, so after the first write the epoch
     /// stands still for the life of the process. The wiring is here anyway: the
@@ -638,9 +670,57 @@ impl Replica {
         }
     }
 
-    /// Whether this replica has applied everything it knows to be committed.
-    pub const fn is_ready(&self) -> bool {
-        self.ready
+    /// Whether this replica has applied everything it knows to be committed
+    /// **and** its driver is still willing to serve.
+    ///
+    /// **Two facts, and the second one used to be missing.** The gate itself is
+    /// one-way and should be: catching up is not something a replica un-does, and
+    /// a flapping gate would refuse service every time a write landed. But a
+    /// driver refuses client work for reasons that have nothing to do with the
+    /// applied floor — a committed removal spent this replica's identity, no
+    /// configuration names it, its own licensing inputs contradict each other —
+    /// and a readiness answer derived from the floor alone reported `ready` for
+    /// every one of them. A supervisor that polls readiness rather than watching
+    /// exit codes saw a healthy replica refusing everything.
+    ///
+    /// So the floor stays one-way and the driver is consulted on every read. The
+    /// conjunction can fall, which is correct: what it answers is "may a client
+    /// use this replica now", and that is not a property that only ever improves.
+    pub fn is_ready(&self) -> bool {
+        readiness(self.ready, self.driver.service_state())
+    }
+
+    /// The operator-facing reason this replica will never serve again, if its
+    /// control plane has reached one.
+    ///
+    /// **Only the contradictions, and that is the whole of the predicate.** A
+    /// driver refuses client work in five states and four of them are not this
+    /// process's business to die over: `NotMember` and `Released` end by
+    /// themselves, `Decommissioned` is a replica the cluster deliberately removed
+    /// — an operator retires that process, and killing it here would turn an
+    /// orderly removal into a crash — and `ShuttingDown` is this process already
+    /// stopping. The two contradictory states are different in kind: the facts
+    /// that license this replica's permanent statement about who is retired
+    /// disagree, no later fact decides them, and the driver has already stopped
+    /// publishing. A process that kept running would be a replica reporting
+    /// itself alive while it cannot answer the one question it exists to answer.
+    ///
+    /// `DriverServiceState` is `#[non_exhaustive]`, so the wildcard is the arm a
+    /// new variant lands in and it deliberately does *not* terminate: a state
+    /// this build cannot name is not a state it can claim is unrecoverable.
+    pub fn terminal_control_plane_failure(&self) -> Option<String> {
+        match self.driver.service_state() {
+            DriverServiceState::ContradictoryCurrentState { through } => Some(format!(
+                "two observations of the committed membership at index {} disagree",
+                through.0
+            )),
+            DriverServiceState::ContradictoryTransitionPredecessor { through } => Some(format!(
+                "a committed transition declares a membership at index {} that this \
+                 replica's own record contradicts",
+                through.0
+            )),
+            _ => None,
+        }
     }
 
     /// Returns this replica's durable applied index.
@@ -692,12 +772,13 @@ impl Replica {
     ///
     /// Counted apart from [`Replica::refused_frames`] because the two diagnose
     /// opposite things. A refusal by the validator says the outer admission
-    /// control is working: a principal this deployment does not authorize, or
-    /// one it has fenced, was turned away before Rafter saw it. A refusal by the
-    /// membership says the validator and the group *disagree* — the link layer
-    /// still authorizes a replica the cluster has retired, which is the window
-    /// between a committed removal and a fence the transport has accepted. One
-    /// is a quiet network; the other is a control plane running behind.
+    /// control is working: a principal this deployment does not authorize, or one
+    /// beneath the retirement floor its link layer holds, was turned away before
+    /// Rafter saw it. A refusal by the membership says the validator and the
+    /// group *disagree* — the link layer still authorizes a replica the cluster
+    /// has retired, which is the window between a committed removal and the
+    /// policy publication whose floor reaches it. One is a quiet network; the
+    /// other is a control plane running behind.
     pub const fn non_member_frames(&self) -> u64 {
         self.non_member_frames
     }
@@ -1129,10 +1210,50 @@ fn poll_once<T>(future: &mut Pin<Box<dyn Future<Output = T>>>) -> Poll<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::combine_outcomes;
+    use super::{combine_outcomes, readiness, DriverServiceState, LogIndex, NodeId};
 
     fn failure(detail: &str) -> Result<(), String> {
         Err(detail.to_owned())
+    }
+
+    /// A replica that has caught up and whose driver serves is ready.
+    ///
+    /// The control. Without it every clause below would pass a readiness rule
+    /// that always answered `false`.
+    #[test]
+    fn a_caught_up_serving_replica_is_ready() {
+        assert!(readiness(true, DriverServiceState::Serving));
+    }
+
+    /// A replica that has not caught up is not ready, whatever its driver says.
+    #[test]
+    fn a_replica_behind_its_application_floor_is_not_ready() {
+        assert!(!readiness(false, DriverServiceState::Serving));
+    }
+
+    /// **No state in which the driver refuses reports ready**, and the applied
+    /// floor being reached is exactly what makes the case interesting: the gate
+    /// this file keeps is one-way, so `caught_up` stays `true` through every one
+    /// of these and used to be the whole answer.
+    #[test]
+    fn no_refusing_driver_state_reports_ready() {
+        for state in [
+            DriverServiceState::Decommissioned { node_id: NodeId(1) },
+            DriverServiceState::NotMember { node_id: NodeId(1) },
+            DriverServiceState::ContradictoryCurrentState {
+                through: LogIndex(11),
+            },
+            DriverServiceState::ContradictoryTransitionPredecessor {
+                through: LogIndex(11),
+            },
+            DriverServiceState::Released,
+            DriverServiceState::ShuttingDown,
+        ] {
+            assert!(
+                !readiness(true, state),
+                "a replica whose driver answers {state:?} reported itself ready"
+            );
+        }
     }
 
     #[test]

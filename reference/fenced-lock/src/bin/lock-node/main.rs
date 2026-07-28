@@ -83,6 +83,7 @@
 //! READY <id> <client_addr> <applied_index>
 //! LINK <id> dropped=<n> unencodable=<n> refused_chunks=<n> refused_frames=<n> non_member_frames=<n>
 //! CONTROL_PLANE_UNPERSISTED <id> <detail>
+//! CONTROL_PLANE_CONTRADICTED <id> <detail>
 //! STOPPED <id>                     the process stopped cleanly
 //! FATAL <detail>                   followed by a nonzero exit
 //! ```
@@ -95,6 +96,19 @@
 //! nonzero through `FATAL` — never through `STOPPED` and exit 0, which a
 //! supervisor would read as a clean stop and restart into exactly that
 //! forgetting.
+//!
+//! `CONTROL_PLANE_CONTRADICTED` is the second half of the same posture and ends
+//! the same way. The driver reports it when the facts licensing this replica's
+//! permanent statement about who is retired disagree at one log position — two
+//! observations of the committed membership, or a committed transition against
+//! this replica's own durable record. It is terminal by construction rather than
+//! by policy: the committed membership at one index is one set, this replica has
+//! been told two, and no later fact decides between them. The driver has already
+//! stopped publishing and frozen its record; the process's part is to say so on a
+//! channel a supervisor can match on and exit nonzero, because a replica that
+//! kept running would report itself alive while unable to answer the one question
+//! it exists to answer. Recovery is an operator reseeding this replica's control
+//! plane deliberately, with the deployment's own record of what was retired.
 //!
 //! `CREATED`, `RECOVERED`, `REPAIRED`, `RESEEDED`, and `NEEDS_DECISION` are the
 //! durable store's recovery report reaching somebody who can act on it. A
@@ -120,10 +134,10 @@
 //! them; `refused_frames` counts inbound frames this replica's own validator
 //! turned away; `non_member_frames` counts frames the validator authorized and
 //! the driver's *membership* did not, which is the window between a committed
-//! removal and a fence the link layer has accepted. The last two are separate
-//! because a non-zero `refused_frames` says the outer admission control is
-//! working, and a non-zero `non_member_frames` says the control plane is
-//! running behind the cluster.
+//! removal and the policy publication whose retirement floor reaches it. The
+//! last two are separate because a non-zero `refused_frames` says the outer
+//! admission control is working, and a non-zero `non_member_frames` says the
+//! control plane is running behind the cluster.
 //!
 //! # The loop, and what bounds it
 //!
@@ -456,15 +470,17 @@ enum State {
     Serving(Box<Replica>),
     /// The replica exists and will not serve again.
     ///
-    /// **Terminal by policy rather than by exhaustion.** A replica that cannot
-    /// make its peer control plane durable is one whose next restart forgets a
-    /// removal, and that outranks anything it could still do for a client: the
-    /// removals it would forget are permanent, and the client work it is
-    /// refusing will be retried against a replica that can still record what it
-    /// retires.
+    /// **Two ways in, and both are about the record no other artifact holds.** A
+    /// replica that cannot make its peer control plane durable is one whose next
+    /// restart forgets a removal. A replica whose control-plane inputs contradict
+    /// each other has no trustworthy statement to make about who is retired at
+    /// all, and no later fact decides it. Either outranks anything the replica
+    /// could still do for a client: what it would get wrong is permanent, and the
+    /// client work it refuses will be retried against a replica that can still
+    /// answer.
     ///
     /// It is a *state* rather than a flag checked at the next call because of
-    /// where the failure comes from. `submit`, `query`, `poll_pending`, and
+    /// where the failures come from. `submit`, `query`, `poll_pending`, and
     /// `abandon_waiters` answer their client with a value rather than a
     /// `Result`, so a persist failure inside one is stored instead of raised —
     /// and the next call with an error channel of its own is an unbounded number
@@ -476,8 +492,55 @@ enum State {
     /// and `serve` returns the failure, so the process exits nonzero.
     Failed {
         replica: Box<Replica>,
-        detail: String,
+        failure: TerminalFailure,
     },
+}
+
+/// Why this process will not serve again.
+///
+/// **One shape for two facts that end identically and diagnose differently.**
+/// Both are about the peer-control-plane record, both are unrecoverable by
+/// restarting, and both must reach a supervisor as a nonzero exit rather than a
+/// clean stop. What differs is the artifact an operator has to look at: one says
+/// the record could not be *written*, and the other says the record and the log
+/// *disagree*. Rendering them through one type keeps the ending in one place
+/// while the lifecycle line stays specific.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TerminalFailure {
+    /// The peer control plane could not be made durable.
+    Unpersisted(String),
+    /// This replica's control-plane inputs contradict each other.
+    Contradicted(String),
+}
+
+impl TerminalFailure {
+    /// The lifecycle line this failure announces itself on.
+    const fn lifecycle_tag(&self) -> &'static str {
+        match self {
+            Self::Unpersisted(_) => "CONTROL_PLANE_UNPERSISTED",
+            Self::Contradicted(_) => "CONTROL_PLANE_CONTRADICTED",
+        }
+    }
+
+    /// What this replica tells a client that asks for service.
+    fn detail(&self) -> &str {
+        match self {
+            Self::Unpersisted(detail) | Self::Contradicted(detail) => detail,
+        }
+    }
+
+    /// The reason the process ends with, which `main` renders as `FATAL`.
+    fn message(&self) -> String {
+        match self {
+            Self::Unpersisted(detail) => {
+                format!("the peer control plane could not be made durable: {detail}")
+            }
+            Self::Contradicted(detail) => format!(
+                "this replica's peer control plane is contradicted and will not serve \
+                 again: {detail}"
+            ),
+        }
+    }
 }
 
 fn run(config: &Config) -> Result<(), String> {
@@ -652,15 +715,23 @@ fn serve(
             }
             State::Serving(replica) => {
                 // Before any protocol work this pass, and before the next job
-                // drain. A stored persistence failure is terminal; see
+                // drain. Both terminal conditions are checked here; see
                 // `State::Failed` for why waiting for the next call with an
                 // error channel is waiting too long.
-                if let Some(detail) = replica.control_plane_failure().map(str::to_owned) {
+                //
+                // The persistence failure is asked about first because it is the
+                // one that may already have been *stored* by an entry point with
+                // no error channel, so it can be older than the contradiction
+                // beside it — and the first failure is the one that explains why
+                // this replica stopped.
+                if let Some(failure) = terminal_failure(replica) {
                     emit(&format!(
-                        "CONTROL_PLANE_UNPERSISTED {} {detail}",
-                        config.node_id.0
+                        "{} {} {}",
+                        failure.lifecycle_tag(),
+                        config.node_id.0,
+                        failure.detail()
                     ));
-                    replica.abandon_waiters("the replica cannot make its control plane durable");
+                    replica.abandon_waiters(failure.detail());
                     for answer in replica.take_answers() {
                         let (ticket, response) = render_answer(answer);
                         if let Some(reply) = responders.remove(&ticket) {
@@ -677,7 +748,7 @@ fn serve(
                     ) else {
                         unreachable!("this arm matched `Serving`")
                     };
-                    state = State::Failed { replica, detail };
+                    state = State::Failed { replica, failure };
                     continue;
                 }
                 for envelope in link.drain_inbound() {
@@ -714,8 +785,8 @@ fn serve(
     // Whatever the terminal state already knows, plus whatever the shutdown
     // flush discovers. Either one means the same thing and both end the same
     // way; they differ only in when the replica stopped serving.
-    let mut unpersisted = match &state {
-        State::Failed { detail, .. } => Some(detail.clone()),
+    let mut terminal = match &state {
+        State::Failed { failure, .. } => Some(failure.clone()),
         _ => None,
     };
     let (refused_frames, non_member_frames) = match &mut state {
@@ -729,13 +800,16 @@ fn serve(
             }
             // The shutdown flush has no later entry point to raise it, so the
             // process says so on its own channel rather than stopping quietly
-            // over a control plane it could not make durable.
-            if let Some(failure) = replica.control_plane_failure() {
+            // over a control plane it could not make durable — or over one whose
+            // inputs it has already declared contradictory.
+            if let Some(failure) = terminal_failure(replica) {
                 emit(&format!(
-                    "CONTROL_PLANE_UNPERSISTED {} {failure}",
-                    config.node_id.0
+                    "{} {} {}",
+                    failure.lifecycle_tag(),
+                    config.node_id.0,
+                    failure.detail()
                 ));
-                unpersisted = Some(failure.to_owned());
+                terminal = Some(failure);
             }
             (replica.refused_frames(), replica.non_member_frames())
         }
@@ -749,31 +823,53 @@ fn serve(
          non_member_frames={non_member_frames}",
         config.node_id.0
     ));
-    // Before `STOPPED`, and instead of it: `stop_outcome` returns `Err` for an
-    // unpersisted control plane, and this only announces a clean stop when it
-    // does not.
-    stop_outcome(unpersisted)?;
+    // Before `STOPPED`, and instead of it: `stop_outcome` returns `Err` for
+    // either terminal control-plane failure, and this only announces a clean
+    // stop when there was none.
+    stop_outcome(terminal)?;
     emit(&format!("STOPPED {}", config.node_id.0));
     Ok(())
+}
+
+/// The terminal control-plane failure this replica has reached, if it has.
+///
+/// **Persistence first, contradiction second, and the order is the rule.** A
+/// persist failure is *stored* by an entry point with no error channel, so it can
+/// be older than the state beside it — and the first failure is the one that
+/// explains why this replica stopped. A contradiction is read live off the
+/// driver, so it is always current.
+///
+/// A free function for the reason [`stop_outcome`] is one: the rule is worth
+/// being able to see without the loop around it.
+fn terminal_failure(replica: &Replica) -> Option<TerminalFailure> {
+    replica
+        .control_plane_failure()
+        .map(|detail| TerminalFailure::Unpersisted(detail.to_owned()))
+        .or_else(|| {
+            replica
+                .terminal_control_plane_failure()
+                .map(TerminalFailure::Contradicted)
+        })
 }
 
 /// Whether this state must stop admitting client work for the rest of the pass.
 ///
 /// **Two states and one of them does not know it yet.** `State::Failed` is the
-/// terminal state and is obvious. A `State::Serving` replica holding a stored
-/// control-plane persistence failure is *already* terminal and has not been
-/// moved yet, because the entry point that discovered the failure had no error
-/// channel to raise it on — `submit`, `query`, `poll_pending`, and
-/// `abandon_waiters` all answer with a value. The transition runs once per pass,
-/// below the drain, so between the failure and the transition there is a whole
-/// job budget in which this replica would otherwise keep serving.
+/// terminal state and is obvious. A `State::Serving` replica that has already
+/// reached a terminal control-plane failure has not been moved yet, and for a
+/// stored persistence failure the reason is that the entry point which discovered
+/// it had no error channel to raise it on — `submit`, `query`, `poll_pending`,
+/// and `abandon_waiters` all answer with a value. The transition runs once per
+/// pass, below the drain, so between the failure and the transition there is a
+/// whole job budget in which this replica would otherwise keep serving.
 ///
 /// It serves nothing in that window because there is nothing it can honestly
-/// do: its next restart begins by forgetting whatever it retired, so a write it
-/// accepts is a write whose retirement record may not survive, and a read it
-/// answers is a read from a replica the cluster should stop using. The client
-/// work it refuses will be retried against a replica that can still record what
-/// it retires.
+/// do. A replica whose control plane it cannot persist begins its next restart by
+/// forgetting whatever it retired, so a write it accepts is a write whose
+/// retirement record may not survive. A replica whose control-plane inputs
+/// contradict each other has no trustworthy statement about who is retired at
+/// all, and its driver has already stopped publishing one. The client work either
+/// refuses will be retried against a replica that can still answer.
 ///
 /// A free function taking the state for the reason [`stop_outcome`] is one: the
 /// rule is the interesting part and it is worth being able to see it without
@@ -781,7 +877,7 @@ fn serve(
 fn pass_is_terminal(state: &State) -> bool {
     match state {
         State::Failed { .. } => true,
-        State::Serving(replica) => replica.control_plane_failure().is_some(),
+        State::Serving(replica) => terminal_failure(replica).is_some(),
         State::Opening { .. } => false,
     }
 }
@@ -789,28 +885,29 @@ fn pass_is_terminal(state: &State) -> bool {
 /// What the process reports once the loop has ended.
 ///
 /// **`STOPPED` and a nonzero exit are the two mutually exclusive endings, and
-/// which one applies turns on a single fact.** A replica that could not make its
-/// peer control plane durable did not stop cleanly: the record it failed to
-/// write is the one no other artifact holds, so the next start of this replica
-/// begins by forgetting whatever it retired — an identity a committed removal
-/// spent becomes allocatable again, and a fence the link layer refused is never
-/// retried. A supervisor reading exit 0 restarts it into exactly that.
+/// which one applies turns on a single fact: whether this replica reached a
+/// terminal control-plane failure.** A replica that could not make its peer
+/// control plane durable did not stop cleanly: the record it failed to write is
+/// the one no other artifact holds, so the next start of this replica begins by
+/// forgetting whatever it retired — an identity a committed removal spent becomes
+/// allocatable again. A replica whose control-plane inputs contradict each other
+/// did not stop cleanly either: its driver has frozen its record and stopped
+/// publishing, and only an operator's deliberate reseed clears that. A supervisor
+/// reading exit 0 restarts either one straight back into the same state.
 ///
 /// A free function for the reason `replica::combine_outcomes` is one: the rule
 /// is checkable without three processes and a filesystem that can be made to
 /// fail at the one moment that matters.
-fn stop_outcome(unpersisted: Option<String>) -> Result<(), String> {
-    match unpersisted {
-        Some(detail) => Err(format!(
-            "the peer control plane could not be made durable: {detail}"
-        )),
+fn stop_outcome(terminal: Option<TerminalFailure>) -> Result<(), String> {
+    match terminal {
+        Some(failure) => Err(failure.message()),
         None => Ok(()),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::stop_outcome;
+    use super::{stop_outcome, TerminalFailure};
 
     #[test]
     fn a_clean_stop_is_ok() {
@@ -826,12 +923,47 @@ mod tests {
     /// is every supervisor — saw a clean shutdown.
     #[test]
     fn an_unpersisted_control_plane_is_a_failure_with_its_reason() {
-        let outcome = stop_outcome(Some(String::from("no space left on device")));
+        let outcome = stop_outcome(Some(TerminalFailure::Unpersisted(String::from(
+            "no space left on device",
+        ))));
         let detail = outcome.expect_err("an unpersisted control plane is not a clean stop");
         assert!(
             detail.contains("could not be made durable")
                 && detail.contains("no space left on device"),
             "the reason reaches the operator: {detail}"
+        );
+    }
+
+    /// A contradicted control plane ends the process too, and says which failure
+    /// it was.
+    ///
+    /// The same defect arriving through the other door. `STATUS` rendered the
+    /// application-floor readiness bit without consulting the driver at all, and
+    /// the loop moved to `Failed` only for persistence failures — so a replica
+    /// whose driver had declared its own inputs untrustworthy went on answering
+    /// `ready`, went on accepting client work, and exited 0.
+    #[test]
+    fn a_contradicted_control_plane_is_a_failure_with_its_reason() {
+        let outcome = stop_outcome(Some(TerminalFailure::Contradicted(String::from(
+            "two observations of the committed membership at index 11 disagree",
+        ))));
+        let detail = outcome.expect_err("a contradicted control plane is not a clean stop");
+        assert!(
+            detail.contains("contradicted") && detail.contains("index 11"),
+            "the reason reaches the operator: {detail}"
+        );
+    }
+
+    /// The two endings are told apart on their own lifecycle lines.
+    #[test]
+    fn each_terminal_failure_announces_itself_on_its_own_line() {
+        assert_eq!(
+            TerminalFailure::Unpersisted(String::new()).lifecycle_tag(),
+            "CONTROL_PLANE_UNPERSISTED"
+        );
+        assert_eq!(
+            TerminalFailure::Contradicted(String::new()).lifecycle_tag(),
+            "CONTROL_PLANE_CONTRADICTED"
         );
     }
 }
@@ -870,13 +1002,11 @@ fn handle_job(state: &mut State, config: &Config, job: &Job, ticket: u64) -> Dis
                 leader,
             ))
         }
-        // **Not `replica.is_ready()`, which is the readiness gate and is
-        // one-way.** That flag says this replica has applied everything it knows
-        // to be committed, and it never falls — so a replica that reached
-        // readiness and then lost its control plane kept reporting `ready` right
-        // up to its nonzero exit, and every supervisor that polls `STATUS` read
-        // a healthy replica. The state is what decides here, and this state will
-        // not serve again.
+        // **Not `replica.is_ready()`, and the state is what decides.** That
+        // answer folds the driver's own service state in now, so it would be
+        // right here too — but a `Failed` replica is one this process has already
+        // decided will not serve again, which is a stronger statement than any
+        // driver state and is the one a supervisor needs.
         (Request::Status, State::Failed { replica, .. }) => {
             let (role, term, leader) = replica.status();
             Disposition::Answered(render_status(
@@ -892,7 +1022,9 @@ fn handle_job(state: &mut State, config: &Config, job: &Job, ticket: u64) -> Dis
         (_, State::Opening { .. }) => Disposition::Answered(String::from("NOTREADY 0 0")),
         // A terminal refusal rather than `NOTREADY`, because `NOTREADY` invites
         // a retry against this replica and nothing here will become ready.
-        (_, State::Failed { detail, .. }) => Disposition::Answered(format!("ABANDONED {detail}")),
+        (_, State::Failed { failure, .. }) => {
+            Disposition::Answered(format!("ABANDONED {}", failure.detail()))
+        }
         (_, State::Serving(replica)) if !replica.is_ready() => Disposition::Answered(format!(
             "NOTREADY {} {}",
             replica.applied_index().0,
