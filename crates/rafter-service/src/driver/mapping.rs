@@ -212,6 +212,32 @@ pub enum ControlPlaneCheckpointError {
     /// it, calls the membership something else. That is damaged, truncated, or
     /// foreign durable state.
     ContradictoryCurrentState { through: LogIndex },
+    /// A checkpoint observed the committed membership *before* the driver it was
+    /// offered to did.
+    ///
+    /// **The chain rule, and it is a narrowing of the contract rather than a
+    /// corruption report.** A replica's records form one chain: each incarnation
+    /// is handed the previous record before it observes anything, so every record
+    /// it writes already carries what the earlier ones spent, and a later record
+    /// of one chain never stands before an earlier one. A record that does is
+    /// from somewhere else — another replica's file, or another process's record
+    /// offered to a driver that has been running — and merging records of
+    /// different chains is what this refuses.
+    ///
+    /// It has to be refused rather than absorbed because the register keeps one
+    /// observation. Two records that directly contradict each other are compared
+    /// only while the register still stands where they do; once any later record
+    /// moves it forward, an older one merges against a position it never saw, and
+    /// its own spent-ness can retire a replica the latest record calls live. That
+    /// is not detectable after the fact without per-position history, so the input
+    /// is refused instead.
+    ///
+    /// **The supported way to restore a record from before this driver existed is
+    /// [`crate::TransportRaftDriver::with_control_plane_checkpoint`]**, which
+    /// restores into empty held state and is the documented crash-recovery path.
+    /// A supervisor holding another process's record builds a driver around it
+    /// rather than joining it into one that has already observed something.
+    StaleCurrentState { held: LogIndex, incoming: LogIndex },
 }
 
 impl fmt::Display for ControlPlaneCheckpointError {
@@ -236,6 +262,11 @@ impl fmt::Display for ControlPlaneCheckpointError {
             Self::ContradictoryCurrentState { through } => write!(
                 formatter,
                 "two observations disagree about the committed membership at index {through}"
+            ),
+            Self::StaleCurrentState { held, incoming } => write!(
+                formatter,
+                "the checkpoint observed the committed membership at index {incoming}, before \
+                 this driver's own observation at index {held}, so the two are not one chain"
             ),
         }
     }

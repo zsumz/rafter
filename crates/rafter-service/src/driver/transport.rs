@@ -53,6 +53,9 @@ mod checkpoint;
 mod control_plane;
 mod error;
 mod health;
+mod observation;
+mod policy;
+mod reconciliation;
 mod state;
 mod waiters;
 
@@ -595,7 +598,7 @@ where
         let node_id = state.node_id;
         let envelope = validate_inbound_peer_envelope(envelope, node_id, &state.validator)
             .map_err(|source| InboundEnvelopeError::Rejected { source })?;
-        if !state.is_member(envelope.from) {
+        if !state.is_admitted(envelope.from) {
             state.refused_non_member_frames = state.refused_non_member_frames.saturating_add(1);
             return Err(InboundEnvelopeError::NotInMembership {
                 node_id: envelope.from,
@@ -825,42 +828,38 @@ where
         if group.group_id() != &state.group_id {
             return Err(ManagedDriverError::MixedGroups);
         }
-        // Before the watermarks and before any assignment, because this is the
-        // one refusal that must leave the driver exactly as it was: a partially
-        // installed identity is an identity, and the whole point is that this
-        // one is never installed. Nothing above this line has moved state
-        // either, so the driver is still holding no group when it raises this.
+        // **The record and the runtime are one transaction, staged.** The join
+        // moves the mark and the register — the two fields an embedder persists —
+        // and the runtime offered beside them can contradict the result at a
+        // position both stand at. Running the join against live state and asking
+        // the runtime afterwards left a refused adoption holding durable state
+        // recovered from the very input it had just declared contradictory, with
+        // an epoch move telling the embedder to write it down. So both questions
+        // are asked of a candidate, and nothing is installed until every refusal
+        // above the installation has had its say.
         //
-        // The checkpoint is joined first so this gate reads the recovered mark
-        // as well as the held one — a takeover handed a checkpoint that spent
-        // the offered ID must refuse it, and joining afterwards would install
-        // the identity and only then learn it was spent.
-        //
-        // A checkpoint this driver refuses leaves the driver exactly as it was:
-        // `restore_control_plane_checkpoint` validates the whole value before it
-        // moves a field, so this refusal is as clean as the one below it.
-        state
-            .restore_control_plane_checkpoint(checkpoint)
+        // The checkpoint is joined before the identity gate so the gate reads the
+        // recovered mark as well as the held one: a takeover handed a checkpoint
+        // that spent the offered ID must refuse it, and joining afterwards would
+        // install the identity and only then learn it was spent.
+        let candidate = state
+            .adoption_candidate(checkpoint, group.runtime())
             .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
-        if state.is_spent(group.node_id()) {
+        if candidate.is_spent(group.node_id()) {
             return Err(ManagedDriverError::RetiredNodeId {
                 node_id: group.node_id(),
             });
         }
-        // And the offered runtime is asked the same question the record was,
-        // before it is installed: does it contradict what this driver now holds
-        // at a position both have observed? A supervisor handing over a replica
-        // whose committed membership disagrees with the durable record is handing
-        // over one that must not open, not one that opens and then reports itself
-        // sick — so this joins the refusals above the installation.
-        state
-            .check_adopted_membership(group.runtime())
-            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
         let (next_proposal_id, next_read_id) = adopted_watermarks(&group, PendingProposals::Carry)?;
         state.node_id = group.node_id();
         state.next_proposal_id = highest(state.next_proposal_id, next_proposal_id);
         state.next_read_id = highest(state.next_read_id, next_read_id);
         state.group = Some(group);
+        // After the group, so the identity this driver now is is the one every
+        // later derivation excludes. Nothing is stated to the link layer here:
+        // the publication belongs to the endpoint fold below, once the recovery
+        // outputs this incarnation is replaying have been folded first.
+        state.install_restored_membership(candidate);
         // History then endpoint, for the reason
         // [`TransportRaftDriver::with_control_plane_checkpoint`] gives: the
         // recovery outputs are older than the committed membership the rebuilt

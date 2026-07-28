@@ -7,9 +7,10 @@
 //! reasons: one is a contract, the other is a loop. The waiter tables the loop
 //! resolves live beside it in [`super::waiters`], split the same way and for
 //! the same reason: this file answers "what does a step do", that one answers
-//! "what happens to the client". The third answer — who may send a step's
-//! input at all — is [`super::control_plane`], which owns every derivation over
-//! the membership, peer, and fence fields declared below.
+//! "what happens to the client". The third answer — who may send a step's input
+//! at all — is [`super::control_plane`] and the three files beneath it, which own
+//! every rule over the membership and policy fields declared below. This file
+//! declares them and never derives anything from them.
 
 use std::{collections::BTreeSet, sync::TryLockError};
 
@@ -132,27 +133,32 @@ where
     /// nothing would ever commit its removal.
     ///
     /// It is a widening input and never a narrowing one: the peer set and the
-    /// inbound check take it in union with `committed_members`, so this alone
-    /// can add authorization and never take any away.
+    /// inbound check take it in union with `committed_members` and the register,
+    /// so this alone can add authorization and never take any away.
     pub(super) effective_members: BTreeSet<NodeId>,
-    /// The configuration the cluster has committed, as last reported.
+    /// The configuration the cluster has committed, as this replica's own
+    /// runtime last reported it.
     ///
     /// The other fact, assigned from its own stream for the same reason. It is
-    /// the only one that licenses narrowing the peer set or fencing what left,
-    /// and it is the only one retirement reads.
+    /// the only one that licenses narrowing what the peer set draws from the
+    /// runtime, and one of the two the local replica's own service state is read
+    /// from.
     ///
     /// Raw, exactly as the cluster reported it, including an identity a
     /// committed removal already spent — see `current_committed`, which is the
     /// part of it this driver can still honor. Keeping the raw fact is what
     /// makes a contract violation *nameable*: `readmitted_retired_peers` counts
-    /// spent identities the group's membership names again, and a set that had
+    /// spent identities this replica's runtime names again, and a set that had
     /// quietly filtered them out would have nothing to count.
     ///
-    /// It moves with `current_committed` and never apart from it: both are
-    /// statements about the same observation, so a fact too old to become the
-    /// current state is too old to become the current raw floor either. Seeded
-    /// from a restored record's membership, which differs from the raw fact only
-    /// by identities this driver already refuses.
+    /// **It is assigned from every committed fact this driver folds, whatever
+    /// position that fact stands at, and that is deliberate.** It answers "what
+    /// does this replica's own stream say the cluster has committed now", which
+    /// no position has an opinion about; the positioned question is
+    /// `current_committed`'s, and the two are separate fields because they are
+    /// separate questions. An earlier revision claimed the two moved together,
+    /// which was never what the code did and would have left this floor stale
+    /// across a second recovery from one checkpoint.
     pub(super) committed_members: BTreeSet<NodeId>,
     /// The committed membership this driver believes is current, and where it
     /// observed it.
@@ -168,10 +174,17 @@ where
     /// Its membership is the *live* one: the observation less every identity a
     /// committed removal has spent. Equal to `committed_members` on every
     /// cluster that keeps the single-use contract. A committed fact naming an
-    /// already-spent identity is not a fact about who may speak —
-    /// `RaftTransport::fence_peer` has no inverse, so the principal is gone —
-    /// and admitting it here would un-spend the ID and re-authorize a replica
-    /// the link layer will refuse forever.
+    /// already-spent identity is not a fact about who may speak — the retirement
+    /// floor never falls, so the identity stays refused — and admitting it here
+    /// would un-spend the ID and re-authorize a replica every correct link layer
+    /// goes on refusing.
+    ///
+    /// **It is also an authorization input in its own right**, and not only the
+    /// spent test's other half. A record legitimately stands ahead of a rebuilt
+    /// runtime, so the replicas this names are ones the cluster's committed
+    /// history calls members even while `committed_members` has not caught up;
+    /// deriving the peer set without it published a floor that retired them. See
+    /// [`super::policy`].
     ///
     /// With `committed_id_high_water` it is the whole of retirement: one
     /// scalar, one position, and a bounded set the size of the cluster.
@@ -494,10 +507,14 @@ where
     /// point.** A step that fails returns no report while the runtime has
     /// already appended, truncated, committed, or installed the configuration
     /// that moved, so a driver that routed only successful reports left the loss
-    /// window open until some later successful step happened to arrive — and for
-    /// a removal that later step is exactly what a stale peer set and an unmade
-    /// fence prevent. `RaftGroup::drain_membership_events` is the app layer's
-    /// error-path companion for that, and this is the driver's use of it.
+    /// window open until some later successful step happened to arrive — and a
+    /// stale peer set is exactly what keeps that later step from arriving.
+    /// `RaftGroup::drain_membership_events` is the app layer's error-path
+    /// companion for that, and this is the driver's use of it.
+    ///
+    /// The drained batch is one transaction like a report's, so an error path
+    /// that carries a contradiction publishes nothing rather than publishing what
+    /// preceded it.
     ///
     /// Empty after a successful step, because the report already carried the
     /// delta and the group advanced its own mark handing it over. So this costs
@@ -512,9 +529,7 @@ where
             };
             group.drain_membership_events()
         };
-        for event in &events {
-            self.route_membership_event(event);
-        }
+        self.route_membership_events(&events);
     }
 
     /// Steps the group with a leadership transfer, reporting the rejection it
@@ -680,9 +695,14 @@ where
         for event in report.snapshot_events {
             self.route_snapshot_event(event);
         }
-        for event in &report.membership_events {
-            self.route_membership_event(event);
-        }
+        // **One statement for the whole report**, not one per event. The
+        // membership events of a single report are folded into a candidate
+        // together and published once — see [`super::reconciliation`] — because a
+        // report whose second event contradicts its first must not leave the link
+        // layer holding a permanent statement licensed by the first alone. The
+        // sends above and the resolutions below are deliberately not in that
+        // transaction: both are loss-tolerant, and neither is retractable-only.
+        self.route_membership_events(&report.membership_events);
         for event in &report.proposal_events {
             self.observe_proposal_event(event);
         }
