@@ -310,3 +310,62 @@ fn recommitting_the_same_membership_retires_nothing() {
     assert!(!transport.is_fenced(NodeId(2)));
     assert!(!transport.is_fenced(NodeId(3)));
 }
+
+/// An entry the state machine cannot decode does not hide the configurations
+/// the same commit crossed behind it.
+///
+/// The failure this file exists for, reached through the one producer its other
+/// cases cannot script: a step that fails *inside* the output scan rather than
+/// after it. The app layer walks the vector once and decodes each `Apply` as it
+/// goes, so a malformed payload at index 1 abandons the walk with the
+/// configurations at 2 and 3 unvisited — and because the commit both admits node
+/// 5 and removes it again, the endpoint the driver would otherwise fall back on
+/// is the membership it started from. Nothing to compare, nothing owed, and an
+/// identity the cluster spent left allocatable with its principal unfenced.
+///
+/// The fence is refused here so the obligation is *observable* rather than
+/// discharged on the way past. That is also the state that matters: a driver
+/// which recorded the retirement but dropped the fence is the one whose next
+/// restart forgets it.
+#[test]
+fn an_undecodable_entry_does_not_hide_the_configurations_committed_behind_it() {
+    let (driver, transport) = driver_over_bootstrap(1, &[2, 3], &[2, 3, 5]);
+    transport.refuse_next_fences(NodeId(5), 8);
+
+    let refused = driver.deliver(append_committing_all(
+        NodeId(2),
+        NodeId(1),
+        vec![
+            // No newline, which is what this state machine's decoder requires.
+            LogEntry::application(Term(1), b"malformed".to_vec()),
+            LogEntry::configuration(Term(1), stable(1, &[1, 2, 3, 5])),
+            LogEntry::configuration(Term(1), stable(2, &[1, 2, 3])),
+        ],
+    ));
+    assert!(
+        matches!(refused, Err(InboundEnvelopeError::Driver { .. })),
+        "the step fails on the payload it cannot decode: {refused:?}"
+    );
+
+    let checkpoint = driver.control_plane_checkpoint();
+    assert_eq!(
+        checkpoint.committed_id_high_water,
+        Some(NodeId(5)),
+        "the admission raised the mark even though the step failed"
+    );
+    assert!(
+        !checkpoint.live_committed_members.contains(&NodeId(5)),
+        "and the removal behind it spent the identity: {:?}",
+        checkpoint.live_committed_members
+    );
+    assert_eq!(
+        checkpoint.pending_fences,
+        [NodeId(5)].into_iter().collect(),
+        "the fence the link refused is owed rather than forgotten"
+    );
+    assert_eq!(driver.pending_peer_fences(), 1);
+    assert_eq!(
+        driver.control_plane_checkpoint().live_committed_members,
+        [NodeId(1), NodeId(2), NodeId(3)].into_iter().collect()
+    );
+}

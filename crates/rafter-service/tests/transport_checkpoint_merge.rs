@@ -315,6 +315,104 @@ fn a_contradictory_checkpoint_is_refused_and_installs_nothing() {
     }
 }
 
+/// A fence the record cannot show a mark for is refused.
+///
+/// The clause the other three do not imply, and the one whose absence points the
+/// wrong way. `FenceNamesLiveMember` catches a fence naming an identity this
+/// record says is *live*; nothing caught a fence naming one this record has no
+/// opinion about at all. An identity above the mark was never in any committed
+/// configuration this record witnessed, so no committed removal here can have
+/// spent it — and a fence is the residue of a committed removal or it is
+/// nothing.
+///
+/// Absorbed instead of refused, it is the one contradiction that survives the
+/// join intact: the mark rises to cover a *live* identity, the obligation
+/// travels with it, and the driver publishes the replica to its link layer and
+/// then permanently fences it. `fence_peer` has no inverse, so that is not a
+/// stale peer set that the next flush corrects.
+#[test]
+fn a_fence_naming_an_identity_the_record_never_spent_is_refused() {
+    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 2] = [
+        (
+            checkpoint(None, &[], &[7]),
+            ControlPlaneCheckpointError::FenceNamesUnspentIdentity { node_id: NodeId(7) },
+        ),
+        (
+            checkpoint(Some(5), &[1, 2, 5], &[7]),
+            ControlPlaneCheckpointError::FenceNamesUnspentIdentity { node_id: NodeId(7) },
+        ),
+    ];
+
+    for (damaged, expected) in cases {
+        let (driver, _transport) = driver_holding(Some(3), &[1, 2, 3]);
+        let before = driver.control_plane_checkpoint();
+        let group = driver.release_group().expect("the driver holds a group");
+
+        let refused = driver.adopt_group_with_checkpoint(group, Vec::new(), damaged);
+        let Err(ManagedDriverError::InvalidControlPlaneCheckpoint { reason }) = refused else {
+            panic!("expected a typed checkpoint refusal, got {refused:?}");
+        };
+        assert_eq!(reason, expected);
+        assert_eq!(
+            driver.control_plane_checkpoint(),
+            before,
+            "a refused record moves nothing, so nothing is half-installed"
+        );
+    }
+}
+
+/// The refusal lands before the link layer is told anything.
+///
+/// The cross-record shape, which is the one that costs a live replica. This
+/// driver's own committed configuration names node 7, so the join would raise
+/// the mark past it, keep it live — and keep the obligation the record brought.
+/// The next flush is then two contradictory statements about one replica:
+/// publish it, then fence it forever.
+///
+/// So the assertion is about *when* rather than only about what. Validation runs
+/// before the first field moves and therefore before any derivation reaches the
+/// transport, which is what makes a damaged file a refusal to open rather than a
+/// replica this process has already helped destroy.
+#[test]
+fn a_fence_contradicting_a_live_member_is_refused_before_any_transport_call() {
+    let (driver, transport) = driver_holding(Some(7), &[1, 2, 7]);
+    let before = driver.control_plane_checkpoint();
+    let fences_before = transport.fence_attempts();
+    let group = driver.release_group().expect("the driver holds a group");
+
+    let refused = driver.adopt_group_with_checkpoint(
+        group,
+        Vec::new(),
+        checkpoint(Some(5), &[1, 2, 5], &[7]),
+    );
+
+    assert!(
+        matches!(
+            refused,
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::FenceNamesUnspentIdentity {
+                    node_id: NodeId(7)
+                }
+            })
+        ),
+        "got {refused:?}"
+    );
+    assert_eq!(
+        driver.control_plane_checkpoint(),
+        before,
+        "a refused record moves nothing"
+    );
+    assert_eq!(
+        transport.fence_attempts(),
+        fences_before,
+        "the link layer was asked to fence a replica this driver still needs"
+    );
+    assert!(
+        !transport.is_fenced(NodeId(7)),
+        "node 7 is live in this driver's own committed configuration"
+    );
+}
+
 /// The control: a valid stale record still contributes everything it knows.
 ///
 /// Without it, a join that refused every stale record would pass every clause

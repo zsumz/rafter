@@ -29,10 +29,31 @@ pub(crate) struct ScriptedMembershipRuntime {
     node_id: NodeId,
 }
 
+/// Where a scripted replica's committed configuration starts.
+///
+/// Above zero so the frames these suites send, which name `last_log_index: 5`,
+/// describe a replica with a log rather than one without.
+const INITIAL_COMMIT_INDEX: LogIndex = LogIndex(5);
+
 #[derive(Debug)]
 pub(crate) struct ScriptedMembership {
     effective: Vec<u64>,
     committed: Vec<u64>,
+    /// Where the committed configuration stands.
+    ///
+    /// **Advanced whenever `committed` moves, because a real runtime cannot do
+    /// otherwise.** `committed_membership` is by definition the latest
+    /// configuration entry at or below `commit_index`, and a committed log entry
+    /// is never truncated — so one commit index names one committed membership,
+    /// for good. A fixture that moved the membership and left the index standing
+    /// would be stating a sequence no correct cluster produces, which is the
+    /// failure mode this file's own neighbours were written against.
+    ///
+    /// It became load-bearing when the driver started reading it: a committed
+    /// fact carries the position it stands at, and a driver skips one at or
+    /// below the position it has already consumed. A frozen index makes every
+    /// change after the first look like a replay of the first.
+    commit_index: LogIndex,
     /// Applied from inside `step`, so the group observes the change as a
     /// membership event rather than as a value that was always this way.
     change_on_step: Option<(Vec<u64>, Vec<u64>)>,
@@ -42,6 +63,23 @@ pub(crate) struct ScriptedMembership {
     /// configuration and hands the group work that the state machine then
     /// refuses, which is the shape every membership-loss case has.
     outputs_on_step: Vec<RaftOutput>,
+}
+
+impl ScriptedMembership {
+    /// Assigns both memberships, advancing the commit index if the committed one
+    /// actually moved.
+    ///
+    /// The one place either membership is written, so the index cannot drift
+    /// away from the fact it dates. Re-committing the same configuration
+    /// advances nothing, which is what a cluster that commits no configuration
+    /// change does.
+    fn assign(&mut self, effective: Vec<u64>, committed: Vec<u64>) {
+        if self.committed != committed {
+            self.commit_index = LogIndex(self.commit_index.0 + 1);
+        }
+        self.effective = effective;
+        self.committed = committed;
+    }
 }
 
 impl ScriptedMembershipRuntime {
@@ -56,6 +94,7 @@ impl ScriptedMembershipRuntime {
             shared: Arc::new(Mutex::new(ScriptedMembership {
                 effective: effective.to_vec(),
                 committed: committed.to_vec(),
+                commit_index: INITIAL_COMMIT_INDEX,
                 change_on_step: None,
                 outputs_on_step: Vec::new(),
             })),
@@ -103,9 +142,7 @@ pub(crate) fn set_membership(
     effective: &[u64],
     committed: &[u64],
 ) {
-    let mut state = lock_membership(handle);
-    state.effective = effective.to_vec();
-    state.committed = committed.to_vec();
+    lock_membership(handle).assign(effective.to_vec(), committed.to_vec());
 }
 
 /// Arms a change the runtime applies from inside its next `step`, so the group
@@ -153,16 +190,24 @@ impl PersistedRaftRuntime for ScriptedMembershipRuntime {
         Term(1)
     }
     fn commit_index(&self) -> LogIndex {
-        LogIndex(5)
+        lock_membership(&self.shared).commit_index
     }
+    /// The commit index, plus one while an uncommitted configuration is in
+    /// effect — which is exactly when a replica's log stands above its commit
+    /// floor.
     fn last_log_index(&self) -> LogIndex {
-        LogIndex(5)
+        let state = lock_membership(&self.shared);
+        if state.effective == state.committed {
+            state.commit_index
+        } else {
+            LogIndex(state.commit_index.0 + 1)
+        }
     }
     fn snapshot_index(&self) -> LogIndex {
         LogIndex(0)
     }
     fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {
-        std::cmp::min(index, LogIndex(5))
+        std::cmp::min(index, self.commit_index())
     }
     fn membership(&self) -> MembershipConfig {
         self.config(false)
@@ -174,14 +219,13 @@ impl PersistedRaftRuntime for ScriptedMembershipRuntime {
         Vec::new()
     }
     fn term_at_index(&self, index: LogIndex) -> Option<Term> {
-        (index <= LogIndex(5)).then_some(Term(1))
+        (index <= self.last_log_index()).then_some(Term(1))
     }
 
     fn step(&mut self, _input: RaftInput) -> Result<Vec<RaftOutput>, Self::Error> {
         let mut state = lock_membership(&self.shared);
         if let Some((effective, committed)) = state.change_on_step.take() {
-            state.effective = effective;
-            state.committed = committed;
+            state.assign(effective, committed);
         }
         Ok(std::mem::take(&mut state.outputs_on_step))
     }

@@ -201,6 +201,27 @@ where
     /// [`super::PeerControlPlaneCheckpoint`] is how the set survives a process
     /// restart.
     pub(super) pending_fences: BTreeSet<NodeId>,
+    /// How far this driver has consumed the committed configuration stream.
+    ///
+    /// The one field here that names a *position* rather than a state, and the
+    /// reason it has to exist is that committed configurations arrive twice. A
+    /// live cluster delivers each one once, as it commits; a restart delivers a
+    /// whole suffix of them again, because the runtime replays every
+    /// configuration entry between the application's applied floor and the
+    /// durable commit index. The retirement diff beside it is computed against
+    /// the live set as it stands *now*, so a historical configuration folded in
+    /// a second time does not repeat an observation — it reads as a removal of
+    /// everything the configurations above it added.
+    ///
+    /// Ordering the replay before the endpoint is observed is necessary and not
+    /// sufficient: the second recovery from the same durable state replays the
+    /// same history against a live set the first recovery already advanced.
+    /// Idempotence under arbitrary re-replay needs a position.
+    ///
+    /// It moves in [`super::control_plane`]'s `observe_committed_members`,
+    /// under the same epoch as the three fields above it, so a checkpoint can
+    /// never carry a retirement record and a stale position for it.
+    pub(super) committed_configuration_through: Option<LogIndex>,
     /// How many times the checkpointable control-plane state has changed.
     ///
     /// The change signal an embedder persists against. Eq over the checkpoint

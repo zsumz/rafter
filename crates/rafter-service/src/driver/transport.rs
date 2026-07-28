@@ -49,6 +49,7 @@ pub type AddressedRead<G, QR> = (ReadId, DriverFuture<Result<QueryReceipt<G, QR>
 
 mod adoption;
 mod bounds;
+mod checkpoint;
 mod control_plane;
 mod error;
 mod health;
@@ -56,7 +57,7 @@ mod state;
 mod waiters;
 
 pub use bounds::TransportDriverOptions;
-pub use control_plane::PeerControlPlaneCheckpoint;
+pub use checkpoint::PeerControlPlaneCheckpoint;
 pub use error::InboundEnvelopeError;
 pub use state::DriverServiceState;
 
@@ -233,31 +234,48 @@ where
                 committed_id_high_water: None,
                 published_peers: None,
                 pending_fences: BTreeSet::new(),
+                committed_configuration_through: None,
                 checkpoint_epoch: 0,
                 shutting_down: false,
             })),
         };
-        // Before the publication below, and that order is the contract: the
-        // spent test reads the recovered mark and the recovered live set
-        // together, and a membership fact derived ahead of them would be derived
-        // against state the crash erased.
+        // Before everything below, and that order is the contract: the spent
+        // test reads the recovered mark and the recovered live set together, and
+        // a membership fact derived ahead of them would be derived against state
+        // the crash erased. It also installs the consumer offset the replay
+        // below is filtered against.
         driver
             .inner
             .lock()
             .restore_control_plane_checkpoint(checkpoint)
             .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
-        // Published before the driver serves anything, so the transport's peer
-        // set is the group's membership from construction onward rather than
-        // undefined until the first membership change. A group that never
-        // changes membership would otherwise never tell its link layer anything,
-        // and a recovery report carries no membership event to stand in.
-        driver.inner.lock().publish_adopted_membership();
+        // **The history, then the endpoint.** The recovery outputs are the
+        // committed configurations this replica crossed, oldest first, and every
+        // one of them is older than the committed membership the recovered
+        // runtime reports. Publishing the endpoint first made each of them a
+        // *removal* of everything the endpoint had that they did not — so a
+        // restart retired the replicas the cluster had most recently admitted,
+        // permanently, and the spent filter meant the very next crossing could
+        // not give them back.
+        //
+        // Order alone is not the whole fix and this order is not load-bearing on
+        // its own: each fact is gated on the checkpoint's consumer offset, so a
+        // second recovery over the same durable state skips the history it has
+        // already folded in rather than re-deriving it against a live set that
+        // has moved. What order still buys is that a *first* recovery, with no
+        // offset to gate on, folds the stream in the direction it happened.
         if !recovery_outputs.is_empty() {
             driver
                 .inner
                 .lock()
                 .apply_recovery_outputs(recovery_outputs)?;
         }
+        // Published before the driver serves anything, so the transport's peer
+        // set is the group's membership from construction onward rather than
+        // undefined until the first membership change. A group that never
+        // changes membership would otherwise never tell its link layer anything,
+        // and a recovery report carries no membership event to stand in.
+        driver.inner.lock().publish_adopted_membership();
         Ok(driver)
     }
 
@@ -785,12 +803,19 @@ where
         state.next_proposal_id = highest(state.next_proposal_id, next_proposal_id);
         state.next_read_id = highest(state.next_read_id, next_read_id);
         state.group = Some(group);
-        state.publish_adopted_membership();
-        if recovery_outputs.is_empty() {
-            state.publish_metrics();
-            return Ok(());
+        // History then endpoint, for the reason
+        // [`TransportRaftDriver::with_control_plane_checkpoint`] gives: the
+        // recovery outputs are older than the committed membership the rebuilt
+        // runtime reports, and a driver that took the endpoint first read every
+        // one of them as a removal of what the endpoint had added. A takeover
+        // reaches this with a checkpoint from another process and is the case
+        // that most needs it.
+        if !recovery_outputs.is_empty() {
+            state.apply_recovery_outputs(recovery_outputs)?;
         }
-        state.apply_recovery_outputs(recovery_outputs)
+        state.publish_adopted_membership();
+        state.publish_metrics();
+        Ok(())
     }
 }
 

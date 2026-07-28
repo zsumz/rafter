@@ -267,6 +267,56 @@ fn a_shut_down_driver_reports_shutting_down() {
     ));
 }
 
+/// A shut-down driver still reports the control plane its embedder must persist.
+///
+/// The last cell of the lifecycle, and the one where forgetting costs the most.
+/// Shutdown is terminal for *service* and says nothing about the record: an
+/// identity a committed removal spent is still spent, and a fence the link layer
+/// never took is still owed by whatever replica opens this durable state next.
+/// A supervisor's final act is to persist what it holds, and that read happens
+/// after the shutdown it is the shutdown for — so the accessor has to keep
+/// answering past the point every client surface has stopped.
+///
+/// Shutdown also discharges nothing. There is no flush here and there must not
+/// be: the obligation belongs to the `(group, NodeId)` pair rather than to this
+/// process, and a driver that dropped it on the way out would be the forgotten
+/// fence with a tidy exit in front of it.
+#[test]
+fn a_shut_down_driver_still_reports_what_its_embedder_must_persist() {
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
+    let handle_to_membership = runtime.handle();
+    let (driver, transport) = scripted_driver(runtime, Nameable::only(&[NodeId(2)]));
+    let client = driver.handle();
+
+    // A committed removal the link layer cannot act on, so the obligation is
+    // still outstanding when the driver is asked to stop.
+    change_on_step(&handle_to_membership, &[1, 2], &[1, 2]);
+    driver.tick().expect("the step that commits the removal");
+    let before = driver.control_plane_checkpoint();
+    assert_eq!(
+        before.pending_fences,
+        [NodeId(3)].into_iter().collect(),
+        "the fixture only means anything with a fence outstanding"
+    );
+
+    block_on(client.shutdown()).expect("the driver shuts down");
+
+    assert_eq!(
+        driver.control_plane_checkpoint(),
+        before,
+        "shutdown is terminal for service and changes nothing about the record"
+    );
+    assert_eq!(
+        driver.pending_peer_fences(),
+        1,
+        "and discharges no obligation on the way out"
+    );
+    assert!(
+        !transport.is_fenced(NodeId(3)),
+        "the link layer still never took it, which is why it is still owed"
+    );
+}
+
 /// Shutdown outranks a released group, which outranks everything derived from a
 /// group the driver does not hold.
 #[test]

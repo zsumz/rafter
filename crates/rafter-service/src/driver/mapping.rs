@@ -173,6 +173,20 @@ pub enum ControlPlaneCheckpointError {
     /// removes from the live set. Installing it would ask the link layer to
     /// permanently fence a replica the group still needs.
     FenceNamesLiveMember { node_id: NodeId },
+    /// A pending fence names an identity the checkpoint never saw spent.
+    ///
+    /// The other half of the same rule, and the half a live-set comparison alone
+    /// cannot state: an identity *above* the mark — or any identity at all when
+    /// there is no mark — was never in a committed configuration this record
+    /// witnessed, so no committed removal recorded here can have spent it. A
+    /// fence is the residue of a committed removal or it is nothing.
+    ///
+    /// This is the direction that survives the join intact rather than being
+    /// caught by it. The mark rises to cover an identity another record calls
+    /// live, the obligation travels with it, and the next flush publishes the
+    /// replica to the link layer and then permanently fences it — which
+    /// [`crate::RaftTransport::fence_peer`] cannot undo.
+    FenceNamesUnspentIdentity { node_id: NodeId },
 }
 
 impl fmt::Display for ControlPlaneCheckpointError {
@@ -192,6 +206,11 @@ impl fmt::Display for ControlPlaneCheckpointError {
             Self::FenceNamesLiveMember { node_id } => write!(
                 formatter,
                 "the checkpoint fences {node_id} and also calls it a live member"
+            ),
+            Self::FenceNamesUnspentIdentity { node_id } => write!(
+                formatter,
+                "the checkpoint fences {node_id} without ever having seen a committed \
+                 configuration that named it"
             ),
         }
     }
