@@ -125,9 +125,12 @@ fn durable_state(
     (hard_state_store, log_segment)
 }
 
-/// Rebuilds the runtime, asserting the fixture really replays both crossings and
-/// that each one carries the transition it should.
-fn recovered_runtime(configurations: [&[u64]; 2]) -> (DurableRaftNode, Vec<RaftOutput>) {
+/// Rebuilds the runtime above `applied_floor`, asserting the fixture replays the
+/// crossings it means to and that each one carries the transition it should.
+fn recovered_runtime(
+    configurations: [&[u64]; 2],
+    applied_floor: LogIndex,
+) -> (DurableRaftNode, Vec<RaftOutput>) {
     let (hard_state_store, log_segment) = durable_state(configurations);
     let (runtime, recovery_outputs) =
         DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
@@ -136,7 +139,7 @@ fn recovered_runtime(configurations: [&[u64]; 2]) -> (DurableRaftNode, Vec<RaftO
             hard_state_store,
             log_segment,
             InMemoryRaftSnapshotStore::new(),
-            APPLIED_FLOOR,
+            applied_floor,
         )
         .expect("the runtime recovers above the applied floor")
         .into_parts();
@@ -149,19 +152,24 @@ fn recovered_runtime(configurations: [&[u64]; 2]) -> (DurableRaftNode, Vec<RaftO
             _ => None,
         })
         .collect::<Vec<(LogIndex, BTreeSet<NodeId>)>>();
-    // The fixture only means anything if recovery really replays both moves, and
-    // the transition only means anything if the kernel walked the chronology
-    // rather than sampling the state the replay ends at. The first entry's
-    // predecessor is the bootstrap membership — there is no configuration entry
-    // beneath it — and the second's is the first.
-    assert_eq!(
-        crossings,
+    // The fixture only means anything if recovery really replays the moves it
+    // names, and the transition only means anything if the kernel walked the
+    // chronology rather than sampling the state the replay ends at. The first
+    // entry's predecessor is the bootstrap membership — there is no
+    // configuration entry beneath it — and the second's is the first.
+    let expected = if applied_floor < FIRST_AT {
         vec![
             (FIRST_AT, ids(&BOOTSTRAP)),
             (SECOND_AT, ids(configurations[0])),
-        ],
-        "recovery must replay both crossings, each carrying the membership that \
-         stood immediately before it: {recovery_outputs:?}"
+        ]
+    } else {
+        vec![(SECOND_AT, ids(configurations[0]))]
+    };
+    assert_eq!(
+        crossings, expected,
+        "recovery must replay the crossings above the applied floor, each \
+         carrying the membership that stood immediately before it: \
+         {recovery_outputs:?}"
     );
     (runtime, recovery_outputs)
 }
@@ -179,7 +187,16 @@ fn adopt_under(
     checkpoint: PeerControlPlaneCheckpoint<u64>,
     configurations: [&[u64]; 2],
 ) -> (Driver, QueueTransport) {
-    let (runtime, recovery_outputs) = recovered_runtime(configurations);
+    adopt_above(checkpoint, configurations, APPLIED_FLOOR)
+}
+
+/// The same, with the applied floor chosen by the caller.
+fn adopt_above(
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
+    configurations: [&[u64]; 2],
+    applied_floor: LogIndex,
+) -> (Driver, QueueTransport) {
+    let (runtime, recovery_outputs) = recovered_runtime(configurations, applied_floor);
     let transport = QueueTransport::default();
     let validator = Validator {
         transport: transport.clone(),
@@ -187,10 +204,10 @@ fn adopt_under(
         nameable: Nameable::all(),
     };
     let app = KvStateMachine {
-        applied_index: APPLIED_FLOOR,
+        applied_index: applied_floor,
         ..KvStateMachine::default()
     };
-    let group = RaftGroup::with_applied_index(GROUP, NodeId(1), runtime, app, APPLIED_FLOOR);
+    let group = RaftGroup::with_applied_index(GROUP, NodeId(1), runtime, app, applied_floor);
     let driver = TransportRaftDriver::with_control_plane_checkpoint(
         group,
         recovery_outputs,
@@ -462,4 +479,113 @@ fn an_observation_behind_the_register_manufactures_no_removal() {
         "and the link layer was asked to fence nobody: {:?}",
         transport.fence_attempts()
     );
+}
+
+/// A removal replayed *alone* is spent and fenced on its own evidence.
+///
+/// **The case the transition is load-bearing for, and the one a mutation check
+/// found missing.** Everywhere the admission crossing is replayed too, the
+/// removal is already derivable by comparing that crossing's membership against
+/// a record that no longer names the identity — so neutralizing the transition
+/// and leaning entirely on that inference passes every other case here.
+///
+/// It does not pass this one. The applied floor sits *between* the admission at
+/// index 6 and the removal at index 7, which is ordinary rather than contrived:
+/// a state machine's floor lands wherever it landed. Only the removal is
+/// replayed, its membership `{1,2,3}` is exactly what the record already names,
+/// and the inference has nothing to compare. Without `previous` the identity
+/// still becomes spent — the crossing names node 5, so the mark rises past it and
+/// the record does not name it — but **no fence is ever owed**, which is the
+/// quietest way this whole mechanism can fail.
+#[test]
+fn a_removal_replayed_without_its_admission_is_still_fenced() {
+    let (driver, transport) = adopt_above(
+        record_at(3, &[1, 2, 3], ABOVE_HISTORY),
+        ADMIT_THEN_REMOVE,
+        FIRST_AT,
+    );
+
+    let checkpoint = driver.control_plane_checkpoint();
+    assert_eq!(
+        checkpoint.committed_id_high_water,
+        Some(NodeId(5)),
+        "the crossing named node 5 in the membership it replaced, so the mark \
+         covers it"
+    );
+    assert!(
+        !live_of(&driver).contains(&NodeId(5)),
+        "and it is spent: {:?}",
+        live_of(&driver)
+    );
+    assert!(
+        transport.is_fenced(NodeId(5)) || checkpoint.pending_fences.contains(&NodeId(5)),
+        "and the fence is installed or owed, which only the transition proves \
+         here: fenced {:?}, owed {:?}",
+        transport.fence_attempts(),
+        checkpoint.pending_fences
+    );
+}
+
+/// A removal is absorbed even when a later record still names the identity.
+///
+/// **The trap this design had to answer, and the case that proves the answer is
+/// load-bearing.** If a crossing only ever narrowed the register when it was the
+/// later observation, a removal proved beneath a later record would leave the
+/// identity in `membership` — and `spent(id) = id ≤ mark ∧ id ∉ membership`
+/// cannot see it there. The fence would be owed for a replica the driver still
+/// called live: the peer set would publish it and the flush would permanently
+/// fence it, which is two contradictory statements about one replica and a
+/// record its own validator refuses.
+///
+/// So the removal is subtracted from the register whatever the fact's position,
+/// because a removal is not an observation of the present — it is a permanent
+/// fact about an identity. No holding set is needed: the crossing that proves
+/// the removal also *named* the identity, so the mark already covers it, and
+/// every later assignment filters its incoming membership through the spent test
+/// so it can never re-enter.
+///
+/// The record here names node 5 at position 10 while the history removed it at
+/// index 7, which is the single-use contract already broken — the one condition
+/// under which the gap is reachable at all. The driver's answer is to keep the
+/// identity spent and refuse it.
+#[test]
+fn a_removal_is_absorbed_even_when_a_later_record_still_names_it() {
+    let (driver, transport) = adopt_under(
+        record_at(5, &[1, 2, 3, 4, 5], ABOVE_HISTORY),
+        ADMIT_THEN_REMOVE,
+    );
+
+    let checkpoint = driver.control_plane_checkpoint();
+    assert!(
+        !live_of(&driver).contains(&NodeId(5)),
+        "the crossing at index {} proved node 5 removed, and a record standing \
+         later does not make that provisional: {:?}",
+        SECOND_AT.0,
+        live_of(&driver)
+    );
+    assert!(
+        transport.is_fenced(NodeId(5)) || checkpoint.pending_fences.contains(&NodeId(5)),
+        "its fence is installed or owed: fenced {:?}, owed {:?}",
+        transport.fence_attempts(),
+        checkpoint.pending_fences
+    );
+    assert!(
+        !transport
+            .peer_sets()
+            .last()
+            .expect("a set was published")
+            .iter()
+            .any(|principal| principal_node(principal) == Some(NodeId(5))),
+        "and it is not also published to the link layer, which is the \
+         contradiction a record that kept it live would produce: {:?}",
+        transport.peer_sets().last()
+    );
+    // And the record the driver would persist is one a driver accepts back. A
+    // fence naming an identity the same record calls live is refused at restore
+    // — which is what a removal left unabsorbed would produce, and the reason
+    // the gap is a correctness bug rather than an untidiness.
+    let group = driver.release_group().expect("the driver holds a group");
+    driver
+        .adopt_group_with_checkpoint(group, Vec::new(), checkpoint)
+        .expect("a driver's own record is a record it can be handed back");
 }
