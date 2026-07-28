@@ -7360,6 +7360,460 @@ the addition-only case would have shipped the offset and lost the order; a
 reviewer checking only the admit-then-remove case would have shipped the order
 and lost idempotence.
 
+### Eleventh revision after adoption (2026-07-27)
+
+A seventh external review read the tenth revision's model and found three
+defects. **Two of them are lifecycle interactions of the offset the tenth
+revision itself introduced**, which is the shape that revision predicted when it
+made the lifecycle matrix the deliverable rather than the fixes: a mechanism
+added to one path acquires an obligation on every other path that touches it,
+and the matrix exists to make those obligations enumerable. The offset acquired
+two and the matrix had a row for neither.
+
+The third is a liveness inversion in the reference process loop, and it is worth
+stating in the same breath because it is the same failure of scope: a loop that
+answers clients until they stop asking is a fairness bug that only shows up when
+somebody asks continuously, and nothing in the composition asked continuously.
+
+Each was reproduced with a failing test before anything changed.
+
+#### 1. The offset suppressed the *current* committed floor, not only the replayed one
+
+`observe_committed_members` returned early for a fact at or below the offset —
+correctly, because re-folding a consumed configuration computes a difference
+between a historical membership and a present one. But the early return skipped
+the **raw committed membership assignment** as well as the fold, and one of the
+two publishers reaching that gate is not history.
+
+`publish_adopted_membership` is the *endpoint*: the committed configuration the
+runtime holds, stamped with its commit index. On a second recovery from one
+checkpoint that index is exactly where the restored offset already sits — the
+first recovery wrote it there — so the whole call returned early and
+`committed_members` stayed **empty** on a freshly constructed driver.
+
+**Nothing showed while the two membership facts agreed**, and that is why no
+existing test caught it. The peer set, the inbound admission check, and the
+readmission counter are all derived from `effective ∪ committed`, and a union
+with an empty half is the other half. `effective_members` is assigned before the
+gate and was therefore right.
+
+The union's *point* is what breaks. It is `effective ∪ committed` precisely so an
+in-flight narrowing cannot de-authorize a replica that is still committed — the
+joiner of a change that has appended and not committed must be able to speak, and
+the replica such a change *drops* must keep speaking until the drop commits. With
+the floor empty there was no floor to be held above:
+
+- a new leader appends an uncommitted `{1,2}` over a committed `{1,2,3,4,5}`;
+- `EffectiveChanged` arrives, `effective = {1,2}`, `committed = {}`;
+- nodes 3, 4, and 5 leave the published peer set and are refused inbound, while
+  the cluster still has them committed;
+- and a **local** node 5 reports `NotMember` and refuses every client surface —
+  for a removal that may still be truncated back off the log.
+
+`NotMember` rather than `Decommissioned` is the tell: nothing was spent, no fence
+was owed, and the mark and live set were exactly right. Only the raw floor was
+missing.
+
+**The fix separates the two operations the gate conflated.**
+`MembershipFact::Committed` gains
+**`source: CommittedMembershipSource::{Crossing, Endpoint}`**, and
+`publish_membership` reads:
+
+```rust
+let folded = self.observe_committed_members(&committed, through);
+if folded || source == CommittedMembershipSource::Endpoint {
+    self.committed_members = committed;
+}
+```
+
+`observe_committed_members` keeps the gate and now does **retirement only**,
+returning whether it folded. The retirement fold stays offset-gated for *both*
+sources, which is not negotiable: an endpoint at or below the offset must not
+re-fold, for the volatile-commit-index reason the tenth revision gives. What
+changes is that the offset no longer answers a question it was never asked. It
+says "have I folded this retirement in"; it says nothing about "is this
+configuration still the cluster's", and the raw floor is only ever read as the
+second question.
+
+**Both publishers were checked, and `route_membership_event` is `Crossing` —
+including the app layer's own endpoint comparison.** `rafter-app` emits
+`MembershipEvent::Applied` for two things: each configuration the commit index
+crossed, at that entry's index, and a final comparison at the commit index that
+catches moves crossing no entry at all. The driver cannot tell them apart from
+the event, and does not need to. A live `Applied` above the offset assigns either
+way. A live `Applied` *at or below* it can only occur in the window where a
+recovered runtime's commit index is still below a higher restored offset, and
+there the older floor is safe: anything a configuration in that window added is
+named by `effective` and covered by the union, and anything it removed is already
+spent by the restored record and filtered out of both derivations regardless. The
+driver's floor comes from adoption, which is the one publisher that asks the
+runtime rather than being told.
+
+The design deviates from neither of the review's two sketches so much as picks
+one: the source tag rather than having `publish_adopted_membership` assign the
+raw membership itself. The type is where this module puts distinctions —
+`MembershipFact` exists because a caller supplying a set and a decision as
+separate arguments once answered them inconsistently — and an assignment split
+across two call sites is the same hazard by another route.
+
+#### 2. The offset and the retirement record could be restored out of step
+
+`committed_configuration_through` documents that it moves with the retirement
+record "and never apart from it". Nothing enforced it. `validate` inspected the
+mark, the live set, and the fences, and never looked at the offset at all — so
+both ways of separating them were accepted as ordinary input, and each loses a
+different half of what the record exists for.
+
+**(a) Final retirement state with `through: None`.** Every field individually
+plausible, the whole a lie: the state proves history *was* consumed. With no
+offset to gate them, recovery re-folds every replayed configuration against a
+live set that already reflects it, and each one below the last reads as a removal
+of everything above it added. This is the exact bug the offset was introduced to
+close, **resurrected through a checkpoint shape**. It is not hypothetical:
+neutralizing the clause and recovering an addition-only log under such a record
+fences node 5 and publishes a peer set without it.
+
+It is also the shape the reference decoder already refuses — and that gap between
+the two layers is the finding worth naming. `lock-node` moved its file format to
+version 3 rather than migrate a version-2 record to `through = -`, for precisely
+this reason, and the tenth revision wrote the argument out. Meanwhile the generic
+validator one layer down accepted the same semantic shape from any embedder that
+reached it another way, including a well-formed version-3 file whose `through`
+line had been flipped to `-`. A version tag refuses a *file*; only a record
+invariant refuses the *semantics*.
+
+**(b) `through: Some(_)` with empty retirement state.** The quiet one. The offset
+says every committed configuration through that index has been folded in, so
+recovery skips exactly that history — and with no mark and no live set there is
+nothing it was folded into. Every identity those configurations spent becomes
+allocatable again, with no fence owed and no later fact to re-derive one from.
+
+**The clause is one biconditional over the whole record:**
+
+```text
+through == None  ⟺  high_water == None ∧ live empty ∧ fences empty
+```
+
+with two typed errors, `CommittedStateWithoutCursor` and
+`CursorWithoutCommittedState`, because the two fail in opposite directions and an
+operator holding the file needs to know which.
+
+**The reverse direction's soundness is worth stating rather than assuming**,
+since it is the direction that could in principle turn away a legitimate record.
+It cannot: a committed configuration always names at least one replica —
+`MembershipSet::new` refuses an empty voter set — so
+`observe_committed_members` raises the mark to that configuration's greatest
+identity in the same call that advances the offset. A consumed offset beside no
+mark is **not a producible state**, so the clause refuses nothing a driver could
+have written.
+
+The forward direction holds by the same construction, from the other end: the
+mark, the live set, and the fence set move only inside that one method, and it
+always advances the offset.
+
+The clause runs on the incoming record and on the **joined candidate**, keeping
+the tenth revision's executable-not-argued stance. The join preserves it — the
+offset is a `max` and the retirement fields are unions or maxima, so a joined
+record has an offset exactly when a side did and retirement state exactly when a
+side did, and each side has both or neither — and it is checked anyway, because a
+proof that stops holding when someone edits the join is a proof that fails
+silently.
+
+The reference decoder's `check_invariants` gains the same clause, checked first,
+so the refusal can name the *file* rather than only the value.
+
+**One consequence worth recording**, because it changed a fixture rather than a
+behavior: `transport_checkpoint_merge.rs` built every hand-made record with no
+offset, which is now the refused shape (a). The helper supplies one, below the
+scripted runtime's commit index so each adoption's endpoint publication still
+folds rather than being skipped as replayed — a fixture that gated the
+publication away would be measuring the gate instead of the lattice.
+
+#### 3. The reference loop could starve Raft and its own terminal transition
+
+```rust
+while let Ok(job) = jobs.recv_timeout(LOOP_POLL_INTERVAL) {
+```
+
+The drain ran until the client channel went quiet, and *then* the pass inspected
+the stored control-plane failure, delivered inbound frames, ticked, drove reads,
+and polled deadlines. A continuous stream of immediately-answered requests never
+lets the channel go quiet, so none of that happens. `STATUS` suffices: it answers
+from memory, touches no store, and reaches neither Raft nor the lock, so a client
+can keep one in flight perpetually without the replica doing work that would slow
+the flood down.
+
+Two costs, and the second is worse. The first is that Raft stops: no clock, no
+inbound frames, no read progress, for as long as somebody keeps asking. The
+second is that **`State::Failed` never terminates**. That state is entered by a
+replica that has just learned it cannot make its peer control plane durable —
+the one state where continuing to serve is exactly wrong, because its next
+restart begins by forgetting whatever it retired. The drain answers `ABANDONED`
+forever and never reaches the branch that ends the loop, so a process that *knows*
+its control plane is not durable keeps serving and never exits nonzero. Every
+supervisor watching the exit code learns nothing.
+
+The fix is a per-pass budget:
+
+```rust
+for slot in 0..MAX_JOBS_PER_PASS {
+    let received = if slot == 0 {
+        jobs.recv_timeout(LOOP_POLL_INTERVAL).ok()
+    } else {
+        jobs.try_recv().ok()
+    };
+    let Some(job) = received else { break };
+    /* ... handle ... */
+    if stopping || matches!(state, State::Failed { .. }) {
+        break;
+    }
+}
+```
+
+**Only the first receive blocks**, which is a deviation from the review's
+`try_recv`-throughout sketch and a deliberate one. The first receive is the
+loop's idle wait — it is what keeps an idle replica off the CPU and what bounds
+how long an arrived peer frame waits — while blocking *again* after a request has
+been answered would let a momentary lull cost the protocol a full poll interval
+it never needed to pay, up to the budget's worth per pass.
+
+`MAX_JOBS_PER_PASS = 64`: comfortably more than the requests a correct client
+population can have outstanding at once — a connection is strictly sequential, so
+queue depth is bounded by live connections and this composition's default client
+bound is eight — while few enough that a whole pass of them finishes far inside
+one tick interval. The terminal-state break is separate from the budget because
+the budget is about fairness and this is about not spending it: in `State::Failed`
+the work below the drain *is* the exit, and a pass that kept answering would
+postpone it for exactly as long as clients kept asking.
+
+**The review's `sync_channel`-and-connection-limit "consider" is declined, with
+reasons rather than by omission.** The channel's depth is already bounded by the
+number of live connections, because a connection is strictly sequential — the
+reply is written before the next line is read — so a client cannot queue a second
+request until the first is answered. A bounded `sync_channel` would therefore not
+bound a resource that was unbounded; it would move where a burst blocks, from the
+loop to the client threads, and leave the binding resource where it was. That
+binding resource is threads and file descriptors, and bounding it means refusing
+an accept, which needs an answer this client protocol does not have — a
+wire-contract change rather than a loop fix. `CONTRACT.md` scopes this
+composition as integration composition over a protocol that authenticates
+nothing, where any connection may already claim any client identity, so a
+resource bound here would be a property against accidents and not against an
+adversary.
+
+The per-pass budget is kept apart from that judgement because it is a different
+kind of statement: it bounds a **correctness** property — that Raft's clock, its
+inbound frames, and this process's own terminal exit are reached on every pass
+regardless of client load — rather than a resource. A production composition
+wants all three bounds; this one needs the first, and the module header says so
+where a reader of the loop will find it.
+
+**A fault seam was added to reach the state at all**, and it is the one addition
+here that is not a fix. The tenth revision's matrix listed "the reference
+process's live terminal transition" as uncovered, on the grounds that this
+cluster never reconfigures — so after the opening write the driver's checkpoint
+epoch stands still and no later persist is attempted, which makes every
+external way of injecting a write failure an injection into a call that never
+happens. `OpenRequest::control_plane_fault_after`, reached from
+`--control-plane-fault-after`, makes the control plane undurable from the `n`-th
+client operation onward, and makes the attempt whether or not the epoch moved —
+because what is injected is an artifact this replica can no longer write, not one
+update lost. It is addressed by operation ordinal in the same shape the durable
+store's `FaultPlan` uses, and it is what moves that matrix cell from uncovered to
+covered.
+
+#### The lifecycle matrix, re-audited
+
+Every cell the offset touches was re-read against the code, not against the
+previous revision's claim about it. Three tables from the tenth revision stand
+with the additions marked **new**; one table is new outright, because this round
+found that the raw committed floor is a mechanism with its own lifecycle and had
+never been treated as one.
+
+**New table — the raw committed floor** (`committed_members`, the half of
+`effective ∪ committed` that licenses narrowing and is read by `is_member`,
+`named_members`, `desired_peers`, and `readmitted_retired_peers`):
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| fresh `new` | assigned from the adopted runtime's endpoint | `an_uncommitted_removal_narrows_nothing_and_fences_nobody` — which only means anything because the floor was assigned at construction |
+| `new+ckpt` | endpoint assigns; replayed crossings assign only when they are news | `a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added` |
+| `new+ckpt`, twice over one durable state | **endpoint assigns even though its fold is gated** | **new** — `a_second_recovery_keeps_the_committed_floor_an_effective_narrowing_cannot_cross` |
+| `adopt_group` / `adopt+ckpt` | same endpoint publication at the second call site | `an_adoption_still_spends_an_identity_its_recovery_outputs_admitted_and_removed` |
+| effective-only narrowing over the floor | the floor holds; the narrowing cannot cross it | **new** — `a_second_recovery_keeps_the_committed_floor_an_effective_narrowing_cannot_cross` |
+| the same, for the **local** replica | `Serving`, not `NotMember` | **new** — `a_second_recovery_does_not_make_a_still_committed_local_replica_a_non_member` |
+| live `deliver`/`tick` crossing | assigned; the floor tracks the cluster | `one_append_crossing_two_configurations_spends_the_intermediate_identity` |
+| spent identity named again | filtered out of both derivations, counted raw | `an_uncommitted_widening_settles_no_fence_and_readmits_no_spent_identity` |
+| shutdown | not a producer; membership facts are untouched | **uncovered** — see below |
+
+**The checkpoint, offset included** — the tenth revision's table, with the
+coupling rows added and every offset row re-audited:
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| fresh `new` | `empty(group)`; offset `None`; coupling holds trivially | `the_checkpoint_epoch_moves_only_when_the_checkpoint_does`, **new** — `a_driver_that_has_observed_a_configuration_records_both_halves` |
+| `new+ckpt` | restore, then history, then gated endpoint | `a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added` |
+| `new+ckpt`, twice over one durable state | second pass is a no-op **for the fold, not for the floor** | `a_second_recovery_from_the_same_durable_state_is_a_no_op` (record) + **new** `a_second_recovery_keeps_the_committed_floor_an_effective_narrowing_cannot_cross` (floor) |
+| `adopt_group` | joins `empty`; offset unchanged | `releasing_and_re_adopting_the_same_id_stays_valid` |
+| `adopt+ckpt` | lattice join, `max` on the offset | `the_join_is_order_free_across_three_records`, `joining_the_same_record_twice_is_the_same_as_once` |
+| **record with retirement state and no offset** | **refused whole, before any transport call** | **new** — `a_final_retirement_record_with_no_cursor_is_refused_before_any_transport_call`, `a_record_that_separates_the_cursor_from_what_it_retired_is_refused` |
+| **record with an offset and no retirement state** | **refused whole** | **new** — `a_consumer_offset_with_nothing_retired_beside_it_is_refused`, `a_record_that_separates_the_cursor_from_what_it_retired_is_refused` |
+| **joined candidate breaking the coupling** | not producible; validated anyway | argued above; the mutation row below reports honestly that neutralizing it fails nothing |
+| **a driver's own output** | always carries both halves | **new** — `a_driver_that_has_observed_a_configuration_records_both_halves` |
+| invalid record, either call site | refused whole, nothing installed | `a_contradictory_checkpoint_is_refused_and_installs_nothing`, `a_fence_naming_an_identity_the_record_never_spent_is_refused` |
+| recovery-output replay | facts above the offset only | `a_restart_still_spends_an_identity_the_replayed_history_admitted_and_removed` |
+| live `deliver`/`tick` | offset advances with the record, one epoch | `the_checkpoint_epoch_moves_only_when_the_checkpoint_does` |
+| failed step | record moves; epoch moves; nothing rolls back | `a_failed_step_still_routes_the_membership_it_moved_through` |
+| `into_parts`/rebuild | driver-side, not group-side; survives release | `a_rebuilt_driver_retries_the_fence_and_keeps_the_identity_spent` |
+| shutdown | still readable; nothing discharged | `a_shut_down_driver_still_reports_what_its_embedder_must_persist` |
+| durable round trip | offset survives encode/decode | `a_round_trip_preserves_every_fact`, `a_sealed_consistent_record_is_accepted` |
+| **durable coupling violation** | **refused at the file, both directions** | **new** — three resealed cases in `a_resealed_contradiction_is_refused` |
+| durable absence | first boot only below the commit floor | `an_absent_file_is_a_first_boot_only_below_the_commit_floor`, `a_deleted_control_plane_checkpoint_refuses_to_open_as_a_first_boot` |
+
+**New table — the reference process loop**, which had no cells at all and is
+where fix 3 lives:
+
+| Path | Behavior | Covered by |
+| --- | --- | --- |
+| idle | one blocking receive per pass at the poll interval | *(the rate itself; every process test depends on it)* |
+| client flood, `Serving` | at most `MAX_JOBS_PER_PASS`; ticks, frames, and reads still run | **new** — `a_client_flood_cannot_starve_the_protocol_on_the_replicas_it_floods` |
+| client flood, `State::Failed` | the pass breaks at the first job and the process exits nonzero | **new** — `an_unpersistable_control_plane_stops_the_process_under_a_client_flood` |
+| `SHUTDOWN` mid-drain | `stopping` breaks the pass, then the loop | `three_processes_elect_a_leader_and_serve_the_lock` (every test's teardown) |
+| persist failure with an error channel | `finish` combines and `serve` returns it | `a_persist_failure_outranks_the_operations_own` and its three siblings (unit) |
+| persist failure with no error channel | stored, raised at the top of the next pass | **new** — `an_unpersistable_control_plane_stops_the_process_under_a_client_flood` |
+| shutdown-flush persist failure | `FATAL`, never `STOPPED` | `an_unpersisted_control_plane_is_a_failure_with_its_reason` (unit) |
+| client flood, `State::Opening` | budget applies; the ownership retry is on its own timer | **uncovered** — see below |
+
+The crossing-stream and fence-set tables are unchanged by this round and stand as
+the tenth revision left them.
+
+**Uncovered, and named rather than omitted.** Two of the tenth revision's four
+still are; one is now covered; three are new.
+
+- **Crossing stream × shutdown.** *(unchanged)* `shutdown` releases waiters and
+  closes the metrics watch; it never touches the group, so it can neither produce
+  nor consume a crossing. There is no test because there is no behavior — but a
+  future `shutdown` that drained the group would silently discard an owed
+  crossing, and nothing would fail.
+- **Crossing stream × `adopt_group`.** *(unchanged)* `adopt_group` is
+  `adopt+ckpt` with an empty checkpoint and shares its body. A separate case
+  would pin the delegation rather than the behavior.
+- **Offset regression across a real snapshot install.** *(unchanged, and now
+  slightly larger)* The snapshot-boundary path reaches
+  `observe_committed_members` as an ordinary committed fact and is gated like any
+  other, and the raw floor now follows the endpoint rather than the boundary — but
+  no test drives a real snapshot install through a recovery that also replays
+  crossings. The two mechanisms are exercised separately and their composition is
+  argued rather than executed.
+- **The reference process's live terminal transition.** ***Now covered.*** It was
+  listed as unreachable because this cluster never reconfigures. That was true of
+  every *external* injection and not of the composition as a whole; the fault seam
+  described above reaches it, and
+  `an_unpersistable_control_plane_stops_the_process_under_a_client_flood` drives
+  it end to end — a serving replica, a real persist failure, a real `ABANDONED`,
+  a real nonzero exit.
+- **New: the raw committed floor × shutdown.** `shutdown` moves no membership
+  fact, so the floor is whatever the last publication left. No behavior, no test —
+  and the same caveat as the crossing stream's: a future shutdown that published
+  anything would be unguarded.
+- **New: the value of `MAX_JOBS_PER_PASS`.** The regressions prove the drain is
+  *bounded*; nothing pins 64 rather than 6,400. A budget large enough to exceed a
+  tick interval would starve the clock again in every practical sense and no test
+  would fail. The constant's doc carries the argument; only boundedness is
+  executable.
+- **New: a client flood during `State::Opening`.** The budget applies to that arm
+  too, and the ownership retry runs on `OWNERSHIP_RETRY_INTERVAL` rather than on
+  the drain, so a flood delays a directory takeover by at most one pass. Argued,
+  not executed: the flood tests both run against a replica that has reached
+  `Serving`.
+
+#### Blast radius of the eleventh revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-service/src/driver/transport/control_plane.rs`](../crates/rafter-service/src/driver/transport/control_plane.rs) | `CommittedMembershipSource`; `MembershipFact::Committed` carries it; `publish_membership` separates the fold from the assignment; `observe_committed_members` takes `&BTreeSet`, does retirement only, and returns whether it folded |
+| [`crates/rafter-service/src/driver/transport/checkpoint.rs`](../crates/rafter-service/src/driver/transport/checkpoint.rs) | the coupling clause in `validate`; the field doc states the invariant as checked; the join's preservation argument |
+| [`crates/rafter-service/src/driver/mapping.rs`](../crates/rafter-service/src/driver/mapping.rs) | `ControlPlaneCheckpointError::CommittedStateWithoutCursor`, `::CursorWithoutCommittedState`, and their `Display` arms |
+| [`crates/rafter-service/tests/transport_recovery_replay.rs`](../crates/rafter-service/tests/transport_recovery_replay.rs) | the local-replica and refusal-inspecting fixtures; four new cases |
+| [`crates/rafter-service/tests/transport_checkpoint_merge.rs`](../crates/rafter-service/tests/transport_checkpoint_merge.rs) | `checkpoint_through`; every hand-built record carries an offset; two new cases |
+| `reference/fenced-lock/src/bin/lock-node/control_plane.rs` | the coupling clause in `check_invariants`; the header's two-layer note |
+| `reference/fenced-lock/src/bin/lock-node/control_plane/tests.rs` | three resealed coupling cases; one existing case gains an offset |
+| `reference/fenced-lock/src/bin/lock-node/main.rs` | `MAX_JOBS_PER_PASS`; the bounded drain; the terminal-state break; the loop section and the declined bounds; `--control-plane-fault-after` |
+| `reference/fenced-lock/src/bin/lock-node/replica.rs` | `OpenRequest::control_plane_fault_after`; the fault check ahead of the epoch gate; the client-operation counter; `create_replica_directories` extracted to keep `open` under the line limit |
+| `reference/fenced-lock/tests/support/process.rs` | `StatusFlood`; `spawn_with_control_plane_fault`; `restart_with_control_plane_fault` |
+| `reference/fenced-lock/tests/process_cluster.rs` | `FLOOD_CONNECTIONS`; two new process tests |
+| [`verification/reference-process-test-inventory.fenced-lock.txt`](../verification/reference-process-test-inventory.fenced-lock.txt) | re-pinned for the two new process tests |
+
+No kernel change and no `rafter-app` change. Fix 1 is entirely in how the service
+driver reads a fact the app layer already produced correctly.
+
+#### Focused-test plan for the eleventh revision
+
+New, in `crates/rafter-service/tests/transport_recovery_replay.rs`:
+
+- `a_second_recovery_keeps_the_committed_floor_an_effective_narrowing_cannot_cross`
+  — recover twice from one checkpoint, then deliver a real `AppendEntries`
+  carrying a configuration the leader has **not** committed. Nodes 3, 4, and 5
+  stay in the published peer set and a frame from node 5 is admitted.
+- `a_second_recovery_does_not_make_a_still_committed_local_replica_a_non_member`
+  — the same, with the driver running *as* node 5. `service_state` stays
+  `Serving`. Before the fix: `NotMember { node_id: NodeId(5) }`.
+- `a_final_retirement_record_with_no_cursor_is_refused_before_any_transport_call`
+  — the review's key case. Asserts *when* as well as what: no peer set is
+  published and no fence is attempted. With the clause neutralized this record
+  fences node 5 and publishes `{2,3,4}`.
+- `a_consumer_offset_with_nothing_retired_beside_it_is_refused` — the other
+  direction, over an admit-then-remove history whose endpoint carries no trace of
+  the spent identity.
+
+New, in `crates/rafter-service/tests/transport_checkpoint_merge.rs`:
+
+- `a_record_that_separates_the_cursor_from_what_it_retired_is_refused` — four
+  shapes, both directions, including `through: Some(LogIndex(0))` to pin that a
+  zero offset is a real position rather than an absence.
+- `a_driver_that_has_observed_a_configuration_records_both_halves` — the control.
+  Without it, a clause stated backwards would be turning away ordinary driver
+  output rather than damage.
+
+New, in the reference decoder's tests: three resealed coupling contradictions,
+and an offset added to the existing mark-less-fence case, which the new clause
+now refuses one step earlier.
+
+New, in `reference/fenced-lock/tests/process_cluster.rs` — both at process level:
+
+- `a_client_flood_cannot_starve_the_protocol_on_the_replicas_it_floods` — the
+  leader is killed and **both** survivors are flooded, so neither can be carried
+  by the other: a three-replica election needs both to reach their own timeout,
+  poll, and deliver the answer. A linearizable read on a flooded replica follows,
+  because an election proves ticks and votes and a `ReadIndex` proves the rest.
+  Before the fix, no election happens at all and `wait_for_leader` fails on its
+  deadline.
+- `an_unpersistable_control_plane_stops_the_process_under_a_client_flood` — the
+  fault is armed at the first client operation, the replica opens and serves
+  normally, the flood starts, and one `QUERY` makes it undurable while `STATUS`
+  keeps arriving on every other connection. The `QUERY` is answered `ABANDONED`,
+  and the process exits nonzero with `CONTROL_PLANE_UNPERSISTED` and `FATAL` and
+  without `STOPPED`. Before the fix the process never exits at all.
+
+Mutation check, on the committed implementation:
+
+| Neutralized | Fails |
+| --- | --- |
+| the endpoint's raw assignment (gated with the fold again) | `a_second_recovery_keeps_the_committed_floor_an_effective_narrowing_cannot_cross`, `a_second_recovery_does_not_make_a_still_committed_local_replica_a_non_member` |
+| the coupling clause in `validate` | `a_final_retirement_record_with_no_cursor_is_refused_before_any_transport_call`, `a_consumer_offset_with_nothing_retired_beside_it_is_refused`, `a_record_that_separates_the_cursor_from_what_it_retired_is_refused` |
+| the coupling clause in the reference `check_invariants` | `a_resealed_contradiction_is_refused` |
+| the per-pass budget (drain until the channel is quiet) | `a_client_flood_cannot_starve_the_protocol_on_the_replicas_it_floods`, `an_unpersistable_control_plane_stops_the_process_under_a_client_flood` |
+| tagging the endpoint `Crossing` instead of dropping the source | **nothing** |
+
+The last row is reported rather than hidden, and it is a statement about the
+first row's mutation rather than about the fix. Flipping the comparison to
+`source == Crossing` makes a *gated crossing* assign the raw floor — and on a
+recovery the last replayed crossing carries the same membership the endpoint
+would have, so the floor comes out right by accident. The honest neutralization
+is the one above it: drop the source from the condition entirely, which is the
+pre-fix code, and both new cases fail. A reviewer who mutated only the
+comparison would have concluded the tag was untested.
+
 ## Terminal Driver Vocabulary
 
 ### Origin
