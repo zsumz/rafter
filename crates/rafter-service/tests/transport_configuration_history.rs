@@ -132,7 +132,7 @@ fn one_append_crossing_two_configurations_spends_the_intermediate_identity() {
     );
 
     assert!(
-        transport.is_fenced(NodeId(5)),
+        transport.retires(NodeId(5)),
         "the removal that this step also crossed licenses the fence, and the \
          link layer took it"
     );
@@ -157,16 +157,18 @@ fn one_append_crossing_two_configurations_spends_the_intermediate_identity() {
     );
 }
 
-/// The fence obligation survives a link layer that refuses it.
+/// The retirement survives a link layer that refuses to take it.
 ///
-/// The same crossing, with a transport that will not take the fence. The
-/// obligation is recorded rather than discharged, which is what a restart has to
-/// carry: the removal is already behind the committed membership, so nothing
-/// re-derives it.
+/// The same crossing, with a transport that will not accept a policy. There is
+/// no obligation to record any more — the floor is a function of the mark, and
+/// the mark is in the checkpoint — so what has to hold is that the driver knows
+/// its link layer is behind, keeps refusing the retired replica itself
+/// meanwhile, and re-derives the same statement at its next entry point rather
+/// than waiting for a configuration change that will never come.
 #[test]
-fn a_crossed_removal_leaves_its_fence_owed_when_the_link_refuses_it() {
+fn a_crossed_removal_is_republished_until_the_link_takes_it() {
     let (driver, transport) = driver_over_bootstrap(1, &[2, 3], &[2, 3, 5]);
-    transport.refuse_next_fences(NodeId(5), 8);
+    transport.refuse_next_peer_updates(8);
 
     driver
         .deliver(append_committing_all(
@@ -179,15 +181,19 @@ fn a_crossed_removal_leaves_its_fence_owed_when_the_link_refuses_it() {
         ))
         .expect("a leader's append is accepted");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "the refused fence stays owed"
+    assert!(
+        driver.peer_policy_is_stale(),
+        "the refused publication leaves the driver knowing its link layer is \
+         behind the group"
     );
-    assert_eq!(
-        driver.control_plane_checkpoint().pending_fences,
-        [NodeId(5)].into_iter().collect(),
-        "and it is in the checkpoint, which is the only thing a restart can read"
+    assert!(
+        !transport.retires(NodeId(5)),
+        "and the link layer has not been told to retire node 5 yet"
+    );
+    assert!(
+        !live_of(&driver.control_plane_checkpoint()).contains(&NodeId(5)),
+        "while the record a restart reads already spends the identity, which is \
+         what makes the statement re-derivable rather than owed"
     );
 
     // The window this fence exists to close, seen from inside: the link layer
@@ -240,11 +246,11 @@ fn a_multi_configuration_step_is_reported_in_index_order() {
          joined in the second and stayed"
     );
     assert!(
-        transport.is_fenced(NodeId(4)),
+        transport.retires(NodeId(4)),
         "the removal in the middle of the step is fenced"
     );
     assert!(
-        !transport.is_fenced(NodeId(5)),
+        !transport.retires(NodeId(5)),
         "and the addition in the middle of it is not"
     );
     assert_eq!(
@@ -277,7 +283,7 @@ fn a_single_crossed_configuration_still_retires_exactly_what_left() {
         live_of(&checkpoint),
         [NodeId(1), NodeId(2)].into_iter().collect()
     );
-    assert!(transport.is_fenced(NodeId(3)));
+    assert!(transport.retires(NodeId(3)));
 }
 
 /// A configuration that commits nothing new retires nothing.
@@ -306,9 +312,9 @@ fn recommitting_the_same_membership_retires_nothing() {
         live_of(&checkpoint),
         [NodeId(1), NodeId(2), NodeId(3)].into_iter().collect()
     );
-    assert_eq!(driver.pending_peer_fences(), 0);
-    assert!(!transport.is_fenced(NodeId(2)));
-    assert!(!transport.is_fenced(NodeId(3)));
+    assert!(!driver.peer_policy_is_stale());
+    assert!(!transport.retires(NodeId(2)));
+    assert!(!transport.retires(NodeId(3)));
 }
 
 /// An entry the state machine cannot decode does not hide the configurations
@@ -323,14 +329,11 @@ fn recommitting_the_same_membership_retires_nothing() {
 /// is the membership it started from. Nothing to compare, nothing owed, and an
 /// identity the cluster spent left allocatable with its principal unfenced.
 ///
-/// The fence is refused here so the obligation is *observable* rather than
-/// discharged on the way past. That is also the state that matters: a driver
-/// which recorded the retirement but dropped the fence is the one whose next
-/// restart forgets it.
+/// What matters is the state the driver reaches, because that state is what its
+/// next publication and its next restart are both derived from.
 #[test]
 fn an_undecodable_entry_does_not_hide_the_configurations_committed_behind_it() {
     let (driver, transport) = driver_over_bootstrap(1, &[2, 3], &[2, 3, 5]);
-    transport.refuse_next_fences(NodeId(5), 8);
 
     let refused = driver.deliver(append_committing_all(
         NodeId(2),
@@ -358,12 +361,11 @@ fn an_undecodable_entry_does_not_hide_the_configurations_committed_behind_it() {
         "and the removal behind it spent the identity: {:?}",
         live_of(&checkpoint)
     );
-    assert_eq!(
-        checkpoint.pending_fences,
-        [NodeId(5)].into_iter().collect(),
-        "the fence the link refused is owed rather than forgotten"
+    assert!(
+        transport.retires(NodeId(5)),
+        "and the policy published for the failing step retires it: {:?}",
+        transport.policies().last()
     );
-    assert_eq!(driver.pending_peer_fences(), 1);
     assert_eq!(
         live_of(&driver.control_plane_checkpoint()),
         [NodeId(1), NodeId(2), NodeId(3)].into_iter().collect()

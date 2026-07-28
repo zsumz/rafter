@@ -30,6 +30,24 @@ pub(super) enum StepFailure<E, RE> {
     Group(GroupError<E, RE>),
 }
 
+/// One authorization policy in this driver's own terms.
+///
+/// `NodeId`s rather than principals, because this is what a *comparison* needs:
+/// the driver decides whether the link layer is level by comparing the policy it
+/// would publish against the one the transport accepted, and a principal is
+/// stable for the lifetime of its ID — see
+/// [`crate::transport::AuthenticatedPeerValidator::principal_for_node`] — so the
+/// identities decide the answer and the principals are derived at publication.
+///
+/// The two halves travel together because they are published together. A floor
+/// that moved without the set, or a set that moved without the floor, is still a
+/// policy the transport does not hold.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct DesiredPeerPolicy {
+    pub(super) peers: BTreeSet<NodeId>,
+    pub(super) retirement_floor: Option<NodeId>,
+}
+
 /// Which waiter a dropped client future reclaims.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum WaiterId {
@@ -179,44 +197,39 @@ where
     /// has ever committed*, not merely unused. See [`rafter::NodeId`], which
     /// states the contract this reads.
     pub(super) committed_id_high_water: Option<NodeId>,
-    /// The peer set this driver's transport last *accepted*, or `None` before it
+    /// The policy this driver's transport last *accepted*, or `None` before it
     /// has accepted one.
     ///
     /// Tracking what the group says and tracking what the link layer took are
     /// two different facts, and a driver that keeps only the first cannot tell a
-    /// published peer set from a refused one. This is the second, and the
-    /// difference between it and the set derived from `known_members` is the
-    /// whole of the peer-set half's outstanding work.
+    /// published policy from a refused one. This is the second, and the
+    /// difference between it and the policy derived from the membership facts is
+    /// the whole of the control plane's outstanding work — there is no separate
+    /// obligation ledger beside it any more, because retirement is a floor and a
+    /// floor is re-derived from the mark on every attempt.
     ///
-    /// `None` rather than an empty set for "nothing accepted yet", because an
+    /// `None` rather than an empty policy for "nothing accepted yet", because an
     /// empty peer set is a real and publishable statement — a single-voter group
     /// authorizes no peers — and a driver that could not tell the two apart
     /// would skip the first publication of exactly that group.
-    pub(super) published_peers: Option<BTreeSet<NodeId>>,
-    /// Committed removals whose fence the transport has not accepted yet.
+    pub(super) published_policy: Option<DesiredPeerPolicy>,
+    /// Where two observations of the committed membership contradicted each
+    /// other, if they have.
     ///
-    /// An obligation rather than a derived value, and that is why it is stored.
-    /// The committed membership advances past a removal the moment the cluster
-    /// commits it, so no later membership event re-derives the fence: once the
-    /// diff has been taken, the only record that it was owed is this one. A
-    /// fence leaves the set when [`RaftTransport::fence_peer`] returns `Ok` for
-    /// it, and for no other reason.
+    /// Terminal for the incarnation, and deliberately not a counter. A
+    /// contradiction means the facts that license this driver's permanent
+    /// statement about who is retired disagree at one log position, so there is
+    /// no correct policy to publish and no later fact that makes one appear: the
+    /// committed membership at one index is one set, and this driver has been
+    /// told two. What it does instead is keep stepping — a replica in this state
+    /// is still a useful follower and still has to be able to catch up — while
+    /// refusing client work and publishing nothing.
     ///
-    /// **It may contain the local node, and that entry is deferred rather than
-    /// dropped.** A committed removal of this replica owes its own link layer
-    /// the same statement every other replica is making, and the only thing this
-    /// driver cannot do is make it while it *is* that replica — fencing itself
-    /// would cut off its own inbound frames. So the flush skips an entry equal
-    /// to the current `node_id` without removing it, and the first adoption
-    /// under a different identity discharges it like any other.
-    ///
-    /// The one structure here that still holds exact identities, and therefore
-    /// the one whose growth an embedder is told about:
-    /// [`TransportDriverOptions::fence_backlog_service_threshold`] decides when
-    /// the driver stops serving, and
-    /// [`super::PeerControlPlaneCheckpoint`] is how the set survives a process
-    /// restart.
-    pub(super) pending_fences: BTreeSet<NodeId>,
+    /// The supervisor's move is [`TransportRaftDriver::release_group`] and a
+    /// rebuild from durable state, which is why this is reported through
+    /// [`DriverServiceState`] rather than raised at whichever client call
+    /// happened to be next.
+    pub(super) contradicted_at: Option<LogIndex>,
     /// How many times the checkpointable control-plane state has changed.
     ///
     /// The change signal an embedder persists against. Eq over the checkpoint
@@ -239,20 +252,22 @@ where
 ///
 /// One shape, because a client asking "may I write" needs one answer and an
 /// operator asking "why not" needs the reason beside it. These are states rather
-/// than counts, like [`TransportRaftDriver::pending_peer_fences`] and unlike the
+/// than counts, like [`TransportRaftDriver::peer_policy_is_stale`] and unlike the
 /// refusal counters: they say what is true now.
 ///
-/// **Three of them end and two do not.** [`DriverServiceState::FenceBacklog`]
-/// drains, [`DriverServiceState::NotMember`] clears when the cluster names this
-/// replica again, and [`DriverServiceState::Released`] ends at the next
-/// adoption. [`DriverServiceState::Decommissioned`] and
-/// [`DriverServiceState::ShuttingDown`] are terminal.
+/// **Two of them end and three do not.** [`DriverServiceState::NotMember`]
+/// clears when the cluster names this replica again, and
+/// [`DriverServiceState::Released`] ends at the next adoption.
+/// [`DriverServiceState::ContradictoryCurrentState`],
+/// [`DriverServiceState::Decommissioned`] and
+/// [`DriverServiceState::ShuttingDown`] are terminal for the incarnation.
 ///
 /// None of the first four stops the protocol. A driver in any of them still
-/// ticks, still delivers, still flushes its peer control plane, and still
-/// applies what commits — what stops is admitting *new* client operations. A
-/// replica that stopped stepping could not finish the catch-up that ends one of
-/// these conditions, and could not stay a useful follower through the others.
+/// ticks, still delivers, still applies what commits, and — except in the
+/// contradictory state, where it deliberately publishes nothing — still flushes
+/// its peer policy. What stops is admitting *new* client operations. A replica
+/// that stopped stepping could not finish the catch-up that ends one of these
+/// conditions, and could not stay a useful follower through the others.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum DriverServiceState {
@@ -298,25 +313,30 @@ pub enum DriverServiceState {
     ///
     /// It clears by itself the moment a configuration names the ID again.
     NotMember { node_id: NodeId },
-    /// The link layer has left more fence obligations outstanding than
-    /// [`TransportDriverOptions::fence_backlog_service_threshold`] allows.
+    /// Two observations of the committed membership at `through` disagree about
+    /// it.
     ///
-    /// The threshold does not cap the queue, and could not: a committed fact is
-    /// not a request and cannot be refused, so discarding an obligation on
-    /// overflow would be exactly the forgotten fence this control plane exists to
-    /// prevent, with a capacity limit attached as an excuse. What it decides is
-    /// when a driver whose link layer has stopped taking admission controls
-    /// should stop taking client work: past it, this driver is authorizing
-    /// replicas the cluster has removed, and adding writes to that is making the
-    /// problem larger.
+    /// **The committed membership at one log index is one set**, so this is not
+    /// two readings to reconcile: it is a durable record and a runtime — or two
+    /// durable records — making incompatible claims about a single fact, after
+    /// every identity either side has proven spent has been taken out of both.
+    /// A cluster that readmits a retired identity does *not* land here; that is a
+    /// counted contract violation with an answer of its own, at
+    /// [`TransportRaftDriver::readmitted_retired_peers`].
     ///
-    /// It ends by itself. The driver keeps flushing while degraded, and returns
-    /// to [`DriverServiceState::Serving`] as soon as the backlog is back under
-    /// the threshold.
-    FenceBacklog {
-        pending_fences: usize,
-        service_threshold: usize,
-    },
+    /// Terminal for the incarnation, because there is no later fact that decides
+    /// it and because the statement at stake is permanent: this driver publishes
+    /// a retirement floor to its link layer, and a floor issued from
+    /// contradictory inputs either retires a live replica or fails to retire a
+    /// removed one, neither of which a later publication takes back. So the
+    /// driver refuses client work and publishes nothing while it keeps stepping.
+    ///
+    /// Reachable only after the group is installed — an adoption or a
+    /// construction that can see the disagreement up front refuses with
+    /// [`ManagedDriverError::InvalidControlPlaneCheckpoint`] instead, and installs
+    /// no group. The supervisor's move either way is
+    /// [`TransportRaftDriver::release_group`] and a rebuild from durable state.
+    ContradictoryCurrentState { through: LogIndex },
     /// The driver released its group and has not adopted another.
     ///
     /// Reported rather than folded into `Serving`, which is what it used to be:

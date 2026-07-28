@@ -89,6 +89,15 @@ const ADMIT_THEN_REMOVE: [&[u64]; 2] = [&[1, 2, 3, 5], &[1, 2, 3]];
 /// carries a transition.
 const ONLY_ADDITIONS: [&[u64]; 2] = [&[1, 2, 3, 4], &[1, 2, 3, 4, 5]];
 
+/// A history whose second entry removes node 4 by an exact committed transition.
+///
+/// The transition is the strongest evidence this driver can hold — the kernel
+/// computed `{1,4} − {1}` where the chronology was known — and it is replayed
+/// beneath a record that has already moved past it. The record's own mark
+/// already covers node 4, which is the condition under which the old derivation
+/// discarded the fact.
+const REMOVE_FOUR: [&[u64]; 2] = [&[1, 4], &[1]];
+
 /// One replica's durable state: filler beneath the applied floor, then the two
 /// configurations `configurations` names.
 fn durable_state(
@@ -269,13 +278,10 @@ fn an_addition_only_history_retires_nobody_against_a_later_record() {
         live_of(&driver)
     );
     assert!(
-        driver.control_plane_checkpoint().pending_fences.is_empty(),
-        "and no fence is owed for a replica no committed configuration removed"
-    );
-    assert!(
-        transport.fence_attempts().is_empty(),
-        "and the link layer was asked to fence nobody: {:?}",
-        transport.fence_attempts()
+        !transport.retires(NodeId(5)),
+        "and the policy this driver published does not retire a replica no \
+         committed configuration removed: {:?}",
+        transport.policies().last()
     );
 }
 
@@ -291,7 +297,7 @@ fn an_addition_only_history_retires_nobody_against_a_later_record() {
 /// `max` carried the endpoint's 10 into the crossing gate and skipped both
 /// entries as already-consumed.
 #[test]
-fn a_removal_beneath_a_later_record_is_still_spent_and_fenced() {
+fn a_removal_beneath_a_later_record_is_still_spent_and_retired() {
     let (driver, transport) =
         adopt_under(record_at(3, &[1, 2, 3], ABOVE_HISTORY), ADMIT_THEN_REMOVE);
 
@@ -310,11 +316,45 @@ fn a_removal_beneath_a_later_record_is_still_spent_and_fenced() {
         live_of(&driver)
     );
     assert!(
-        transport.is_fenced(NodeId(5)) || checkpoint.pending_fences.contains(&NodeId(5)),
-        "and the fence the removal licensed is installed or still owed: fenced \
-         {:?}, owed {:?}",
-        transport.fence_attempts(),
-        checkpoint.pending_fences
+        transport.retires(NodeId(5)),
+        "and the policy this driver published retires it: {:?}",
+        transport.policies().last()
+    );
+}
+
+/// An exact removal transition beneath a later record still denies the identity
+/// at the link layer.
+///
+/// **The tenth reviewer's first counterexample, and it is about what `is_spent`
+/// cannot answer.** The record is honest and snapshot-derived: `{1,6}` observed
+/// at commit 10, with a mark of 6. Beneath it the history really does remove
+/// node 4, and it says so with the strongest evidence there is — the kernel's
+/// own transition `{1,4} → {1}` at index 7.
+///
+/// The record's mark already covers node 4 and its live set does not name it, so
+/// `is_spent(4)` is true before the crossing is folded. Read as "has this
+/// identity been retired", that is correct. Read as "has this identity's link
+/// layer been told", it is a guess — and it was the guess that suppressed the
+/// obligation. **A fence is a statement to a link layer, and this process's link
+/// layer is new**: `published_peers` deliberately does not survive a restart
+/// precisely because a new process has a link layer that has accepted nothing.
+///
+/// So the driver watched a committed removal it could prove exactly, and its
+/// link layer was never told anything about node 4.
+#[test]
+fn an_exact_removal_beneath_a_later_record_still_denies_the_identity() {
+    let (driver, transport) = adopt_under(record_at(6, &[1, 6], ABOVE_HISTORY), REMOVE_FOUR);
+
+    assert!(
+        !live_of(&driver).contains(&NodeId(4)),
+        "the transition at index {} proves node 4 removed: {:?}",
+        SECOND_AT.0,
+        live_of(&driver)
+    );
+    assert!(
+        transport.retires(NodeId(4)),
+        "and this process's link layer must be told so: {:?}",
+        transport.policies().last()
     );
 }
 
@@ -350,10 +390,9 @@ fn a_record_above_unseen_history_still_folds_it() {
         live_of(&driver)
     );
     assert!(
-        transport.is_fenced(NodeId(5)) || checkpoint.pending_fences.contains(&NodeId(5)),
-        "and its fence is installed or owed: fenced {:?}, owed {:?}",
-        transport.fence_attempts(),
-        checkpoint.pending_fences
+        transport.retires(NodeId(5)),
+        "and the published policy retires it: {:?}",
+        transport.policies().last()
     );
     assert_eq!(
         standing_at(&driver),
@@ -392,36 +431,43 @@ fn replaying_a_history_over_its_own_record_changes_nothing() {
          state"
     );
     assert!(
-        transport.fence_attempts().is_empty(),
-        "a log that removed nobody owes no fence, however many times it is \
+        !transport.retires(NodeId(5)),
+        "a log that removed nobody retires nobody, however many times it is \
          replayed: {:?}",
-        transport.fence_attempts()
+        transport.policies().last()
     );
 }
 
-/// A replayed removal owes exactly one fence.
+/// A replayed removal reaches the same published policy, not a second statement.
 ///
-/// The removal half of idempotence, and the property a bare union of removal
-/// sets would not give: the obligation is derived when the identity is *news*
-/// and not again once it is spent, so a second recovery over a record that has
-/// already absorbed the removal asks the link layer for nothing.
+/// **Idempotence at the link layer, which is what the obligation ledger used to
+/// be responsible for.** A driver that derived a fresh fence on every replay
+/// would ask its link layer to fence the same replica once per recovery; a
+/// driver that suppressed the derivation once the identity tested as spent lost
+/// the statement entirely on a fresh link layer, which is the tenth reviewer's
+/// first counterexample.
+///
+/// A floor is neither. The second recovery derives exactly the policy the first
+/// one did, publishes it once because the transport already holds it, and the
+/// replica stays retired because the floor covers it and the peer set does not
+/// name it.
 #[test]
-fn a_replayed_removal_owes_exactly_one_fence() {
+fn a_replayed_removal_reaches_the_same_published_policy() {
     let (first, first_transport) =
         adopt_under(PeerControlPlaneCheckpoint::empty(GROUP), ADMIT_THEN_REMOVE);
     let persisted = first.control_plane_checkpoint();
-    assert_eq!(
-        first_transport.fence_attempts().len(),
-        1,
-        "the first recovery watched the removal at index {} and fenced once: {:?}",
-        SECOND_AT.0,
-        first_transport.fence_attempts()
-    );
-    assert!(first_transport.is_fenced(NodeId(5)), "and it fenced node 5");
     assert!(
-        persisted.pending_fences.is_empty(),
-        "this link accepted the fence, so nothing is still owed: {persisted:?}"
+        first_transport.retires(NodeId(5)),
+        "the first recovery watched the removal at index {} and retired node 5: \
+         {:?}",
+        SECOND_AT.0,
+        first_transport.policies().last()
     );
+    let settled = first_transport
+        .policies()
+        .last()
+        .cloned()
+        .expect("a policy was published");
 
     let (second, second_transport) = adopt_under(persisted.clone(), ADMIT_THEN_REMOVE);
 
@@ -430,11 +476,11 @@ fn a_replayed_removal_owes_exactly_one_fence() {
         persisted,
         "the second recovery reached the same record"
     );
-    assert!(
-        second_transport.fence_attempts().is_empty(),
-        "and asked the link layer for nothing, because node 5 was already spent \
-         when the removal was replayed: {:?}",
-        second_transport.fence_attempts()
+    assert_eq!(
+        second_transport.policies().last(),
+        Some(&settled),
+        "and told its own link layer the same thing, rather than a statement \
+         that depends on how many times the history has been replayed"
     );
 }
 
@@ -457,7 +503,6 @@ fn an_observation_behind_the_register_manufactures_no_removal() {
         ONLY_ADDITIONS,
     );
 
-    let checkpoint = driver.control_plane_checkpoint();
     assert_eq!(
         live_of(&driver),
         ids(&[1, 2, 3, 4, 5]),
@@ -470,14 +515,9 @@ fn an_observation_behind_the_register_manufactures_no_removal() {
         "and the older observations did not pull the register backwards"
     );
     assert!(
-        checkpoint.pending_fences.is_empty(),
-        "and nothing is owed: {:?}",
-        checkpoint.pending_fences
-    );
-    assert!(
-        transport.fence_attempts().is_empty(),
-        "and the link layer was asked to fence nobody: {:?}",
-        transport.fence_attempts()
+        !transport.retires(NodeId(5)),
+        "and the link layer was told to retire nobody the history kept: {:?}",
+        transport.policies().last()
     );
 }
 
@@ -498,7 +538,7 @@ fn an_observation_behind_the_register_manufactures_no_removal() {
 /// the record does not name it — but **no fence is ever owed**, which is the
 /// quietest way this whole mechanism can fail.
 #[test]
-fn a_removal_replayed_without_its_admission_is_still_fenced() {
+fn a_removal_replayed_without_its_admission_is_still_retired() {
     let (driver, transport) = adopt_above(
         record_at(3, &[1, 2, 3], ABOVE_HISTORY),
         ADMIT_THEN_REMOVE,
@@ -518,11 +558,10 @@ fn a_removal_replayed_without_its_admission_is_still_fenced() {
         live_of(&driver)
     );
     assert!(
-        transport.is_fenced(NodeId(5)) || checkpoint.pending_fences.contains(&NodeId(5)),
-        "and the fence is installed or owed, which only the transition proves \
-         here: fenced {:?}, owed {:?}",
-        transport.fence_attempts(),
-        checkpoint.pending_fences
+        transport.retires(NodeId(5)),
+        "and the published policy retires it, which only the transition \
+         proves here: {:?}",
+        transport.policies().last()
     );
 }
 
@@ -564,10 +603,9 @@ fn a_removal_is_absorbed_even_when_a_later_record_still_names_it() {
         live_of(&driver)
     );
     assert!(
-        transport.is_fenced(NodeId(5)) || checkpoint.pending_fences.contains(&NodeId(5)),
-        "its fence is installed or owed: fenced {:?}, owed {:?}",
-        transport.fence_attempts(),
-        checkpoint.pending_fences
+        transport.retires(NodeId(5)),
+        "the published policy retires it: {:?}",
+        transport.policies().last()
     );
     assert!(
         !transport

@@ -330,13 +330,23 @@ fn adopting_the_drivers_own_group_id_is_accepted() {
 /// OUTSIDE the identity check: the node ID. A replacement incarnation is still
 /// a replica of the same group, so a new node ID under the same group ID is
 /// adopted and becomes the ID the driver drives.
+///
+/// **The two incarnations are replicas of one cluster**, which this fixture used
+/// to leave to chance: it adopted a single-voter group `{2}` into a driver that
+/// had been the single voter of `{1}`, at the same commit index. That is two
+/// different clusters sharing a group ID, and the driver absorbed it — the
+/// runtime won the tie, node 1 left the committed membership, and the adoption
+/// quietly spent the identity the previous incarnation had been serving under.
+/// Nothing asserted otherwise, so the fixture passed while stating a sequence no
+/// supervisor produces: a replacement rebuilds from the same durable storage and
+/// reports the same committed membership, or a later one.
 #[test]
 fn adopting_a_new_node_id_under_the_same_group_is_accepted() {
-    let (driver, _transport) = driver_for(1, &[]);
+    let (driver, _transport) = driver_for(1, &[2]);
     let _retired = driver.release_group().expect("the driver holds a group");
 
     driver
-        .adopt_group(numbered_group(GROUP, 2, &[], 3), Vec::new())
+        .adopt_group(numbered_group(GROUP, 2, &[1], 3), Vec::new())
         .expect("a new node ID under the same group ID is adoptable");
 
     let served_node = driver
@@ -530,9 +540,9 @@ fn a_retry_after_a_failed_adoption_reaches_the_same_record() {
         "the retry re-derived the same retirement record"
     );
     assert_eq!(
-        driver.control_plane_checkpoint().pending_fences,
-        after_failure.pending_fences,
-        "and owes exactly what it owed"
+        driver.control_plane_checkpoint().current_committed,
+        after_failure.current_committed,
+        "and stands exactly where it stood"
     );
 }
 

@@ -17,8 +17,8 @@
 mod support;
 
 use rafter_service::{
-    AuthenticatedPeerEnvelope, DriverServiceState, DriverUnavailableReason, InboundEnvelopeError,
-    ReadOptions, TransportDriverOptions, TransportRaftDriver, WriteOptions,
+    AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError, DriverServiceState,
+    DriverUnavailableReason, InboundEnvelopeError, ReadOptions, WriteOptions,
 };
 use support::scripted::*;
 use support::transport::*;
@@ -93,29 +93,28 @@ fn a_vote(from: NodeId) -> AuthenticatedPeerEnvelope<u64, Principal> {
 // ---------------------------------------------------------------------------
 
 /// A retired replica the cluster commits back in is refused on this driver's
-/// own authority, and its fence is still owed.
+/// own authority, whatever the link layer holds.
 ///
-/// The link never took the fence here, which is what makes the driver's own
+/// The link never took the policy here, which is what makes the driver's own
 /// check the only admission control in play. Under the previous contract the
 /// committed re-admission retracted the obligation and put the replica back in
 /// `known_members`, so this frame was *accepted*: a replica whose removal the
-/// cluster had committed, whose fence had never landed, voting here on the
+/// cluster had committed, whose retirement had never landed, voting here on the
 /// strength of a change that should never have been proposed.
 #[test]
-fn a_readmitted_retired_replica_is_refused_and_its_fence_stays_owed() {
+fn a_readmitted_retired_replica_is_refused_while_its_retirement_is_unpublished() {
     let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
     let handle = runtime.handle();
     change_on_step(&handle, &[1, 2], &[1, 2]);
     let (driver, transport) = scripted_driver(runtime, Nameable::all());
-    // The link refuses node 3's fence for the length of the test.
-    transport.refuse_next_fences(NodeId(3), 16);
+    // The link refuses every publication for the length of the test.
+    transport.refuse_next_peer_updates(64);
 
     driver.tick().expect("the tick advances the protocol");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "the committed removal licensed a fence the link would not take"
+    assert!(
+        driver.peer_policy_is_stale(),
+        "the committed removal licensed a policy the link would not take"
     );
     assert_eq!(
         driver.readmitted_retired_peers(),
@@ -132,35 +131,12 @@ fn a_readmitted_retired_replica_is_refused_and_its_fence_stays_owed() {
         1,
         "a spent identity is named again, and that is the number to alert on"
     );
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "the fence is still owed: nothing retracts a retirement, so nothing \
-         retracts the obligation it created"
-    );
-    assert_eq!(
-        transport.peer_sets().last().expect("a set was published"),
-        &vec![Principal::for_node(NodeId(2))],
-        "and node 3 is not published back into the peer set"
-    );
     assert!(
-        !driver.peer_set_is_stale(),
-        "excluding the retired replica is the answer, not a publication still \
-         being attempted"
+        !transport.retires(NodeId(3)),
+        "the link layer still holds nothing that retires it, which is what \
+         leaves the driver's own check as the only control in play"
     );
-
-    let refused = driver.deliver(AuthenticatedPeerEnvelope {
-        group_id: GROUP,
-        authenticated_peer: Principal::for_node(NodeId(3)),
-        raft_from: NodeId(3),
-        raft_to: NodeId(1),
-        message: Message::RequestVote(RequestVote {
-            term: Term(1),
-            candidate_id: NodeId(3),
-            last_log_index: LogIndex(5),
-            last_log_term: Term(1),
-        }),
-    });
+    let refused = driver.deliver(a_vote(NodeId(3)));
 
     assert!(
         matches!(
@@ -168,13 +144,31 @@ fn a_readmitted_retired_replica_is_refused_and_its_fence_stays_owed() {
             Err(InboundEnvelopeError::NotInMembership { node_id: NodeId(3) })
         ),
         "the driver refuses a spent identity whatever the committed membership \
-         says, got {refused:?}"
+         says, and with nothing published it is the only layer that can, got \
+         {refused:?}"
     );
     assert_eq!(
         driver.refused_non_member_frames(),
         1,
         "and the refusal is counted rather than silent"
     );
+
+    // And when the link recovers, the statement it finally takes still excludes
+    // node 3: refusing the retired replica is the answer, not a publication
+    // still being attempted.
+    transport.allow_peer_updates();
+    driver.tick().expect("the tick advances the protocol");
+    assert_eq!(
+        transport.peer_sets().last().expect("a set was published"),
+        &vec![Principal::for_node(NodeId(2))],
+        "node 3 is not published back into the peer set"
+    );
+    assert!(
+        transport.retires(NodeId(3)),
+        "and the floor that came with it retires the readmitted identity: {:?}",
+        transport.policies().last()
+    );
+    assert!(!driver.peer_policy_is_stale());
 }
 
 /// A retired replica whose fence the link *accepted* never comes back, and
@@ -196,11 +190,11 @@ fn a_readmitted_retired_replica_never_asks_for_an_unfence() {
     driver.tick().expect("the tick advances the protocol");
 
     assert!(
-        transport.is_fenced(NodeId(3)),
+        transport.retires(NodeId(3)),
         "the link took the fence, which is the fixture's whole point"
     );
-    assert_eq!(driver.pending_peer_fences(), 0, "so nothing is owed");
-    let asks_before = transport.fence_attempts();
+    assert!(!driver.peer_policy_is_stale(), "so nothing is owed");
+    let policies_before = transport.policies();
     let published_before = transport.peer_sets().len();
 
     // The deployment reuses node 3's ID, and the cluster commits it back in.
@@ -222,13 +216,14 @@ fn a_readmitted_retired_replica_never_asks_for_an_unfence() {
         transport.peer_sets()
     );
     assert_eq!(
-        transport.fence_attempts(),
-        asks_before,
-        "no second fence, and no unfence — there is no such operation"
+        transport.policies(),
+        policies_before,
+        "no second statement, and nothing that un-retires — the driver simply \
+         never authorizes a spent identity, so the policy does not move"
     );
     assert!(
-        transport.is_fenced(NodeId(3)),
-        "the fence the removal installed still stands"
+        transport.retires(NodeId(3)),
+        "and the retirement the removal installed still stands"
     );
 
     let refused = driver.deliver(AuthenticatedPeerEnvelope {
@@ -257,44 +252,43 @@ fn a_readmitted_retired_replica_never_asks_for_an_unfence() {
 /// Both halves of the directory's obligation, in one scenario. The driver holds
 /// the outstanding fence as a `NodeId` and asks `principal_for_node` again at
 /// each retry, so a directory that dropped node 3 the moment its removal
-/// committed would leave the fence permanently unmade; keeping the mapping is
-/// what makes the retry resolve `replica-3` rather than nothing. And the
-/// replacement is why keeping it costs nothing: node 4 is a fresh identity with
-/// a principal of its own, so the retired mapping is never in the way of the
-/// replica that took over the work.
+/// committed would leave the fence permanently unmade, so the directory had to
+/// keep the retired mapping resolvable until the fence was accepted. It no
+/// longer does: the retirement names no principal, so the retry re-states the
+/// same floor whether or not node 3 can still be named — and the replacement
+/// joins under a fresh identity with a principal of its own either way.
 #[test]
-fn a_retried_fence_resolves_the_retired_mapping_while_a_fresh_id_joins() {
+fn a_retried_retirement_needs_no_mapping_while_a_fresh_id_joins() {
     let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
     let handle = runtime.handle();
     change_on_step(&handle, &[1, 2], &[1, 2]);
-    let (driver, transport) =
-        scripted_driver_authorizing(runtime, Nameable::all(), &[NodeId(2), NodeId(3), NodeId(4)]);
-    transport.refuse_next_fences(NodeId(3), 1);
+    // The directory has already forgotten node 3, which the validator contract
+    // now permits: no per-removed-principal lookup is ever made.
+    let (driver, transport) = scripted_driver_authorizing(
+        runtime,
+        Nameable::only(&[NodeId(1), NodeId(2), NodeId(4)]),
+        &[NodeId(2), NodeId(3), NodeId(4)],
+    );
+    transport.refuse_next_peer_updates(1);
 
     driver.tick().expect("the tick advances the protocol");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "the link refused the fence, so the obligation is outstanding"
+    assert!(
+        driver.peer_policy_is_stale(),
+        "the link refused the policy, so the statement is outstanding"
     );
 
-    // The replacement joins under a fresh ID, and the same step retries the
-    // fence for the retired one.
+    // The replacement joins under a fresh ID, and the same step re-states the
+    // policy that retires the old one.
     change_on_step(&handle, &[1, 2, 4], &[1, 2, 4]);
     driver.tick().expect("the tick advances the protocol");
 
-    assert_eq!(
-        transport.fence_attempt_principals(),
-        vec![
-            Principal::for_node(NodeId(3)),
-            Principal::for_node(NodeId(3))
-        ],
-        "both asks named node 3's own principal: the directory kept the removed \
-         replica resolvable, which is what the retry depends on"
+    assert!(
+        transport.retires(NodeId(3)),
+        "so the retry landed, without this deployment ever naming node 3: {:?}",
+        transport.policies().last()
     );
-    assert!(transport.is_fenced(NodeId(3)), "so the retry landed");
-    assert_eq!(driver.pending_peer_fences(), 0, "and nothing is owed");
+    assert!(!driver.peer_policy_is_stale(), "and nothing is owed");
     assert_eq!(
         transport.peer_sets().last().expect("a set was published"),
         &vec![
@@ -374,10 +368,9 @@ fn a_replica_that_restarts_under_its_own_id_is_untouched_by_retirement() {
         .deliver(vote(2))
         .expect("a restarted replica is the same member it was");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        0,
-        "no removal committed, so no fence was ever licensed"
+    assert!(
+        !transport.retires(NodeId(2)),
+        "no removal committed, so no retirement was ever licensed"
     );
     assert_eq!(
         driver.readmitted_retired_peers(),
@@ -386,7 +379,7 @@ fn a_replica_that_restarts_under_its_own_id_is_untouched_by_retirement() {
     );
     assert_eq!(driver.refused_non_member_frames(), 0, "nothing was refused");
     assert!(
-        !transport.is_fenced(NodeId(3)),
+        !transport.retires(NodeId(3)),
         "and the link layer was never told to fence it"
     );
     assert_eq!(
@@ -429,7 +422,7 @@ fn an_uncommitted_removal_does_not_narrow_the_peer_set_at_adoption() {
         "node 3's removal has not committed, so node 3 may still speak"
     );
     assert!(
-        !transport.is_fenced(NodeId(3)),
+        !transport.retires(NodeId(3)),
         "and an uncommitted removal licenses no fence either"
     );
     assert_eq!(driver.refused_peer_updates(), 0);
@@ -456,7 +449,7 @@ fn an_uncommitted_addition_widens_the_peer_set_at_adoption() {
         ]],
         "node 3 is catching up under an uncommitted change and must be able to"
     );
-    assert!(!transport.is_fenced(NodeId(3)));
+    assert!(!transport.retires(NodeId(3)));
     assert_eq!(driver.refused_peer_updates(), 0);
 }
 
@@ -497,13 +490,13 @@ fn a_committed_removal_across_release_and_adopt_narrows_and_fences() {
         "the narrowed set reached the link layer"
     );
     assert!(
-        transport.is_fenced(NodeId(3)),
+        transport.retires(NodeId(3)),
         "and so did the fence the same committed fact licenses; \
          refused_peer_updates = {}",
         driver.refused_peer_updates(),
     );
     assert!(
-        !transport.is_fenced(NodeId(2)),
+        !transport.retires(NodeId(2)),
         "node 2 is still committed and must still be able to speak"
     );
     assert_eq!(driver.refused_peer_updates(), 0);
@@ -534,14 +527,14 @@ fn a_committed_removal_fences_the_same_way_on_both_publication_paths() {
         .expect("the tick routes the membership change");
 
     assert_eq!(
-        adopted.is_fenced(NodeId(3)),
-        ticked.is_fenced(NodeId(3)),
+        adopted.retires(NodeId(3)),
+        ticked.retires(NodeId(3)),
         "one committed removal of node 3, two ways of observing it: across \
          release/adopt fenced = {} (refused_peer_updates = {}); through a routed \
          Applied event fenced = {} (refused_peer_updates = {})",
-        adopted.is_fenced(NodeId(3)),
+        adopted.retires(NodeId(3)),
         driver.refused_peer_updates(),
-        ticked.is_fenced(NodeId(3)),
+        ticked.retires(NodeId(3)),
         ticked_driver.refused_peer_updates(),
     );
     assert_eq!(
@@ -550,7 +543,7 @@ fn a_committed_removal_fences_the_same_way_on_both_publication_paths() {
         "and the peer set they publish for it is the same set"
     );
     assert!(
-        adopted.is_fenced(NodeId(3)),
+        adopted.retires(NodeId(3)),
         "both paths fence, rather than both agreeing not to"
     );
 }
@@ -704,13 +697,14 @@ fn a_committed_removal_of_the_local_replica_decommissions_the_driver() {
         .tick()
         .expect("and the protocol still advances, so the log can still catch up");
     assert!(
-        !transport.is_fenced(NodeId(1)),
-        "the driver never fences the replica it currently is"
+        transport.retires(NodeId(1)),
+        "and its own policy retires the identity the cluster spent, at once: a \
+         node is not a peer of itself, so nothing about that cuts off the \
+         replication it still needs"
     );
 }
 
-/// The fence a self-removal licenses is deferred, not dropped, and is discharged
-/// once this driver is something else.
+/// A self-removal is retired like any other, with no deferral to arrange.
 ///
 /// The obligation is real: every other replica fences node 1's principal, and
 /// this driver owes its own link layer the same statement. It cannot make it
@@ -718,7 +712,7 @@ fn a_committed_removal_of_the_local_replica_decommissions_the_driver() {
 /// flush skips the entry without removing it, and the first adoption under a
 /// different identity discharges it like any other.
 #[test]
-fn the_local_replicas_fence_is_deferred_until_a_fresh_id_is_adopted() {
+fn the_local_replicas_retirement_needs_no_deferral() {
     let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
     let handle = runtime.handle();
     change_on_step(&handle, &[2, 3], &[2, 3]);
@@ -727,24 +721,37 @@ fn the_local_replicas_fence_is_deferred_until_a_fresh_id_is_adopted() {
 
     driver.tick().expect("the tick advances the protocol");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "the committed removal of node 1 owes a fence like any other"
-    );
     assert!(
-        transport.fence_attempts().is_empty(),
-        "and the driver has not asked for it: it is still node 1"
+        transport.retires(NodeId(1)),
+        "the committed removal of node 1 retires it like any other, at once: \
+         {:?}",
+        transport.policies().last()
     );
-
-    driver.tick().expect("a second entry point flushes again");
-
     assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "still owed, still not asked for — deferred is not dropped"
+        driver.service_state(),
+        DriverServiceState::Decommissioned { node_id: NodeId(1) },
+        "and the driver knows what it has become"
     );
-    assert!(transport.fence_attempts().is_empty());
+
+    // **And that costs the stepping-down replica nothing**, which is what made
+    // the deferral necessary before: a policy retiring the local identity says
+    // who may speak *to* this node, and a node is never a peer of itself. Its
+    // peers are still authorized and still get through, so it can still receive
+    // enough of the log to be useful until the supervisor lets go of it.
+    driver
+        .deliver(AuthenticatedPeerEnvelope {
+            group_id: GROUP,
+            authenticated_peer: Principal::for_node(NodeId(2)),
+            raft_from: NodeId(2),
+            raft_to: NodeId(1),
+            message: Message::RequestVote(RequestVote {
+                term: Term(1),
+                candidate_id: NodeId(2),
+                last_log_index: LogIndex(5),
+                last_log_term: Term(1),
+            }),
+        })
+        .expect("a committed member may still speak to a replica stepping down");
 
     let group = driver.release_group().expect("the driver holds a group");
     drop(group);
@@ -766,12 +773,12 @@ fn the_local_replicas_fence_is_deferred_until_a_fresh_id_is_adopted() {
         .expect("a fresh identity is adoptable");
 
     assert!(
-        transport.is_fenced(NodeId(1)),
-        "the old local principal is fenced now that it names a peer: \
-         fence attempts = {:?}",
-        transport.fence_attempts()
+        transport.retires(NodeId(1)),
+        "and the fresh incarnation's own policy keeps retiring what it used to \
+         be: {:?}",
+        transport.policies().last()
     );
-    assert_eq!(driver.pending_peer_fences(), 0, "and nothing is owed");
+    assert!(!driver.peer_policy_is_stale(), "and nothing is owed");
     assert_eq!(
         driver.service_state(),
         DriverServiceState::Serving,
@@ -782,9 +789,9 @@ fn the_local_replicas_fence_is_deferred_until_a_fresh_id_is_adopted() {
 /// The retired local ID stays refused when a later membership names it again.
 ///
 /// Same rule as for a peer, reached the other way round. The identity was spent
-/// by the committed removal, its principal is fenced, and `fence_peer` has no
-/// inverse — so a committed configuration naming node 1 again is a contract
-/// violation and is reported as one rather than obeyed.
+/// by the committed removal and the `(group, NodeId)` pair is consumed, so a
+/// committed configuration naming node 1 again is a contract violation and is
+/// reported as one rather than obeyed.
 #[test]
 fn the_retired_local_id_stays_refused_when_a_later_membership_names_it() {
     let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
@@ -823,10 +830,10 @@ fn the_retired_local_id_stays_refused_when_a_later_membership_names_it() {
         1,
         "node 1's identity was spent, and naming it again does not un-spend it"
     );
-    assert_eq!(
-        driver.pending_peer_fences(),
-        0,
-        "its fence already landed, and there is nothing to take back"
+    assert!(
+        !driver.peer_policy_is_stale(),
+        "and the driver's own policy already retires it, with nothing to take \
+         back"
     );
 
     let refused = driver.deliver(AuthenticatedPeerEnvelope {
@@ -891,7 +898,9 @@ fn an_id_allocated_into_a_gap_below_the_high_water_mark_is_refused() {
     assert!(
         matches!(
             refused,
-            Err(InboundEnvelopeError::NotInMembership { node_id: NodeId(3) })
+            Err(InboundEnvelopeError::Rejected {
+                source: AuthenticatedPeerEnvelopeError::FencedPeer { node_id: NodeId(3) }
+            })
         ),
         "and refuses it rather than authorizing an ID the contract forbids, \
          got {refused:?}"
@@ -917,14 +926,11 @@ fn an_addition_that_never_committed_can_be_committed_later() {
     change_on_step(&handle, &[1, 2], &[1, 2]);
     driver.tick().expect("the tick advances the protocol");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        0,
-        "nothing committed and nothing was removed, so no fence is licensed"
-    );
     assert!(
-        !transport.is_fenced(NodeId(3)),
-        "least of all an installed one"
+        !transport.retires(NodeId(3)),
+        "nothing committed and nothing was removed, so no retirement is \
+         licensed: {:?}",
+        transport.policies().last()
     );
     assert_eq!(
         driver.readmitted_retired_peers(),
@@ -955,31 +961,40 @@ fn an_addition_that_never_committed_can_be_committed_later() {
 }
 
 // ---------------------------------------------------------------------------
-// The one structure that still holds exact identities is bounded, and reaching
-// the bound refuses client work rather than an obligation.
+// There is no structure holding exact identities left to bound, and that is why
+// the bound left with it.
 // ---------------------------------------------------------------------------
 
-/// A fence backlog past its bound stops client service and drops no obligation.
+/// A link layer that refuses every publication does not degrade client service.
 ///
-/// The obligation cannot be refused: a committed fact is not a request. So the
-/// bound cannot cap the queue — discarding a fence there would be the forgotten
-/// fence this whole control plane exists to prevent, with a capacity limit
-/// attached as an excuse. What the bound does instead is decide when a driver
-/// whose link layer has stopped taking admission controls should stop taking
-/// client work. It keeps flushing throughout, and it recovers by itself.
+/// **The test that replaces the fence-backlog bound, and it states why the bound
+/// is gone rather than merely dropping it.** A per-removal obligation queue grew
+/// by one identity per committed removal and could not be capped — a committed
+/// fact is not a request, so discarding an entry would have been the forgotten
+/// fence the control plane exists to prevent — which left only one lever: stop
+/// taking client work once the queue passed a threshold, and hope the link layer
+/// recovers.
+///
+/// Retirement is a floor now. It is re-derived from the mark at every entry
+/// point, it costs one `NodeId` whatever the group's removal history, and a link
+/// layer that refuses it forever leaves the driver holding exactly the same two
+/// facts it already had. There is nothing to grow, so there is nothing to
+/// threshold, and refusing client work would buy nothing: the replica is a
+/// correct member of a group whose link layer is behind, and the driver's own
+/// inbound check is what refuses the replicas the cluster removed.
+///
+/// What replaces the degraded state is one alertable observation —
+/// [`TransportRaftDriver::peer_policy_is_stale`] — and the retry that ends it.
 #[test]
-fn a_fence_backlog_over_its_bound_refuses_client_work_and_keeps_every_fence() {
+fn a_link_that_refuses_every_publication_still_serves_clients() {
     let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3, 4, 5], &[1, 2, 3, 4, 5]);
     let handle = runtime.handle();
-    let (driver, transport) = scripted_driver_with_options(
+    let (driver, transport) = scripted_driver_authorizing(
         runtime,
         Nameable::all(),
         &[NodeId(2), NodeId(3), NodeId(4), NodeId(5)],
-        TransportDriverOptions::default().with_fence_backlog_service_threshold(2),
     );
-    for node_id in [NodeId(3), NodeId(4), NodeId(5)] {
-        transport.refuse_next_fences(node_id, 16);
-    }
+    transport.refuse_next_peer_updates(64);
 
     a_write(&driver).expect("a serving driver admits a write");
 
@@ -987,82 +1002,45 @@ fn a_fence_backlog_over_its_bound_refuses_client_work_and_keeps_every_fence() {
     change_on_step(&handle, &[1, 2], &[1, 2]);
     driver.tick().expect("the tick advances the protocol");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        3,
-        "three committed removals, three obligations: the bound caps service, \
-         never the record"
-    );
-    assert_eq!(
-        driver.service_state(),
-        DriverServiceState::FenceBacklog {
-            pending_fences: 3,
-            service_threshold: 2,
-        },
-        "and the driver says it has stopped serving, and why"
-    );
-
-    let refused_write = a_write(&driver).expect_err("a degraded driver takes no writes");
     assert!(
-        write_refused_for(&refused_write, DriverUnavailableReason::FenceBacklog),
-        "the refusal names the backlog: {refused_write:?}"
+        driver.peer_policy_is_stale(),
+        "the link layer is behind the group, and that is the one thing to alert \
+         on"
     );
-    let refused_read = a_read(&driver).expect_err("a degraded driver takes no reads");
-    assert!(
-        read_refused_for(&refused_read, DriverUnavailableReason::FenceBacklog),
-        "and a read hears the same thing: {refused_read:?}"
-    );
-    assert_eq!(
-        transport.fence_attempts(),
-        vec![NodeId(3), NodeId(4), NodeId(5)],
-        "and it kept flushing while degraded, which is the only thing that can \
-         end the condition"
-    );
-
-    // The link takes one fence, which is enough to bring the queue back to the
-    // bound.
-    transport.allow_fences_for(NodeId(3));
-    driver.tick().expect("the tick advances the protocol");
-
-    assert_eq!(driver.pending_peer_fences(), 2, "one obligation discharged");
+    for node_id in [NodeId(3), NodeId(4), NodeId(5)] {
+        assert!(
+            !transport.retires(node_id),
+            "{node_id} is removed and its retirement is unpublished"
+        );
+        assert!(
+            matches!(
+                driver.deliver(a_vote(node_id)),
+                Err(InboundEnvelopeError::NotInMembership { .. })
+            ),
+            "so the driver's own check is what refuses {node_id}"
+        );
+    }
     assert_eq!(
         driver.service_state(),
         DriverServiceState::Serving,
-        "at the bound rather than past it, so the driver serves again"
+        "and the replica itself is a correct member of the group, so it serves"
     );
-    a_write(&driver).expect("and a write is admitted");
-}
-
-/// A zero fence bound is refused at construction.
-///
-/// The same reason a zero waiter bound is: a driver that can hold no fence
-/// obligation cannot record the one a committed removal creates, so it would be
-/// permanently degraded from its first configuration change — discovered at that
-/// change rather than at construction.
-#[test]
-fn a_zero_fence_bound_is_refused() {
-    let transport = QueueTransport::default();
-    let validator = Validator {
-        transport: transport.clone(),
-        authorized: [NodeId(2)].into_iter().collect(),
-        nameable: Nameable::all(),
-    };
-    let refused = TransportRaftDriver::new(
-        numbered_group(GROUP, 1, &[2], 3),
-        Vec::new(),
-        transport,
-        validator,
-        TransportDriverOptions::default().with_fence_backlog_service_threshold(0),
-    );
-
+    a_write(&driver).expect("including new client work");
     assert!(
-        matches!(
-            refused,
-            Err(ManagedDriverError::InvalidOptions {
-                field: "fence_backlog_service_threshold",
-                ..
-            })
-        ),
-        "got {refused:?}"
+        driver.refused_peer_updates() > 0,
+        "every withheld attempt is counted, which is the history beside the state"
     );
+
+    // The link recovers, and one publication states everything at once.
+    transport.allow_peer_updates();
+    driver.tick().expect("the tick advances the protocol");
+
+    assert!(!driver.peer_policy_is_stale(), "the retry brought it level");
+    for node_id in [NodeId(3), NodeId(4), NodeId(5)] {
+        assert!(
+            transport.retires(node_id),
+            "and one floor retires every identity beneath it: {:?}",
+            transport.policies().last()
+        );
+    }
 }

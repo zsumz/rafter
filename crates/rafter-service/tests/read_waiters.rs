@@ -19,7 +19,7 @@ use std::{
 
 use rafter_runtime_api::PersistedRaftRuntime;
 use rafter_service::{
-    AuthenticatedPeerValidator, PeerEnvelope, PeerSet, RaftTransport, SnapshotChunkEnvelope,
+    AuthenticatedPeerValidator, PeerEnvelope, PeerPolicy, RaftTransport, SnapshotChunkEnvelope,
     TransportDriverOptions, TransportRaftDriver,
 };
 use support::*;
@@ -53,11 +53,8 @@ impl RaftTransport<u64> for NullTransport {
     fn update_peers(
         &self,
         _group_id: &u64,
-        _peers: PeerSet<Self::PeerPrincipal>,
+        _policy: PeerPolicy<Self::PeerPrincipal>,
     ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-    fn fence_peer(&self, _group_id: &u64, _peer: Self::PeerPrincipal) -> Result<(), Self::Error> {
         Ok(())
     }
     /// This fixture's runtime emits no snapshot directives, so a chunk arriving

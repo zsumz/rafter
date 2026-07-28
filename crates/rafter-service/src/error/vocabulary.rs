@@ -107,7 +107,7 @@ impl fmt::Display for ReadAbandonReason {
 ///
 /// The companion of [`crate::DriverServiceState`] and deliberately not the same
 /// type. That one is an *observation* an operator polls, and carries the detail
-/// an investigation needs — which node, how many fences, against what threshold.
+/// an investigation needs — which node, at which log position.
 /// This one is a *cause on a client's error*: `Copy`, payload-free, and
 /// low-cardinality, so it can be a metric label or a map key exactly like
 /// [`WriteErrorKind`]. A client branching on why it was refused needs the
@@ -132,10 +132,11 @@ pub enum DriverUnavailableReason {
     /// state exists: the replica receives no replication, so answering a local
     /// read from it is answering from a view with no bound on how stale it is.
     NotMember,
-    /// The link layer has left more committed removals unfenced than
-    /// [`crate::TransportDriverOptions::fence_backlog_service_threshold`]
-    /// allows. It clears when the backlog drains.
-    FenceBacklog,
+    /// Two observations of the committed membership at one log position
+    /// disagree about it, so this driver has no trustworthy statement to make
+    /// about who may speak. Terminal for the incarnation; the supervisor
+    /// releases and rebuilds.
+    ContradictoryCurrentState,
     /// The driver released its group and has not adopted another.
     Released,
     /// The driver has shut down, which is terminal.
@@ -165,7 +166,9 @@ impl DriverUnavailableReason {
             crate::DriverServiceState::Serving => None,
             crate::DriverServiceState::Decommissioned { .. } => Some(Self::Decommissioned),
             crate::DriverServiceState::NotMember { .. } => Some(Self::NotMember),
-            crate::DriverServiceState::FenceBacklog { .. } => Some(Self::FenceBacklog),
+            crate::DriverServiceState::ContradictoryCurrentState { .. } => {
+                Some(Self::ContradictoryCurrentState)
+            }
             crate::DriverServiceState::Released => Some(Self::Released),
             crate::DriverServiceState::ShuttingDown => Some(Self::ShuttingDown),
         }
@@ -177,7 +180,9 @@ impl fmt::Display for DriverUnavailableReason {
         formatter.write_str(match self {
             Self::Decommissioned => "a committed change removed this replica",
             Self::NotMember => "no configuration this driver knows names this replica",
-            Self::FenceBacklog => "the link layer owes more peer fences than this driver allows",
+            Self::ContradictoryCurrentState => {
+                "two observations of the committed membership at one position disagree"
+            }
             Self::Released => "the driver released its group and holds none",
             Self::ShuttingDown => "the driver has shut down",
         })

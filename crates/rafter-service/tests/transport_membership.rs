@@ -85,7 +85,7 @@ fn a_replicated_addition_widens_this_drivers_peer_set() {
         "the uncommitted addition reached the link layer"
     );
     assert!(
-        !transport.is_fenced(NodeId(3)),
+        !transport.retires(NodeId(3)),
         "and nothing was fenced: an uncommitted change may only widen"
     );
     driver
@@ -126,7 +126,7 @@ fn an_overwritten_addition_leaves_the_peer_set_and_the_inbound_check() {
         "the rolled-back replica left the published peer set"
     );
     assert!(
-        !driver.peer_set_is_stale(),
+        !driver.peer_policy_is_stale(),
         "and the link layer holds exactly what the driver requires"
     );
 
@@ -167,15 +167,10 @@ fn a_rolled_back_addition_is_never_fenced_and_never_retired() {
     change_on_step(&handle, &[1, 2], &[1, 2]);
     driver.tick().expect("the tick advances the protocol");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        0,
-        "no committed removal ever happened, so no fence was ever licensed"
-    );
     assert!(
-        transport.fence_attempts().is_empty(),
-        "and the link layer was never asked: {:?}",
-        transport.fence_attempts()
+        !transport.retires(NodeId(3)),
+        "no committed removal ever happened, so nothing retires node 3: {:?}",
+        transport.policies().last()
     );
     assert_eq!(
         driver.readmitted_retired_peers(),
@@ -212,8 +207,10 @@ fn a_commit_under_a_later_effective_configuration_keeps_both_facts() {
         "the committed set sets the floor and the effective one adds to it"
     );
     assert!(
-        transport.fence_attempts().is_empty(),
-        "nothing left the committed configuration, so nothing may be fenced"
+        !transport.retires(NodeId(3)) && !transport.retires(NodeId(4)),
+        "nothing left the committed configuration, so nothing may be retired: \
+         {:?}",
+        transport.policies().last()
     );
     driver
         .deliver(a_vote(NodeId(4)))
@@ -231,9 +228,9 @@ fn a_commit_under_a_later_effective_configuration_keeps_both_facts() {
         "the removal of node 3 has not committed, so nothing may be taken away"
     );
     assert!(
-        transport.fence_attempts().is_empty(),
-        "and no fence is licensed for an uncommitted removal: {:?}",
-        transport.fence_attempts()
+        !transport.retires(NodeId(3)),
+        "and no retirement is licensed for an uncommitted removal: {:?}",
+        transport.policies().last()
     );
     driver
         .deliver(a_vote(NodeId(3)))
@@ -250,10 +247,7 @@ fn a_commit_under_a_later_effective_configuration_keeps_both_facts() {
         &principals(&[2, 4]),
         "the committed removal is what narrows the set"
     );
-    assert!(
-        transport.is_fenced(NodeId(3)),
-        "and what licenses the fence"
-    );
+    assert!(transport.retires(NodeId(3)), "and what licenses the fence");
     let refused = driver.deliver(a_vote(NodeId(3)));
     assert!(
         refused.is_err(),
@@ -286,21 +280,21 @@ fn an_uncommitted_removal_narrows_nothing_and_fences_nobody() {
          republished and nothing was taken away"
     );
     assert!(
-        !driver.peer_set_is_stale(),
+        !driver.peer_policy_is_stale(),
         "and the driver agrees the link layer is level"
     );
     assert!(
-        transport.fence_attempts().is_empty(),
-        "only a committed removal licenses a fence: {:?}",
-        transport.fence_attempts()
+        !transport.retires(NodeId(3)),
+        "only a committed removal licenses a retirement: {:?}",
+        transport.policies().last()
     );
     driver
         .deliver(a_vote(NodeId(3)))
         .expect("node 3 is still committed and may still speak");
 }
 
-/// A widening that names a spent identity again settles no fence and readmits
-/// nobody.
+/// A widening that names a spent identity again retires nothing new and
+/// readmits nobody.
 ///
 /// Two clauses the same fact decides. The fence stays owed because an effective
 /// configuration may still be reverted, so it is too weak to retract an
@@ -310,23 +304,22 @@ fn an_uncommitted_removal_narrows_nothing_and_fences_nobody() {
 /// spent the `(group, NodeId)` pair: the widening is not a fact about who may
 /// speak, it is a contract violation, visible as one and refused as one.
 #[test]
-fn an_uncommitted_widening_settles_no_fence_and_readmits_no_spent_identity() {
+fn an_uncommitted_widening_retires_nothing_and_readmits_no_spent_identity() {
     let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
     let handle = runtime.handle();
     let (driver, transport) = scripted_driver(runtime, Nameable::all());
-    // The link refuses node 3's fence for the length of the test, which is what
-    // makes the driver's own check the only admission control in play.
-    transport.refuse_next_fences(NodeId(3), 16);
+    // The link refuses every publication for the first half of the test, which
+    // is what makes the driver's own check the only admission control in play.
+    transport.refuse_next_peer_updates(16);
 
     change_on_step(&handle, &[1, 2], &[1, 2]);
     driver
         .deliver(a_vote(NodeId(2)))
         .expect("node 2 is a member");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "the committed removal licensed a fence the link would not take"
+    assert!(
+        driver.peer_policy_is_stale(),
+        "the committed removal licensed a policy the link would not take"
     );
 
     // A later configuration names node 3 again and has not committed.
@@ -335,21 +328,20 @@ fn an_uncommitted_widening_settles_no_fence_and_readmits_no_spent_identity() {
         .deliver(a_vote(NodeId(2)))
         .expect("node 2 is a member");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "the obligation outlived the widening: a change that may be reverted \
+    assert!(
+        !driver
+            .control_plane_checkpoint()
+            .current_committed
+            .expect("the driver holds a current state")
+            .membership
+            .contains(&NodeId(3)),
+        "the removal outlived the widening: a change that may be reverted \
          retracts nothing"
     );
     assert_eq!(
         driver.readmitted_retired_peers(),
         1,
         "and the violation is observable rather than merely absorbed"
-    );
-    assert_eq!(
-        transport.peer_sets().last().expect("a set was published"),
-        &principals(&[2]),
-        "node 3 is not published back into the peer set"
     );
     let refused = driver.deliver(a_vote(NodeId(3)));
     assert!(
@@ -361,15 +353,20 @@ fn an_uncommitted_widening_settles_no_fence_and_readmits_no_spent_identity() {
     );
 
     // The link recovers, and nothing about the membership changes.
-    transport.allow_fences_for(NodeId(3));
+    transport.allow_peer_updates();
     driver.tick().expect("the tick advances the protocol");
 
-    assert!(
-        transport.is_fenced(NodeId(3)),
-        "the obligation was discharged on retry: {:?}",
-        transport.fence_attempts()
+    assert_eq!(
+        transport.peer_sets().last().expect("a set was published"),
+        &principals(&[2]),
+        "node 3 is not published back into the peer set"
     );
-    assert_eq!(driver.pending_peer_fences(), 0, "and nothing is owed now");
+    assert!(
+        transport.retires(NodeId(3)),
+        "and the retry installed the policy that retires it: {:?}",
+        transport.policies().last()
+    );
+    assert!(!driver.peer_policy_is_stale(), "and nothing is owed now");
 }
 
 /// A step that fails still narrows the peer set and fences what left.
@@ -419,15 +416,14 @@ fn a_failed_step_still_routes_the_membership_it_moved_through() {
         "the committed removal narrowed the published peer set anyway"
     );
     assert!(
-        transport.is_fenced(NodeId(3)),
-        "and the fence it licensed was installed: {:?}",
-        transport.fence_attempts()
+        transport.retires(NodeId(3)),
+        "and the retirement it licensed was installed: {:?}",
+        transport.policies().last()
     );
     assert!(
-        !driver.peer_set_is_stale(),
+        !driver.peer_policy_is_stale(),
         "the link layer holds exactly what the driver requires"
     );
-    assert_eq!(driver.pending_peer_fences(), 0, "and nothing is left owed");
 
     let refused = driver.deliver(a_vote(NodeId(3)));
     assert!(
@@ -495,7 +491,7 @@ fn a_failed_step_still_routes_an_effective_rollback() {
         "the rolled-back replica left the published peer set anyway"
     );
     assert!(
-        !transport.is_fenced(NodeId(3)),
+        !transport.retires(NodeId(3)),
         "and nothing was fenced: an addition that never committed retires nothing"
     );
     let refused = driver.deliver(a_vote(NodeId(3)));

@@ -1,13 +1,14 @@
 #![allow(clippy::wildcard_imports)]
 
-//! The peer-control-plane record a restarted process reads back.
+//! The peer-control-plane record a restarted process reads back, and the one
+//! merge every pair of observations goes through.
 //!
 //! Split from [`super::control_plane`] along the line between a *record* and a
 //! *derivation*. That file answers "who is allowed to send a step" — the
-//! membership facts, the retirement diff, the peer set, the fences the link
-//! layer still owes. This one answers "what does a process that crashed get
-//! back, and what may it conclude from it": the type, what makes one valid, and
-//! how two of them join.
+//! membership facts, the retirement floor, the policy the link layer is handed.
+//! This one answers "what does a process that crashed get back, and what may it
+//! conclude from it": the type, what makes one valid, and how two observations of
+//! the committed membership combine.
 //!
 //! **There is no consumer offset here, and there used to be two.** A record kept
 //! a position in the committed configuration stream so a replayed history could
@@ -19,6 +20,16 @@
 //! neither 6 nor 7, and a cursor reading 8 says otherwise. The facts are
 //! monotone evidence now, so re-folding one changes nothing and there is nothing
 //! to skip. See [`super::control_plane`] for the algebra that makes that true.
+//!
+//! **There is no obligation ledger here either, and there used to be one.** A
+//! record carried the committed removals whose per-principal fence the link layer
+//! had not accepted, because `fence_peer` was an operation that could be refused
+//! and no later event re-derived it. Retirement is published as a *floor* now —
+//! see [`crate::transport::PeerPolicy`] — so every statement this driver makes to
+//! its link layer is a function of state it still holds, and a refused
+//! publication is retried rather than remembered. That deleted the one output of
+//! the join that was not monotone, which is what restored order-freedom by
+//! construction rather than by proof.
 //!
 //! The state these rules read still lives on
 //! [`super::state::TransportDriverState`], like every other field behind the one
@@ -47,17 +58,24 @@ use super::state::TransportDriverState;
 /// restarted process observes only the latest one. Compaction then erases the
 /// configuration history below the snapshot boundary, so the difference is gone
 /// from the log as well. Concretely: committed `{1,2,5}`, node 5 removed, the
-/// link layer refuses `fence_peer(5)`, the process crashes. A new process
-/// reconstructs committed `{1,2}` and a high-water mark of 2 — the fence is
-/// never retried, and node 5 is no longer spent, so the identity the cluster
-/// consumed is allocatable again.
+/// process crashes. A new process reconstructs committed `{1,2}` and a high-water
+/// mark of 2 — so node 5 is no longer spent, the policy this driver publishes
+/// stops retiring it, and the identity the cluster consumed is allocatable again.
 ///
-/// **The three facts.** The mark, the current committed state, and the
-/// obligations. Nothing else is here, because everything else about the control
-/// plane is re-derived at adoption: the effective membership comes from the
-/// runtime, and `published_peers` deliberately does not survive — a new process
-/// has a new link layer that has accepted nothing, and starting from "nothing
-/// accepted" is what forces the first republication.
+/// **The two facts.** The mark and the current committed state. Nothing else is
+/// here, because everything else about the control plane is re-derived at
+/// adoption: the effective membership comes from the runtime, and the published
+/// policy deliberately does not survive — a new process has a new link layer that
+/// has accepted nothing, and starting from "nothing accepted" is what forces the
+/// first republication.
+///
+/// **There is deliberately no record of what the link layer accepted.** It used
+/// to carry one — the committed removals whose fence was still owed — because
+/// fencing was a per-principal operation that could be refused and that no later
+/// fact re-derived. Retirement is a floor now, and the floor is a function of the
+/// mark, so every statement this driver owes its link layer is derivable from the
+/// two facts above at any moment. An obligation nobody has to remember is an
+/// obligation nobody can forget, mis-order, or double-count.
 ///
 /// **Bound to one group, and validated against the driver's own at restore.**
 /// Retirement is per `(group_id, NodeId)` pair, so a checkpoint's mark and live
@@ -75,8 +93,8 @@ use super::state::TransportDriverState;
 /// [`rafter::NodeId`] — and it is the only backstop for a removal committed
 /// while no driver was running at all. Persist when
 /// [`TransportRaftDriver::control_plane_checkpoint_epoch`] moves, which is on
-/// every committed configuration this driver observes and every fence its link
-/// layer accepts.
+/// every committed configuration this driver observes that changes what it
+/// holds, and on nothing else.
 ///
 /// **A stale checkpoint is a legal input, and joining one can only ever add
 /// spent-ness.** That is a property of the join rather than of the caller's
@@ -145,13 +163,6 @@ pub struct PeerControlPlaneCheckpoint<G> {
     /// union of two different nows. The join that does it correctly is the
     /// crate-internal `restore_control_plane_checkpoint`.
     pub current_committed: Option<CurrentCommittedState>,
-    /// Committed removals whose fence the link layer has not accepted.
-    ///
-    /// One entry per unfenced removal, and nothing here ever discards one: a
-    /// committed fact is not a request. Retention across restarts is therefore
-    /// the embedder's, stated at
-    /// [`TransportDriverOptions::fence_backlog_service_threshold`].
-    pub pending_fences: BTreeSet<NodeId>,
 }
 
 /// The committed membership a record believes is current, and where it looked.
@@ -168,9 +179,9 @@ pub struct PeerControlPlaneCheckpoint<G> {
 /// `membership` is the *live* reading: the observed committed configuration less
 /// every identity a committed removal has spent. An already-spent identity that
 /// a later configuration names again is filtered out here rather than obeyed —
-/// [`RaftTransport::fence_peer`] has no inverse, so re-authorizing it is a
-/// promise the link layer cannot keep — and the raw fact is kept beside it on
-/// the driver so the violation stays countable.
+/// a `(group, NodeId)` pair the cluster consumed is not a pair it can hand back
+/// — and the raw fact is kept beside it on the driver so the violation stays
+/// countable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct CurrentCommittedState {
@@ -217,7 +228,6 @@ impl<G> PeerControlPlaneCheckpoint<G> {
             group,
             committed_id_high_water: None,
             current_committed: None,
-            pending_fences: BTreeSet::new(),
         }
     }
 
@@ -230,16 +240,11 @@ impl<G> PeerControlPlaneCheckpoint<G> {
     /// opinion, which is what lets two records with different marks be joined
     /// without either overruling the other outside what it saw.
     fn spends(&self, node_id: NodeId) -> bool {
-        self.committed_id_high_water
-            .is_some_and(|mark| node_id <= mark)
-            && !self.names(node_id)
-    }
-
-    /// Whether this record's current state names `node_id` as live.
-    fn names(&self, node_id: NodeId) -> bool {
-        self.current_committed
-            .as_ref()
-            .is_some_and(|current| current.membership.contains(&node_id))
+        spends_under(
+            self.committed_id_high_water,
+            self.current_committed.as_ref(),
+            node_id,
+        )
     }
 
     /// The membership of this record's current state, or the empty set.
@@ -248,19 +253,6 @@ impl<G> PeerControlPlaneCheckpoint<G> {
             .as_ref()
             .map(|current| current.membership.clone())
             .unwrap_or_default()
-    }
-
-    /// Drops a current state that no observation produced.
-    ///
-    /// The join builds one unconditionally so the arithmetic above has somewhere
-    /// to land, and joining two empty records must still yield an empty record
-    /// rather than a state at position zero — which the coupling biconditional
-    /// would then refuse.
-    fn without_empty_state(mut self) -> Self {
-        if self.committed_id_high_water.is_none() && self.pending_fences.is_empty() {
-            self.current_committed = None;
-        }
-        self
     }
 
     /// Refuses a checkpoint that contradicts the invariants a driver maintains.
@@ -275,31 +267,14 @@ impl<G> PeerControlPlaneCheckpoint<G> {
     ///   the configuration it is assigning as live, in the same call, so the two
     ///   can never disagree. A lowered mark is how a corrupted record un-retires
     ///   everything above it.
-    /// * **Every pending fence names an identity this record saw spent**, which
-    ///   is `pending_fences ⊆ spent`. The fence set is extended with exactly the
-    ///   difference the live assignment removes, so a fenced identity is one that
-    ///   was live, is no longer, and therefore sits at or below the mark. The two
-    ///   ways to break that are separate variants because they fail in opposite
-    ///   directions and an operator needs to know which:
-    ///   [`ControlPlaneCheckpointError::FenceNamesLiveMember`] for a fence
-    ///   naming an identity this record still calls live, and
-    ///   [`ControlPlaneCheckpointError::FenceNamesUnspentIdentity`] for one
-    ///   naming an identity above the mark, which no committed configuration
-    ///   here ever named at all.
-    ///
-    /// The second is the clause a live-set comparison alone cannot state, and it
-    /// is the one that survives the join rather than being caught by it: the
-    /// joined mark rises to cover an identity the *other* record calls live, the
-    /// obligation travels with it, and the next flush publishes that replica to
-    /// the link layer and then permanently fences it. [`RaftTransport::fence_peer`]
-    /// has no inverse, so unlike a stale peer set that is not something a later
-    /// flush corrects.
     ///
     /// * **The mark and the current state are one record, and the coupling is a
-    ///   biconditional.** Deleting the two offsets collapsed three clauses into
-    ///   this one, and the collapse is a consequence rather than a
-    ///   simplification: what the offsets were coupled *to* is now the only
-    ///   other thing here.
+    ///   biconditional.** Two clauses about the obligation ledger used to sit
+    ///   beside this one, and they left with it: a fence was the residue of a
+    ///   committed removal and therefore had to name a spent identity, which is
+    ///   a rule about a set that no longer exists. Retirement is the mark and the
+    ///   live set now, and the mark and the live set are exactly what this
+    ///   couples.
     ///
     ///   Every observation of a committed configuration raises the mark — a
     ///   committed configuration always names at least one replica, since
@@ -309,9 +284,8 @@ impl<G> PeerControlPlaneCheckpoint<G> {
     ///   current_committed.is_some()`, and the two ways to break it are separate
     ///   variants because they fail in opposite directions:
     ///   [`ControlPlaneCheckpointError::RetirementWithoutCurrentState`] leaves a
-    ///   mark and obligations with nothing to compare them against — every
-    ///   identity at or below the mark reads as spent, which is the whole
-    ///   cluster — and
+    ///   mark with nothing to compare it against — every identity at or below the
+    ///   mark reads as spent, which is the whole cluster — and
     ///   [`ControlPlaneCheckpointError::CurrentStateWithoutRetirement`] is a
     ///   membership this record could not have observed, since observing it
     ///   would have raised a mark.
@@ -327,11 +301,11 @@ impl<G> PeerControlPlaneCheckpoint<G> {
             return Err(ControlPlaneCheckpointError::ForeignGroup);
         }
         // **One record, checked as one.** A mark is raised by an observation and
-        // an observation assigns the current state, so neither stands alone;
-        // obligations are the residue of a removal, which is an observation too.
-        let retired_something =
-            self.committed_id_high_water.is_some() || !self.pending_fences.is_empty();
-        match (self.current_committed.is_some(), retired_something) {
+        // an observation assigns the current state, so neither stands alone.
+        match (
+            self.current_committed.is_some(),
+            self.committed_id_high_water.is_some(),
+        ) {
             (false, true) => {
                 return Err(ControlPlaneCheckpointError::RetirementWithoutCurrentState)
             }
@@ -350,61 +324,131 @@ impl<G> PeerControlPlaneCheckpoint<G> {
                 return Err(ControlPlaneCheckpointError::LiveMemberAboveMark { node_id, mark });
             }
         }
-        for node_id in self.pending_fences.iter().copied() {
-            if self.names(node_id) {
-                return Err(ControlPlaneCheckpointError::FenceNamesLiveMember { node_id });
-            }
-            if !self.spends(node_id) {
-                return Err(ControlPlaneCheckpointError::FenceNamesUnspentIdentity { node_id });
-            }
-        }
         Ok(())
     }
 }
 
-/// Chooses between two current states and names what the pair proves.
+/// Whether a record holding this mark and this current state spends `node_id`.
 ///
-/// The later observation wins and the earlier one is not discarded: the
-/// identities it named that the later one does not are the removals that
-/// happened between the two positions. That is the only inference here, and it
-/// is the one neither record can make alone.
+/// The two reads [`TransportDriverState::is_spent`] makes, over the halves of a
+/// record rather than over the record — which is what lets the join read a
+/// checkpoint's spent-ness after moving its fields out.
+fn spends_under(
+    mark: Option<NodeId>,
+    current: Option<&CurrentCommittedState>,
+    node_id: NodeId,
+) -> bool {
+    mark.is_some_and(|mark| node_id <= mark)
+        && !current.is_some_and(|current| current.membership.contains(&node_id))
+}
+
+/// Everything one merge needs to know about the observation arriving.
+///
+/// A position, the membership observed there **raw**, and what the fact itself
+/// proves a committed removal consumed. The third field is what separates a
+/// crossing from every other input: only a transition the kernel computed proves
+/// a removal on its own, and it proves it wherever the fact is folded.
+pub(super) struct IncomingObservation<'a> {
+    pub(super) through: LogIndex,
+    pub(super) membership: &'a BTreeSet<NodeId>,
+    pub(super) proven_removed: &'a BTreeSet<NodeId>,
+}
+
+/// Merges one observation of the committed membership into the one held.
+///
+/// **The single merge, reached from four directions.** Two checkpoints joining;
+/// a checkpoint meeting the adopted runtime's own endpoint; a held state meeting
+/// a routed `CommittedEndpoint`; a held state meeting a crossing that advances
+/// the register. They were four expressions of one rule and only the first
+/// refused a tie, so a runtime that disagreed with a durable record at the very
+/// position both had observed silently retired a live replica in one direction
+/// and silently authorized a never-committed one in the other.
+///
+/// # The rule
+///
+/// * **The later observation wins**, and the earlier is not discarded: the
+///   identities it named that the later one does not are the committed removals
+///   that happened between the two positions. That is the inference neither side
+///   can make alone.
+/// * **A proven removal is absorbed whatever the fact's position**, because it is
+///   not an observation of the present — it is a permanent fact about an
+///   identity. A crossing beneath the register still takes its removal out of it.
+/// * **A tie is refused rather than broken**, once normalization has had its say.
+///   The committed membership at one log position is one set, so two claims about
+///   it that still differ are not two readings to reconcile; picking either
+///   would be choosing which side to believe with nothing to decide on, and
+///   merging them would invent a third neither side ever held.
+///
+/// # What normalization is for
+///
+/// Both sides are filtered by `spent` and by `proven_removed` *before* the tie is
+/// judged, and each half of that is load-bearing.
+///
+/// `spent` is what keeps a **readmission** from reading as corruption. A cluster
+/// that names an already-spent identity again has broken the single-use contract,
+/// and this driver has an answer for that — refuse the replica, count the
+/// violation at `readmitted_retired_peers`. The raw membership a runtime reports
+/// contains the readmitted identity and the held register does not, which is a
+/// difference with a known cause, so it must not be reported as a damaged file.
+///
+/// `proven_removed` is what keeps a **crossing at the register's own position**
+/// from reading as one. The transition says which identities left; the held state
+/// has either already absorbed them or is about to. Either way the two agree once
+/// the transition is applied to both.
+///
+/// The normalization is applied to both sides rather than only to the incoming
+/// one, which is what keeps the merge symmetric — and symmetry is a property the
+/// checkpoint join needs, since a supervisor has no correct order to read two
+/// peers' records in.
 ///
 /// # Errors
 ///
 /// [`ControlPlaneCheckpointError::ContradictoryCurrentState`] when the two stand
-/// at one position and disagree about the membership there.
-fn join_current_state<G>(
-    held: &PeerControlPlaneCheckpoint<G>,
-    incoming: &PeerControlPlaneCheckpoint<G>,
-) -> Result<(CurrentCommittedState, BTreeSet<NodeId>), ControlPlaneCheckpointError> {
-    match (
-        held.current_committed.as_ref(),
-        incoming.current_committed.as_ref(),
-    ) {
-        (None, None) => Ok((
-            CurrentCommittedState::new(LogIndex::ZERO, BTreeSet::new()),
-            BTreeSet::new(),
-        )),
-        (Some(only), None) | (None, Some(only)) => Ok((only.clone(), BTreeSet::new())),
-        (Some(held), Some(incoming)) => {
-            let (older, newer) = match held.through.cmp(&incoming.through) {
-                Ordering::Less => (held, incoming),
-                Ordering::Greater => (incoming, held),
-                Ordering::Equal if held.membership == incoming.membership => (held, incoming),
-                Ordering::Equal => {
-                    return Err(ControlPlaneCheckpointError::ContradictoryCurrentState {
-                        through: held.through,
-                    })
-                }
-            };
-            let inferred = older
-                .membership
-                .difference(&newer.membership)
-                .copied()
-                .collect();
-            Ok((newer.clone(), inferred))
+/// at one position and still disagree about the membership there.
+pub(super) fn merge_current_state(
+    held: Option<&CurrentCommittedState>,
+    incoming: &IncomingObservation<'_>,
+    spent: &dyn Fn(NodeId) -> bool,
+) -> Result<CurrentCommittedState, ControlPlaneCheckpointError> {
+    let Some(held) = held else {
+        return Ok(CurrentCommittedState::new(
+            incoming.through,
+            live(incoming.membership, incoming.proven_removed, spent),
+        ));
+    };
+    let (older, newer) = match held.through.cmp(&incoming.through) {
+        Ordering::Less => (&held.membership, incoming.membership),
+        Ordering::Greater => (incoming.membership, &held.membership),
+        Ordering::Equal => {
+            let held_live = live(&held.membership, incoming.proven_removed, spent);
+            let incoming_live = live(incoming.membership, incoming.proven_removed, spent);
+            if held_live != incoming_live {
+                return Err(ControlPlaneCheckpointError::ContradictoryCurrentState {
+                    through: held.through,
+                });
+            }
+            return Ok(CurrentCommittedState::new(held.through, held_live));
         }
-    }
+    };
+    let mut removed: BTreeSet<NodeId> = older.difference(newer).copied().collect();
+    removed.extend(incoming.proven_removed.iter().copied());
+    Ok(CurrentCommittedState::new(
+        held.through.max(incoming.through),
+        live(newer, &removed, spent),
+    ))
+}
+
+/// One membership less everything a removal took and everything already spent.
+fn live(
+    membership: &BTreeSet<NodeId>,
+    removed: &BTreeSet<NodeId>,
+    spent: &dyn Fn(NodeId) -> bool,
+) -> BTreeSet<NodeId> {
+    membership
+        .iter()
+        .copied()
+        .filter(|node_id| !removed.contains(node_id) && !spent(*node_id))
+        .collect()
 }
 
 impl<G, A, R, T, V> TransportDriverState<G, A, R, T, V>
@@ -439,7 +483,6 @@ where
             group: self.group_id.clone(),
             committed_id_high_water: self.committed_id_high_water,
             current_committed: self.current_committed.clone(),
-            pending_fences: self.pending_fences.clone(),
         }
     }
 
@@ -474,19 +517,19 @@ where
     /// {1,2,3,5}}` beside a later snapshot-derived `{through 10, mark 3, live
     /// {1,2,3}}` says node 5 was in the committed membership at position 7 and
     /// is not in it at position 10, which is a committed removal — while the
-    /// union kept 5 live, unspent and unfenced. The missing fact was not in
-    /// either record; it was *between* them, and only a positioned current state
-    /// can see it.
+    /// union kept 5 live, unspent, and published to the link layer. The missing
+    /// fact was not in either record; it was *between* them, and only a
+    /// positioned current state can see it.
     ///
     /// Write `spent_x(n) = n ≤ mark_x ∧ n ∉ live_x`, and let `older` and `newer`
     /// be the two current states ordered by `through`. Then:
     ///
     /// ```text
     /// mark     = max(mark_a, mark_b)
+    /// spent    = S_a ∪ S_b
     /// inferred = older.membership \ newer.membership
-    /// spent    = S_a ∪ S_b ∪ inferred
-    /// current  = { through: newer.through, membership: newer.membership \ spent }
-    /// fences   = fences_a ∪ fences_b ∪ (inferred \ (S_a ∪ S_b))
+    /// current  = { through: max(through_a, through_b),
+    ///              membership: newer.membership \ inferred \ spent }
     /// ```
     ///
     /// An identity *above* one side's mark is judged only by the side whose mark
@@ -495,22 +538,31 @@ where
     /// it is judged by both, because being named at one position and absent at a
     /// later one is a two-record fact.
     ///
-    /// **Equal positions with different memberships are refused rather than
-    /// merged** — see [`ControlPlaneCheckpointError::ContradictoryCurrentState`].
-    /// The committed membership at one position is one set, so two records
-    /// disagreeing there are not two observations to reconcile; picking either
-    /// would be choosing which record to believe, and merging them would invent
-    /// a third. Unreachable for a cluster that keeps the single-use contract:
-    /// each side's filter removes only identities a committed removal spent, and
-    /// under the contract no such identity is named again at a later position,
-    /// so the filters agree wherever the positions do.
+    /// **Every output is a lattice operation, and that is what changed.** There
+    /// used to be a fifth line — the fence obligations, which were the union of
+    /// both sides *plus the inferred removals neither side had already spent*.
+    /// That last clause read the spent set to decide a side effect, which made
+    /// the effect depend on how much spent-ness had accumulated by the time the
+    /// inference fired, which made it depend on the order. Concretely, with
+    /// records at positions 7, 10 and 12: `(A∨B)∨C` derives node 4's removal from
+    /// the A/B pair, while `A∨(B∨C)` raises the mark to 6 first and then reads
+    /// node 4 as already-spent, deriving nothing. Publishing retirement as a
+    /// floor deletes the line rather than repairing it — see
+    /// [`crate::transport::PeerPolicy`] — and what is left is `max`, `∪`, `\` and
+    /// "the later of the two", every one of which is order-free.
     ///
-    /// **The three properties, which are what make it safe to apply in any
-    /// order.** Let `S_x` be the spent set of `x` and `L_x` its live set.
+    /// **Equal positions are normalized and then refused if they still differ**
+    /// — see [`merge_current_state`], which owns that rule for all four callers.
+    ///
+    /// **The three properties, and they now hold of the whole operation rather
+    /// than of the spent set alone.** Let `S_x` be the spent set of `x` and `L_x`
+    /// its live set.
     ///
     /// 1. *Symmetric.* Every operator above is symmetric in `a` and `b`: `max`,
     ///    `∪`, and "the later of the two, refusing a tie that disagrees" — which
-    ///    is symmetric precisely because the tie is refused rather than broken.
+    ///    is symmetric precisely because the tie is refused rather than broken,
+    ///    and because the normalization that decides the tie is applied to both
+    ///    sides.
     /// 2. *Order-free.* `S_join ⊇ S_a ∪ S_b` (take `n ∈ S_a`: `n ≤ mark_a ≤
     ///    mark_join`, and `n` is filtered out of the joined membership by
     ///    construction). Position is `max`, which is associative, and the joined
@@ -519,34 +571,31 @@ where
     ///    and a spent set that only grew, whichever order the first two arrived
     ///    in. Idempotent: joining `a` with itself leaves the position equal, the
     ///    memberships equal, `inferred` empty, and `L_a \ S_a = L_a`.
+    ///
+    ///    **And the join has no other output to be order-free in.** That is the
+    ///    clause this used to be missing rather than getting wrong: the proof
+    ///    covered the spent set, and the fence set was a second output it never
+    ///    mentioned. `tests/transport_checkpoint_merge.rs` permutes three records
+    ///    at three positions and asserts the settled record *and* the
+    ///    identities the published policy retires.
     /// 3. *Monotone in spent-ness.* From property 2, every identity either side
     ///    had witnessed spent is spent in the join and in every later join.
     ///    **A witnessed removal cannot be undone by any merge order**, and an
     ///    inferred one cannot either: it leaves the joined membership, and the
     ///    filter above keeps a later observation from putting it back.
     ///
-    /// Obligations are still the union, because a driver can hold fences of its
-    /// own before a checkpoint is restored and losing either set would be losing
-    /// a fence. **An inferred removal contributes a fence only when neither side
-    /// already knew the identity was spent**, which is what keeps one committed
-    /// removal to exactly one obligation: a side that knew either still owes the
-    /// fence, and it is in that side's set, or the link layer already accepted
-    /// it and nothing is owed.
-    ///
     /// **The joined candidate is validated too, and that is deliberate
-    /// redundancy.** The proof above says it cannot fail — `fences ⊆ spent` is
-    /// preserved because a fence of `a` is in `S_a` and every element of `S_a`
-    /// is excluded from the joined membership while sitting at or below the
-    /// joined mark, and an inferred fence is spent by the same construction. The
-    /// coupling biconditional is preserved because the mark is a `max` and the
-    /// current state is a choice between two: the join has a mark exactly when a
-    /// side did, and a current state exactly when a side did.
+    /// redundancy.** The proof above says it cannot fail: the coupling
+    /// biconditional is preserved because the mark is a `max` and the current
+    /// state is a choice between two, so the join has a mark exactly when a side
+    /// did and a current state exactly when a side did; and every live identity
+    /// stays at or below the joined mark because the mark only rose.
     ///
     /// The properties are nonetheless *executed* rather than only argued,
     /// because the cost is one pass over a cluster-sized set and the thing being
-    /// protected is a permanent, uninvertible fence on a live replica. A proof
-    /// that stops holding because someone edited the join is a proof that fails
-    /// silently; this one fails loudly.
+    /// protected is a retirement floor that never falls. A proof that stops
+    /// holding because someone edited the join is a proof that fails silently;
+    /// this one fails loudly.
     ///
     /// # Errors
     ///
@@ -557,6 +606,7 @@ where
     /// path** — the join is computed into a candidate and validated before the
     /// first field moves — so a caller that refuses to open is left with a driver
     /// in exactly the state it was.
+    ///
     pub(super) fn restore_control_plane_checkpoint(
         &mut self,
         checkpoint: PeerControlPlaneCheckpoint<G>,
@@ -564,43 +614,46 @@ where
         checkpoint.validate(&self.group_id)?;
 
         let held = self.control_plane_checkpoint();
-        let committed_id_high_water = match (
-            held.committed_id_high_water,
-            checkpoint.committed_id_high_water,
-        ) {
+        // Taken apart rather than read through, so the restored observation is
+        // moved into this driver rather than cloned into it. The two halves are
+        // what spent-ness is computed from either way.
+        let PeerControlPlaneCheckpoint {
+            committed_id_high_water: restored_mark,
+            current_committed: restored_state,
+            ..
+        } = checkpoint;
+        let committed_id_high_water = match (held.committed_id_high_water, restored_mark) {
             (Some(held), Some(restored)) => Some(held.max(restored)),
             (held, None) => held,
             (None, restored) => restored,
         };
-        // The two-record fact, and the only thing here that neither record
-        // states on its own: an identity named at one position and absent at a
-        // later one was removed between them.
-        let (current, inferred) = join_current_state(&held, &checkpoint)?;
-        let already_spent = |node_id: NodeId| held.spends(node_id) || checkpoint.spends(node_id);
-        let membership = current
-            .membership
-            .iter()
-            .copied()
-            .filter(|node_id| !already_spent(*node_id))
-            .collect();
-        // Only what neither side already knew. A removal one side had witnessed
-        // is either still owed in that side's obligations or already discharged,
-        // and re-deriving it would owe a second fence for one committed fact.
-        let owed = inferred
-            .into_iter()
-            .filter(|id| !already_spent(*id))
-            .collect::<Vec<_>>();
-        let mut pending_fences = checkpoint.pending_fences;
-        pending_fences.extend(held.pending_fences);
-        pending_fences.extend(owed);
+        let spent = |node_id: NodeId| {
+            held.spends(node_id) || spends_under(restored_mark, restored_state.as_ref(), node_id)
+        };
+        // A record carries no transition, so it proves no removal on its own.
+        // What the *pair* proves — an identity named at one position and absent
+        // at a later one — is the merge's own inference.
+        let proves_nothing = BTreeSet::new();
+        let current_committed = match restored_state.as_ref() {
+            // The incoming record observed nothing, so it can raise no mark
+            // either (the biconditional above), and there is nothing to merge.
+            None => held.current_committed.clone(),
+            Some(incoming) => Some(merge_current_state(
+                held.current_committed.as_ref(),
+                &IncomingObservation {
+                    through: incoming.through,
+                    membership: &incoming.membership,
+                    proven_removed: &proves_nothing,
+                },
+                &spent,
+            )?),
+        };
 
         let joined = PeerControlPlaneCheckpoint {
             group: self.group_id.clone(),
             committed_id_high_water,
-            current_committed: Some(CurrentCommittedState::new(current.through, membership)),
-            pending_fences,
-        }
-        .without_empty_state();
+            current_committed,
+        };
         joined.validate(&self.group_id)?;
 
         // The raw committed floor is deliberately not restored from here. It
@@ -611,7 +664,6 @@ where
         // driver serves anything.
         self.committed_id_high_water = joined.committed_id_high_water;
         self.current_committed = joined.current_committed;
-        self.pending_fences = joined.pending_fences;
         self.advance_checkpoint_epoch();
         Ok(())
     }

@@ -22,7 +22,7 @@ use std::{
 
 use rafter::{PreVoteResponse, RequestVoteResponse};
 use rafter_service::{
-    AuthenticatedPeerEnvelope, PeerEnvelope, PeerSet, RaftTransport, ReadOptions,
+    AuthenticatedPeerEnvelope, PeerEnvelope, PeerPolicy, RaftTransport, ReadOptions,
     SnapshotChunkEnvelope, TransportDriverOptions, TransportRaftDriver, WriteOptions,
 };
 use support::transport::*;
@@ -390,13 +390,9 @@ impl RaftTransport<u64> for DropOnSendTransport {
     fn update_peers(
         &self,
         group_id: &u64,
-        peers: PeerSet<Self::PeerPrincipal>,
+        policy: PeerPolicy<Self::PeerPrincipal>,
     ) -> Result<(), Self::Error> {
-        self.link.update_peers(group_id, peers)
-    }
-
-    fn fence_peer(&self, group_id: &u64, peer: Self::PeerPrincipal) -> Result<(), Self::Error> {
-        self.link.fence_peer(group_id, peer)
+        self.link.update_peers(group_id, policy)
     }
 }
 

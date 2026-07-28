@@ -1,8 +1,9 @@
 //! The managed service transport trait and its validation glue.
 //!
 //! Production transports must authenticate peers before constructing an
-//! authenticated envelope, keep group peer sets current, fence removed peers,
-//! and use the current `rafter-codec` peer wire format. This crate
+//! authenticated envelope, keep each group's authorization policy current —
+//! which is who may speak *and* which identities the cluster has retired, in one
+//! value — and use the current `rafter-codec` peer wire format. This crate
 //! intentionally provides a trait only, so that no transport ships as the
 //! default by being the one that is here.
 //!
@@ -51,29 +52,106 @@ pub struct SnapshotChunkEnvelope<G> {
     pub chunk: SnapshotChunkSend,
 }
 
-/// Current transport principals authorized for a group.
+/// Who may speak for a group, and which identities are retired.
+///
+/// **One statement rather than a set plus a stream of per-principal fences**, and
+/// that is the whole design. Retiring a replica used to be an operation —
+/// `fence_peer`, once per removal, permanent, and owed until the link layer took
+/// it — which meant a driver had to *remember which removals it had already
+/// acted on*. That memory was a bounded set with an unbounded question attached:
+/// "has this identity's fence been made" is not the same question as "may this
+/// identity be admitted again", and one bit answered both. An exact committed
+/// removal arriving beneath a later observation was suppressed as
+/// already-handled, and the join that merged two records was not order-free in
+/// the fences it derived.
+///
+/// A floor answers the second question and deletes the first. Under the
+/// single-use, monotonically-allocated identity contract [`NodeId`] states,
+/// every identity a group has ever committed is at or below the greatest one it
+/// has committed — so "authorized, plus the greatest identity ever committed" is
+/// a complete statement of who may speak and who is retired, with no per-removal
+/// history behind it.
+///
+/// # The rule
+///
+/// A principal in `peers` is authorized. An identity at or below
+/// `retirement_floor` whose principal is **not** in `peers` is **retired**: the
+/// cluster committed its removal, and it must never be admitted under that
+/// identity again. An identity *above* the floor is simply not authorized yet —
+/// a replica whose addition has not committed here, or one this deployment has
+/// provisioned and the cluster has not admitted.
+///
+/// The distinction is worth carrying because the two are not equally repairable.
+/// An unauthorized principal becomes authorized by the next publication; a
+/// retired one does not, because the floor never falls.
+///
+/// # What an implementation may assume, and what it may not
+///
+/// **The floor is monotone.** A driver's floor is the greatest identity it has
+/// ever seen in a committed configuration, so a later publication never carries a
+/// lower one. An implementation may therefore keep the highest floor it has ever
+/// accepted, and doing so is what makes a *stale* policy unable to widen
+/// admission: a publication the link layer missed leaves fewer identities
+/// retired, never more.
+///
+/// **The set is authoritative and is re-read on every publication.** This value
+/// replaces the previous one whole. An implementation must not latch a denial
+/// past the policy that produced it — if a later policy authorizes a principal,
+/// that principal is authorized, and a link torn down for a retired peer must be
+/// re-establishable.
+///
+/// That is weaker than the append-only fenced set `fence_peer` allowed, and the
+/// weakening is exactly the unbounded per-removal record this design deletes.
+/// What replaces it is a property of the *driver*: it never authorizes an
+/// identity its own spent test refuses, and that test is monotone for the life of
+/// an incarnation. See `PeerControlPlaneCheckpoint` for what carries it across
+/// one.
+///
+/// **The local replica is not a peer of itself**, so it is never in `peers` and
+/// this policy says nothing about it. A node does not authorize its own frames,
+/// and a driver adopted under a fresh identity retires its previous one here like
+/// any other: the old identity is at or below the floor and absent from the set.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PeerSet<P> {
+pub struct PeerPolicy<P> {
     peers: Vec<P>,
+    retirement_floor: Option<NodeId>,
 }
 
-impl<P> PeerSet<P> {
-    /// Creates a peer set from the currently authorized principals.
+impl<P> PeerPolicy<P> {
+    /// Creates a policy from the authorized principals and the retirement floor.
+    ///
+    /// `retirement_floor` is `None` before this group has committed any
+    /// configuration, which retires nothing. It is not zero: [`NodeId`] `0` is a
+    /// legal identity and cannot double as "no floor".
     #[must_use]
-    pub fn new(peers: Vec<P>) -> Self {
-        Self { peers }
+    pub fn new(peers: Vec<P>, retirement_floor: Option<NodeId>) -> Self {
+        Self {
+            peers,
+            retirement_floor,
+        }
     }
 
-    /// Returns the current authorized principals.
+    /// Returns the currently authorized principals.
     #[must_use]
     pub fn peers(&self) -> &[P] {
         &self.peers
     }
 
-    /// Consumes the peer set and returns the stored principals.
+    /// Consumes the policy and returns the authorized principals.
     #[must_use]
     pub fn into_peers(self) -> Vec<P> {
         self.peers
+    }
+
+    /// Returns the greatest identity this group has ever committed, if any.
+    ///
+    /// Half of the denial rule; [`PeerPolicy::peers`] is the other half. An
+    /// implementation that maps principals to replicas — which every
+    /// [`AuthenticatedPeerValidator`] does — refuses an identity at or below this
+    /// whose principal the set does not name.
+    #[must_use]
+    pub fn retirement_floor(&self) -> Option<NodeId> {
+        self.retirement_floor
     }
 }
 
@@ -155,83 +233,48 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
     /// rather than propagated to a client.
     fn send_snapshot_chunk(&self, envelope: SnapshotChunkEnvelope<G>) -> Result<(), Self::Error>;
 
-    /// Replaces the authorized transport principals for `group_id`.
+    /// Replaces the authorization policy for `group_id`: who may speak, and
+    /// which identities are retired.
     ///
-    /// Idempotent, and may be called with a set the transport already holds. A
-    /// driver retries a refused publication at its next entry point rather than
-    /// waiting for the cluster's next configuration change, so an
-    /// implementation must treat a repeat of the current set as a no-op rather
-    /// than as a reconfiguration.
+    /// **The only admission statement this boundary carries**, and it used to be
+    /// two. A driver published a peer set here and retired replicas through a
+    /// separate per-principal `fence_peer` call that was permanent, fallible, and
+    /// therefore owed until accepted. Both statements are now one value, which is
+    /// what removes the driver's obligation ledger and everything that could go
+    /// wrong inside it — see [`PeerPolicy`] for what the floor buys and what it
+    /// gives up.
     ///
-    /// **A set published here never re-authorizes a fenced principal, and an
-    /// implementation must not read one as an unfence.**
-    /// [`RaftTransport::fence_peer`] is permanent, so the two operations do not
-    /// contradict each other and never have to be ordered against each other: a
-    /// driver excludes a fenced replica from every later set it publishes.
-    /// Fencing wins over authorization on any implementation that checks both.
+    /// Idempotent, and may be called with a policy the transport already holds.
+    /// A driver retries a refused publication at its next entry point rather than
+    /// waiting for the cluster's next configuration change, so an implementation
+    /// must treat a repeat of the current policy as a no-op rather than as a
+    /// reconfiguration.
+    ///
+    /// # What a refusal costs
+    ///
+    /// A refused publication leaves the link layer holding the *previous* policy,
+    /// which authorizes a set the cluster has moved on from and retires fewer
+    /// identities than it should. That is stale rather than wrong in the
+    /// dangerous direction — the floor is monotone, so an older policy never
+    /// retires an identity the current one does not — and the driver's own
+    /// inbound membership check refuses the retired replica in the meantime. Two
+    /// layers, and this is the outer one.
+    ///
+    /// **Restarting a replica is not removing it.** A replica killed and
+    /// restarted under the same node ID was never removed, stays in the peer set,
+    /// and keeps its principal across the restart. Nothing on this boundary
+    /// changes for it.
     ///
     /// # Errors
     ///
-    /// Returns the transport implementation's error when peer metadata cannot
-    /// be updated. A refusal is not final: the driver holds the set it could
-    /// not publish and tries again.
+    /// Returns the transport implementation's error when the policy cannot be
+    /// installed. A refusal is not final: the driver holds the policy it could
+    /// not publish and tries again at every later entry point.
     fn update_peers(
         &self,
         group_id: &G,
-        peers: PeerSet<Self::PeerPrincipal>,
+        policy: PeerPolicy<Self::PeerPrincipal>,
     ) -> Result<(), Self::Error>;
-
-    /// Fences `peer` for `group_id` so later frames from it are rejected.
-    ///
-    /// This is the operation that retires a replica the cluster has committed
-    /// the removal of, and it is allowed to fail — which makes retrying it the
-    /// caller's obligation. A driver that observes a refusal keeps the fence
-    /// outstanding and re-issues it at every later entry point until it is
-    /// accepted, because no later membership event re-derives it: the removal is
-    /// already behind the driver's record of the membership.
-    ///
-    /// Idempotent, for the same reason [`RaftTransport::update_peers`] is:
-    /// fencing an already-fenced peer must succeed rather than report a fault,
-    /// or a retried fence could never converge.
-    ///
-    /// # A fence is permanent, and there is no unfence
-    ///
-    /// Deliberately. This trait has no inverse of this method and will not
-    /// acquire one, because there is no fact that could license calling it: a
-    /// replica is fenced by a *committed* removal, and a committed removal
-    /// retires the `(group_id, node_id)` pair for good — see [`NodeId`], which
-    /// states the single-use contract. A replica that returns to a group
-    /// returns under a fresh ID with its own principal, and that principal was
-    /// never fenced, so nothing needs unfencing.
-    ///
-    /// So an implementation may treat its fenced set as append-only for the
-    /// lifetime of the group, and callers must assume it does. A membership
-    /// change that names a retired ID again is a violation of the contract above
-    /// rather than a request this boundary can serve; a driver refuses the
-    /// replica locally and reports the violation instead of asking for an
-    /// unfence that does not exist.
-    ///
-    /// **Restarting a replica is not removing it.** A replica killed and
-    /// restarted under the same node ID was never removed, is never fenced, and
-    /// keeps its principal across the restart. Nothing on this boundary changes
-    /// for it.
-    ///
-    /// **The local replica is not an exception.** A committed removal of the
-    /// replica a driver currently *is* licenses this call for that replica's own
-    /// principal — every other member of the group is making it — and the driver
-    /// holds the obligation rather than dropping it. It cannot make the call
-    /// while it is still that replica, because fencing itself would refuse its
-    /// own inbound frames, so the statement is deferred until the driver is
-    /// adopted under a fresh identity and then made like any other.
-    ///
-    /// # Errors
-    ///
-    /// Returns the transport implementation's error when the peer cannot be
-    /// fenced. A refusal leaves the driver's own inbound check as the only
-    /// admission control for that replica until a retry is accepted, so an
-    /// implementation that cannot fence should report it rather than swallow
-    /// it.
-    fn fence_peer(&self, group_id: &G, peer: Self::PeerPrincipal) -> Result<(), Self::Error>;
 }
 
 /// Validates and converts one authenticated inbound envelope before it enters
@@ -299,11 +342,24 @@ mod tests {
     }
 
     #[test]
-    fn peer_set_round_trips_principals() {
-        let peers = PeerSet::new(vec!["node-1", "node-2"]);
+    fn peer_policy_round_trips_principals_and_floor() {
+        let policy = PeerPolicy::new(vec!["node-1", "node-2"], Some(NodeId(6)));
 
-        assert_eq!(peers.peers(), ["node-1", "node-2"]);
-        assert_eq!(peers.into_peers(), vec!["node-1", "node-2"]);
+        assert_eq!(policy.peers(), ["node-1", "node-2"]);
+        assert_eq!(policy.retirement_floor(), Some(NodeId(6)));
+        assert_eq!(policy.into_peers(), vec!["node-1", "node-2"]);
+    }
+
+    /// A group that has committed nothing retires nothing.
+    ///
+    /// `None` rather than zero, because `NodeId(0)` is a legal identity: a floor
+    /// of zero retires it, and "no committed configuration observed" must not.
+    #[test]
+    fn a_policy_with_no_floor_retires_nothing() {
+        let policy = PeerPolicy::<&str>::new(Vec::new(), None);
+
+        assert_eq!(policy.retirement_floor(), None);
+        assert!(policy.peers().is_empty());
     }
 
     #[test]

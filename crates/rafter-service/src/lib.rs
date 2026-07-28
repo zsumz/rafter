@@ -54,6 +54,6 @@ pub use membership::{MembershipController, PlannedMembershipChange};
 pub use rafter_app::read::ReadConsistency;
 pub use transport::{
     validate_inbound_peer_envelope, AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError,
-    AuthenticatedPeerValidator, PeerEnvelope, PeerSet, RaftTransport, SnapshotChunkEnvelope,
+    AuthenticatedPeerValidator, PeerEnvelope, PeerPolicy, RaftTransport, SnapshotChunkEnvelope,
 };
 pub use watch::{MetricsPublisher, MetricsWatch};

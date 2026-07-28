@@ -271,16 +271,15 @@ fn a_shut_down_driver_reports_shutting_down() {
 ///
 /// The last cell of the lifecycle, and the one where forgetting costs the most.
 /// Shutdown is terminal for *service* and says nothing about the record: an
-/// identity a committed removal spent is still spent, and a fence the link layer
-/// never took is still owed by whatever replica opens this durable state next.
-/// A supervisor's final act is to persist what it holds, and that read happens
-/// after the shutdown it is the shutdown for — so the accessor has to keep
-/// answering past the point every client surface has stopped.
+/// identity a committed removal spent is still spent, and whatever replica opens
+/// this durable state next has to keep refusing it. A supervisor's final act is
+/// to persist what it holds, and that read happens after the shutdown it is the
+/// shutdown for — so the accessor has to keep answering past the point every
+/// client surface has stopped.
 ///
-/// Shutdown also discharges nothing. There is no flush here and there must not
-/// be: the obligation belongs to the `(group, NodeId)` pair rather than to this
-/// process, and a driver that dropped it on the way out would be the forgotten
-/// fence with a tidy exit in front of it.
+/// Shutdown also retracts nothing and publishes nothing. There is no flush here
+/// and there must not be: the retirement belongs to the `(group, NodeId)` pair
+/// rather than to this process, and the record is what carries it.
 #[test]
 fn a_shut_down_driver_still_reports_what_its_embedder_must_persist() {
     let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
@@ -288,15 +287,19 @@ fn a_shut_down_driver_still_reports_what_its_embedder_must_persist() {
     let (driver, transport) = scripted_driver(runtime, Nameable::only(&[NodeId(2)]));
     let client = driver.handle();
 
-    // A committed removal the link layer cannot act on, so the obligation is
-    // still outstanding when the driver is asked to stop.
+    // A committed removal whose policy the link layer never accepted, so the
+    // statement is still outstanding when the driver is asked to stop.
+    transport.refuse_next_peer_updates(64);
     change_on_step(&handle_to_membership, &[1, 2], &[1, 2]);
     driver.tick().expect("the step that commits the removal");
     let before = driver.control_plane_checkpoint();
-    assert_eq!(
-        before.pending_fences,
-        [NodeId(3)].into_iter().collect(),
-        "the fixture only means anything with a fence outstanding"
+    assert!(
+        !live_of(&before).contains(&NodeId(3)),
+        "the fixture only means anything with a removal recorded"
+    );
+    assert!(
+        driver.peer_policy_is_stale(),
+        "and with the link layer still behind it"
     );
 
     block_on(client.shutdown()).expect("the driver shuts down");
@@ -306,14 +309,14 @@ fn a_shut_down_driver_still_reports_what_its_embedder_must_persist() {
         before,
         "shutdown is terminal for service and changes nothing about the record"
     );
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "and discharges no obligation on the way out"
+    assert!(
+        driver.peer_policy_is_stale(),
+        "and states nothing new on the way out"
     );
     assert!(
-        !transport.is_fenced(NodeId(3)),
-        "the link layer still never took it, which is why it is still owed"
+        !transport.retires(NodeId(3)),
+        "the link layer still never took it, which is why the record is what \
+         carries the retirement across the restart"
     );
 }
 
@@ -353,11 +356,10 @@ fn only_serving_projects_to_no_reason() {
             DriverUnavailableReason::NotMember,
         ),
         (
-            DriverServiceState::FenceBacklog {
-                pending_fences: 3,
-                service_threshold: 2,
+            DriverServiceState::ContradictoryCurrentState {
+                through: LogIndex(10),
             },
-            DriverUnavailableReason::FenceBacklog,
+            DriverUnavailableReason::ContradictoryCurrentState,
         ),
         (
             DriverServiceState::Released,
@@ -400,21 +402,20 @@ fn a_rebuilt_driver_retries_the_fence_and_keeps_the_identity_spent() {
     let handle = runtime.handle();
     let (driver, transport) =
         scripted_driver_authorizing(runtime, Nameable::all(), &[NodeId(2), NodeId(5)]);
-    transport.refuse_next_fences(NodeId(5), 64);
+    transport.refuse_next_peer_updates(64);
 
     change_on_step(&handle, &[1, 2], &[1, 2]);
     driver.tick().expect("the tick advances the protocol");
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "the committed removal licensed a fence the link would not take"
+    assert!(
+        driver.peer_policy_is_stale(),
+        "the committed removal licensed a policy the link would not take"
     );
     assert!(driver.control_plane_checkpoint_epoch() > 0, "and it moved");
 
     // The embedder persists here, and the process dies.
     let checkpoint = driver.control_plane_checkpoint();
     assert_eq!(checkpoint.committed_id_high_water, Some(NodeId(5)));
-    assert_eq!(checkpoint.pending_fences, [NodeId(5)].into_iter().collect());
+    assert!(!live_of(&checkpoint).contains(&NodeId(5)));
     drop(driver);
 
     // A new process: a new transport that has accepted nothing, and a runtime
@@ -428,15 +429,14 @@ fn a_rebuilt_driver_retries_the_fence_and_keeps_the_identity_spent() {
         checkpoint,
     );
 
-    assert_eq!(
-        rebuilt.pending_peer_fences(),
-        0,
-        "the restored obligation was retried at construction and this link took it"
+    assert!(
+        !rebuilt.peer_policy_is_stale(),
+        "the restored record was re-stated at construction and this link took it"
     );
     assert!(
-        rebuilt_transport.is_fenced(NodeId(5)),
-        "which is the fence a process restart used to forget: {:?}",
-        rebuilt_transport.fence_attempts()
+        rebuilt_transport.retires(NodeId(5)),
+        "which is the retirement a process restart used to forget: {:?}",
+        rebuilt_transport.policies().last()
     );
     assert_eq!(
         rebuilt_transport
@@ -546,13 +546,14 @@ fn a_rebuilt_driver_without_a_checkpoint_forgets_the_removal() {
         scripted_driver_authorizing(reopened, Nameable::all(), &[NodeId(2), NodeId(5)]);
 
     assert_eq!(
-        rebuilt.pending_peer_fences(),
-        0,
-        "no obligation survived, because none was handed over"
+        rebuilt.control_plane_checkpoint().committed_id_high_water,
+        Some(NodeId(2)),
+        "the mark falls back to what the surviving configuration names, because \
+         nothing was handed over"
     );
     assert!(
-        !rebuilt_transport.is_fenced(NodeId(5)),
-        "so nothing is fenced"
+        !rebuilt_transport.retires(NodeId(5)),
+        "so nothing retires node 5"
     );
 
     let _ = rebuilt.release_group().expect("the driver holds a group");
@@ -579,14 +580,14 @@ fn the_checkpoint_epoch_moves_only_when_the_checkpoint_does() {
     let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
     let handle = runtime.handle();
     let (driver, transport) = scripted_driver(runtime, Nameable::all());
-    transport.refuse_next_fences(NodeId(3), 1);
+    transport.refuse_next_peer_updates(1);
 
     let after_construction = driver.control_plane_checkpoint_epoch();
     driver.tick().expect("the tick advances the protocol");
     assert_eq!(
         driver.control_plane_checkpoint_epoch(),
         after_construction,
-        "a tick that moved no configuration and settled no fence changes nothing"
+        "a tick that moved no configuration changes nothing"
     );
 
     change_on_step(&handle, &[1, 2], &[1, 2]);
@@ -594,14 +595,23 @@ fn the_checkpoint_epoch_moves_only_when_the_checkpoint_does() {
     let after_removal = driver.control_plane_checkpoint_epoch();
     assert!(
         after_removal > after_construction,
-        "a committed removal moves both the mark and the obligations"
+        "a committed removal moves the mark and the current committed state"
     );
 
-    transport.allow_fences_for(NodeId(3));
+    // **And a publication the link finally accepts moves nothing.** That is the
+    // change: the epoch used to advance when a fence was discharged, because
+    // what the link layer had taken was part of the record. It no longer is —
+    // the record says what this driver has *spent*, and a policy accepted or
+    // refused says nothing about that.
     driver.tick().expect("the tick advances the protocol");
     assert!(
-        driver.control_plane_checkpoint_epoch() > after_removal,
-        "and a fence the link finally accepted retires an obligation"
+        transport.retires(NodeId(3)),
+        "the retry landed: {:?}",
+        transport.policies().last()
     );
-    assert_eq!(driver.control_plane_checkpoint().pending_fences.len(), 0);
+    assert_eq!(
+        driver.control_plane_checkpoint_epoch(),
+        after_removal,
+        "and the embedder is not asked to persist anything for it"
+    );
 }

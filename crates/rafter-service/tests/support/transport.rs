@@ -16,7 +16,7 @@ use std::{
 use rafter::{InMemorySnapshotChunkSource, RaftSnapshot};
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
-    AuthenticatedPeerEnvelope, AuthenticatedPeerValidator, PeerEnvelope, PeerSet, RaftTransport,
+    AuthenticatedPeerEnvelope, AuthenticatedPeerValidator, PeerEnvelope, PeerPolicy, RaftTransport,
     SnapshotChunkEnvelope, TransportDriverOptions, TransportRaftDriver,
 };
 
@@ -56,34 +56,31 @@ pub(crate) struct QueueState {
     sent: VecDeque<PeerEnvelope<u64>>,
     observed: Vec<PeerEnvelope<u64>>,
     cut: bool,
-    /// Every replica this link has been told to fence, and it only grows.
+    /// The principals this link currently authorizes, as the replicas they are.
     ///
-    /// Not a simplification: `RaftTransport::fence_peer` is permanent for the
-    /// principal it names and the trait has no inverse, by design. A fence is
-    /// licensed by a committed removal, a committed removal retires the
-    /// `(group, NodeId)` pair for good, and a replica that returns to a group
-    /// returns under a fresh ID whose principal was never fenced. So a
-    /// production link may hold its fenced set append-only for the life of the
-    /// group, and this one does the same thing rather than a convenient version
-    /// of it. Nothing offers an unfence here because nothing may.
-    fenced: BTreeSet<NodeId>,
+    /// Half of the policy the driver published. A real link keeps principals;
+    /// this one keeps the replicas behind them, because every assertion in these
+    /// suites is about which replica may speak.
+    authorized: BTreeSet<NodeId>,
+    /// The other half: every identity at or below this that `authorized` does
+    /// not name is retired.
+    ///
+    /// **Kept as the maximum ever accepted**, which is what the trait allows and
+    /// what a production link should do. A driver's floor is monotone, so this
+    /// changes nothing for a link that keeps up — and for one that missed a
+    /// publication it is the difference between a stale policy retiring fewer
+    /// identities and a stale policy un-retiring one.
+    retirement_floor: Option<NodeId>,
     /// Every peer set this transport was told to authorize, in order.
     peer_sets: Vec<Vec<Principal>>,
+    /// Every policy this transport accepted, in order, as `(peers, floor)`.
+    policies: Vec<(Vec<NodeId>, Option<NodeId>)>,
     /// How many more `update_peers` calls this link refuses before accepting.
     ///
     /// A countdown rather than a flag, because the property under test is
     /// *retry to success*: a flag can only distinguish "always fails" from
     /// "always works", and both of those pass a driver that gives up.
     refuse_peer_updates: usize,
-    /// How many more `fence_peer` calls this link refuses, per replica.
-    ///
-    /// Per replica rather than one counter, because fencing is per replica: a
-    /// shared countdown could not express "the link refuses node 3's fence and
-    /// takes node 4's", which is the distinction the fence half of the control
-    /// plane is built around.
-    refuse_fences: BTreeMap<NodeId, usize>,
-    /// Every `fence_peer` call this link was handed, refused or not.
-    fence_attempts: Vec<Principal>,
     /// The snapshot payloads this link can serve, which is what makes it able
     /// to resolve a chunk directive into a frame.
     snapshots: InMemorySnapshotChunkSource,
@@ -129,11 +126,33 @@ impl QueueTransport {
             .expect("the payload matches the snapshot it belongs to");
     }
 
-    pub(crate) fn is_fenced(&self, node_id: NodeId) -> bool {
-        self.lock().fenced.contains(&node_id)
+    /// Whether the policy this link currently holds retires `node_id`.
+    ///
+    /// **Derived rather than recorded**, which is the whole of what changed:
+    /// there is no fenced set here to append to, because the driver never makes
+    /// a per-principal statement. An identity is retired when it is at or below
+    /// the floor this link accepted and the set that came with it does not
+    /// authorize it.
+    pub(crate) fn retires(&self, node_id: NodeId) -> bool {
+        let state = self.lock();
+        state.retirement_floor.is_some_and(|floor| node_id <= floor)
+            && !state.authorized.contains(&node_id)
     }
 
-    /// Refuses the next `count` peer-set publications, then accepts.
+    /// The retirement floor this link currently holds.
+    pub(crate) fn retirement_floor(&self) -> Option<NodeId> {
+        self.lock().retirement_floor
+    }
+
+    /// Every policy this link accepted, in order.
+    ///
+    /// The publication *history*, which is what separates "the driver kept
+    /// re-stating the same thing" from "the driver converged".
+    pub(crate) fn policies(&self) -> Vec<(Vec<NodeId>, Option<NodeId>)> {
+        self.lock().policies.clone()
+    }
+
+    /// Refuses the next `count` policy publications, then accepts.
     ///
     /// The shape every retry test needs: a link that fails and then stops
     /// failing, so "the driver retried" and "the driver was lucky" are
@@ -142,41 +161,9 @@ impl QueueTransport {
         self.lock().refuse_peer_updates = count;
     }
 
-    /// Refuses the next `count` fences of `node_id`, then accepts.
-    pub(crate) fn refuse_next_fences(&self, node_id: NodeId, count: usize) {
-        self.lock().refuse_fences.insert(node_id, count);
-    }
-
-    /// Stops refusing `node_id`'s fence, whatever countdown was left.
-    ///
-    /// The recovery half of [`QueueTransport::refuse_next_fences`], for a test
-    /// that needs the link to keep refusing until an unrelated event and then
-    /// take exactly one fence.
-    pub(crate) fn allow_fences_for(&self, node_id: NodeId) {
-        self.lock().refuse_fences.remove(&node_id);
-    }
-
-    /// Every replica this link was *asked* to fence, in order, including the
-    /// asks it refused.
-    ///
-    /// The refused asks are the point: `is_fenced` says whether the fence took,
-    /// and this says whether the driver kept asking.
-    pub(crate) fn fence_attempts(&self) -> Vec<NodeId> {
-        self.lock()
-            .fence_attempts
-            .iter()
-            .filter_map(principal_node)
-            .collect()
-    }
-
-    /// The same asks, as the principals they were actually made with.
-    ///
-    /// A fence names a principal and never a replica, so this is what the link
-    /// layer heard. It is the only way to see *which* identity a retried fence
-    /// resolved through the directory, which is the property a driver holding
-    /// the obligation as a `NodeId` depends on.
-    pub(crate) fn fence_attempt_principals(&self) -> Vec<Principal> {
-        self.lock().fence_attempts.clone()
+    /// Stops refusing publications, whatever countdown was left.
+    pub(crate) fn allow_peer_updates(&self) {
+        self.lock().refuse_peer_updates = 0;
     }
 }
 
@@ -213,34 +200,33 @@ impl RaftTransport<u64> for QueueTransport {
         })
     }
 
+    /// Installs the policy whole, and never lowers the floor.
+    ///
+    /// The floor is kept as a maximum because the trait says an implementation
+    /// may, and because a link that lowered one would be re-authorizing an
+    /// identity the cluster spent every time it fell behind a publication.
     fn update_peers(
         &self,
         _group_id: &u64,
-        peers: PeerSet<Self::PeerPrincipal>,
+        policy: PeerPolicy<Self::PeerPrincipal>,
     ) -> Result<(), Self::Error> {
         let mut state = self.lock();
         if let Some(remaining) = state.refuse_peer_updates.checked_sub(1) {
             state.refuse_peer_updates = remaining;
-            return Err(TransportError("this link is refusing peer-set updates"));
+            return Err(TransportError("this link is refusing policy updates"));
         }
-        state.peer_sets.push(peers.into_peers());
-        Ok(())
-    }
-
-    fn fence_peer(&self, _group_id: &u64, peer: Self::PeerPrincipal) -> Result<(), Self::Error> {
-        let node_id = principal_node(&peer).ok_or(TransportError("unknown principal"))?;
-        let mut state = self.lock();
-        state.fence_attempts.push(peer);
-        if let Some(remaining) = state
-            .refuse_fences
-            .get(&node_id)
-            .copied()
-            .and_then(|count| count.checked_sub(1))
-        {
-            state.refuse_fences.insert(node_id, remaining);
-            return Err(TransportError("this link is refusing fences"));
-        }
-        state.fenced.insert(node_id);
+        let floor = policy.retirement_floor();
+        let peers = policy.into_peers();
+        let replicas = peers.iter().filter_map(principal_node).collect::<Vec<_>>();
+        state.authorized = replicas.iter().copied().collect();
+        state.retirement_floor = match (state.retirement_floor, floor) {
+            (Some(held), Some(published)) => Some(held.max(published)),
+            (held, None) => held,
+            (None, published) => published,
+        };
+        let accepted = state.retirement_floor;
+        state.peer_sets.push(peers);
+        state.policies.push((replicas, accepted));
         Ok(())
     }
 }
@@ -301,8 +287,13 @@ fn lock_nameable(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Maps authenticated principals to replicas, and consults the transport for
-/// fencing so a test can fence through the documented API.
+/// Maps authenticated principals to replicas, and reads retirement off the
+/// policy the link layer holds.
+///
+/// `is_fenced_peer` is *derived* here rather than recorded, which is what the
+/// trait now asks of a directory: the deployment is handed one statement — the
+/// authorized principals beside the retirement floor — and both halves of the
+/// inbound check come out of it.
 #[derive(Clone)]
 pub(crate) struct Validator {
     pub(crate) transport: QueueTransport,
@@ -331,7 +322,7 @@ impl AuthenticatedPeerValidator<u64, Principal> for Validator {
     }
 
     fn is_fenced_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {
-        self.transport.is_fenced(node_id)
+        self.transport.retires(node_id)
     }
 }
 

@@ -4,9 +4,19 @@
 //!
 //! Split from [`super::state`] along the line that file's own header draws:
 //! that one answers "what does a step do", and this one answers "who is allowed
-//! to send one". Everything between a committed configuration and the two
-//! statements the transport is owed for it — a peer set and a fence — is here,
-//! and the step loop reaches it through one call.
+//! to send one". Everything between a committed configuration and the one
+//! statement the transport is owed for it — a [`PeerPolicy`], which is the
+//! authorized principals beside the retirement floor — is here, and the step loop
+//! reaches it through one call.
+//!
+//! It used to be two statements: a peer set, plus a permanent per-principal
+//! fence per committed removal, owed until the link layer accepted it. That
+//! second one was an *operation* rather than a derivation, so the driver had to
+//! remember which removals it had already acted on — and it answered "has this
+//! fence been made" with the same bit that answers "may this identity be admitted
+//! again". Publishing a floor makes retirement a function of state the driver
+//! still holds, which is what deletes the ledger and everything that could go
+//! wrong inside it.
 //!
 //! The state these derivations read still lives on
 //! [`super::state::TransportDriverState`], because the step loop's fields and
@@ -32,21 +42,22 @@
 
 use std::collections::BTreeSet;
 
-use crate::transport::{AuthenticatedPeerValidator, PeerSet, RaftTransport};
+use crate::transport::{AuthenticatedPeerValidator, PeerPolicy, RaftTransport};
 
 use super::super::*;
-use super::checkpoint::CurrentCommittedState;
-use super::state::TransportDriverState;
+use super::checkpoint::{merge_current_state, IncomingObservation};
+use super::state::{DesiredPeerPolicy, TransportDriverState};
 
 /// The membership fact one publication is derived from.
 ///
 /// A fact rather than a set plus a decision, and that is the whole point of the
 /// type. Publishing answers two questions — which principals the link layer may
-/// authorize, and which it must fence — and both are licensed by the same one
-/// fact: what the cluster has *committed*. A caller that supplied a set and a
-/// fencing flag as separate arguments could answer the two inconsistently, and
+/// authorize, and how far retirement reaches — and both are licensed by the same
+/// one fact: what the cluster has *committed*. A caller that supplied a set and a
+/// retirement flag as separate arguments could answer the two inconsistently, and
 /// one did: adoption published a narrowed peer set for a committed removal and
-/// withheld the fence for it, because the two travelled apart. Here they cannot.
+/// withheld the retirement for it, because the two travelled apart. Here they
+/// cannot.
 ///
 /// So every publisher names what it knows, and
 /// [`TransportDriverState::publish_membership`] derives both answers from it.
@@ -70,7 +81,7 @@ pub(super) enum MembershipFact {
     /// A committed configuration, and the effective one beside it.
     ///
     /// Both halves are load-bearing and neither stands alone. `committed` is the
-    /// only fact that licenses narrowing the set and fencing what left it.
+    /// only fact that licenses narrowing the set and retiring what left it.
     /// `effective` is what keeps an in-flight change's joiner able to speak
     /// across the same publication — a replica that rebuilt its runtime from
     /// durable storage can hold an appended-but-uncommitted addition in its log,
@@ -196,16 +207,34 @@ where
     /// transition and about a new leader taking one back. It did not always, and
     /// the widening arm was for a while live code no public entry point of this
     /// driver could reach.
+    ///
+    /// **A contradiction discovered here is recorded rather than returned**, and
+    /// there is nowhere else for it to go: this runs from `route_report` and
+    /// `reconcile_membership`, which are reached from every step outcome
+    /// including a failing one. What it must never do is publish anyway —
+    /// [`TransportDriverState::publish_membership`] leaves the driver's own state
+    /// untouched and issues nothing, and
+    /// [`DriverServiceState::ContradictoryCurrentState`] is how a supervisor
+    /// hears about it.
+    pub(super) fn route_membership_event(&mut self, event: &MembershipEvent<G>) {
+        // The refusal is already recorded on the state by the time this returns;
+        // there is no caller here that could act on a second copy of it.
+        let _ = self.route_membership_fact(event);
+    }
+
     #[allow(
         clippy::match_same_arms,
         reason = "`Rejected` and the non-exhaustive wildcard do nothing for \
                   different reasons, and naming the known variant is the audit"
     )]
-    pub(super) fn route_membership_event(&mut self, event: &MembershipEvent<G>) {
+    fn route_membership_fact(
+        &mut self,
+        event: &MembershipEvent<G>,
+    ) -> Result<(), ControlPlaneCheckpointError> {
         match event {
             MembershipEvent::EffectiveChanged { membership, .. } => {
                 let effective = membership.replica_ids().into_iter().collect();
-                self.publish_membership(MembershipFact::Effective(effective));
+                self.publish_membership(MembershipFact::Effective(effective))
             }
             // The two committed facts, routed apart because they carry different
             // evidence. `Applied` is a transition — the configuration entry the
@@ -223,16 +252,14 @@ where
                 previous,
                 ..
             } => {
-                self.publish_committed(CommittedObservation::crossing(
-                    *index, previous, membership,
-                ));
+                self.publish_committed(CommittedObservation::crossing(*index, previous, membership))
             }
             MembershipEvent::CommittedEndpoint {
                 membership, index, ..
             } => self.publish_committed(CommittedObservation::endpoint(*index, membership)),
             // A rejected change never entered the log, so there is no membership
             // fact in it to act on.
-            MembershipEvent::Rejected { .. } => {}
+            MembershipEvent::Rejected { .. } => Ok(()),
             // `MembershipEvent` is `#[non_exhaustive]`, so this arm is required
             // and is the one place a new membership fact can be missed. It is
             // deliberately not a silent skip in spirit: a variant this build
@@ -242,7 +269,7 @@ where
             // nothing, and the real defence is that `rafter-app` and this driver
             // ship together — the app-layer match has no wildcard, so a fourth
             // variant stops that build first.
-            _ => {}
+            _ => Ok(()),
         }
     }
 
@@ -251,51 +278,51 @@ where
     /// Shared by the two committed arms above because everything except the
     /// evidence is identical, and the evidence now travels inside the
     /// observation rather than as a provenance tag the reducer has to interpret.
-    fn publish_committed(&mut self, committed: CommittedObservation) {
+    fn publish_committed(
+        &mut self,
+        committed: CommittedObservation,
+    ) -> Result<(), ControlPlaneCheckpointError> {
         // The runtime is the authority on what is in effect, and it agrees with
         // the effective event that preceded this one in the same report. A
         // driver holding no group keeps what it had rather than assigning an
-        // empty set: an absent effective membership must not turn a fence into a
-        // silence, and must not narrow anything either.
+        // empty set: an absent effective membership must not turn a retirement
+        // into a silence, and must not narrow anything either.
         let effective = self
             .runtime_effective_members()
             .unwrap_or_else(|| self.effective_members.clone());
         self.publish_membership(MembershipFact::Committed {
             committed,
             effective,
-        });
+        })
     }
 
     /// Records what one membership fact requires of the link layer, then tries
     /// to install it.
     ///
-    /// Two statements, derived from one fact: which principals the transport may
-    /// authorize, and which it must fence. Neither may be skipped because the
-    /// other could not be made — a membership event that both narrows the set
-    /// and licenses a fence installs two admission controls, and a driver that
-    /// dropped one because the other failed would leave a committed-removed
-    /// replica able to speak.
+    /// One statement, derived from one fact: the principals the transport may
+    /// authorize, beside the floor at or below which an unauthorized identity is
+    /// retired. The two halves cannot be published apart and cannot be published
+    /// inconsistently, because they are one value — which is what a membership
+    /// event that narrows the set and retires what left it needs.
     ///
     /// No caller chooses between them. Everything the link layer is told is
-    /// derived from the union of the two membership facts and the spent test
-    /// over it, so a caller that supplies [`MembershipFact::Effective`] cannot
-    /// narrow past what committed and cannot fence anything, and one that
-    /// supplies [`MembershipFact::Committed`] fences exactly the identities that
+    /// derived from the union of the two membership facts, the spent test over
+    /// it, and the mark, so a caller that supplies [`MembershipFact::Effective`]
+    /// cannot narrow past what committed and cannot retire anything, and one that
+    /// supplies [`MembershipFact::Committed`] retires exactly the identities that
     /// left the live committed configuration. Both are consequences of the
     /// derivation below rather than obligations on a caller.
     ///
-    /// **Recording is separate from installing, and that separation is the
-    /// contract.** This method derives obligations; it does not decide that they
-    /// were met. The membership facts advance here unconditionally, because they
-    /// are the record of what the *cluster* says and the next committed removal
-    /// has to be computed against the membership the cluster had. The record of
-    /// what the *link layer* took lives in `published_peers` and
-    /// `pending_fences`, and only
-    /// [`TransportDriverState::flush_peer_control_plane`] moves those — on an
-    /// `Ok` from the transport and on nothing else. A driver with one piece of
-    /// state for both forgets a refused fence the instant it advances, because
-    /// there is no later event to re-derive it from: the removal is already
-    /// behind the committed membership.
+    /// **Recording is separate from installing, and that separation is what is
+    /// left of the contract.** This method derives what the link layer should
+    /// hold; it does not decide that the link layer took it. The membership facts
+    /// advance here unconditionally, because they are the record of what the
+    /// *cluster* says. The record of what the *link layer* took lives in
+    /// `published_policy`, and only
+    /// [`TransportDriverState::flush_peer_policy`] moves it — on an `Ok` from
+    /// the transport and on nothing else. What no longer needs recording is the
+    /// *work outstanding*: a refused publication is re-derived from state this
+    /// driver still holds, so there is nothing to forget.
     ///
     /// **Retirement reads the committed stream and only the committed stream**,
     /// with no exclusion of any kind — the local node included, which is the
@@ -307,19 +334,30 @@ where
     /// Reading removals from committed facts and not from the union is what
     /// closes the opposite window: an addition that appended and was then
     /// truncated back off the log was never in a committed configuration, so its
-    /// disappearance retires nothing and licenses no fence. Its ID is still
-    /// allocatable, because a reverted change may legitimately be proposed
-    /// again.
+    /// disappearance retires nothing. Its ID is still allocatable, because a
+    /// reverted change may legitimately be proposed again.
     ///
     /// **Nothing un-spends an identity.** A committed configuration naming an
     /// already-spent ID is filtered out of the current state rather than obeyed,
-    /// so the ID stays spent and stays refused. A fence is permanent for the
-    /// principal it names — [`RaftTransport::fence_peer`] has no inverse,
-    /// deliberately — so obeying such a fact would promise an authorization the
-    /// link layer cannot give back. The raw fact is kept beside the live one so
-    /// the violation is countable rather than silently absorbed; see
+    /// so the ID stays spent and stays refused: a `(group_id, NodeId)` pair a
+    /// committed removal consumed is not a pair the cluster can hand back. The
+    /// raw fact is kept beside the live one so the violation is countable rather
+    /// than silently absorbed; see
     /// [`TransportDriverState::readmitted_retired_peers`].
-    fn publish_membership(&mut self, fact: MembershipFact) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlPlaneCheckpointError::ContradictoryCurrentState`] when
+    /// the fact and the state this driver holds stand at one position and
+    /// disagree about the membership there. **Nothing moves and nothing is
+    /// published on that path**, and the refusal is recorded on the driver so a
+    /// supervisor polling [`TransportDriverState::service_state`] sees it: a
+    /// retirement floor is permanent, and a permanent statement must never be
+    /// issued while the facts licensing it contradict each other.
+    fn publish_membership(
+        &mut self,
+        fact: MembershipFact,
+    ) -> Result<(), ControlPlaneCheckpointError> {
         match fact {
             // Assigned, not merged. The effective configuration moves in both
             // directions — a new leader can truncate an uncommitted one back off
@@ -330,11 +368,22 @@ where
                 committed,
                 effective,
             } => {
+                // The committed half first, because it is the one that can
+                // refuse. An effective membership assigned ahead of a refusal
+                // would be half a fact applied.
+                if let Err(reason) = self.observe_committed_members(committed) {
+                    let ControlPlaneCheckpointError::ContradictoryCurrentState { through } = reason
+                    else {
+                        return Err(reason);
+                    };
+                    self.contradicted_at = Some(through);
+                    return Err(reason);
+                }
                 self.effective_members = effective;
-                self.observe_committed_members(committed);
             }
         }
-        self.flush_peer_control_plane();
+        self.flush_peer_policy();
+        Ok(())
     }
 
     /// Takes one committed membership fact: the removals it proves, the
@@ -391,33 +440,43 @@ where
     /// refused at step 4 rather than parked in a set that has to be bounded, and
     /// the violation stays countable through the raw floor beside the register —
     /// see [`TransportDriverState::readmitted_retired_peers`].
-    fn observe_committed_members(&mut self, fact: CommittedObservation) {
+    ///
+    /// # What the spent test is no longer asked
+    ///
+    /// It used to gate a *side effect*: a proven removal owed the link layer a
+    /// fence unless the identity already tested as spent. That read one bit —
+    /// "may this ID ever be admitted again" — as the answer to a different
+    /// question — "has this identity's link layer been told" — and the two come
+    /// apart exactly where it matters. A record recovered from a snapshot can
+    /// make an identity test as spent without this process's link layer having
+    /// heard anything about it, and an exact removal transition arriving beneath
+    /// that record was then discarded as already-handled.
+    ///
+    /// Retirement is a floor now, published beside the peer set, so this method
+    /// has no side effect to gate. `spent` answers only what it can: whether an
+    /// identity may be admitted, adopted, or published again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlPlaneCheckpointError::ContradictoryCurrentState`] when
+    /// this fact and the register stand at one position and still disagree about
+    /// the membership there after normalization. **Nothing is mutated on that
+    /// path**: every value is computed into a local and assigned only once the
+    /// merge has answered.
+    fn observe_committed_members(
+        &mut self,
+        fact: CommittedObservation,
+    ) -> Result<(), ControlPlaneCheckpointError> {
         // Read before anything moves, so the epoch below is advanced for exactly
         // the observations an embedder must persist.
         let before = self.control_plane_checkpoint();
 
-        // Everything this fact proves was removed: its own transition, plus the
-        // identities the older of the two observations names and the newer does
-        // not. The second half is what one record and one runtime jointly prove
-        // and neither states — the same inference the checkpoint join makes.
-        let mut removed = fact.removed;
-        let held = self.current_committed.as_ref();
-        let is_later = held.is_none_or(|current| fact.through >= current.through);
-        if let Some(current) = held {
-            let (older, newer) = if is_later {
-                (&current.membership, &fact.membership)
-            } else {
-                (&fact.membership, &current.membership)
-            };
-            removed.extend(older.difference(newer).copied());
-        }
-
-        // **Every derivation below reads the spent test as it stood before this
-        // fact**, and that order is load-bearing rather than tidy. The mark
-        // moves first only in wall-clock terms; read against the raised mark,
-        // an identity this driver has simply not observed yet — every identity
-        // at all, on the very first fact — would test as spent, and the
-        // membership the fact names would filter down to nothing.
+        // **The merge reads the spent test as it stood before this fact**, and
+        // that order is load-bearing rather than tidy. Read against a mark this
+        // fact had already raised, an identity this driver has simply not
+        // observed yet — every identity at all, on the very first fact — would
+        // test as spent, and the membership the fact names would filter down to
+        // nothing.
         let was_spent = {
             let mark = self.committed_id_high_water;
             let live = self.live_committed_members().clone();
@@ -425,12 +484,16 @@ where
                 mark.is_some_and(|mark| node_id <= mark) && !live.contains(&node_id)
             }
         };
+        let current = merge_current_state(
+            self.current_committed.as_ref(),
+            &IncomingObservation {
+                through: fact.through,
+                membership: &fact.membership,
+                proven_removed: &fact.removed,
+            },
+            &was_spent,
+        )?;
 
-        // Only what this driver did not already know. A removal it had absorbed
-        // is either still in the obligations or was discharged by the link
-        // layer, and re-deriving it would owe a second fence for one fact.
-        self.pending_fences
-            .extend(removed.iter().copied().filter(|id| !was_spent(*id)));
         // Over every identity the fact named rather than the survivors: an ID
         // the cluster committed is allocated whether or not it survived the
         // transition, and a mark that ignored a removed one would leave it
@@ -441,23 +504,7 @@ where
                     .map_or(highest, |mark| mark.max(highest)),
             );
         }
-
-        if let Some(current) = self.current_committed.as_mut() {
-            // Step 2 above: absorbed at any position, because a removal is not
-            // an observation of the present.
-            current.membership.retain(|id| !removed.contains(id));
-        }
-        if is_later {
-            // Step 4 above: the filter is what keeps a spent identity out
-            // forever, so a violating readmission cannot un-spend one.
-            let membership = fact
-                .membership
-                .iter()
-                .copied()
-                .filter(|id| !was_spent(*id))
-                .collect();
-            self.current_committed = Some(CurrentCommittedState::new(fact.through, membership));
-        }
+        self.current_committed = Some(current);
         // **The raw floor is not part of the register, and assigning it always
         // is round 8's rule kept rather than re-litigated.** It answers "what
         // does this replica's own stream say the cluster has committed", which
@@ -473,6 +520,7 @@ where
         if before != self.control_plane_checkpoint() {
             self.advance_checkpoint_epoch();
         }
+        Ok(())
     }
 
     /// Whether a committed removal has already consumed this `(group, NodeId)`.
@@ -518,21 +566,39 @@ where
             .collect()
     }
 
-    /// Installs everything the link layer still owes the group, and leaves owed
-    /// whatever it refuses.
+    /// Installs the authorization policy the group requires, or installs
+    /// nothing.
     ///
-    /// The retry the transport boundary requires. Both
-    /// [`RaftTransport::update_peers`] and [`RaftTransport::fence_peer`] are
-    /// documented as fallible, which makes retry the caller's obligation — and
-    /// this driver is the caller. Neither statement repairs itself the way a
-    /// dropped frame does: Raft re-sends a lost heartbeat, and nothing
-    /// re-derives a peer set or a fence, because the membership fact that
-    /// licensed them is already behind `known_members`.
+    /// The retry the transport boundary requires. [`RaftTransport::update_peers`]
+    /// is documented as fallible, which makes retry the caller's obligation — and
+    /// this driver is the caller. It does not repair itself the way a dropped
+    /// frame does: Raft re-sends a lost heartbeat, and nothing re-derives a
+    /// policy, because the membership fact that licensed it is already behind
+    /// `committed_members`.
     ///
-    /// Idempotent and cheap when there is nothing owed: a peer set that matches
-    /// what the transport accepted makes no call, and an empty obligation set
-    /// makes no call. That is what lets it run from every entry point rather
-    /// than from a schedule.
+    /// **All or nothing, and now that is the whole of it.** A membership the
+    /// validator cannot fully name is not published: a partial peer set
+    /// authorizes fewer replicas than the cluster has, which is a quorum-splitting
+    /// configuration change made by accident, while leaving the previous policy
+    /// in place is merely stale — the floor is monotone, so an older policy
+    /// retires fewer identities and never more, and the driver's own inbound
+    /// check refuses the retired replica meanwhile.
+    ///
+    /// This used to be two flushes, and the second one had to be per replica: a
+    /// fence was one statement about one replica, so fencing three of four
+    /// removed replicas was strictly better than fencing none. A floor makes that
+    /// distinction disappear — one statement retires every identity beneath it at
+    /// once, and a directory that cannot name some *live* replica no longer
+    /// withholds anything about the *removed* ones, because there is nothing
+    /// per-removal to withhold.
+    ///
+    /// Idempotent and cheap when nothing moved: a policy that matches what the
+    /// transport accepted makes no call. That is what lets it run from every
+    /// entry point rather than from a schedule.
+    ///
+    /// **Nothing is published while this driver's own inputs contradict each
+    /// other.** A retirement floor is permanent, and a permanent statement issued
+    /// from facts that disagree is the one mistake no later publication corrects.
     ///
     /// **Where it may run.** Every named entry point of the driver — both
     /// constructors, `tick`, `deliver`, and `drive_pending_reads` — and nowhere
@@ -544,39 +610,11 @@ where
     /// so a transport that drops a client future inside it reclaims through the
     /// deferred queue exactly as [`super::state::DriverShared::reclaim`]
     /// describes.
-    pub(super) fn flush_peer_control_plane(&mut self) {
-        self.flush_peer_set();
-        self.flush_pending_fences();
-    }
-
-    /// Publishes the peer set the group requires, or publishes nothing.
-    ///
-    /// All or nothing. A membership the validator cannot fully name is not
-    /// published at all: a partial peer set authorizes fewer replicas than the
-    /// cluster has, which is a quorum-splitting configuration change made by
-    /// accident, while leaving the previous set in place is merely stale. That
-    /// last clause is true of the peer set and only of the peer set — a fence
-    /// the same fact licensed is not stale when it is withheld, it is absent,
-    /// which is why fencing is not part of this decision.
-    ///
-    /// Staleness is now bounded rather than merely tolerable, and that is what
-    /// changed. The previous set stays in place until the *next* attempt, and
-    /// the next attempt is the driver's next entry point rather than the
-    /// cluster's next configuration change. `published_peers` is what makes the
-    /// difference observable: it advances only on an accepted publication, so
-    /// "the link layer is behind the group" is a state this driver can see and
-    /// report rather than an event it counted once.
-    ///
-    /// Both a principal that cannot be named and a transport refusal are
-    /// counted, for the reason they always were, and both now leave the work
-    /// outstanding as well as counted.
-    ///
-    /// The local replica is not in its own peer set: a `PeerSet` names who may
-    /// speak *to* this node, and a node is not a peer of itself. Derived on each
-    /// attempt rather than stored, so an incarnation adopted under a different
-    /// node ID excludes the right replica without anything having to notice.
-    fn flush_peer_set(&mut self) {
-        let desired = self.desired_peers();
+    pub(super) fn flush_peer_policy(&mut self) {
+        if self.contradicted_at.is_some() {
+            return;
+        }
+        let desired = self.desired_policy();
         // `NodeId` sets on both sides, comparing a set of replicas against a
         // record of the principals the link layer accepted for them, and it is
         // sound for exactly one reason: a `PeerPrincipal` is stable for the
@@ -586,11 +624,11 @@ where
         // reporting level while the transport authorizes the wrong subject.
         // Credential rotation happens *beneath* a principal and is invisible
         // here, which is what makes the stability requirement affordable.
-        if self.published_peers.as_ref() == Some(&desired) {
+        if self.published_policy.as_ref() == Some(&desired) {
             return;
         }
         let mut principals = Vec::new();
-        for node_id in desired.iter().copied() {
+        for node_id in desired.peers.iter().copied() {
             let Some(principal) = self.validator.principal_for_node(&self.group_id, node_id) else {
                 self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
                 return;
@@ -599,77 +637,31 @@ where
         }
         if self
             .transport
-            .update_peers(&self.group_id, PeerSet::new(principals))
+            .update_peers(
+                &self.group_id,
+                PeerPolicy::new(principals, desired.retirement_floor),
+            )
             .is_err()
         {
             self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
             return;
         }
-        self.published_peers = Some(desired);
+        self.published_policy = Some(desired);
     }
 
-    /// Fences every replica a committed removal left owed, and keeps owing the
-    /// rest.
+    /// The policy the group currently requires: who may speak, and how far
+    /// retirement reaches.
     ///
-    /// Per replica rather than all or nothing, because the two statements have
-    /// different shapes. A peer set is one statement about a whole cluster, and
-    /// a partial one authorizes a quorum-splitting subset of it. A fence is one
-    /// statement about one replica, and fencing three of four removed replicas
-    /// is strictly better than fencing none of them. The set is drained one
-    /// entry at a time for the same reason: one replica's refusal is not
-    /// another's.
-    ///
-    /// A replica this deployment cannot name **stays owed** rather than being
-    /// discarded as counted. `principal_for_node` answering `None` is a
-    /// statement about the directory, not about the cluster: a deployment that
-    /// cannot name a replica today can name it once its directory catches up,
-    /// and the removal it could not act on is exactly as committed either way.
-    /// Dropping the obligation there would make an unnameable removal
-    /// permanently unfenced — the same forgetting as a refused fence, arriving
-    /// through the validator instead of the transport.
-    ///
-    /// **The local node's own fence is deferred, not dropped.** A committed
-    /// removal of this replica owes the link layer the same statement every
-    /// other replica is making about it, and the one thing this driver cannot do
-    /// is make it while it *is* that replica: fencing itself would refuse its
-    /// own inbound frames, and a replica stepping down still has to receive
-    /// enough of the log to be useful until the supervisor lets go of it. So the
-    /// entry is skipped and left in place, matched against the *current*
-    /// `node_id` rather than the one the obligation was recorded under. The
-    /// first adoption of a different identity makes it an ordinary peer
-    /// obligation, and the next flush discharges it.
-    ///
-    /// Dropping it instead — which is what this did — was the local half of
-    /// forgetting a fence: the driver became something else and never told its
-    /// link layer to stop trusting what it used to be.
-    fn flush_pending_fences(&mut self) {
-        for node_id in self.pending_fences.iter().copied().collect::<Vec<_>>() {
-            if node_id == self.node_id {
-                continue;
-            }
-            // The obligation holds a `NodeId` and the principal is resolved
-            // *now*, at each retry, rather than captured when the removal
-            // committed — and that is correct by contract rather than by luck.
-            // `AuthenticatedPeerValidator::principal_for_node` requires a
-            // directory to keep a removed replica's mapping resolvable until its
-            // fence has been accepted, and the mapping it must keep is stable
-            // for the lifetime of that ID. So the principal this resolves is the
-            // one the removal named; there is no later principal for a retired
-            // ID to be moved to, because the ID is retired.
-            let Some(principal) = self.validator.principal_for_node(&self.group_id, node_id) else {
-                self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
-                continue;
-            };
-            if self
-                .transport
-                .fence_peer(&self.group_id, principal)
-                .is_err()
-            {
-                self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
-                continue;
-            }
-            self.pending_fences.remove(&node_id);
-            self.advance_checkpoint_epoch();
+    /// **The floor is the mark, unchanged and uninterpreted.** Every identity
+    /// this group has ever committed is at or below `committed_id_high_water`, so
+    /// an identity at or below it that this policy does not authorize is one a
+    /// committed removal spent — or one an allocator produced out of order, which
+    /// [`TransportDriverState::is_spent`] already refuses for the same reason and
+    /// in the same direction.
+    fn desired_policy(&self) -> DesiredPeerPolicy {
+        DesiredPeerPolicy {
+            peers: self.desired_peers(),
+            retirement_floor: self.committed_id_high_water,
         }
     }
 
@@ -699,9 +691,9 @@ where
             .collect()
     }
 
-    /// Whether the transport's peer set is behind the one the group requires.
-    pub(super) fn peer_set_is_stale(&self) -> bool {
-        self.published_peers.as_ref() != Some(&self.desired_peers())
+    /// Whether the transport's policy is behind the one the group requires.
+    pub(super) fn peer_policy_is_stale(&self) -> bool {
+        self.published_policy.as_ref() != Some(&self.desired_policy())
     }
 
     /// How many spent identities the group's membership names again.
@@ -710,8 +702,8 @@ where
     /// makes it worth reading. A non-zero value is one specific violation and
     /// not a link-layer condition: some replica was named again under a `NodeId`
     /// a committed removal had already spent, and this driver is refusing it —
-    /// out of the peer set, out of the inbound check, and with its fence still
-    /// owed if the link never took it.
+    /// out of the published peer set, out of the inbound check, and beneath the
+    /// retirement floor its own policy states.
     ///
     /// Counted over the *raw* membership facts rather than the live ones, which
     /// is why the raw committed configuration is stored at all: the live set has
@@ -719,7 +711,7 @@ where
     /// exactly the case this exists to name.
     ///
     /// Current state rather than history, like
-    /// [`super::TransportRaftDriver::pending_peer_fences`] and unlike
+    /// [`super::TransportRaftDriver::peer_policy_is_stale`] and unlike
     /// `refused_peer_updates`: it falls back to zero only if a later membership
     /// stops naming the spent replica, which no correct deployment needs and no
     /// incorrect one is helped by.
@@ -743,8 +735,7 @@ where
     /// ID is not evidence that the replica may speak again — it is evidence that
     /// the contract was broken, and the frame is refused whatever the fact says.
     /// The alternative reads a violated precondition as permission, and would
-    /// admit exactly the replica whose principal the transport has permanently
-    /// fenced.
+    /// admit exactly the replica this driver's own published policy retires.
     ///
     /// Asks each fact rather than building their union, because this runs on
     /// every inbound frame and the union is the same answer with an allocation
@@ -765,26 +756,24 @@ where
         self.is_spent(self.node_id)
     }
 
-    /// Whether the link layer has left more fences owed than the service
-    /// threshold allows.
-    fn fence_backlog_is_over_threshold(&self) -> bool {
-        self.pending_fences.len() > self.options.fence_backlog_service_threshold
-    }
-
     /// Why this driver is refusing new client work, if it is.
     ///
     /// **Ordered by what a supervisor can still do about it**, most terminal
     /// first. Shutdown outranks everything because nothing else changes what
     /// happens next; a released driver is reported before anything derived from
-    /// a group it does not hold; decommissioning outranks the two conditions
-    /// that end, because a backlog drains and a rollback can be re-proposed and
-    /// a spent identity can be neither.
+    /// a group it does not hold; a contradiction outranks both conclusions drawn
+    /// from the membership facts, because it says those facts cannot be trusted;
+    /// and decommissioning outranks the condition that ends, because a rollback
+    /// can be re-proposed and a spent identity cannot.
     pub(super) fn service_state(&self) -> DriverServiceState {
         if self.shutting_down {
             return DriverServiceState::ShuttingDown;
         }
         if self.group.is_none() {
             return DriverServiceState::Released;
+        }
+        if let Some(through) = self.contradicted_at {
+            return DriverServiceState::ContradictoryCurrentState { through };
         }
         if self.is_decommissioned() {
             return DriverServiceState::Decommissioned {
@@ -798,12 +787,6 @@ where
         if !self.is_member(self.node_id) {
             return DriverServiceState::NotMember {
                 node_id: self.node_id,
-            };
-        }
-        if self.fence_backlog_is_over_threshold() {
-            return DriverServiceState::FenceBacklog {
-                pending_fences: self.pending_fences.len(),
-                service_threshold: self.options.fence_backlog_service_threshold,
             };
         }
         DriverServiceState::Serving
@@ -823,7 +806,9 @@ where
                 Err(DriverUnavailableReason::Decommissioned)
             }
             DriverServiceState::NotMember { .. } => Err(DriverUnavailableReason::NotMember),
-            DriverServiceState::FenceBacklog { .. } => Err(DriverUnavailableReason::FenceBacklog),
+            DriverServiceState::ContradictoryCurrentState { .. } => {
+                Err(DriverUnavailableReason::ContradictoryCurrentState)
+            }
             DriverServiceState::Released => Err(DriverUnavailableReason::Released),
             // Every client surface refuses shutdown ahead of this call with its
             // own older variant, so this arm is the projection staying total
@@ -867,51 +852,49 @@ where
     /// authorization away for a change that may still revert. The union is what
     /// keeps both readings correct at once.
     ///
-    /// Adoption also discharges whatever the previous incarnation left owed, and
+    /// Adoption also republishes whatever the previous incarnation could not, and
     /// gets that for free rather than by arrangement: publishing runs the flush,
-    /// and the obligations are the driver's rather than the group's, so a
-    /// release does not cancel them. That is the half a re-derivation cannot
-    /// cover — by the time the driver holds no group, its committed membership
-    /// has already moved past any removal it observed, so the difference this
-    /// method takes is empty and the fence is owed rather than derivable. It is
-    /// also where a deferred self-fence is finally made: the entry stops
-    /// matching `node_id` the moment a fresh identity is installed, and the
-    /// flush this runs is the next one.
+    /// and the policy is the driver's rather than the group's, so a release does
+    /// not cancel it. It is also where a fresh incarnation retires the identity
+    /// it used to be — the old `node_id` is at or below the floor and absent from
+    /// the peer set the moment a different identity is installed, which is the
+    /// whole of what a deferred self-fence used to arrange by hand.
     ///
-    /// A driver holding no group publishes nothing and still owes what it owed.
-    /// The early return skips the *derivation*, which needs a runtime; it does
-    /// not discard obligations, which need only the next entry point.
+    /// A driver holding no group publishes nothing. The early return skips the
+    /// *derivation*, which needs a runtime; the policy it already published stays
+    /// installed, because a release retracts nothing.
     ///
-    /// **This is the endpoint of the stream, so it stands at the commit index
-    /// and its retirement fold is gated against the endpoint position.** The
-    /// runtime does not publish the index of the entry its committed
+    /// **This is the endpoint of the stream, so it stands at the commit index.**
+    /// The runtime does not publish the index of the entry its committed
     /// configuration came from, and it does not need to: `committed_membership`
     /// is by definition the latest configuration at or below `commit_index`, so
-    /// the commit index is a sound and monotone position *for an endpoint*. A
-    /// driver whose endpoint position already covers it has folded this
-    /// observation in and takes no diff.
+    /// the commit index is a sound position *for an endpoint*.
     ///
-    /// The gate is not decoration here. A commit index is *volatile* — a
-    /// recovered runtime can legitimately report a lower one than the
-    /// incarnation that wrote the checkpoint had reached — so an ungated fold
-    /// would compute a fresh retirement diff between a rebuilt runtime's older
-    /// committed configuration and a restored live set that had already moved
-    /// past it, and retire everything the newer configurations had added. That
-    /// is the same manufactured removal the replay produces, arriving through
-    /// the endpoint instead of through the history.
+    /// **It carries no removal evidence, and that is the whole of what makes it
+    /// safe to fold from anywhere.** A commit index is volatile — a recovered
+    /// runtime can legitimately report a lower one than the incarnation that
+    /// wrote the checkpoint had reached — and an endpoint standing beneath the
+    /// register is simply an older observation of the same register, which
+    /// [`merge_current_state`] answers by keeping the later one. The gate this
+    /// used to need, and the two-cursor apparatus behind it, went with the
+    /// provenance tag: nothing here reads a position to decide whether a fact has
+    /// been consumed, because every fact is monotone evidence that can be folded
+    /// again.
     ///
-    /// **And it gates endpoints only.** This position covers nothing beneath
-    /// itself: the runtime reports the configuration it holds and says nothing
-    /// about what committed and was superseded below it, which is exactly the
-    /// case a snapshot install produces. Letting it gate crossings skipped
-    /// history that had genuinely never been folded — see
-    /// [`CommittedMembershipSource`].
+    /// **What the position still decides is the tie.** A runtime and a restored
+    /// record that both stand at the same index are two claims about one
+    /// committed configuration, so they must agree once every proven removal and
+    /// every spent identity is taken out of both — and if they do not, this
+    /// refuses rather than letting the runtime overwrite the record. That is the
+    /// one direction in which an endpoint can still do permanent damage: silently
+    /// retiring a live replica, or silently raising the floor past an identity the
+    /// durable record says was never committed.
     ///
-    /// **The raw committed membership is not gated at all**, because it answers
-    /// a question no position has an opinion about. This call is where a driver
-    /// gets it from the runtime directly rather than from an event, and it runs
-    /// last in both construction and adoption so the floor ends those sequences
-    /// level with the group the driver now holds.
+    /// **The raw committed membership is not part of the register**, because it
+    /// answers a question no position has an opinion about. This call is where a
+    /// driver gets it from the runtime directly rather than from an event, and it
+    /// runs last in both construction and adoption so the floor ends those
+    /// sequences level with the group the driver now holds.
     ///
     /// **It is not, however, the only publisher of an endpoint, and it is not
     /// sampled per step.** `rafter-app` emits
@@ -921,17 +904,72 @@ where
     /// the floor tracks the runtime without this method being called again; this
     /// one exists for the moment *before* any step, when the driver has just
     /// been handed a group and no event has announced anything.
-    pub(super) fn publish_adopted_membership(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlPlaneCheckpointError::ContradictoryCurrentState`] when
+    /// the adopted runtime and the record this driver restored stand at one
+    /// position and disagree about the committed membership there. Nothing is
+    /// published and nothing moves; see
+    /// [`TransportDriverState::check_adopted_membership`], which asks the same
+    /// question before an adoption installs the group at all.
+    pub(super) fn publish_adopted_membership(&mut self) -> Result<(), ControlPlaneCheckpointError> {
         let Some(group) = self.group.as_ref() else {
-            return;
+            return Ok(());
         };
-        let runtime = group.runtime();
-        let committed =
-            CommittedObservation::endpoint(runtime.commit_index(), &runtime.committed_membership());
-        let effective = runtime.membership().replica_ids().into_iter().collect();
+        let (committed, effective) = Self::adopted_observation(group.runtime());
         self.publish_membership(MembershipFact::Committed {
             committed,
             effective,
-        });
+        })
+    }
+
+    /// Asks whether an offered runtime contradicts what this driver holds,
+    /// without installing anything.
+    ///
+    /// **Adoption's refusals are ordered so that everything above the
+    /// installation leaves the driver exactly as it was**, and this belongs in
+    /// that half: a runtime whose committed membership disagrees with the
+    /// restored record at one position is a supervisor handing over a replica
+    /// that must not open, not a replica that opens and then reports itself sick.
+    /// So the merge is run against a candidate and its answer discarded, and the
+    /// group is installed only if it agrees.
+    ///
+    /// # Errors
+    ///
+    /// As [`TransportDriverState::publish_adopted_membership`].
+    pub(super) fn check_adopted_membership(
+        &self,
+        runtime: &R,
+    ) -> Result<(), ControlPlaneCheckpointError> {
+        let (committed, _) = Self::adopted_observation(runtime);
+        let was_spent = {
+            let mark = self.committed_id_high_water;
+            let live = self.live_committed_members().clone();
+            move |node_id: NodeId| {
+                mark.is_some_and(|mark| node_id <= mark) && !live.contains(&node_id)
+            }
+        };
+        merge_current_state(
+            self.current_committed.as_ref(),
+            &IncomingObservation {
+                through: committed.through,
+                membership: &committed.membership,
+                proven_removed: &committed.removed,
+            },
+            &was_spent,
+        )
+        .map(|_| ())
+    }
+
+    /// The endpoint observation and effective membership one runtime reports.
+    ///
+    /// Shared by the check and the publication so the question asked before an
+    /// adoption is the same one answered after it.
+    fn adopted_observation(runtime: &R) -> (CommittedObservation, BTreeSet<NodeId>) {
+        (
+            CommittedObservation::endpoint(runtime.commit_index(), &runtime.committed_membership()),
+            runtime.membership().replica_ids().into_iter().collect(),
+        )
     }
 }

@@ -13,8 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use rafter_app::proposal::ClientRequestId;
 use rafter_service::{
     AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError, DriverServiceState,
-    DriverUnavailableReason, InboundEnvelopeError, RaftTransport, TransportDriverOptions,
-    TransportRaftDriver, WriteOptions,
+    DriverUnavailableReason, InboundEnvelopeError, PeerPolicy, RaftTransport,
+    TransportDriverOptions, TransportRaftDriver, WriteOptions,
 };
 use support::transport::*;
 use support::*;
@@ -298,18 +298,24 @@ fn an_unauthorized_peer_is_refused_before_the_group_is_stepped() {
     );
 }
 
-/// Negative: the same frame accepted, then fenced through the documented
-/// transport API, then refused.
+/// Negative: the same frame accepted, then retired by the policy the documented
+/// transport API carries, then refused.
+///
+/// The policy is installed directly here rather than derived from a committed
+/// removal, because what is under test is the *validator's* reading of it: an
+/// identity at or below the retirement floor that the authorized set does not
+/// name is refused as retired rather than as merely unauthorized, and the
+/// refusal is the same typed variant a per-principal fence used to produce.
 #[test]
-fn a_fenced_peer_is_refused_after_fencing() {
+fn a_retired_peer_is_refused_after_the_policy_retires_it() {
     let (driver, transport) = driver_for(1, &[2]);
     driver
         .deliver(vote_envelope(NodeId(2), NodeId(1)))
         .expect("an authorized peer is accepted");
 
     transport
-        .fence_peer(&GROUP, Principal::for_node(NodeId(2)))
-        .expect("fencing a known principal succeeds");
+        .update_peers(&GROUP, PeerPolicy::new(Vec::new(), Some(NodeId(2))))
+        .expect("installing a policy over a known group succeeds");
 
     let error = driver
         .deliver(vote_envelope(NodeId(2), NodeId(1)))

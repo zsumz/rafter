@@ -330,7 +330,7 @@ fn membership_reaches_the_transports_peer_set() {
          the local node"
     );
     assert!(
-        !transport.is_fenced(NodeId(3)),
+        !transport.retires(NodeId(3)),
         "construction removes nobody, so it fences nobody"
     );
 
@@ -348,11 +348,11 @@ fn membership_reaches_the_transports_peer_set() {
         "the committed change narrowed the published set"
     );
     assert!(
-        transport.is_fenced(NodeId(3)),
+        transport.retires(NodeId(3)),
         "a committed removal is the fact that licenses fencing"
     );
     assert!(
-        !transport.is_fenced(NodeId(2)),
+        !transport.retires(NodeId(2)),
         "node 2 is still a member and must still be able to speak"
     );
     assert_eq!(driver.refused_peer_updates(), 0);
@@ -392,36 +392,42 @@ fn a_membership_the_validator_cannot_name_is_not_published() {
 
 /// The all-or-nothing rule governs the peer set and stops there. Withholding a
 /// peer set leaves the previous one in place, which is merely stale; withholding
-/// a fence the same event licensed leaves a committed-removed replica able to
-/// speak until something retries it.
+/// **A retirement is withheld with the peer set it travels with, and that is the
+/// price of one statement.**
 ///
-/// The two halves fail independently, which is the clause under test: the peer
-/// set here can never be published — node 2 has no principal — and the fence
-/// lands anyway.
+/// The two halves used to fail independently: the peer set here can never be
+/// published — node 2 has no principal — and the per-principal fence for node 3
+/// landed anyway. One value cannot do that, so the whole policy is withheld and
+/// the link layer keeps authorizing node 3 until the directory catches up.
+///
+/// It is a trade rather than a loss, and the two sides are worth naming. What
+/// went is the case where the *removed* replica is nameable and a *live* one is
+/// not. What arrived is the reverse and commoner case: retirement needs no
+/// principal of its own at all, so a directory that forgets a replica the moment
+/// its removal commits — which the validator contract now explicitly permits —
+/// can still retire it. See `a_removal_needs_no_principal_of_its_own`.
+///
+/// The window is bounded the way every withheld publication is: the driver
+/// reports it as one state, retries it at every entry point, and refuses the
+/// removed replica itself meanwhile.
 #[test]
-fn a_committed_removal_is_fenced_even_when_the_peer_set_cannot_be_published() {
+fn a_committed_removal_is_withheld_with_the_peer_set_it_travels_with() {
     // Node 2 cannot be named; node 3, the one the change removes, can.
     let (driver, transport) = shrink_driver(Nameable::only(&[NodeId(1), NodeId(3)]));
 
     driver.tick().expect("the tick advances the protocol");
 
     assert!(
-        transport.is_fenced(NodeId(3)),
-        "node 3 was removed by a committed configuration change and must be fenced"
-    );
-    assert_eq!(
-        driver.pending_peer_fences(),
-        0,
-        "so nothing is owed on the fence half"
-    );
-    assert!(
         transport.peer_sets().is_empty(),
-        "the peer set is still all-or-nothing, and node 2 has no principal"
+        "the policy is all-or-nothing, and node 2 has no principal"
     );
     assert!(
-        driver.peer_set_is_stale(),
-        "and the peer-set half is still owed, which is the state a cumulative \
-         refusal count cannot express"
+        !transport.retires(NodeId(3)),
+        "so the link layer has not been told to retire node 3 either"
+    );
+    assert!(
+        driver.peer_policy_is_stale(),
+        "and the whole statement is owed, which is now one state rather than two"
     );
     assert!(
         driver.refused_peer_updates() > 0,
@@ -430,14 +436,27 @@ fn a_committed_removal_is_fenced_even_when_the_peer_set_cannot_be_published() {
     );
 }
 
-/// The consequence at the boundary a consumer sees. `update_peers` is the
-/// admission control in the one consumer that adopted this driver, so a fence
-/// dropped alongside a withheld peer set is both controls missing at once.
+/// The consequence at the boundary a consumer sees, and the layer that catches
+/// it.
+///
+/// **This is the assertion that pays for the trade above.** The published policy
+/// is the admission control in the consumer that adopted this driver, and here it
+/// was never installed — so the outer layer is missing entirely, and the refusal
+/// has to come from the driver's own membership check. It does, and it is
+/// reported as [`InboundEnvelopeError::NotInMembership`] rather than as a
+/// validator rejection: nothing external refused this frame, this driver did.
+///
+/// A test that accepted either refusal would pass whichever layer happened to
+/// act, which is exactly what a two-layer design must not be checked with.
 #[test]
 fn a_removed_replica_cannot_speak_after_the_publication_was_refused() {
-    let (driver, _transport) = shrink_driver(Nameable::only(&[NodeId(1), NodeId(3)]));
+    let (driver, transport) = shrink_driver(Nameable::only(&[NodeId(1), NodeId(3)]));
 
     driver.tick().expect("the tick advances the protocol");
+    assert!(
+        !transport.retires(NodeId(3)),
+        "the fixture's premise: the link layer holds no policy that retires it"
+    );
 
     let refused = driver.deliver(AuthenticatedPeerEnvelope {
         group_id: GROUP,
@@ -453,64 +472,60 @@ fn a_removed_replica_cannot_speak_after_the_publication_was_refused() {
     });
 
     assert!(
-        matches!(refused, Err(InboundEnvelopeError::Rejected { .. })),
-        "a committed-removed replica must not be able to speak, got {refused:?}"
+        matches!(
+            refused,
+            Err(InboundEnvelopeError::NotInMembership { node_id: NodeId(3) })
+        ),
+        "a committed-removed replica must not be able to speak, and with the \\
+         outer layer missing the driver's own check is what refuses it: got \\
+         {refused:?}"
     );
 }
 
-/// Fencing is per replica rather than all-or-nothing, so an unnameable removal
-/// costs only its own fence — and the fence it could not make stays *owed*,
-/// because a directory that cannot name a replica today can name it tomorrow.
+/// A removal needs no principal of its own.
 ///
-/// This replaces a test that accepted the same situation as a counted condition
-/// and asserted nothing further. The count was true and insufficient: a
-/// committed removal the link layer never heard about is an authorization the
-/// cluster retracted and the transport still honours, and a cumulative counter
-/// records that it happened once while saying nothing about whether it is still
-/// happening.
+/// **The other side of the trade, and the reason the directory contract shrank.**
+/// A per-principal fence had to resolve the removed replica's principal at every
+/// retry, so a directory that had forgotten it — or never learned it — left the
+/// removal permanently unmade, and the validator contract had to require that a
+/// removed replica stay resolvable until its fence was accepted. It no longer
+/// does: a floor names no principal, so the identity is retired by a policy the
+/// directory can state without knowing anything about it.
+///
+/// The removed replica is the one this deployment cannot name here, and it is
+/// retired anyway.
 #[test]
-fn an_unfenceable_removal_stays_owed_until_the_directory_can_name_it() {
+fn a_removal_needs_no_principal_of_its_own() {
     // The removed replica is the one with no principal; node 2 has one.
     let nameable = Nameable::only(&[NodeId(1), NodeId(2)]);
-    let (driver, transport) = shrink_driver(nameable.clone());
+    let (driver, transport) = shrink_driver(nameable);
 
     driver.tick().expect("the tick advances the protocol");
 
-    assert!(
-        !transport.is_fenced(NodeId(3)),
-        "the fence could not be made: this deployment cannot name node 3"
-    );
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "so it is owed, which is the state the old contract discarded"
-    );
     assert_eq!(
         transport.peer_sets(),
         vec![vec![Principal::for_node(NodeId(2))]],
         "the committed set is nameable in full, so it published"
     );
-
-    // The directory learns node 3's identity, and nothing about the membership
-    // changes: no event, no configuration change, just a later entry point.
-    nameable.learn(NodeId(3));
-    driver.tick().expect("the tick advances the protocol");
-
     assert!(
-        transport.is_fenced(NodeId(3)),
-        "the committed removal was still owed, so the first entry point that \
-         could name node 3 discharged it"
+        transport.retires(NodeId(3)),
+        "and the policy retires node 3 without this deployment ever having to \
+         name it: {:?}",
+        transport.policies().last()
     );
-    assert_eq!(driver.pending_peer_fences(), 0, "and nothing is owed now");
+    assert!(
+        !driver.peer_policy_is_stale(),
+        "so nothing is left owed at all"
+    );
 }
 
 // ---------------------------------------------------------------------------
 // The control plane is retried, because neither half of it repairs itself.
 //
-// `update_peers` and `fence_peer` are both allowed to fail, and the driver is
-// the only thing that can try again: no later membership event re-derives a
-// removal the cluster has already committed, because the driver's record of
-// what the group says has moved past it.
+// `update_peers` is allowed to fail, and the driver is the only thing that can
+// try again: no later membership event re-derives a removal the cluster has
+// already committed, because the driver's record of what the group says has
+// moved past it.
 // ---------------------------------------------------------------------------
 
 /// A refused peer-set publication is retried at the next entry point, with no
@@ -537,7 +552,7 @@ fn a_refused_peer_set_publication_is_retried_without_another_membership_event() 
          still holding the set from construction"
     );
     assert!(
-        driver.peer_set_is_stale(),
+        driver.peer_policy_is_stale(),
         "and the driver reports the link layer as behind while that is true"
     );
 
@@ -556,53 +571,42 @@ fn a_refused_peer_set_publication_is_retried_without_another_membership_event() 
          membership event to re-derive it"
     );
     assert!(
-        !driver.peer_set_is_stale(),
+        !driver.peer_policy_is_stale(),
         "and stops reporting it once the publication is accepted"
     );
 }
 
-/// A refused fence is retried until the link accepts it.
+/// A refused retirement is retried until the link accepts it.
 ///
-/// This is the half that cannot be left behind. A stale peer set authorizes a
-/// replica the cluster still names; a missing fence authorizes one it has
-/// committed the removal of, and `fence_peer` is documented as the operation
-/// that stops later frames from that replica.
+/// The half that cannot be left behind, now carried by the same publication as
+/// the peer set. A stale policy authorizes a replica the cluster still names
+/// *and* fails to retire one it has committed the removal of, and nothing but
+/// this driver's own retry re-states either: the membership fact that licensed
+/// them is already behind `committed_members`.
 #[test]
-fn a_refused_fence_is_retried_until_the_link_accepts_it() {
+fn a_refused_retirement_is_retried_until_the_link_accepts_it() {
     let (driver, transport) = shrink_driver(Nameable::all());
-    transport.refuse_next_fences(NodeId(3), 1);
+    transport.refuse_next_peer_updates(1);
 
     driver.tick().expect("the tick advances the protocol");
 
     assert!(
-        !transport.is_fenced(NodeId(3)),
-        "the link refused the first fence"
+        !transport.retires(NodeId(3)),
+        "the link refused the first policy"
     );
-    assert_eq!(
-        transport.fence_attempts(),
-        vec![NodeId(3)],
-        "and the driver asked exactly once"
-    );
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "the window is visible while it is open: one admission control is owed"
+    assert!(
+        driver.peer_policy_is_stale(),
+        "the window is visible while it is open"
     );
 
     driver.tick().expect("the tick advances the protocol");
 
     assert!(
-        transport.is_fenced(NodeId(3)),
+        transport.retires(NodeId(3)),
         "the committed removal was still owed, so the next entry point retried it"
     );
-    assert_eq!(
-        transport.fence_attempts(),
-        vec![NodeId(3), NodeId(3)],
-        "asked twice, accepted once"
-    );
-    assert_eq!(
-        driver.pending_peer_fences(),
-        0,
+    assert!(
+        !driver.peer_policy_is_stale(),
         "and the window closed when the link accepted"
     );
 }
@@ -610,30 +614,26 @@ fn a_refused_fence_is_retried_until_the_link_accepts_it() {
 /// A replica whose committed removal has not been fenced yet cannot speak to
 /// this driver, whatever the link layer believes.
 ///
-/// The fail-closed backstop. `fence_peer` is the link layer's admission control
-/// and it is allowed to fail, so the window between "the cluster committed the
-/// removal" and "the transport accepted the fence" is a window in which the
-/// validator still authorizes the removed replica. The driver knows better than
-/// its own transport here — its membership is committed ∪ effective — so it
-/// refuses the frame itself rather than treating a transient control-plane
-/// failure as an authorization.
+/// The fail-closed backstop. The published policy is the link layer's admission
+/// control and it is allowed to fail, so the window between "the cluster
+/// committed the removal" and "the transport accepted the policy" is a window in
+/// which the validator still authorizes the removed replica. The driver knows
+/// better than its own transport here — its membership is committed union
+/// effective — so it refuses the frame itself rather than treating a transient
+/// control-plane failure as an authorization.
 #[test]
-fn a_removed_replica_cannot_speak_while_its_fence_is_pending() {
+fn a_removed_replica_cannot_speak_while_its_retirement_is_unpublished() {
     let (driver, transport) = shrink_driver(Nameable::all());
-    // The link refuses every fence for the length of this test.
-    transport.refuse_next_fences(NodeId(3), 16);
+    // The link refuses every publication for the length of this test.
+    transport.refuse_next_peer_updates(16);
 
     driver.tick().expect("the tick advances the protocol");
 
     assert!(
-        !transport.is_fenced(NodeId(3)),
-        "the fixture's whole point: the external fence never took"
+        !transport.retires(NodeId(3)),
+        "the fixture's whole point: the external statement never took"
     );
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "so the driver still owes it"
-    );
+    assert!(driver.peer_policy_is_stale(), "so the driver still owes it");
 
     let refused = driver.deliver(AuthenticatedPeerEnvelope {
         group_id: GROUP,
@@ -702,32 +702,31 @@ fn a_replica_added_by_an_in_flight_change_may_still_speak() {
 /// The supervisor pattern this driver documents is release, rebuild the runtime
 /// from durable storage, adopt, and the adoption re-derives nothing here: the
 /// driver's record of the membership already moved past the removal on the
-/// tick, so `known_members` and the committed membership agree and their
-/// difference is empty. The fence is owed rather than derivable, which is
-/// precisely why it has to be state the driver carries rather than a value it
-/// recomputes.
+/// tick, so a difference taken at adoption is empty. What makes the statement
+/// re-derivable anyway is that it is a function of state the driver still holds:
+/// the mark and the current committed membership, both of which survive a
+/// release untouched.
 #[test]
 fn control_plane_work_still_owed_survives_release_and_adoption() {
     let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
     let handle = runtime.handle();
     change_on_step(&handle, &[1, 2], &[1, 2]);
     let (driver, transport) = scripted_driver(runtime, Nameable::all());
-    transport.refuse_next_fences(NodeId(3), 1);
+    transport.refuse_next_peer_updates(1);
 
     driver.tick().expect("the tick advances the protocol");
 
     assert!(
-        !transport.is_fenced(NodeId(3)),
-        "the link refused the fence the committed removal licensed"
+        !transport.retires(NodeId(3)),
+        "the link refused the policy the committed removal licensed"
     );
 
     let group = driver.release_group().expect("the driver holds a group");
 
-    assert_eq!(
-        driver.pending_peer_fences(),
-        1,
-        "releasing the group retires an incarnation, not the link layer's \
-         obligations: the same transport serves the next one"
+    assert!(
+        driver.peer_policy_is_stale(),
+        "releasing the group retires an incarnation, not what the link layer is \
+         owed: the same transport serves the next one"
     );
 
     driver
@@ -735,13 +734,12 @@ fn control_plane_work_still_owed_survives_release_and_adoption() {
         .expect("the released group is adoptable");
 
     assert!(
-        transport.is_fenced(NodeId(3)),
-        "the adoption discharged work the release did not cancel; \
-         fence attempts = {:?}",
-        transport.fence_attempts()
+        transport.retires(NodeId(3)),
+        "the adoption re-stated what the release did not cancel: {:?}",
+        transport.policies().last()
     );
     assert!(
-        !transport.is_fenced(NodeId(2)),
+        !transport.retires(NodeId(2)),
         "node 2 is still committed and must still be able to speak"
     );
 }

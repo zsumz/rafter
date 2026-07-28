@@ -64,51 +64,16 @@ where
     /// same way — Raft re-sends a dropped frame on its own, and a peer set or a
     /// fence is re-published only because this driver retries it.
     ///
-    /// A non-zero value means either the transport refused a publication or a
-    /// fence, or this driver's validator could not name a principal for some
-    /// replica. It counts *attempts* and therefore rises on every retry, which
-    /// makes it a history rather than a health check: a driver that has refused
-    /// nine times and succeeded on the tenth reads the same as one still
-    /// failing. Read [`TransportRaftDriver::pending_peer_fences`] and
-    /// [`TransportRaftDriver::peer_set_is_stale`] for the current state; read
+    /// A non-zero value means either the transport refused a policy publication,
+    /// or this driver's validator could not name a principal for some replica. It
+    /// counts *attempts* and therefore rises on every retry, which makes it a
+    /// history rather than a health check: a driver that has refused nine times
+    /// and succeeded on the tenth reads the same as one still failing. Read
+    /// [`TransportRaftDriver::peer_policy_is_stale`] for the current state; read
     /// this to tell a link that has always worked from one that recovered.
     #[must_use]
     pub fn refused_peer_updates(&self) -> u64 {
         self.inner.lock().refused_peer_updates
-    }
-
-    /// Returns how many committed removals this driver has not managed to fence
-    /// yet.
-    ///
-    /// Current state rather than history, and the distinction is the point.
-    /// [`crate::RaftTransport::fence_peer`] is what stops later frames from a
-    /// replica the cluster has removed, and it is allowed to fail — so a
-    /// non-zero value here means that, right now, this driver owes the link
-    /// layer an admission control it has not accepted. It falls to zero when
-    /// every outstanding fence has been accepted, and it is retried at every
-    /// entry point of the driver.
-    ///
-    /// This is the number to alert on. Inbound frames from an unfenced removed
-    /// replica are refused locally in the meantime — see
-    /// [`InboundEnvelopeError::NotInMembership`] — so the window is degraded
-    /// rather than unsafe, but it is a window that does not close by itself if
-    /// the link layer stays refusing.
-    ///
-    /// One entry may be *deferred* rather than owed to a link layer that refused
-    /// it: a committed removal of this driver's own replica licenses a fence for
-    /// its own principal, which it cannot make while it is still that replica.
-    /// That one is discharged by the first adoption under a fresh identity
-    /// rather than by a retry, and [`TransportRaftDriver::service_state`] is
-    /// what distinguishes the two situations.
-    ///
-    /// Past [`crate::TransportDriverOptions::fence_backlog_service_threshold`]
-    /// this stops being only an alert: the driver refuses new client work until
-    /// the backlog is back under the threshold. No obligation is ever discarded
-    /// for it, and [`TransportRaftDriver::control_plane_checkpoint`] is how the
-    /// set survives a process restart.
-    #[must_use]
-    pub fn pending_peer_fences(&self) -> usize {
-        self.inner.lock().pending_fences.len()
     }
 
     /// Returns the peer-control-plane state an embedder must make durable.
@@ -132,10 +97,10 @@ where
     /// Returns how many times this driver's checkpointable state has changed.
     ///
     /// The persist trigger. It advances on every committed configuration that
-    /// moves the retirement record and on every fence the link layer accepts,
-    /// and on nothing else — so an embedder that persists whenever this differs
-    /// from the epoch it last persisted writes exactly the changes it must not
-    /// lose, and writes nothing on a tick that changed nothing.
+    /// moves the retirement record, on every restored checkpoint, and on nothing
+    /// else — so an embedder that persists whenever this differs from the epoch
+    /// it last persisted writes exactly the changes it must not lose, and writes
+    /// nothing on a tick that changed nothing.
     ///
     /// **Instance-local and monotone within the instance.** A driver built from
     /// a recovered checkpoint starts at zero and counts from there, so the value
@@ -147,23 +112,32 @@ where
         self.inner.lock().checkpoint_epoch
     }
 
-    /// Returns whether the transport's peer set is behind the group's
-    /// membership.
+    /// Returns whether the transport's authorization policy is behind the one
+    /// the group requires.
     ///
-    /// True when the set this driver would publish differs from the last one the
-    /// transport accepted — because a publication was refused, or because the
-    /// validator could not name every replica in it, and no retry has succeeded
-    /// since. It is `true` before the first accepted publication for the same
-    /// reason: nothing has been accepted, so nothing is level.
+    /// True when the policy this driver would publish — the authorized peers
+    /// *and* the retirement floor — differs from the last one the transport
+    /// accepted, because a publication was refused, or because the validator
+    /// could not name every replica in it, and no retry has succeeded since. It
+    /// is `true` before the first accepted publication for the same reason:
+    /// nothing has been accepted, so nothing is level.
     ///
-    /// The peer-set counterpart of
-    /// [`TransportRaftDriver::pending_peer_fences`], and the milder of the two.
-    /// A stale peer set means the link layer authorizes a set the cluster has
-    /// moved on from, which is a liveness and least-privilege concern; an
-    /// unfenced removal is an authorization the cluster explicitly retracted.
+    /// **This is the number to alert on**, and it is one number because the two
+    /// halves are one statement. It used to be two surfaces — a stale peer set
+    /// beside a count of fences still owed — and they reported different
+    /// severities for the same underlying fact, which is that this driver and its
+    /// link layer disagree about who may speak.
+    ///
+    /// What that costs is bounded rather than open-ended. A stale policy retires
+    /// *fewer* identities than the current one, never more, because the floor is
+    /// monotone; and inbound frames from a replica the cluster removed are
+    /// refused locally in the meantime — see
+    /// [`InboundEnvelopeError::NotInMembership`]. So the window is degraded
+    /// rather than unsafe, and it is a window that does not close by itself if
+    /// the link layer stays refusing.
     #[must_use]
-    pub fn peer_set_is_stale(&self) -> bool {
-        self.inner.lock().peer_set_is_stale()
+    pub fn peer_policy_is_stale(&self) -> bool {
+        self.inner.lock().peer_policy_is_stale()
     }
 
     /// Returns how many inbound frames this driver refused because its group's
@@ -173,9 +147,9 @@ where
     /// ([`InboundEnvelopeError::NotInMembership`]). A non-zero value means the
     /// link layer and the group disagree about who may speak: the validator
     /// authorized a replica this driver's membership has retired. Read beside
-    /// [`TransportRaftDriver::pending_peer_fences`], it separates the two causes
-    /// — a fence this driver still owes, or a validator that authorizes a
-    /// replica no fence was ever licensed for.
+    /// [`TransportRaftDriver::peer_policy_is_stale`], it separates the two causes
+    /// — a policy this driver has not managed to publish, or a validator that
+    /// authorizes a replica no committed configuration ever named.
     #[must_use]
     pub fn refused_non_member_frames(&self) -> u64 {
         self.inner.lock().refused_non_member_frames
@@ -194,15 +168,14 @@ where
     /// the history it would need.
     ///
     /// The driver's response is to stay refusing. The identity is left out of
-    /// the published peer set, its inbound frames are refused as
-    /// [`InboundEnvelopeError::NotInMembership`], and any fence still owed for
-    /// it stays owed. That leaves the forbidden membership change wedged, which
-    /// is the correct outcome and not a defect to work around: fencing is
-    /// permanent for a principal ([`crate::RaftTransport::fence_peer`] has no
-    /// inverse, by design), so a driver that admitted the replica would be
-    /// promising an authorization no transport can give back. Alert on this and
-    /// fix the identity allocator; nothing here recovers on its own, and nothing
-    /// here attempts to.
+    /// the published peer set — and therefore stays beneath the retirement floor
+    /// the same policy states — and its inbound frames are refused as
+    /// [`InboundEnvelopeError::NotInMembership`]. That leaves the forbidden
+    /// membership change wedged, which is the correct outcome and not a defect to
+    /// work around: the `(group_id, NodeId)` pair was consumed by a committed
+    /// removal, so a driver that admitted the replica would be re-authorizing an
+    /// identity the cluster spent. Alert on this and fix the identity allocator;
+    /// nothing here recovers on its own, and nothing here attempts to.
     ///
     /// Restart is not removal, and does not reach this. A replica killed and
     /// restarted under the same ID keeps its ID and its principal, and no
@@ -222,18 +195,24 @@ where
     /// Returns why this driver is refusing new client work, if it is.
     ///
     /// The one accessor a supervisor polls to decide whether this replica is
-    /// still worth routing to. Both non-serving states leave the protocol
-    /// running — the driver still ticks, delivers, flushes its peer control
-    /// plane, and applies what commits — so this is about *client* service and
-    /// never about whether the replica is participating.
+    /// still worth routing to. Every non-serving state leaves the protocol
+    /// running — the driver still ticks, delivers, and applies what commits — so
+    /// this is about *client* service and never about whether the replica is
+    /// participating.
     ///
-    /// [`DriverServiceState::FenceBacklog`] ends on its own when the link layer
-    /// catches up. [`DriverServiceState::Decommissioned`] does not: the cluster
-    /// spent this replica's identity, and the supervisor's move is
+    /// [`DriverServiceState::NotMember`] ends on its own when a configuration
+    /// names this replica again. [`DriverServiceState::Decommissioned`] does not:
+    /// the cluster spent this replica's identity, and the supervisor's move is
     /// [`TransportRaftDriver::release_group`] followed by an adoption under a
     /// *fresh* node ID. Adopting the removed one back is refused with
     /// [`ManagedDriverError::RetiredNodeId`], which is the same fact reported at
     /// the boundary that can still do something about it.
+    ///
+    /// [`DriverServiceState::ContradictoryCurrentState`] does not end either, and
+    /// it is the one state in which this driver deliberately stops publishing:
+    /// the facts licensing its permanent statement about who is retired disagree,
+    /// so there is no policy it could issue that is not a guess. Release and
+    /// rebuild from durable state.
     #[must_use]
     pub fn service_state(&self) -> DriverServiceState {
         self.inner.lock().service_state()

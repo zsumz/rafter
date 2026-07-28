@@ -14,7 +14,9 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rafter_service::{PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver};
+use rafter_service::{
+    ManagedDriverError, PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver,
+};
 
 use super::transport::{Nameable, QueueTransport, Validator, GROUP};
 use super::{
@@ -349,6 +351,36 @@ pub(crate) fn scripted_driver_with_checkpoint(
         KvStateMachine::default(),
         checkpoint,
     )
+}
+
+/// A driver opened over a checkpoint it may refuse, with the link it would have
+/// spoken to.
+///
+/// The seam every "refuses to open, and told the link layer nothing" case needs:
+/// the refusal is the observation, so it must not be an `expect`, and the
+/// transport has to outlive the attempt for its emptiness to be assertable.
+pub(crate) fn try_scripted_driver_with_checkpoint(
+    runtime: ScriptedMembershipRuntime,
+    nameable: Nameable,
+    authorized: &[NodeId],
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
+) -> (Result<ScriptedDriver, ManagedDriverError>, QueueTransport) {
+    let transport = QueueTransport::default();
+    let validator = Validator {
+        transport: transport.clone(),
+        authorized: authorized.iter().copied().collect(),
+        nameable,
+    };
+    let node_id = runtime.node_id;
+    let opened = TransportRaftDriver::with_control_plane_checkpoint(
+        RaftGroup::new(GROUP, node_id, runtime, KvStateMachine::default()),
+        Vec::new(),
+        transport.clone(),
+        validator,
+        TransportDriverOptions::default(),
+        checkpoint,
+    );
+    (opened, transport)
 }
 
 fn build_scripted_driver(

@@ -13,6 +13,16 @@
 //! `TransportDriverState::restore_control_plane_checkpoint`. This file is the
 //! evidence for them, plus the validation that keeps a damaged record from being
 //! absorbed in part.
+//!
+//! **Order-freedom is asserted over the *effects*, not only over the settled
+//! record**, and that is what it was missing. The join used to have one output
+//! that was not a lattice operation — the fence obligations it derived, which
+//! were filtered by how much spent-ness had accumulated by the time the
+//! inference fired — so three records could reach the same state by two orders
+//! and owe different fences. There is no such output now: retirement is a floor
+//! the driver republishes from state it still holds. The permutation test below
+//! asserts the identities the *link layer* ends up retiring as well as the record
+//! the driver ends up holding.
 
 #![allow(clippy::wildcard_imports)]
 
@@ -47,8 +57,8 @@ const OBSERVED_AT: LogIndex = LogIndex(1);
 /// left it out would be building a shape the validator now refuses — which is
 /// the point of `a_record_that_separates_retirement_from_its_current_state_is_refused`
 /// below, and not something every other case here should be quietly asserting.
-fn checkpoint(mark: Option<u64>, live: &[u64], fences: &[u64]) -> PeerControlPlaneCheckpoint<u64> {
-    checkpoint_at(mark, live, fences, Some(OBSERVED_AT))
+fn checkpoint(mark: Option<u64>, live: &[u64]) -> PeerControlPlaneCheckpoint<u64> {
+    checkpoint_at(mark, live, Some(OBSERVED_AT))
 }
 
 /// The same, with the observation's position chosen by the caller.
@@ -58,12 +68,10 @@ fn checkpoint(mark: Option<u64>, live: &[u64], fences: &[u64]) -> PeerControlPla
 fn checkpoint_at(
     mark: Option<u64>,
     live: &[u64],
-    fences: &[u64],
     through: Option<LogIndex>,
 ) -> PeerControlPlaneCheckpoint<u64> {
     let mut checkpoint = PeerControlPlaneCheckpoint::empty(GROUP);
     checkpoint.committed_id_high_water = mark.map(NodeId);
-    checkpoint.pending_fences = ids(fences);
     checkpoint.current_committed =
         through.map(|through| CurrentCommittedState::new(through, ids(live)));
     checkpoint
@@ -91,16 +99,16 @@ fn driver_holding(mark: Option<u64>, live: &[u64]) -> (ScriptedDriver, QueueTran
 
 /// The same, with a directory that can name only some replicas.
 ///
-/// A fence for a replica this directory cannot name stays *owed* rather than
-/// being discharged, which is how a test observes the obligations a join
-/// contributed instead of watching a cooperative link swallow them.
+/// A publication naming a replica this directory cannot resolve is withheld
+/// whole, which is how a test reaches a driver whose link layer is behind it
+/// without arranging a transport refusal.
 fn driver_holding_named(
     mark: Option<u64>,
     live: &[u64],
     nameable: Nameable,
 ) -> (ScriptedDriver, QueueTransport) {
     let record = match mark {
-        Some(mark) => checkpoint(Some(mark), live, &[]),
+        Some(mark) => checkpoint(Some(mark), live),
         None => PeerControlPlaneCheckpoint::empty(GROUP),
     };
     scripted_driver_with_checkpoint(
@@ -133,7 +141,7 @@ fn a_stale_checkpoint_cannot_un_spend_a_retired_identity() {
             KvStateMachine::default(),
         ),
         Vec::new(),
-        checkpoint(Some(5), &[1, 2, 5], &[]),
+        checkpoint(Some(5), &[1, 2, 5]),
     );
 
     assert!(
@@ -169,7 +177,7 @@ fn the_join_is_symmetric_in_the_two_records() {
             KvStateMachine::default(),
         ),
         Vec::new(),
-        checkpoint(Some(5), &[1, 2], &[]),
+        checkpoint(Some(5), &[1, 2]),
     );
 
     assert!(
@@ -189,9 +197,9 @@ fn the_join_is_symmetric_in_the_two_records() {
 #[test]
 fn the_join_is_order_free_across_three_records() {
     let records = [
-        checkpoint(Some(4), &[1, 2, 3, 4], &[]),
-        checkpoint(Some(6), &[1, 2, 3, 5, 6], &[4]),
-        checkpoint(Some(6), &[1, 2, 5], &[3]),
+        checkpoint(Some(4), &[1, 2, 3, 4]),
+        checkpoint(Some(6), &[1, 2, 3, 5, 6]),
+        checkpoint(Some(6), &[1, 2, 5]),
     ];
     let orders = [[0, 1, 2], [2, 1, 0], [1, 0, 2], [0, 2, 1]];
 
@@ -226,11 +234,77 @@ fn the_join_is_order_free_across_three_records() {
         ids(&[1, 2, 5]),
         "3 and 4 were each witnessed spent by one record, and 6 by another"
     );
-    assert_eq!(
-        settled.pending_fences,
-        ids(&[3, 4]),
-        "each record's obligations are owed, and this directory can name neither"
-    );
+}
+
+/// Three positioned records reach the same *effects* in any order, not only the
+/// same spent set.
+///
+/// **The tenth reviewer's second counterexample.** `the_join_is_order_free_across_three_records`
+/// keeps every record at one position, so the only thing it can vary is which
+/// record's mark arrives first. The inference that makes the current state a
+/// *register* — an identity named at one position and absent at a later one was
+/// removed between them — never fires there, and it was the one output the
+/// order-freedom proof did not cover.
+///
+/// Here the three records stand at 7, 10 and 12 and each pair proves something
+/// the third does not. Under the old join, whose fence obligations were filtered
+/// by accumulated spent-ness, `(A∨B)∨C` derived node 4's removal from the A/B
+/// pair while `A∨(B∨C)` never did: joining B and C first raised the mark to 6,
+/// which made node 4 test as already-spent by the time A arrived, and an
+/// inference filtered by spent-ness produced nothing. Two orders, one settled
+/// record, two different sets of replicas the link layer was told to refuse.
+///
+/// There is no filtered output left to diverge. The floor is the mark, the mark
+/// is a `max`, and the link layer refuses node 4 in every order because 4 is
+/// beneath the floor and the peer set does not name it.
+///
+/// The runtime stands at commit 1 naming `{1}`, beneath every record, so the
+/// adoption publication contributes no inference of its own and the orders are
+/// measuring the join.
+#[test]
+fn three_positioned_records_retire_the_same_identities_in_any_order() {
+    let records = [
+        checkpoint_at(Some(4), &[1, 4], Some(LogIndex(7))),
+        checkpoint_at(Some(3), &[1, 3], Some(LogIndex(10))),
+        checkpoint_at(Some(6), &[1, 6], Some(LogIndex(12))),
+    ];
+    let orders = [[0, 1, 2], [1, 2, 0], [2, 1, 0], [1, 0, 2]];
+
+    let mut settled: Option<PeerControlPlaneCheckpoint<u64>> = None;
+    for order in orders {
+        let (driver, transport) = scripted_driver_with_checkpoint(
+            ScriptedMembershipRuntime::for_node_at(NodeId(1), &[1], &[1], LogIndex(1)),
+            Nameable::only(&[NodeId(2)]),
+            &[NodeId(2)],
+            TransportDriverOptions::default(),
+            PeerControlPlaneCheckpoint::empty(GROUP),
+        );
+        for index in order {
+            let group = driver.release_group().expect("the driver holds a group");
+            driver
+                .adopt_group_with_checkpoint(group, Vec::new(), records[index].clone())
+                .expect("each record is valid for this group");
+        }
+        let reached = driver.control_plane_checkpoint();
+        assert!(
+            transport.retires(NodeId(4)),
+            "the pair standing at 7 and 10 proves node 4 was removed between \
+             them, whatever order the three arrive in: order {order:?} left the \
+             link layer holding {:?}",
+            transport.policies().last()
+        );
+        match &settled {
+            None => settled = Some(reached),
+            Some(first) => assert_eq!(
+                &reached, first,
+                "the order {order:?} reached a different state"
+            ),
+        }
+    }
+
+    let settled = settled.expect("four orders were run");
+    assert_eq!(settled.committed_id_high_water, Some(NodeId(6)));
+    assert_eq!(live_of(&settled), ids(&[1, 6]));
 }
 
 /// Joining the same record twice changes nothing.
@@ -240,7 +314,7 @@ fn the_join_is_order_free_across_three_records() {
 #[test]
 fn joining_the_same_record_twice_is_the_same_as_once() {
     let (driver, _transport) = driver_holding_named(None, &[1, 2], Nameable::only(&[NodeId(2)]));
-    let record = checkpoint(Some(5), &[1, 2], &[5]);
+    let record = checkpoint(Some(5), &[1, 2]);
 
     let group = driver.release_group().expect("the driver holds a group");
     driver
@@ -268,7 +342,7 @@ fn an_identity_above_a_records_mark_is_not_spent_by_that_record() {
     let (driver, _transport) = driver_holding(Some(5), &[1, 2, 5]);
     let group = driver.release_group().expect("the driver holds a group");
     driver
-        .adopt_group_with_checkpoint(group, Vec::new(), checkpoint(Some(2), &[1, 2], &[]))
+        .adopt_group_with_checkpoint(group, Vec::new(), checkpoint(Some(2), &[1, 2]))
         .expect("an older record is valid");
 
     let settled = driver.control_plane_checkpoint();
@@ -297,17 +371,20 @@ fn an_identity_above_a_records_mark_is_not_spent_by_that_record() {
 ///
 /// Treating the current membership as a grow-only set loses exactly that. The
 /// union keeps node 5 live under the joined mark of 5, which leaves it unspent
-/// and unfenced, and the joined endpoint of 10 then makes the runtime's own
-/// index-10 publication look already-consumed so no fold ever runs.
+/// and still authorized, and the joined endpoint of 10 then makes the runtime's
+/// own index-10 publication look already-consumed so no fold ever runs.
 #[test]
 fn two_records_that_jointly_prove_a_removal_spend_the_identity() {
-    let (driver, _transport) = driver_holding_named(None, &[1, 2, 3], Nameable::only(&[NodeId(2)]));
+    // A directory that can name every replica, so the policy the pair licenses
+    // actually reaches the link layer and the assertion is about what was
+    // published rather than about what was derived.
+    let (driver, transport) = driver_holding(None, &[1, 2, 3]);
     let group = driver.release_group().expect("the driver holds a group");
     driver
         .adopt_group_with_checkpoint(
             group,
             Vec::new(),
-            checkpoint_at(Some(5), &[1, 2, 3, 5], &[], Some(LogIndex(7))),
+            checkpoint_at(Some(5), &[1, 2, 3, 5], Some(LogIndex(7))),
         )
         .expect("an older honest record");
 
@@ -316,7 +393,7 @@ fn two_records_that_jointly_prove_a_removal_spend_the_identity() {
         .adopt_group_with_checkpoint(
             group,
             Vec::new(),
-            checkpoint_at(Some(3), &[1, 2, 3], &[], Some(LogIndex(10))),
+            checkpoint_at(Some(3), &[1, 2, 3], Some(LogIndex(10))),
         )
         .expect("a later honest snapshot-derived record");
 
@@ -333,9 +410,9 @@ fn two_records_that_jointly_prove_a_removal_spend_the_identity() {
         "and the mark still covers it, so the spent test can see it"
     );
     assert!(
-        settled.pending_fences.contains(&NodeId(5)),
-        "and the removal the pair proves owes a permanent fence: {:?}",
-        settled.pending_fences
+        transport.retires(NodeId(5)),
+        "and the policy this driver publishes retires it: {:?}",
+        transport.policies().last()
     );
 }
 
@@ -346,7 +423,7 @@ fn a_checkpoint_from_another_group_is_refused() {
     let before = driver.control_plane_checkpoint();
     let group = driver.release_group().expect("the driver holds a group");
 
-    let mut foreign = checkpoint(Some(9), &[1, 2, 3, 9], &[7]);
+    let mut foreign = checkpoint(Some(9), &[1, 2, 3, 9]);
     foreign.group = GROUP + 1;
     let refused = driver.adopt_group_with_checkpoint(group, Vec::new(), foreign);
 
@@ -368,72 +445,29 @@ fn a_checkpoint_from_another_group_is_refused() {
 
 /// Each way a record can contradict a driver's invariants is refused whole.
 ///
-/// The three clauses hold by construction for a record a driver produced, so
-/// each failure means the durable bytes were damaged — and each one lowers a
-/// retirement record in the direction that un-retires an identity.
+/// **Two clauses where there were four**, and the two that left were both about
+/// the obligation ledger: a fence naming a live member, and a fence naming an
+/// identity the record never saw spent. Neither is expressible now — a record
+/// carries a mark and a current state, and retirement is derived from them — so
+/// the validator states what is left, which is the coupling between the two and
+/// the mark covering every live identity.
+///
+/// Both hold by construction for a record a driver produced, so each failure
+/// means the durable bytes were damaged, and each one lowers a retirement record
+/// in the direction that un-retires an identity.
 #[test]
 fn a_contradictory_checkpoint_is_refused_and_installs_nothing() {
-    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 3] = [
+    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 2] = [
         (
-            checkpoint(None, &[1, 2], &[]),
+            checkpoint(None, &[1, 2]),
             ControlPlaneCheckpointError::CurrentStateWithoutRetirement,
         ),
         (
-            checkpoint(Some(2), &[1, 2, 5], &[]),
+            checkpoint(Some(2), &[1, 2, 5]),
             ControlPlaneCheckpointError::LiveMemberAboveMark {
                 node_id: NodeId(5),
                 mark: NodeId(2),
             },
-        ),
-        (
-            checkpoint(Some(3), &[1, 2, 3], &[2]),
-            ControlPlaneCheckpointError::FenceNamesLiveMember { node_id: NodeId(2) },
-        ),
-    ];
-
-    for (damaged, expected) in cases {
-        let (driver, _transport) = driver_holding(Some(3), &[1, 2, 3]);
-        let before = driver.control_plane_checkpoint();
-        let group = driver.release_group().expect("the driver holds a group");
-
-        let refused = driver.adopt_group_with_checkpoint(group, Vec::new(), damaged);
-        let Err(ManagedDriverError::InvalidControlPlaneCheckpoint { reason }) = refused else {
-            panic!("expected a typed checkpoint refusal, got {refused:?}");
-        };
-        assert_eq!(reason, expected);
-        assert_eq!(
-            driver.control_plane_checkpoint(),
-            before,
-            "a refused record moves nothing, so nothing is half-installed"
-        );
-    }
-}
-
-/// A fence the record cannot show a mark for is refused.
-///
-/// The clause the other three do not imply, and the one whose absence points the
-/// wrong way. `FenceNamesLiveMember` catches a fence naming an identity this
-/// record says is *live*; nothing caught a fence naming one this record has no
-/// opinion about at all. An identity above the mark was never in any committed
-/// configuration this record witnessed, so no committed removal here can have
-/// spent it — and a fence is the residue of a committed removal or it is
-/// nothing.
-///
-/// Absorbed instead of refused, it is the one contradiction that survives the
-/// join intact: the mark rises to cover a *live* identity, the obligation
-/// travels with it, and the driver publishes the replica to its link layer and
-/// then permanently fences it. `fence_peer` has no inverse, so that is not a
-/// stale peer set that the next flush corrects.
-#[test]
-fn a_fence_naming_an_identity_the_record_never_spent_is_refused() {
-    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 2] = [
-        (
-            checkpoint(None, &[], &[7]),
-            ControlPlaneCheckpointError::FenceNamesUnspentIdentity { node_id: NodeId(7) },
-        ),
-        (
-            checkpoint(Some(5), &[1, 2, 5], &[7]),
-            ControlPlaneCheckpointError::FenceNamesUnspentIdentity { node_id: NodeId(7) },
         ),
     ];
 
@@ -457,35 +491,32 @@ fn a_fence_naming_an_identity_the_record_never_spent_is_refused() {
 
 /// The refusal lands before the link layer is told anything.
 ///
-/// The cross-record shape, which is the one that costs a live replica. This
-/// driver's own committed configuration names node 7, so the join would raise
-/// the mark past it, keep it live — and keep the obligation the record brought.
-/// The next flush is then two contradictory statements about one replica:
-/// publish it, then fence it forever.
-///
-/// So the assertion is about *when* rather than only about what. Validation runs
+/// The assertion is about *when* rather than only about what. Validation runs
 /// before the first field moves and therefore before any derivation reaches the
 /// transport, which is what makes a damaged file a refusal to open rather than a
 /// replica this process has already helped destroy.
+///
+/// The stakes changed shape and did not go away. The permanent statement used to
+/// be a per-principal fence; it is the retirement floor now, and a floor raised
+/// from a damaged record is exactly as uninvertible — every identity beneath it
+/// that the peer set does not name is refused for the life of the group.
 #[test]
-fn a_fence_contradicting_a_live_member_is_refused_before_any_transport_call() {
+fn a_damaged_record_is_refused_before_any_transport_call() {
     let (driver, transport) = driver_holding(Some(7), &[1, 2, 7]);
     let before = driver.control_plane_checkpoint();
-    let fences_before = transport.fence_attempts();
+    let policies_before = transport.policies();
     let group = driver.release_group().expect("the driver holds a group");
 
-    let refused = driver.adopt_group_with_checkpoint(
-        group,
-        Vec::new(),
-        checkpoint(Some(5), &[1, 2, 5], &[7]),
-    );
+    let refused =
+        driver.adopt_group_with_checkpoint(group, Vec::new(), checkpoint(Some(2), &[1, 2, 7]));
 
     assert!(
         matches!(
             refused,
             Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
-                reason: ControlPlaneCheckpointError::FenceNamesUnspentIdentity {
-                    node_id: NodeId(7)
+                reason: ControlPlaneCheckpointError::LiveMemberAboveMark {
+                    node_id: NodeId(7),
+                    mark: NodeId(2),
                 }
             })
         ),
@@ -497,12 +528,12 @@ fn a_fence_contradicting_a_live_member_is_refused_before_any_transport_call() {
         "a refused record moves nothing"
     );
     assert_eq!(
-        transport.fence_attempts(),
-        fences_before,
-        "the link layer was asked to fence a replica this driver still needs"
+        transport.policies(),
+        policies_before,
+        "and the link layer was told nothing on the way to the refusal"
     );
     assert!(
-        !transport.is_fenced(NodeId(7)),
+        !transport.retires(NodeId(7)),
         "node 7 is live in this driver's own committed configuration"
     );
 }
@@ -519,29 +550,27 @@ fn a_fence_contradicting_a_live_member_is_refused_before_any_transport_call() {
 /// with nothing to read it against spends every identity at or below it, so the
 /// driver refuses the whole cluster. A current state with no mark is a record
 /// whose retirement half was truncated away, so every identity the lost facts
-/// spent is allocatable again with no fence owed.
+/// spent is allocatable again and the floor this driver publishes stops covering
+/// any of them.
 #[test]
 fn a_record_that_separates_retirement_from_its_current_state_is_refused() {
-    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 4] = [
+    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 3] = [
         (
-            checkpoint_at(Some(3), &[1, 2, 3], &[], None),
+            checkpoint_at(Some(3), &[1, 2, 3], None),
             ControlPlaneCheckpointError::RetirementWithoutCurrentState,
         ),
-        // A mark and an obligation with no live set is still retirement state,
-        // so it needs a current state like any other.
+        // A mark with no live set at all is still retirement state, so it needs a
+        // current state like any other: read against nothing, it spends the
+        // cluster.
         (
-            checkpoint_at(Some(5), &[], &[5], None),
+            checkpoint_at(Some(5), &[], None),
             ControlPlaneCheckpointError::RetirementWithoutCurrentState,
-        ),
-        (
-            checkpoint_at(None, &[], &[], Some(LogIndex(3))),
-            ControlPlaneCheckpointError::CurrentStateWithoutRetirement,
         ),
         // `LogIndex(0)` is a real position rather than an absence, which is why
         // the current state is an `Option` — so this is the same separation and
         // not a zero standing in for `None`.
         (
-            checkpoint_at(None, &[], &[], Some(LogIndex(0))),
+            checkpoint_at(None, &[], Some(LogIndex(0))),
             ControlPlaneCheckpointError::CurrentStateWithoutRetirement,
         ),
     ];
@@ -549,7 +578,7 @@ fn a_record_that_separates_retirement_from_its_current_state_is_refused() {
     for (damaged, expected) in cases {
         let (driver, transport) = driver_holding(Some(3), &[1, 2, 3]);
         let before = driver.control_plane_checkpoint();
-        let fences_before = transport.fence_attempts();
+        let policies_before = transport.policies();
         let group = driver.release_group().expect("the driver holds a group");
 
         let refused = driver.adopt_group_with_checkpoint(group, Vec::new(), damaged);
@@ -563,8 +592,8 @@ fn a_record_that_separates_retirement_from_its_current_state_is_refused() {
             "a refused record moves nothing, so nothing is half-installed"
         );
         assert_eq!(
-            transport.fence_attempts(),
-            fences_before,
+            transport.policies(),
+            policies_before,
             "and the link layer was told nothing on the way to the refusal"
         );
     }
@@ -599,7 +628,6 @@ fn a_driver_that_has_observed_a_configuration_records_its_current_state() {
     let empty = PeerControlPlaneCheckpoint::<u64>::empty(GROUP);
     assert!(empty.committed_id_high_water.is_none());
     assert!(empty.current_committed.is_none());
-    assert!(empty.pending_fences.is_empty());
 }
 
 /// The later of two current states wins, and the earlier is not merged into it.
@@ -620,7 +648,7 @@ fn the_later_of_two_current_states_is_the_one_that_is_believed() {
         .adopt_group_with_checkpoint(
             group,
             Vec::new(),
-            checkpoint_at(Some(3), &[1, 2, 3], &[], Some(LogIndex(9))),
+            checkpoint_at(Some(3), &[1, 2, 3], Some(LogIndex(9))),
         )
         .expect("a snapshot-recovered record is an ordinary input");
 
@@ -644,6 +672,16 @@ fn the_later_of_two_current_states_is_the_one_that_is_believed() {
 /// would be choosing which record to believe with nothing to decide on; merging
 /// them would invent a third that neither record ever held, and a merged live
 /// set is exactly how a removal gets lost.
+///
+/// **The pair has to be one neither side's spent-ness explains**, which is what
+/// the normalization ahead of the comparison forces. The incoming record's mark
+/// is 2, so it has never seen node 5 in any committed configuration and has no
+/// opinion to filter with; the driver calls node 5 live at that same position.
+/// One of them is wrong about the raw fact, and nothing here can decide which.
+///
+/// A record that omits node 5 while its own mark *covers* it is the other case
+/// entirely — that record witnessed a removal — and
+/// `a_stale_checkpoint_cannot_un_spend_a_retired_identity` is where it lands.
 #[test]
 fn two_records_that_disagree_at_one_position_are_refused() {
     let (driver, transport) = driver_holding(Some(5), &[1, 2, 5]);
@@ -653,13 +691,13 @@ fn two_records_that_disagree_at_one_position_are_refused() {
         .as_ref()
         .expect("the driver holds a current state")
         .through;
-    let fences_before = transport.fence_attempts();
+    let policies_before = transport.policies();
     let group = driver.release_group().expect("the driver holds a group");
 
     let refused = driver.adopt_group_with_checkpoint(
         group,
         Vec::new(),
-        checkpoint_at(Some(5), &[1, 2], &[], Some(standing_at)),
+        checkpoint_at(Some(2), &[1, 2], Some(standing_at)),
     );
 
     assert!(
@@ -677,30 +715,69 @@ fn two_records_that_disagree_at_one_position_are_refused() {
         "a refused record moves nothing"
     );
     assert_eq!(
-        transport.fence_attempts(),
-        fences_before,
+        transport.policies(),
+        policies_before,
         "and the link layer was told nothing on the way to the refusal"
+    );
+}
+
+/// A record whose omission its own mark explains is a removal, not a
+/// contradiction.
+///
+/// The control for the clause above, and the line the normalization draws. This
+/// record stands where the driver stands and omits node 5 — but its mark is 5,
+/// so the omission *is* its report that a committed removal spent the identity.
+/// Refusing it would turn the commonest legitimate stale record into a file this
+/// process cannot open.
+#[test]
+fn a_record_whose_mark_explains_its_omission_is_a_removal() {
+    let (driver, transport) = driver_holding(Some(5), &[1, 2, 5]);
+    let standing_at = driver
+        .control_plane_checkpoint()
+        .current_committed
+        .expect("the driver holds a current state")
+        .through;
+    let group = driver.release_group().expect("the driver holds a group");
+
+    driver
+        .adopt_group_with_checkpoint(
+            group,
+            Vec::new(),
+            checkpoint_at(Some(5), &[1, 2], Some(standing_at)),
+        )
+        .expect("a record that witnessed a removal the driver had not");
+
+    assert!(
+        !live_of(&driver.control_plane_checkpoint()).contains(&NodeId(5)),
+        "the witnessed removal wins over the driver's own older reading"
+    );
+    assert!(
+        transport.retires(NodeId(5)),
+        "and the policy this driver publishes retires it: {:?}",
+        transport.policies().last()
     );
 }
 
 /// The control: a valid stale record still contributes everything it knows.
 ///
 /// Without it, a join that refused every stale record would pass every clause
-/// above and lose the whole point of the checkpoint. A record that saw a fence
-/// the driver never did still owes that fence.
+/// above and lose the whole point of the checkpoint. A record whose mark reaches
+/// further than this driver's own still raises the floor this driver publishes.
 #[test]
-fn a_stale_record_still_contributes_the_fence_it_witnessed() {
+fn a_stale_record_still_contributes_the_retirement_it_witnessed() {
     let (driver, transport) = driver_holding(Some(3), &[1, 2, 3]);
     let group = driver.release_group().expect("the driver holds a group");
 
     driver
-        .adopt_group_with_checkpoint(group, Vec::new(), checkpoint(Some(9), &[1, 2, 3], &[9]))
+        .adopt_group_with_checkpoint(group, Vec::new(), checkpoint(Some(9), &[1, 2, 3]))
         .expect("a valid record from a process that saw further");
 
     let settled = driver.control_plane_checkpoint();
     assert_eq!(settled.committed_id_high_water, Some(NodeId(9)));
     assert!(
-        transport.is_fenced(NodeId(9)),
-        "the obligation the other process could not discharge became this one's,          and this link took it"
+        transport.retires(NodeId(9)),
+        "the retirement the other process witnessed is now this driver's, and it \
+         published it: {:?}",
+        transport.policies().last()
     );
 }

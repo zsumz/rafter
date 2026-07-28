@@ -158,29 +158,6 @@ pub enum ControlPlaneCheckpointError {
     /// so a lowered mark is how a corrupted record un-retires everything above
     /// it.
     LiveMemberAboveMark { node_id: NodeId, mark: NodeId },
-    /// A pending fence names a replica the checkpoint's current state also calls
-    /// live.
-    ///
-    /// Contradictory by construction: a fence is licensed only by a committed
-    /// removal, and a removal is subtracted from the current state's membership
-    /// in the same call that owes the fence, whatever position the removal
-    /// arrived at. Installing it would ask the link layer to permanently fence a
-    /// replica the group still needs.
-    FenceNamesLiveMember { node_id: NodeId },
-    /// A pending fence names an identity the checkpoint never saw spent.
-    ///
-    /// The other half of the same rule, and the half a live-set comparison alone
-    /// cannot state: an identity *above* the mark — or any identity at all when
-    /// there is no mark — was never in a committed configuration this record
-    /// witnessed, so no committed removal recorded here can have spent it. A
-    /// fence is the residue of a committed removal or it is nothing.
-    ///
-    /// This is the direction that survives the join intact rather than being
-    /// caught by it. The mark rises to cover an identity another record calls
-    /// live, the obligation travels with it, and the next flush publishes the
-    /// replica to the link layer and then permanently fences it — which
-    /// [`crate::RaftTransport::fence_peer`] cannot undo.
-    FenceNamesUnspentIdentity { node_id: NodeId },
     /// The checkpoint carries retirement state and no current committed state.
     ///
     /// **The dangerous half of the coupling, and it is not subtle.** The spent
@@ -201,23 +178,39 @@ pub enum ControlPlaneCheckpointError {
     /// have observed is one whose greatest identity would have raised a mark, so
     /// a record holding the observation and no mark has had its retirement half
     /// truncated away. Absorbed, every identity the lost facts spent is
-    /// allocatable again with no fence owed and no later fact to re-derive one
-    /// from.
+    /// allocatable again, with the retirement floor this driver publishes falling
+    /// back to cover none of them and no later fact to re-derive it from.
     CurrentStateWithoutRetirement,
-    /// Two records disagree about the committed membership at one position.
+    /// Two observations of the committed membership at one position disagree
+    /// about it.
     ///
-    /// The join picks the later of two current states, and a tie it cannot break
+    /// The merge picks the later of two current states, and a tie it cannot break
     /// is refused rather than broken arbitrarily: the committed membership at
     /// one log position is one set, so this is not two observations to reconcile
     /// but two claims about a single fact. Picking either would be choosing
-    /// which record to believe with nothing to decide on, and merging them would
-    /// invent a third that neither record ever held.
+    /// which side to believe with nothing to decide on, and merging them would
+    /// invent a third that neither side ever held.
     ///
-    /// Unreachable for a cluster that keeps the single-use contract. Each
-    /// record's membership is its observation less the identities it saw a
-    /// committed removal spend, and under the contract no spent identity is
-    /// named again at a later position — so two records that looked at the same
-    /// position filtered the same nothing and agree.
+    /// **Raised from all four places two such observations meet**, which is what
+    /// it was missing: two checkpoints joining, a checkpoint meeting the adopted
+    /// runtime's endpoint, a held register meeting a routed committed endpoint,
+    /// and a held register meeting a crossing. Only the first refused a tie, so a
+    /// runtime that disagreed with a durable record at the very position both had
+    /// observed silently retired a live replica in one direction and silently
+    /// raised the floor past a never-committed identity in the other.
+    ///
+    /// **A readmitted spent identity is not this.** Both sides are normalized by
+    /// what either has proven spent — and by the removals the incoming fact
+    /// itself carries — before the tie is judged, so a cluster that names a
+    /// retired identity again is reported at
+    /// [`crate::TransportRaftDriver::readmitted_retired_peers`] and refused, which
+    /// is a configuration fault with a known answer rather than a record this
+    /// process cannot read.
+    ///
+    /// What survives that normalization is an identity one side calls live at a
+    /// position where the other, with a mark too low to have any opinion about
+    /// it, calls the membership something else. That is damaged, truncated, or
+    /// foreign durable state.
     ContradictoryCurrentState { through: LogIndex },
 }
 
@@ -231,15 +224,6 @@ impl fmt::Display for ControlPlaneCheckpointError {
                 formatter,
                 "the checkpoint's live member {node_id} is above its high-water mark {mark}"
             ),
-            Self::FenceNamesLiveMember { node_id } => write!(
-                formatter,
-                "the checkpoint fences {node_id} and also calls it a live member"
-            ),
-            Self::FenceNamesUnspentIdentity { node_id } => write!(
-                formatter,
-                "the checkpoint fences {node_id} without ever having seen a committed \
-                 configuration that named it"
-            ),
             Self::RetirementWithoutCurrentState => formatter.write_str(
                 "the checkpoint records what it retired and no committed membership to \
                  read it against, so every identity at or below its mark would be spent",
@@ -251,7 +235,7 @@ impl fmt::Display for ControlPlaneCheckpointError {
             ),
             Self::ContradictoryCurrentState { through } => write!(
                 formatter,
-                "two records disagree about the committed membership at index {through}"
+                "two observations disagree about the committed membership at index {through}"
             ),
         }
     }

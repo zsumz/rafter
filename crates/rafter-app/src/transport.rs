@@ -1,8 +1,8 @@
 //! Peer envelope types for caller-owned transport and routing.
 //!
 //! This module defines explicit group-aware envelopes. Authentication,
-//! authorization, and removed-peer fencing remain the responsibility of the
-//! embedding runtime before messages enter the group driver.
+//! authorization, and the refusal of retired peers remain the responsibility of
+//! the embedding runtime before messages enter the group driver.
 
 use std::{error::Error, fmt};
 
@@ -90,16 +90,35 @@ pub trait AuthenticatedPeerValidator<G, P> {
     /// principal would leave the link layer authorizing the wrong subject with
     /// every published set still reading as current.
     ///
-    /// **A removed replica stays resolvable until its fence has been accepted.**
-    /// Fencing is per principal and may be refused, which makes retrying it the
-    /// caller's obligation; a driver holds the obligation as a `NodeId` and asks
-    /// here again at each attempt. A directory that forgot the mapping the
-    /// moment the removal committed would turn a transient link failure into a
-    /// permanently unfenced replica.
+    /// **A removed replica need not stay resolvable.** This is asked for the
+    /// replicas a driver is *authorizing*, and a driver never authorizes an
+    /// identity a committed removal has spent. Retirement is published as a floor
+    /// beside the authorized set rather than as a call naming each removed
+    /// principal, so no lookup for a removed identity is ever made — a directory
+    /// may forget the mapping as soon as the removal commits.
     fn principal_for_node(&self, group_id: &G, node_id: NodeId) -> Option<P>;
 
+    /// Whether this deployment's current authorization policy names `node_id`.
     fn is_authorized_peer(&self, group_id: &G, node_id: NodeId) -> bool;
 
+    /// Whether a committed removal has retired `node_id` for this group.
+    ///
+    /// **Derived from the authorization policy rather than recorded per
+    /// principal.** An embedder's transport is handed one statement — the
+    /// authorized principals and the greatest identity the group has ever
+    /// committed — and this is the half of it that says "not merely unauthorized,
+    /// but retired": `node_id` is at or below that floor and the authorized set
+    /// does not name it.
+    ///
+    /// Kept distinct from [`AuthenticatedPeerValidator::is_authorized_peer`]
+    /// because the two are not equally repairable, and
+    /// [`AuthenticatedPeerEnvelopeError::FencedPeer`] is checked first for that
+    /// reason: an unauthorized principal becomes authorized at the next
+    /// publication, and a retired one does not, because the floor never falls.
+    ///
+    /// A directory that cannot map principals to replicas may answer `false`
+    /// here and rely on the authorization half alone; the driver's own inbound
+    /// membership check refuses the retired replica either way.
     fn is_fenced_peer(&self, group_id: &G, node_id: NodeId) -> bool;
 }
 

@@ -312,19 +312,17 @@ fn a_restart_does_not_retire_a_member_the_replayed_history_only_ever_added() {
         "the mark still names the greatest identity the log committed"
     );
     assert!(
-        checkpoint.pending_fences.is_empty(),
-        "a log that removed nobody owes no fence: {:?}",
-        checkpoint.pending_fences
+        !transport.retires(NodeId(5)),
+        "the replica the cluster admitted last was retired by its own restart"
     );
     assert!(
-        !transport.is_fenced(NodeId(5)),
-        "the replica the cluster admitted last was fenced by its own restart"
-    );
-    assert!(
-        !transport.is_fenced(NodeId(4)),
+        !transport.retires(NodeId(4)),
         "and neither was the one before it"
     );
-    assert_eq!(driver.pending_peer_fences(), 0);
+    assert!(
+        !driver.peer_policy_is_stale(),
+        "and the link layer holds exactly the policy the group requires"
+    );
 }
 
 /// Recovering twice from the same durable state changes nothing the second time.
@@ -349,10 +347,13 @@ fn a_second_recovery_from_the_same_durable_state_is_a_no_op() {
          same durable state"
     );
     assert!(
-        !transport.is_fenced(NodeId(5)),
-        "the second recovery fenced a live member"
+        !transport.retires(NodeId(5)),
+        "the second recovery retired a live member"
     );
-    assert_eq!(second.pending_peer_fences(), 0);
+    assert!(
+        !second.peer_policy_is_stale(),
+        "and its link layer holds exactly what the group requires"
+    );
 }
 
 /// A second recovery keeps the committed floor an effective narrowing may not
@@ -503,11 +504,11 @@ fn a_retirement_record_with_no_current_state_is_refused_before_any_transport_cal
         transport.peer_sets().is_empty(),
         "the refusal landed before the link layer was told anything"
     );
-    assert!(
-        transport.fence_attempts().is_empty(),
-        "and before it was asked to permanently fence a replica the log only \
-         ever added: {:?}",
-        transport.fence_attempts()
+    assert_eq!(
+        transport.retirement_floor(),
+        None,
+        "and before any retirement floor was raised over a log that only ever \
+         added"
     );
 }
 
@@ -553,10 +554,10 @@ fn a_current_state_with_nothing_retired_beside_it_is_refused() {
         transport.peer_sets().is_empty(),
         "the refusal landed before the link layer was told anything"
     );
-    assert!(
-        transport.fence_attempts().is_empty(),
-        "and before any fence was attempted: {:?}",
-        transport.fence_attempts()
+    assert_eq!(
+        transport.retirement_floor(),
+        None,
+        "and before any retirement floor was raised"
     );
 }
 
@@ -597,7 +598,7 @@ fn a_restart_still_spends_an_identity_the_replayed_history_admitted_and_removed(
         [NodeId(1), NodeId(2), NodeId(3)].into_iter().collect()
     );
     assert!(
-        transport.is_fenced(NodeId(5)),
+        transport.retires(NodeId(5)),
         "and the link layer was told to stop trusting the principal it retired"
     );
 }
@@ -643,7 +644,7 @@ fn an_adoption_still_spends_an_identity_its_recovery_outputs_admitted_and_remove
         live_of(&checkpoint)
     );
     assert!(
-        transport.is_fenced(NodeId(5)),
+        transport.retires(NodeId(5)),
         "and the link layer took the fence the removal licensed"
     );
 }

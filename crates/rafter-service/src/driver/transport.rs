@@ -186,10 +186,11 @@ where
     /// empty checkpoint is the honest description of a *first* incarnation over
     /// empty storage — every later one has state the Raft log cannot give back.
     /// A driver reconstructed after a crash without one starts with no
-    /// high-water mark and no fence obligations: a removal whose fence the link
-    /// layer refused is never retried, and the identity that removal consumed
-    /// becomes allocatable again. See [`PeerControlPlaneCheckpoint`] for why
-    /// neither fact is re-derivable and what a stale checkpoint costs.
+    /// high-water mark and no current committed state: the retirement floor it
+    /// publishes falls back to whatever the surviving configuration names, so the
+    /// identity a committed removal consumed stops being retired and becomes
+    /// allocatable again. See [`PeerControlPlaneCheckpoint`] for why neither fact
+    /// is re-derivable and what a stale checkpoint costs.
     ///
     /// The checkpoint is installed before any membership fact is derived from
     /// `group`, so a recovered mark of 5 beats a reconstructed committed set of
@@ -232,8 +233,8 @@ where
                 committed_members: BTreeSet::new(),
                 current_committed: None,
                 committed_id_high_water: None,
-                published_peers: None,
-                pending_fences: BTreeSet::new(),
+                published_policy: None,
+                contradicted_at: None,
                 checkpoint_epoch: 0,
                 shutting_down: false,
             })),
@@ -260,12 +261,22 @@ where
                 .lock()
                 .apply_recovery_outputs(recovery_outputs)?;
         }
-        // Published before the driver serves anything, so the transport's peer
-        // set is the group's membership from construction onward rather than
+        // Published before the driver serves anything, so the transport's policy
+        // is the group's membership from construction onward rather than
         // undefined until the first membership change. A group that never
         // changes membership would otherwise never tell its link layer anything,
         // and a recovery report carries no membership event to stand in.
-        driver.inner.lock().publish_adopted_membership();
+        //
+        // Fallible, and the failure is the one shape a constructor must not
+        // absorb: a durable record and the runtime it was recovered beside,
+        // standing at one position and disagreeing about the committed
+        // membership there. Nothing has been published when this refuses, and the
+        // driver being built is dropped rather than returned degraded.
+        driver
+            .inner
+            .lock()
+            .publish_adopted_membership()
+            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
         Ok(driver)
     }
 
@@ -524,10 +535,10 @@ where
     pub fn tick(&self) -> Result<(), ManagedDriverError> {
         let mut state = self.inner.lock();
         state.reject_if_shutting_down()?;
-        // Before the step, so a peer set or a fence the link layer refused
-        // earlier is retried on the embedder's own timer rather than waiting for
-        // the cluster's next configuration change — which may never come.
-        state.flush_peer_control_plane();
+        // Before the step, so a policy the link layer refused earlier is retried
+        // on the embedder's own timer rather than waiting for the cluster's next
+        // configuration change — which may never come.
+        state.flush_peer_policy();
         state.step(GroupInput::Tick)
     }
 
@@ -536,17 +547,18 @@ where
     ///
     /// Validation happens in two stages, and they answer different questions.
     /// [`validate_inbound_peer_envelope`] asks the *validator* whether the link
-    /// layer authenticated this principal as this replica and whether that
-    /// replica is authorized and unfenced. Then this driver asks itself whether
-    /// its own group's membership names the sender at all. Both run before the
-    /// group is touched, exactly where a production embedder refuses a frame,
-    /// and the group never sees one that fails either.
+    /// layer authenticated this principal as this replica, and whether the policy
+    /// that deployment currently holds authorizes it rather than retiring it.
+    /// Then this driver asks itself whether its own group's membership names the
+    /// sender at all. Both run before the group is touched, exactly where a
+    /// production embedder refuses a frame, and the group never sees one that
+    /// fails either.
     ///
     /// The second stage is the fail-closed half, and it exists because the first
-    /// one can be out of date. [`crate::RaftTransport::fence_peer`] is the
-    /// operation that stops later frames from a removed replica, and it is
-    /// allowed to fail — so between the moment the cluster commits a removal and
-    /// the moment the transport accepts the fence, the validator still
+    /// one can be out of date. [`crate::RaftTransport::update_peers`] is how a
+    /// removed replica stops being authorized, and it is allowed to fail — so
+    /// between the moment the cluster commits a removal and the moment the
+    /// transport accepts the policy that retires it, the validator still
     /// authorizes a replica the cluster has retired. The driver knows better
     /// than its own link layer in that window: its membership is committed ∪
     /// effective, so it can refuse the frame itself rather than let a transient
@@ -557,8 +569,8 @@ where
     /// appended and not committed is present and its frames are accepted — which
     /// it must be, or it can never catch up and the change can never commit.
     ///
-    /// Rejection is not a driver failure: an unauthorized, fenced, or retired
-    /// peer sending frames is an expected condition, and the caller decides
+    /// Rejection is not a driver failure: an unauthorized or retired peer
+    /// sending frames is an expected condition, and the caller decides
     /// whether to log it, count it, or drop the connection.
     ///
     /// # Errors
@@ -576,8 +588,9 @@ where
             .reject_if_shutting_down()
             .map_err(|source| InboundEnvelopeError::Driver { source })?;
         // A delivery is an entry point like a tick, and a frame from a replica
-        // whose fence is owed is the likeliest moment for the retry to matter.
-        state.flush_peer_control_plane();
+        // the current policy retires is the likeliest moment for the retry to
+        // matter.
+        state.flush_peer_policy();
         let node_id = state.node_id;
         let envelope = validate_inbound_peer_envelope(envelope, node_id, &state.validator)
             .map_err(|source| InboundEnvelopeError::Rejected { source })?;
@@ -621,7 +634,7 @@ where
         // embedder calls after each batch of deliveries, so it is the supervisory
         // surface a driver whose link layer just recovered is most likely to
         // reach first.
-        state.flush_peer_control_plane();
+        state.flush_peer_policy();
         state.drive_pending_reads()
     }
 
@@ -729,10 +742,11 @@ where
     /// checkpoint from *before* this driver existed — a takeover, or a driver
     /// re-armed from another process's persisted state.
     ///
-    /// Merged rather than assigned, because this driver may already owe fences
-    /// of its own and a released group does not cancel them: obligations are the
-    /// union and the mark is the higher of the two. An in-process release and
-    /// re-adopt needs none of this and passes an empty checkpoint through
+    /// Merged rather than assigned, because this driver may already hold
+    /// retirement state of its own and a released group does not cancel it: the
+    /// mark is the higher of the two and the current state is the later
+    /// observation. An in-process release and re-adopt needs none of this and
+    /// passes an empty checkpoint through
     /// [`TransportRaftDriver::adopt_group`], because nothing was lost.
     ///
     /// # What an `Err` leaves behind
@@ -743,17 +757,19 @@ where
     ///
     /// Everything above the installation is a *refusal*: shutdown, a group
     /// already held, a foreign group ID, a checkpoint that contradicts this
-    /// driver's invariants, a node ID a committed removal has spent, and
-    /// watermarks a released incarnation had already passed. Each leaves the
-    /// driver holding no group, so [`TransportRaftDriver::with_group`] answers
+    /// driver's invariants, a runtime whose committed membership contradicts the
+    /// restored record at a position both observed, a node ID a committed removal
+    /// has spent, and watermarks a released incarnation had already passed. Each
+    /// leaves the driver holding no group, so
+    /// [`TransportRaftDriver::with_group`] answers
     /// [`ManagedDriverError::NoGroup`] and the next adoption is an ordinary
     /// first attempt. The group itself is consumed and dropped, which is what a
     /// refusal means: the supervisor rebuilds and offers a new one.
     ///
-    /// **Only the recovery outputs fail after the group is installed, and that
-    /// adoption is not rolled back.** The driver holds the group, `with_group`
-    /// reads it, and `service_state` answers for it —
-    /// [`TransportRaftDriver::release_group`] is how a supervisor gets it back,
+    /// **Only the recovery outputs and the publication they feed fail after the
+    /// group is installed, and that adoption is not rolled back.** The driver
+    /// holds the group, `with_group` reads it, and `service_state` answers for it
+    /// — [`TransportRaftDriver::release_group`] is how a supervisor gets it back,
     /// and is required before another adoption, which would otherwise raise
     /// [`ManagedDriverError::GroupAlreadyAdopted`]. Rolling back instead would
     /// *drop* the group on the floor, which is strictly worse: a caller holding
@@ -761,9 +777,12 @@ where
     ///
     /// The link layer is told what the installed group requires whether or not
     /// the outputs applied, because that is the one statement a later call
-    /// cannot repair on its own: a peer set left describing the retired
+    /// cannot repair on its own: a policy left describing the retired
     /// incarnation is not stale, it is wrong about who may speak, and nothing
-    /// re-derives it until the cluster's next configuration change.
+    /// re-derives it until the cluster's next configuration change. The single
+    /// exception is a contradiction the recovery outputs themselves introduced,
+    /// where publishing nothing *is* the correct statement — see
+    /// [`DriverServiceState::ContradictoryCurrentState`].
     ///
     /// **Retry is legal, and re-sending is sound.** The checkpoint is merged
     /// before the failure and stays merged; the join is monotone and idempotent,
@@ -827,6 +846,15 @@ where
                 node_id: group.node_id(),
             });
         }
+        // And the offered runtime is asked the same question the record was,
+        // before it is installed: does it contradict what this driver now holds
+        // at a position both have observed? A supervisor handing over a replica
+        // whose committed membership disagrees with the durable record is handing
+        // over one that must not open, not one that opens and then reports itself
+        // sick — so this joins the refusals above the installation.
+        state
+            .check_adopted_membership(group.runtime())
+            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
         let (next_proposal_id, next_read_id) = adopted_watermarks(&group, PendingProposals::Carry)?;
         state.node_id = group.node_id();
         state.next_proposal_id = highest(state.next_proposal_id, next_proposal_id);
@@ -844,16 +872,23 @@ where
         // group is installed by now, so this driver *is* the replica the link
         // layer authorizes for — and returning early left the transport
         // describing the retired incarnation with nothing to re-derive it from,
-        // because the peer set is only republished when the cluster's
-        // membership moves.
+        // because the policy is only republished when the cluster's membership
+        // moves.
         let applied = if recovery_outputs.is_empty() {
             Ok(())
         } else {
             state.apply_recovery_outputs(recovery_outputs)
         };
-        state.publish_adopted_membership();
+        // The check above cleared the record against the runtime, so the only way
+        // this refuses is a contradiction the recovery outputs themselves
+        // introduced — which is a group already installed, exactly like a failed
+        // apply. The driver records the refusal and stops serving; the supervisor
+        // releases and rebuilds.
+        let published = state
+            .publish_adopted_membership()
+            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason });
         state.publish_metrics();
-        applied
+        applied.and(published)
     }
 }
 
