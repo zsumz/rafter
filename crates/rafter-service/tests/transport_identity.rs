@@ -899,7 +899,7 @@ fn an_id_allocated_into_a_gap_below_the_high_water_mark_is_refused() {
         matches!(
             refused,
             Err(InboundEnvelopeError::Rejected {
-                source: AuthenticatedPeerEnvelopeError::FencedPeer { node_id: NodeId(3) }
+                source: AuthenticatedPeerEnvelopeError::RetiredPeer { node_id: NodeId(3) }
             })
         ),
         "and refuses it rather than authorizing an ID the contract forbids, \

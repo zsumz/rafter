@@ -290,7 +290,7 @@ fn lock_nameable(
 /// Maps authenticated principals to replicas, and reads retirement off the
 /// policy the link layer holds.
 ///
-/// `is_fenced_peer` is *derived* here rather than recorded, which is what the
+/// `is_retired_peer` is *derived* here rather than recorded, which is what the
 /// trait now asks of a directory: the deployment is handed one statement — the
 /// authorized principals beside the retirement floor — and both halves of the
 /// inbound check come out of it.
@@ -321,7 +321,7 @@ impl AuthenticatedPeerValidator<u64, Principal> for Validator {
         self.authorized.contains(&node_id)
     }
 
-    fn is_fenced_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {
+    fn is_retired_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {
         self.transport.retires(node_id)
     }
 }

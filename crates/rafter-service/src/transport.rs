@@ -284,7 +284,7 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
 ///
 /// Returns [`AuthenticatedPeerEnvelopeError`] if the authenticated principal
 /// is not mapped to the Raft sender, the target is not the local node, the
-/// group is unknown, the peer is unauthorized or fenced, or the embedded Raft
+/// group is unknown, the peer is retired or unauthorized, or the embedded Raft
 /// message sender disagrees with the envelope sender.
 pub fn validate_inbound_peer_envelope<G, P, V>(
     envelope: AuthenticatedPeerEnvelope<G, P>,
@@ -305,12 +305,15 @@ mod tests {
 
     use super::*;
 
+    /// A directory holding one published [`PeerPolicy`], the way the trait asks
+    /// for one: the authorized replicas and the floor beneath which an
+    /// unauthorized identity is retired.
     #[derive(Default)]
     struct Validator {
         known_groups: BTreeSet<u64>,
         principal_map: BTreeMap<&'static str, NodeId>,
         authorized: BTreeSet<NodeId>,
-        fenced: BTreeSet<NodeId>,
+        retirement_floor: Option<NodeId>,
     }
 
     impl AuthenticatedPeerValidator<u64, &'static str> for Validator {
@@ -336,8 +339,9 @@ mod tests {
             self.authorized.contains(&node_id)
         }
 
-        fn is_fenced_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {
-            self.fenced.contains(&node_id)
+        fn is_retired_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {
+            self.retirement_floor.is_some_and(|floor| node_id <= floor)
+                && !self.authorized.contains(&node_id)
         }
     }
 
@@ -425,6 +429,8 @@ mod tests {
         );
     }
 
+    /// An identity the policy does not authorize and the floor does not cover is
+    /// unauthorized: not admitted yet, and admissible by the next publication.
     #[test]
     fn inbound_validation_rejects_unauthorized_peer() {
         let mut validator = validator();
@@ -436,14 +442,21 @@ mod tests {
         );
     }
 
+    /// The same identity beneath the floor is retired, and says so.
+    ///
+    /// The pair is the whole of the boundary's vocabulary and the two halves come
+    /// from one value, so the only thing separating this case from the one above
+    /// is the floor. Read at this seam rather than only at the app layer's,
+    /// because this is the function an embedder calls.
     #[test]
-    fn inbound_validation_rejects_fenced_peer() {
+    fn inbound_validation_rejects_a_retired_peer_as_retired() {
         let mut validator = validator();
-        validator.fenced.insert(NodeId(2));
+        validator.authorized.clear();
+        validator.retirement_floor = Some(NodeId(2));
 
         assert_eq!(
             validate_inbound_peer_envelope(envelope(), NodeId(1), &validator),
-            Err(AuthenticatedPeerEnvelopeError::FencedPeer { node_id: NodeId(2) })
+            Err(AuthenticatedPeerEnvelopeError::RetiredPeer { node_id: NodeId(2) })
         );
     }
 

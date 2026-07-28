@@ -13,7 +13,7 @@ use rafter::{Message, NodeId};
 /// The app layer returns envelopes to the caller; it does not send them. A
 /// multi-group or route-aware runtime can inspect `group_id`, authenticate the
 /// sender at its own transport boundary, and dispatch the embedded Raft
-/// message under its own routing and fencing policy.
+/// message under its own routing and admission policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerEnvelope<G> {
     pub group_id: G,
@@ -30,8 +30,8 @@ pub struct PeerEnvelope<G> {
 /// - `group_id` is known locally;
 /// - `authenticated_peer` maps to `raft_from`;
 /// - `raft_to` is the local node ID;
+/// - the peer is not retired;
 /// - the peer is authorized for the group;
-/// - the peer is not fenced;
 /// - the sender embedded in the Raft message matches `raft_from`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthenticatedPeerEnvelope<G, P> {
@@ -55,8 +55,7 @@ pub trait AuthenticatedPeerValidator<G, P> {
     /// [`AuthenticatedPeerValidator::node_for_authenticated_peer`], and the
     /// same policy: the object that decides which replica a principal is, is
     /// the object that knows which principal a replica has. A driver needs this
-    /// direction to publish a group's membership as a transport peer set and to
-    /// fence a replica the cluster removed.
+    /// direction to publish a group's membership as a transport peer set.
     ///
     /// `None` means this deployment cannot name a principal for `node_id`. A
     /// caller must not read that as an empty peer set: a peer set missing a
@@ -111,15 +110,24 @@ pub trait AuthenticatedPeerValidator<G, P> {
     /// does not name it.
     ///
     /// Kept distinct from [`AuthenticatedPeerValidator::is_authorized_peer`]
-    /// because the two are not equally repairable, and
-    /// [`AuthenticatedPeerEnvelopeError::FencedPeer`] is checked first for that
-    /// reason: an unauthorized principal becomes authorized at the next
-    /// publication, and a retired one does not, because the floor never falls.
+    /// because the two are not equally repairable: an unauthorized principal
+    /// becomes authorized at the next publication, and a retired one does not,
+    /// because the floor never falls.
+    ///
+    /// **This is asked first**, and under the derivation above it has to be. A
+    /// retired identity is one the authorized set does not name, so it is
+    /// unauthorized by construction — and an authorization check that ran ahead
+    /// of this one answered every retired peer with the repairable variant,
+    /// leaving [`AuthenticatedPeerEnvelopeError::RetiredPeer`] unreachable for
+    /// every directory that follows the contract. The two are still one check
+    /// from the frame's point of view; what the order decides is which of them an
+    /// operator is told.
     ///
     /// A directory that cannot map principals to replicas may answer `false`
     /// here and rely on the authorization half alone; the driver's own inbound
-    /// membership check refuses the retired replica either way.
-    fn is_fenced_peer(&self, group_id: &G, node_id: NodeId) -> bool;
+    /// membership check refuses the retired replica either way, and the only cost
+    /// is that the refusal reads as repairable when it is not.
+    fn is_retired_peer(&self, group_id: &G, node_id: NodeId) -> bool;
 }
 
 /// Validation failure before an authenticated frame may enter a group.
@@ -141,7 +149,7 @@ pub enum AuthenticatedPeerEnvelopeError {
     UnauthorizedPeer {
         node_id: NodeId,
     },
-    FencedPeer {
+    RetiredPeer {
         node_id: NodeId,
     },
     SenderMismatch {
@@ -168,7 +176,10 @@ impl fmt::Display for AuthenticatedPeerEnvelopeError {
             Self::UnauthorizedPeer { node_id } => {
                 write!(formatter, "peer {node_id} is not authorized for this group")
             }
-            Self::FencedPeer { node_id } => write!(formatter, "peer {node_id} is fenced"),
+            Self::RetiredPeer { node_id } => write!(
+                formatter,
+                "peer {node_id} was retired by a committed removal and may never speak for this group again"
+            ),
             Self::SenderMismatch {
                 envelope_from,
                 message_from,
@@ -190,7 +201,7 @@ impl<G, P> AuthenticatedPeerEnvelope<G, P> {
     ///
     /// Returns an envelope error when the group is unknown, the authenticated
     /// peer does not map to `raft_from`, the message targets another local
-    /// node, the peer is unauthorized or fenced, or the embedded Raft message
+    /// node, the peer is retired or unauthorized, or the embedded Raft message
     /// sender does not match the envelope sender.
     pub fn validate<V>(
         &self,
@@ -220,13 +231,20 @@ impl<G, P> AuthenticatedPeerEnvelope<G, P> {
                 actual: self.raft_to,
             });
         }
-        if !validator.is_authorized_peer(&self.group_id, self.raft_from) {
-            return Err(AuthenticatedPeerEnvelopeError::UnauthorizedPeer {
+        // **Retirement first, and the order is the whole of what makes the
+        // distinction sayable.** Both answers come out of one published policy —
+        // authorized means "in the set", retired means "beneath the floor and
+        // not in the set" — so retirement *implies* unauthorized for every
+        // directory that follows the contract. Asking about authorization first
+        // therefore answered every retired peer with the repairable variant, and
+        // the permanent one was dead code at the boundary.
+        if validator.is_retired_peer(&self.group_id, self.raft_from) {
+            return Err(AuthenticatedPeerEnvelopeError::RetiredPeer {
                 node_id: self.raft_from,
             });
         }
-        if validator.is_fenced_peer(&self.group_id, self.raft_from) {
-            return Err(AuthenticatedPeerEnvelopeError::FencedPeer {
+        if !validator.is_authorized_peer(&self.group_id, self.raft_from) {
+            return Err(AuthenticatedPeerEnvelopeError::UnauthorizedPeer {
                 node_id: self.raft_from,
             });
         }
@@ -290,12 +308,19 @@ mod tests {
 
     use super::*;
 
+    /// A directory that derives both admission answers from one published
+    /// policy, which is what the trait asks of one.
+    ///
+    /// Two independent sets here would let a fixture state a pair no deployment
+    /// can hold — retired and authorized at once — and it did: the retirement
+    /// arm was only reachable from such a pair, so it passed its tests while
+    /// being dead for every directory that follows the contract.
     #[derive(Default)]
     struct TestValidator {
         known_groups: BTreeSet<u64>,
         principals: BTreeMap<&'static str, NodeId>,
         authorized: BTreeSet<NodeId>,
-        fenced: BTreeSet<NodeId>,
+        retirement_floor: Option<NodeId>,
     }
 
     impl AuthenticatedPeerValidator<u64, &'static str> for TestValidator {
@@ -321,8 +346,9 @@ mod tests {
             self.authorized.contains(&node_id)
         }
 
-        fn is_fenced_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {
-            self.fenced.contains(&node_id)
+        fn is_retired_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {
+            self.retirement_floor.is_some_and(|floor| node_id <= floor)
+                && !self.authorized.contains(&node_id)
         }
     }
 
@@ -406,14 +432,46 @@ mod tests {
         );
     }
 
+    /// A retired identity is reported as retired rather than as merely
+    /// unauthorized.
+    ///
+    /// **The distinction is the whole reason both predicates exist**, and it was
+    /// unreachable. Retirement is derived from the published policy — at or below
+    /// the floor, and not in the authorized set — so a retired identity is
+    /// *by definition* unauthorized, and an authorization check that ran first
+    /// answered every retired peer with the repairable variant. An operator
+    /// reading it could not tell "the control plane has not caught up with this
+    /// replica yet" from "the cluster consumed this identity and never will
+    /// again".
     #[test]
-    fn authenticated_envelope_rejects_fenced_peer() {
+    fn authenticated_envelope_rejects_a_retired_peer_as_retired() {
         let mut validator = validator();
-        validator.fenced.insert(NodeId(2));
+        // The committed removal that retired node 2: out of the authorized set,
+        // and beneath a floor that covers it.
+        validator.authorized.remove(&NodeId(2));
+        validator.retirement_floor = Some(NodeId(2));
 
         assert_eq!(
             authenticated_envelope().validate(NodeId(1), &validator),
-            Err(AuthenticatedPeerEnvelopeError::FencedPeer { node_id: NodeId(2) })
+            Err(AuthenticatedPeerEnvelopeError::RetiredPeer { node_id: NodeId(2) })
+        );
+    }
+
+    /// An identity *above* the floor is unauthorized and not retired.
+    ///
+    /// The control for the clause above, and the direction the two differ in: a
+    /// replica this deployment has provisioned and the cluster has not admitted
+    /// becomes authorized at the next publication, so reporting it as retired
+    /// would name a permanent condition for a transient one.
+    #[test]
+    fn authenticated_envelope_rejects_an_unadmitted_peer_as_unauthorized() {
+        let mut validator = validator();
+        validator.authorized.remove(&NodeId(2));
+        validator.retirement_floor = Some(NodeId(1));
+
+        assert_eq!(
+            authenticated_envelope().validate(NodeId(1), &validator),
+            Err(AuthenticatedPeerEnvelopeError::UnauthorizedPeer { node_id: NodeId(2) })
         );
     }
 

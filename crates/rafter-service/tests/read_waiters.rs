@@ -83,7 +83,7 @@ impl AuthenticatedPeerValidator<u64, Principal> for Validator {
     fn is_authorized_peer(&self, _group_id: &u64, _node_id: NodeId) -> bool {
         true
     }
-    fn is_fenced_peer(&self, _group_id: &u64, _node_id: NodeId) -> bool {
+    fn is_retired_peer(&self, _group_id: &u64, _node_id: NodeId) -> bool {
         false
     }
 }

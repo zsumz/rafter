@@ -379,7 +379,7 @@ impl AuthenticatedPeerValidator<LockGroupId, PeerPrincipal> for PeerDirectory {
     }
 
     /// Derived from the published policy rather than recorded per principal.
-    fn is_fenced_peer(&self, _group_id: &LockGroupId, node_id: NodeId) -> bool {
+    fn is_retired_peer(&self, _group_id: &LockGroupId, node_id: NodeId) -> bool {
         let state = lock(&self.shared);
         state.retirement_floor.is_some_and(|floor| node_id <= floor)
             && !state

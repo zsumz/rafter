@@ -324,7 +324,7 @@ fn a_retired_peer_is_refused_after_the_policy_retires_it() {
         matches!(
             error,
             InboundEnvelopeError::Rejected {
-                source: AuthenticatedPeerEnvelopeError::FencedPeer { node_id: NodeId(2) },
+                source: AuthenticatedPeerEnvelopeError::RetiredPeer { node_id: NodeId(2) },
             }
         ),
         "got {error:?}"

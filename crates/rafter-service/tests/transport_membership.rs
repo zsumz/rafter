@@ -430,7 +430,7 @@ fn a_failed_step_still_routes_the_membership_it_moved_through() {
         matches!(
             refused,
             Err(InboundEnvelopeError::Rejected {
-                source: AuthenticatedPeerEnvelopeError::FencedPeer { node_id: NodeId(3) }
+                source: AuthenticatedPeerEnvelopeError::RetiredPeer { node_id: NodeId(3) }
             })
         ),
         "and the removed replica is refused by the fence itself rather than by \
