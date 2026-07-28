@@ -11,6 +11,12 @@
 //! at all — is [`super::control_plane`] and the three files beneath it, which own
 //! every rule over the membership and policy fields declared below. This file
 //! declares them and never derives anything from them.
+//!
+//! The fourth answer — what condition this driver is *in* — is
+//! [`super::condition`], split off for the same reason again: a supervisor
+//! polling a driver's standing and a reader following a step are reading for
+//! different things, and the two types that answer the first hold no state and
+//! read none.
 
 use std::{collections::BTreeSet, sync::TryLockError};
 
@@ -18,6 +24,8 @@ use crate::transport::{AuthenticatedPeerValidator, RaftTransport, SnapshotChunkE
 
 use super::super::*;
 use super::checkpoint::CurrentCommittedState;
+use super::condition::Contradiction;
+use super::reconciliation::StagedMembership;
 use super::waiters::{ReadWaiter, WriteWaiter};
 use super::TransportDriverOptions;
 
@@ -226,8 +234,7 @@ where
     /// authorizes no peers — and a driver that could not tell the two apart
     /// would skip the first publication of exactly that group.
     pub(super) published_policy: Option<DesiredPeerPolicy>,
-    /// Where two observations of the committed membership contradicted each
-    /// other, if they have.
+    /// The contradiction this driver's licensing inputs proved, if they have.
     ///
     /// Terminal for the incarnation, and deliberately not a counter. A
     /// contradiction means the facts that license this driver's permanent
@@ -236,13 +243,38 @@ where
     /// committed membership at one index is one set, and this driver has been
     /// told two. What it does instead is keep stepping — a replica in this state
     /// is still a useful follower and still has to be able to catch up — while
-    /// refusing client work and publishing nothing.
+    /// refusing client work, publishing nothing, and **freezing the two
+    /// checkpointable fields beside it**.
+    ///
+    /// The freeze is the half that took three rounds to arrive, and without it
+    /// the state is not terminal at all: ordinary reconciliation kept folding
+    /// later batches into the mark and the register and kept advancing the epoch,
+    /// so the embedder persisted a newer record carrying no trace of the fork, and
+    /// a restart from it started clean. See
+    /// [`TransportDriverState::route_membership_events`] for the guard and
+    /// [`PeerControlPlaneCheckpoint::contradicted_at`] for the durable marker
+    /// that makes the freeze survive the process.
     ///
     /// The supervisor's move is [`TransportRaftDriver::release_group`] and a
-    /// rebuild from durable state, which is why this is reported through
+    /// deliberate reseed, which is why this is reported through
     /// [`DriverServiceState`] rather than raised at whichever client call
     /// happened to be next.
-    pub(super) contradicted_at: Option<LogIndex>,
+    pub(super) contradiction: Option<Contradiction>,
+    /// The construction-wide membership transaction, while one is open.
+    ///
+    /// `Some` only between
+    /// [`TransportDriverState::open_membership_transaction`] and
+    /// [`TransportDriverState::commit_membership_transaction`], which is inside
+    /// one constructor call and reachable by no other entry point. While it is
+    /// open, membership routing folds into it and installs nothing — so the
+    /// record, the replay's crossings, and the runtime's endpoint reach the link
+    /// layer as one statement or not at all.
+    ///
+    /// A live report needs none of this: its batch is folded and installed inside
+    /// the call that routes it, so its candidate is a local. Construction's
+    /// inputs are separated by the group's own stepping machinery, which is the
+    /// only reason a candidate has to live on the driver at all.
+    pub(super) staged_membership: Option<StagedMembership>,
     /// How many times the checkpointable control-plane state has changed.
     ///
     /// The change signal an embedder persists against. Eq over the checkpoint
@@ -253,116 +285,6 @@ where
     /// compares against that.
     pub(super) checkpoint_epoch: u64,
     pub(super) shutting_down: bool,
-}
-
-/// Why a driver is refusing new client work, if it is.
-///
-/// **A total answer to that question**, which it did not used to be: a released
-/// driver and a shut-down one both reported `Serving` while refusing everything,
-/// so a supervisor polling this could not tell "ready" from "gone". Every state
-/// in which this driver refuses a client operation for a reason of its own is
-/// named here.
-///
-/// One shape, because a client asking "may I write" needs one answer and an
-/// operator asking "why not" needs the reason beside it. These are states rather
-/// than counts, like [`TransportRaftDriver::peer_policy_is_stale`] and unlike the
-/// refusal counters: they say what is true now.
-///
-/// **Two of them end and three do not.** [`DriverServiceState::NotMember`]
-/// clears when the cluster names this replica again, and
-/// [`DriverServiceState::Released`] ends at the next adoption.
-/// [`DriverServiceState::ContradictoryCurrentState`],
-/// [`DriverServiceState::Decommissioned`] and
-/// [`DriverServiceState::ShuttingDown`] are terminal for the incarnation.
-///
-/// None of the first four stops the protocol. A driver in any of them still
-/// ticks, still delivers, still applies what commits, and — except in the
-/// contradictory state, where it deliberately publishes nothing — still flushes
-/// its peer policy. What stops is admitting *new* client operations. A replica
-/// that stopped stepping could not finish the catch-up that ends one of these
-/// conditions, and could not stay a useful follower through the others.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[non_exhaustive]
-pub enum DriverServiceState {
-    /// The driver is serving clients.
-    ///
-    /// Requires that a committed removal has not spent this replica's identity
-    /// **and** that some configuration this driver knows still names it. The
-    /// second clause is not implied by the first: an addition that appended and
-    /// was then truncated back off the log leaves this replica in no
-    /// configuration at all with nothing spent, which is
-    /// [`DriverServiceState::NotMember`].
-    Serving,
-    /// A committed configuration change removed this driver's own replica.
-    ///
-    /// Terminal for this incarnation and not for the driver. The group stays
-    /// until [`TransportRaftDriver::release_group`] — the durable log is still
-    /// there and the runtime is still live, so a replica that is stepping down
-    /// can still be read from and can still help others catch up — and the
-    /// supervisor's move is release, then adopt a *fresh* identity. Adopting the
-    /// same one back is refused, because the cluster spent it.
-    ///
-    /// Outranks every non-terminal state when several hold: a backlog drains and
-    /// a rollback can be re-proposed, and a removal can be neither.
-    Decommissioned { node_id: NodeId },
-    /// No configuration this driver knows names this replica, and no committed
-    /// removal spent it either.
-    ///
-    /// Distinct from [`DriverServiceState::Decommissioned`] in both direction and
-    /// permanence, and the difference is the point. A local replica that joined
-    /// effectively and was then rolled back — a new leader truncating the
-    /// uncommitted addition back off the log — is in no configuration, has an
-    /// unspent ID, and is receiving no replication. Reporting it as serving let
-    /// it answer local reads from a replica the cluster is not replicating to,
-    /// which is an unboundedly stale view with nothing to bound it: exactly the
-    /// hazard [`crate::ReadConsistency::Local`] cannot detect on its own. It
-    /// covers construction around an unnamed ID too, which is a legitimate
-    /// starting point for a fresh joiner whose addition has not committed.
-    ///
-    /// **Writes and both read levels are refused; ticks and deliveries are
-    /// not.** The replica must be able to catch up if the change is re-proposed,
-    /// or if it is a joiner whose addition is still in flight, and it cannot do
-    /// that without stepping.
-    ///
-    /// It clears by itself the moment a configuration names the ID again.
-    NotMember { node_id: NodeId },
-    /// Two observations of the committed membership at `through` disagree about
-    /// it.
-    ///
-    /// **The committed membership at one log index is one set**, so this is not
-    /// two readings to reconcile: it is a durable record and a runtime — or two
-    /// durable records — making incompatible claims about a single fact, after
-    /// every identity either side has proven spent has been taken out of both.
-    /// A cluster that readmits a retired identity does *not* land here; that is a
-    /// counted contract violation with an answer of its own, at
-    /// [`TransportRaftDriver::readmitted_retired_peers`].
-    ///
-    /// Terminal for the incarnation, because there is no later fact that decides
-    /// it and because the statement at stake is permanent: this driver publishes
-    /// a retirement floor to its link layer, and a floor issued from
-    /// contradictory inputs either retires a live replica or fails to retire a
-    /// removed one, neither of which a later publication takes back. So the
-    /// driver refuses client work and publishes nothing while it keeps stepping.
-    ///
-    /// Reachable only after the group is installed — an adoption or a
-    /// construction that can see the disagreement up front refuses with
-    /// [`ManagedDriverError::InvalidControlPlaneCheckpoint`] instead, and installs
-    /// no group. The supervisor's move either way is
-    /// [`TransportRaftDriver::release_group`] and a rebuild from durable state.
-    ContradictoryCurrentState { through: LogIndex },
-    /// The driver released its group and has not adopted another.
-    ///
-    /// Reported rather than folded into `Serving`, which is what it used to be:
-    /// every client operation was already refused in this state, and the one
-    /// surface a supervisor polls to decide whether to route here said the
-    /// replica was fine. Ends at [`TransportRaftDriver::adopt_group`].
-    Released,
-    /// [`crate::DriverCommandSender::shutdown`] has run, which is terminal.
-    ///
-    /// The driver refuses every operation including adoption; a supervisor that
-    /// wants to serve again builds a driver. Outranks every other state, because
-    /// nothing this driver could otherwise report changes what happens next.
-    ShuttingDown,
 }
 
 impl<G, A, R, T, V> DriverShared<G, A, R, T, V>

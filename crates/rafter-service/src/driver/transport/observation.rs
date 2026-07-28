@@ -111,6 +111,26 @@ pub(super) struct CommittedObservation {
     pub(super) through: LogIndex,
     /// The committed membership at `through`, raw as the cluster reported it.
     pub(super) membership: BTreeSet<NodeId>,
+    /// The membership this fact declares stood immediately before `through`, or
+    /// `None` when it declares none.
+    ///
+    /// **A crossing's `previous` is a claim about a committed membership, and it
+    /// used to be spent on the way in.** The kernel computes it where the
+    /// chronology is known and `MembershipEvent::Applied` carries it, and this
+    /// conversion reduced it to `removed` and `named` — two derived sets — so the
+    /// predecessor itself never met the state it is a claim about. That threw away
+    /// the one-chain contract's most useful executable evidence: a transition
+    /// standing immediately above the register says what the register must have
+    /// held, and a register that says otherwise proves the record and the log are
+    /// not one chain.
+    ///
+    /// `None` for an endpoint, and the absence is the contract rather than an
+    /// omission — see [`CommittedObservation::endpoint`]. It is also `None` where
+    /// nothing can be concluded: a transition that is not adjacent to the held
+    /// position makes no claim the register can be compared against, because the
+    /// entries between them may be application entries and the predecessor of a
+    /// crossing after a gap is not the held membership.
+    pub(super) previous: Option<BTreeSet<NodeId>>,
     /// The identities this fact *proves* a committed removal consumed.
     ///
     /// Non-empty only for a crossing, where it is the kernel's own
@@ -142,6 +162,7 @@ impl CommittedObservation {
             through,
             removed: previous.difference(&membership).copied().collect(),
             named: previous.union(&membership).copied().collect(),
+            previous: Some(previous),
             membership,
         }
     }
@@ -149,16 +170,39 @@ impl CommittedObservation {
     /// The committed membership a runtime holds, at its commit index.
     ///
     /// It proves no removal on its own — the moves that produce one are exactly
-    /// the moves with no history to carry — so `removed` is empty and `named` is
-    /// the membership itself.
+    /// the moves with no history to carry — so `removed` is empty, `previous` is
+    /// absent, and `named` is the membership itself.
     pub(super) fn endpoint(through: LogIndex, committed: &MembershipConfig) -> Self {
         let membership: BTreeSet<NodeId> = committed.replica_ids().into_iter().collect();
         Self {
             through,
             named: membership.clone(),
             membership,
+            previous: None,
             removed: BTreeSet::new(),
         }
+    }
+
+    /// The membership this fact claims stood at `position`, if it claims one.
+    ///
+    /// **Adjacency is the whole of the precondition, and its narrowness is the
+    /// honest part.** A crossing's `previous` is the membership in effect
+    /// immediately before its own entry, so it is a claim about the position one
+    /// below it and about no other. A held observation standing anywhere else is
+    /// separated from the transition by entries this driver cannot see — and the
+    /// entries between two configuration entries are ordinarily application
+    /// entries, across which the committed membership does not move at all, but
+    /// they may equally be configuration entries a compaction erased. Either way
+    /// the predecessor of a crossing after a gap is not the held membership, so
+    /// there is nothing to compare and nothing is concluded.
+    ///
+    /// That is why this is a *check* rather than a derivation: it fires on the
+    /// one arrangement where the two are claims about a single fact, and stays
+    /// silent everywhere else rather than guessing.
+    pub(super) fn membership_claimed_at(&self, position: LogIndex) -> Option<&BTreeSet<NodeId>> {
+        (position.next() == self.through)
+            .then_some(self.previous.as_ref())
+            .flatten()
     }
 }
 

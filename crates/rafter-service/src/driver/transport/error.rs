@@ -27,9 +27,11 @@ pub enum InboundEnvelopeError {
     /// different things about the deployment. `Rejected` is the link layer's own
     /// admission control working. This one is the link layer *disagreeing* with
     /// the group — the driver's membership has retired a replica the validator
-    /// still authorizes — which for a removed replica means the fence for it has
-    /// not been accepted yet. An operator who cannot tell them apart cannot tell
-    /// a hostile peer from a control plane that is behind.
+    /// still authorizes — which for a removed replica means the link layer is
+    /// still holding a stale [`crate::PeerPolicy`], one whose retirement floor
+    /// does not yet reach the identity the cluster spent. An operator who cannot
+    /// tell them apart cannot tell a hostile peer from a control plane that is
+    /// behind.
     NotInMembership { node_id: NodeId },
     /// The group step failed after the envelope was accepted.
     Driver { source: ManagedDriverError },

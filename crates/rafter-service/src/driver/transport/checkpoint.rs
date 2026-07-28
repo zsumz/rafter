@@ -41,6 +41,7 @@ use std::collections::BTreeSet;
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
 use super::super::*;
+use super::condition::Contradiction;
 use super::reconciliation::MembershipCandidate;
 use super::state::TransportDriverState;
 
@@ -63,12 +64,14 @@ use super::state::TransportDriverState;
 /// mark of 2 — so node 5 is no longer spent, the policy this driver publishes
 /// stops retiring it, and the identity the cluster consumed is allocatable again.
 ///
-/// **The two facts.** The mark and the current committed state. Nothing else is
-/// here, because everything else about the control plane is re-derived at
-/// adoption: the effective membership comes from the runtime, and the published
-/// policy deliberately does not survive — a new process has a new link layer that
-/// has accepted nothing, and starting from "nothing accepted" is what forces the
-/// first republication.
+/// **The two facts, and one verdict on them.** The mark and the current
+/// committed state are what a restarted process cannot re-derive; the
+/// contradiction marker is what it must not be allowed to re-derive *away*.
+/// Nothing else is here, because everything else about the control plane is
+/// re-derived at adoption: the effective membership comes from the runtime, and
+/// the published policy deliberately does not survive — a new process has a new
+/// link layer that has accepted nothing, and starting from "nothing accepted" is
+/// what forces the first republication.
 ///
 /// **There is deliberately no record of what the link layer accepted.** It used
 /// to carry one — the committed removals whose fence was still owed — because
@@ -95,12 +98,26 @@ use super::state::TransportDriverState;
 /// while no driver was running at all. Persist when
 /// [`TransportRaftDriver::control_plane_checkpoint_epoch`] moves, which is on
 /// every committed configuration this driver observes that changes what it
-/// holds, and on nothing else.
+/// holds, on the moment it records a contradiction, and on nothing else. The
+/// second is the one an embedder must not skip: a contradiction installs no
+/// membership at all, so the marker is the *only* checkpointable change it
+/// makes, and a record written without it starts the next incarnation clean.
 ///
-/// **A stale checkpoint is a legal input, and joining one can only ever add
-/// spent-ness.** That is a property of the join rather than of the caller's
-/// discipline: see
-/// the crate-internal `restore_control_plane_checkpoint`, which states the
+/// **A stale prefix of the same authoritative chain is a legal input at
+/// construction, and joining one can only ever add spent-ness.** Both
+/// qualifications are load-bearing and the sentence used to carry neither.
+/// *Prefix of the same chain*, because order-freedom is claimed over one
+/// replica's own succession of records and is false across a fork — two records
+/// that disagree about one position are refused rather than reconciled, and the
+/// supervisor owns chain identity. *At construction*, because
+/// [`TransportRaftDriver::with_control_plane_checkpoint`] restores into empty
+/// held state, while a record offered to
+/// [`TransportRaftDriver::adopt_group_with_checkpoint`] must stand at or after
+/// what that driver has already observed or it is refused with
+/// [`ControlPlaneCheckpointError::StaleCurrentState`].
+///
+/// Inside those bounds it is a property of the join rather than of the caller's
+/// discipline: see the crate-internal `restore_checkpoint`, which states the
 /// three properties — symmetric, order-free, monotone — and proves them. A
 /// checkpoint that contradicts the invariants a driver maintains is refused
 /// whole with [`ControlPlaneCheckpointError`] and installs nothing, because
@@ -117,7 +134,7 @@ use super::state::TransportDriverState;
 ///
 /// The boundary itself is still worth what it is worth, and the driver already
 /// takes it: a snapshot install reaches
-/// the crate-internal `observe_committed_members` as an ordinary committed
+/// the crate-internal `observe_committed` as an ordinary committed
 /// fact, which raises `committed_id_high_water` to the greatest identity the
 /// boundary configuration names and retires everything the driver had live that
 /// the boundary does not. That is the whole of the cheap improvement available
@@ -162,8 +179,50 @@ pub struct PeerControlPlaneCheckpoint<G> {
     /// carried the two apart could be joined by uniting the memberships and
     /// taking the greater position, which answers "who is a member now" with the
     /// union of two different nows. The join that does it correctly is the
-    /// crate-internal `restore_control_plane_checkpoint`.
+    /// crate-internal `restore_checkpoint`.
     pub current_committed: Option<CurrentCommittedState>,
+    /// Where this chain observed two irreconcilable claims about the committed
+    /// membership, if it did.
+    ///
+    /// **A terminal marker, and it is durable because a terminal state that does
+    /// not survive a restart is not terminal.** A driver whose licensing inputs
+    /// contradict each other stops serving, stops publishing, and freezes the two
+    /// facts above — but the process holding it can crash, and a record written
+    /// without this field said nothing about the fork. A rebuilt driver started
+    /// clean, and where the rebuilt runtime happened to agree at the record's
+    /// position it went straight back to serving and to publishing retirement
+    /// floors derived from a chain it had already declared broken.
+    ///
+    /// So a restored record carrying this starts the driver in
+    /// [`DriverServiceState::ContradictoryCurrentState`]: refusing clients,
+    /// publishing nothing, and stepping Raft — the `NEEDS_REPAIR` posture the lock
+    /// store takes for a slot it cannot prove, applied to the control plane. It
+    /// clears only when an operator reseeds this replica's control plane
+    /// deliberately, with the deployment's own record of what was retired beside
+    /// them. There is no fact the cluster can supply that decides it: the
+    /// committed membership at one index is one set, and this chain has two.
+    ///
+    /// **A record carrying it may be resumed and may not be merged.**
+    /// [`TransportRaftDriver::with_control_plane_checkpoint`] restores into empty
+    /// held state, which is this chain resuming itself, and the marker has to
+    /// survive that or the freeze ends at the next crash.
+    /// [`TransportRaftDriver::adopt_group_with_checkpoint`] joins a record into a
+    /// driver that has been running, and a marked record is evidence of an
+    /// unresolved fork — merging one would launder exactly what it refused, so it
+    /// is refused with
+    /// [`ControlPlaneCheckpointError::ContradictedRecordMerged`].
+    ///
+    /// **It carries the position and not which comparison found it.** Both
+    /// terminal shapes — two observations at one index, and a transition
+    /// declaring a predecessor the register is not — mean the same thing to a
+    /// restarted process, and the diagnosis that told them apart was emitted by
+    /// the process that found it. A restored marker therefore reports the general
+    /// variant.
+    ///
+    /// The position is at or below `current_committed`'s, because the register
+    /// stops moving the moment this is set and the contradiction was found at or
+    /// ahead of where it stood.
+    pub contradicted_at: Option<LogIndex>,
 }
 
 /// The committed membership a record believes is current, and where it looked.
@@ -229,6 +288,7 @@ impl<G> PeerControlPlaneCheckpoint<G> {
             group,
             committed_id_high_water: None,
             current_committed: None,
+            contradicted_at: None,
         }
     }
 
@@ -248,7 +308,7 @@ impl<G> PeerControlPlaneCheckpoint<G> {
     /// dangerous direction if it is absorbed instead of refused.
     ///
     /// * A live set needs a mark, and every live identity sits at or below it:
-    ///   `observe_committed_members` raises the mark to the greatest identity of
+    ///   `observe_committed` raises the mark to the greatest identity of
     ///   the configuration it is assigning as live, in the same call, so the two
     ///   can never disagree. A lowered mark is how a corrupted record un-retires
     ///   everything above it.
@@ -278,12 +338,38 @@ impl<G> PeerControlPlaneCheckpoint<G> {
     ///   An embedder with a format of its own should refuse the same two shapes
     ///   at its own decoder, so the refusal names the file rather than the
     ///   value.
+    ///
+    /// * **The contradiction marker is coupled to the register, and stands at or
+    ///   above it.** A contradiction is a disagreement between the register and
+    ///   something else, so there is no marker without a register to have
+    ///   disagreed with — `merge_current_state` returns `Ok` outright when the
+    ///   held state is absent, and so does the ancestry check. And the register
+    ///   freezes the moment the marker is set, while the candidate that found the
+    ///   contradiction may already have folded earlier facts of the same batch:
+    ///   the marker's position is therefore at or above the register's, never
+    ///   below it. A record that says otherwise has had one of the two fields
+    ///   damaged, and absorbing it would either freeze a driver at a position
+    ///   nothing disagreed at or — worse — let a marker be attached to a record
+    ///   with no observation, which is unreadable rather than terminal.
     fn validate(&self, group: &G) -> Result<(), ControlPlaneCheckpointError>
     where
         G: Ord,
     {
         if &self.group != group {
             return Err(ControlPlaneCheckpointError::ForeignGroup);
+        }
+        if let Some(contradicted_at) = self.contradicted_at {
+            let Some(current) = self.current_committed.as_ref() else {
+                return Err(ControlPlaneCheckpointError::ContradictionWithoutCurrentState);
+            };
+            if contradicted_at < current.through {
+                return Err(
+                    ControlPlaneCheckpointError::ContradictionBeneathCurrentState {
+                        contradicted_at,
+                        through: current.through,
+                    },
+                );
+            }
         }
         // **One record, checked as one.** A mark is raised by an observation and
         // an observation assigns the current state, so neither stands alone.
@@ -325,6 +411,27 @@ pub(super) fn spends_under(
 ) -> bool {
     mark.is_some_and(|mark| node_id <= mark)
         && !current.is_some_and(|current| current.membership.contains(&node_id))
+}
+
+/// Which of the two entry points is offering a record, and therefore what a
+/// contradiction marker on it means.
+///
+/// **The line is whether the record is this chain's own or somebody else's**, and
+/// it falls exactly where the chain rule already put it.
+/// [`TransportRaftDriver::with_control_plane_checkpoint`] restores into empty
+/// held state and is the documented crash-recovery path, so the record it is
+/// handed *is* the chain: a marker on it has to be carried, or the terminal state
+/// ends at the next crash and the fork disappears.
+/// [`TransportRaftDriver::adopt_group_with_checkpoint`] merges a record into a
+/// driver that has been running, and a marked record is a statement that its
+/// chain observed a fork nothing can resolve — merging it into a live driver is
+/// licensing what it refused, and the mark and register a fork produced are not
+/// evidence anyone may join.
+pub(super) enum RecordJoin {
+    /// A constructor resuming this replica's own chain into empty held state.
+    Resume,
+    /// An adoption merging a record into a driver that has been running.
+    Merge,
 }
 
 /// Everything one merge needs to know about the observation arriving.
@@ -434,7 +541,7 @@ pub(super) fn merge_current_state(
 }
 
 /// One membership less everything a removal took and everything already spent.
-fn live(
+pub(super) fn live(
     membership: &BTreeSet<NodeId>,
     removed: &BTreeSet<NodeId>,
     spent: &dyn Fn(NodeId) -> bool,
@@ -478,6 +585,7 @@ where
             group: self.group_id.clone(),
             committed_id_high_water: self.committed_id_high_water,
             current_committed: self.current_committed.clone(),
+            contradicted_at: self.contradiction.map(Contradiction::through),
         }
     }
 
@@ -604,24 +712,38 @@ where
 /// never falls. A proof that stops holding because someone edited the join is a
 /// proof that fails silently; this one fails loudly.
 ///
+/// # The marker a record can carry, and which caller may take it
+///
+/// A record whose `contradicted_at` is set says its chain observed a fork nothing
+/// resolves. `RecordJoin::Resume` returns the position so the constructor can
+/// re-enter the terminal state; `RecordJoin::Merge` refuses the record outright,
+/// for the reason [`RecordJoin`] gives. Refusing is not a loss of the marker:
+/// the record is still on the embedder's disk, and the supported way to read one
+/// back is the constructor.
+///
 /// # Errors
 ///
 /// Returns [`ControlPlaneCheckpointError`] when the checkpoint names another
-/// group, contradicts the invariants a driver maintains for one, stands before
-/// the candidate's own observation, contradicts it at a shared position, or when
-/// the joined result would contradict those invariants. **Nothing is mutated on
-/// any of those paths** — the join is computed into locals and validated before
-/// the first field moves — so a caller that refuses is left with a candidate it
-/// drops and a driver in exactly the state it was.
+/// group, contradicts the invariants a driver maintains for one, carries a
+/// contradiction marker into an adoption, stands before the candidate's own
+/// observation, contradicts it at a shared position, or when the joined result
+/// would contradict those invariants. **Nothing is mutated on any of those
+/// paths** — the join is computed into locals and validated before the first
+/// field moves — so a caller that refuses is left with a candidate it drops and a
+/// driver in exactly the state it was.
 pub(super) fn restore_checkpoint<G>(
     candidate: &mut MembershipCandidate,
     checkpoint: PeerControlPlaneCheckpoint<G>,
     group_id: &G,
-) -> Result<(), ControlPlaneCheckpointError>
+    join: RecordJoin,
+) -> Result<Option<LogIndex>, ControlPlaneCheckpointError>
 where
     G: Ord,
 {
     checkpoint.validate(group_id)?;
+    if let (Some(through), RecordJoin::Merge) = (checkpoint.contradicted_at, join) {
+        return Err(ControlPlaneCheckpointError::ContradictedRecordMerged { through });
+    }
 
     // Taken apart rather than read through, so the restored observation is moved
     // into the candidate rather than cloned into it. The two halves are what
@@ -629,6 +751,7 @@ where
     let PeerControlPlaneCheckpoint {
         committed_id_high_water: restored_mark,
         current_committed: restored_state,
+        contradicted_at: restored_contradiction,
         ..
     } = checkpoint;
 
@@ -684,6 +807,7 @@ where
         group: group_id,
         committed_id_high_water,
         current_committed,
+        contradicted_at: restored_contradiction,
     };
     joined.validate(&group_id)?;
 
@@ -694,5 +818,10 @@ where
     // assigned from the runtime before the driver serves anything.
     candidate.committed_id_high_water = joined.committed_id_high_water;
     candidate.current_committed = joined.current_committed;
-    Ok(())
+    // The marker travels back to the caller rather than onto the candidate. A
+    // candidate is the four membership fields and nothing else — it is dropped
+    // whole on a refusal — while the marker is a fact about the *driver*, and it
+    // has to be recorded before the replay routes anything or the freeze it
+    // licenses starts one batch too late.
+    Ok(joined.contradicted_at)
 }

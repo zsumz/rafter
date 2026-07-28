@@ -347,3 +347,214 @@ fn a_runtime_that_contradicts_the_register_stops_serving_and_stops_publishing() 
          and none of the ones derivable here is licensed"
     );
 }
+
+/// A contradicted driver's durable record freezes, and the marker survives a
+/// restart.
+///
+/// **The evidence used to be overwritten and then forgotten.** `contradicted_at`
+/// stopped the flush and nothing else: `route_membership_events` kept folding
+/// later batches into the checkpointable fields and kept advancing the epoch, so
+/// the embedder persisted a *newer* record — one carrying no trace of the fork —
+/// and a crash restored it into a driver that started clean. Where the rebuilt
+/// runtime happened to agree at the newer position, the replica went back to
+/// serving and to publishing retirement floors, and the unresolved same-position
+/// fork simply disappeared.
+///
+/// Both halves are pinned here because either alone is insufficient. Freezing the
+/// fields without a durable marker loses the fork the moment the process restarts
+/// from the record it wrote *before* the contradiction; recording the marker
+/// without freezing persists a record whose register moved past the position the
+/// marker names.
+#[test]
+fn a_contradicted_driver_freezes_its_record_and_carries_the_marker_across_a_restart() {
+    let runtime = ScriptedMembershipRuntime::for_node_at(NodeId(1), &[1, 2, 3], &[1, 2, 3], AT);
+    let handle = runtime.handle();
+    let (driver, _transport) = scripted_driver_with_checkpoint(
+        runtime,
+        Nameable::all(),
+        &[NodeId(2), NodeId(3)],
+        rafter_service::TransportDriverOptions::default(),
+        record(3, &[1, 2, 3]),
+    );
+
+    contradict_committed_in_place(&handle, &[1, 2]);
+    driver.tick().expect("the protocol still advances");
+    assert_eq!(
+        driver.service_state(),
+        DriverServiceState::ContradictoryCurrentState { through: AT }
+    );
+    let frozen = driver.control_plane_checkpoint();
+    let epoch = driver.control_plane_checkpoint_epoch();
+
+    // A later committed fact arrives, and it is one the driver would ordinarily
+    // absorb: node 4 is admitted at a position above the fork. A contradicted
+    // driver keeps stepping — it is still a useful follower — and that is exactly
+    // why the record has to stop moving on its own.
+    change_on_step(&handle, &[1, 2, 3, 4], &[1, 2, 3, 4]);
+    driver.tick().expect("a contradicted driver still steps");
+
+    assert_eq!(
+        driver.control_plane_checkpoint(),
+        frozen,
+        "the durable retirement record froze at the contradiction"
+    );
+    assert_eq!(
+        driver.control_plane_checkpoint_epoch(),
+        epoch,
+        "so no epoch move asks the embedder to write a record derived from \
+         inputs this driver has declared untrustworthy"
+    );
+    assert_eq!(
+        frozen.contradicted_at,
+        Some(AT),
+        "and the record carries the position the fork was found at"
+    );
+
+    // The restart. A rebuilt runtime that agrees with the record everywhere is
+    // the case that used to serve.
+    let (restarted, transport) = scripted_driver_with_checkpoint(
+        ScriptedMembershipRuntime::for_node_at(NodeId(1), &[1, 2, 3], &[1, 2, 3], AT),
+        Nameable::all(),
+        &[NodeId(2), NodeId(3)],
+        rafter_service::TransportDriverOptions::default(),
+        frozen,
+    );
+
+    assert_eq!(
+        restarted.service_state(),
+        DriverServiceState::ContradictoryCurrentState { through: AT },
+        "a restored marker starts the driver refusing, whatever the rebuilt \
+         runtime happens to agree about"
+    );
+    assert!(
+        transport.policies().is_empty(),
+        "and it publishes nothing: {:?}",
+        transport.policies()
+    );
+}
+
+/// A marked record is refused at an adoption and accepted by a constructor.
+///
+/// **One record, two entry points, and the line between them is the chain rule
+/// the join already draws.** A constructor restores into empty held state, which
+/// is this chain resuming itself: the marker has to be carried or the terminal
+/// state ends at the next crash, which is the whole defect the durable marker
+/// closes. An adoption merges a record into a driver that has been running, and a
+/// marked record is a statement that its chain observed a fork nothing can
+/// resolve — taking its mark and register on trust is licensing exactly what it
+/// refused, and the joined record would carry no marker at all.
+///
+/// Refusing costs nothing, which is what makes the asymmetry affordable: the file
+/// is still on the embedder's disk, and the supported way to read one back is the
+/// constructor the other half of this test uses.
+#[test]
+fn a_marked_record_is_refused_at_an_adoption_and_resumed_by_a_constructor() {
+    let mut marked = record(3, &[1, 2, 3]);
+    marked.contradicted_at = Some(AT);
+
+    let (driver, transport) = scripted_driver_with_checkpoint(
+        runtime(&[1, 2, 3]),
+        Nameable::all(),
+        &[NodeId(2), NodeId(3)],
+        rafter_service::TransportDriverOptions::default(),
+        PeerControlPlaneCheckpoint::empty(GROUP),
+    );
+    let policies_before = transport.policies();
+    let group = driver.release_group().expect("the driver holds a group");
+
+    let refused = driver.adopt_group_with_checkpoint(group, Vec::new(), marked.clone());
+    assert!(
+        matches!(
+            refused,
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::ContradictedRecordMerged { through }
+            }) if through == AT
+        ),
+        "got {refused:?}"
+    );
+    assert_eq!(
+        transport.policies(),
+        policies_before,
+        "and the refusal reached nothing: {:?}",
+        transport.policies()
+    );
+
+    // The same record, through the entry point that is allowed to take it.
+    let (resumed, resumed_transport) = scripted_driver_with_checkpoint(
+        runtime(&[1, 2, 3]),
+        Nameable::all(),
+        &[NodeId(2), NodeId(3)],
+        rafter_service::TransportDriverOptions::default(),
+        marked.clone(),
+    );
+    assert_eq!(
+        resumed.service_state(),
+        DriverServiceState::ContradictoryCurrentState { through: AT },
+        "the constructor carries the marker rather than starting clean"
+    );
+    assert!(
+        resumed_transport.policies().is_empty(),
+        "and publishes nothing: {:?}",
+        resumed_transport.policies()
+    );
+    assert_eq!(
+        resumed.control_plane_checkpoint(),
+        marked,
+        "the record it would hand back is the record it was given, marker \
+         included — an incarnation that dropped the line would end the refusal at \
+         the next restart"
+    );
+}
+
+/// A frame from `from`, used only to ask whether this driver admits it at all.
+fn a_vote(from: NodeId) -> rafter_service::AuthenticatedPeerEnvelope<u64, Principal> {
+    rafter_service::AuthenticatedPeerEnvelope {
+        group_id: GROUP,
+        authenticated_peer: Principal::for_node(from),
+        raft_from: from,
+        raft_to: NodeId(1),
+        message: Message::RequestVote(RequestVote {
+            term: Term(1),
+            candidate_id: from,
+            last_log_index: AT,
+            last_log_term: Term(1),
+        }),
+    }
+}
+
+/// A restored marker does not stop the replica being replicated to.
+///
+/// **Terminal for client work is not terminal for the protocol**, and the two
+/// halves of the membership state are what keep those separable. The durable
+/// record freezes where the marker says; the two runtime facts go on tracking
+/// what this replica's own stream reports, because the inbound admission check
+/// reads them and a replica that refused every frame could never catch up. That
+/// is the same catch-up the terminal state explicitly allows.
+#[test]
+fn a_resumed_marked_driver_still_admits_the_cluster_it_belongs_to() {
+    let mut marked = record(3, &[1, 2, 3]);
+    marked.contradicted_at = Some(AT);
+
+    let (resumed, _transport) = scripted_driver_with_checkpoint(
+        runtime(&[1, 2, 3]),
+        Nameable::all(),
+        &[NodeId(2), NodeId(3)],
+        rafter_service::TransportDriverOptions::default(),
+        marked,
+    );
+
+    assert!(
+        resumed.deliver(a_vote(NodeId(2))).is_ok(),
+        "a frame from a replica the cluster still has committed is delivered"
+    );
+    assert_eq!(
+        resumed.refused_non_member_frames(),
+        0,
+        "so no committed member was turned away by a record that froze"
+    );
+    assert_eq!(
+        resumed.service_state(),
+        DriverServiceState::ContradictoryCurrentState { through: AT },
+        "and stepping did not clear the marker"
+    );
+}

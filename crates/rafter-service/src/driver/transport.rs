@@ -2,12 +2,13 @@
 
 //! Managed driver for one local Raft group over an attached transport.
 //!
-//! This file is the driver's lifecycle and its client operations. Two neighbours
-//! carry what an embedder reads rather than calls: [`bounds`] holds what the
-//! driver refuses to accumulate, and [`health`] holds what an operator reads off
-//! a running one.
+//! This file is the driver's lifecycle and the operations only *this* driver
+//! has. Three neighbours carry the rest of what a caller touches: [`sender`]
+//! holds the [`DriverCommandSender`] surface a handle reaches through, which
+//! `InMemoryRaftDriver` implements too; [`bounds`] holds what the driver refuses
+//! to accumulate; and [`health`] holds what an operator reads off a running one.
 
-use std::future::{poll_fn, ready};
+use std::future::poll_fn;
 
 use crate::transport::{
     validate_inbound_peer_envelope, AuthenticatedPeerEnvelope, AuthenticatedPeerValidator,
@@ -50,22 +51,24 @@ pub type AddressedRead<G, QR> = (ReadId, DriverFuture<Result<QueryReceipt<G, QR>
 mod adoption;
 mod bounds;
 mod checkpoint;
+mod condition;
 mod control_plane;
 mod error;
 mod health;
 mod observation;
 mod policy;
 mod reconciliation;
+mod sender;
 mod state;
 mod waiters;
 
 pub use bounds::TransportDriverOptions;
 pub use checkpoint::{CurrentCommittedState, PeerControlPlaneCheckpoint};
+pub use condition::DriverServiceState;
 pub use error::InboundEnvelopeError;
-pub use state::DriverServiceState;
 
 use adoption::{adopted_watermarks, highest, PendingProposals, WaiterGuard};
-use state::{DriverShared, SharedState, StartedRead, StepFailure, TransportDriverState, WaiterId};
+use state::{DriverShared, SharedState, TransportDriverState, WaiterId};
 
 /// Managed driver for one local Raft group over an attached transport.
 ///
@@ -237,49 +240,59 @@ where
                 current_committed: None,
                 committed_id_high_water: None,
                 published_policy: None,
-                contradicted_at: None,
+                contradiction: None,
+                staged_membership: None,
                 checkpoint_epoch: 0,
                 shutting_down: false,
             })),
         };
-        // Before everything below, and that order is the contract: the spent
-        // test reads the recovered mark and the recovered current state
+        // **One membership transaction spans this whole constructor**, and the
+        // three statements below are its three inputs rather than three
+        // transactions. It opens here because that order is also the contract:
+        // the spent test reads the recovered mark and the recovered current state
         // together, and a membership fact derived ahead of them would be derived
         // against state the crash erased.
         driver
             .inner
             .lock()
-            .restore_control_plane_checkpoint(checkpoint)
+            .open_membership_transaction(checkpoint)
             .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
         // **The history, then the endpoint**, which is a preference rather than a
         // correctness requirement: each recovery output carries its own
         // transition, so folding one out of order proves the same removals. What
         // the order buys is a current committed state that ends level with the
         // runtime rather than at the last entry replayed.
+        //
+        // The membership these outputs carry folds into the open transaction and
+        // installs nothing. Everything else in the report — peer messages,
+        // snapshot directives, waiter resolutions — routes normally, because none
+        // of it is a permanent statement about who may speak.
         if !recovery_outputs.is_empty() {
-            let mut state = driver.inner.lock();
-            state.apply_recovery_outputs(recovery_outputs)?;
-            // A crossing the replay carried can contradict the restored record,
-            // and the routing path has nowhere to return that; this is where it
-            // escapes. See `TransportDriverState::recorded_contradiction`.
-            if let Some(reason) = state.recorded_contradiction() {
-                return Err(ManagedDriverError::InvalidControlPlaneCheckpoint { reason });
-            }
+            driver
+                .inner
+                .lock()
+                .apply_recovery_outputs(recovery_outputs)?;
         }
+        // The transaction closes: the runtime's endpoint is the last input, and
+        // the single installation and single publication behind it are the only
+        // things this constructor states to the link layer.
+        //
         // Published before the driver serves anything, so the transport's policy
         // is the group's membership from construction onward rather than
-        // undefined until the first membership change. A group that never
-        // changes membership would otherwise never tell its link layer anything,
-        // and a recovery report carries no membership event to stand in.
+        // undefined until the first membership change. A group that never changes
+        // membership would otherwise never tell its link layer anything, and a
+        // recovery report carries no membership event to stand in.
         //
-        // Fallible, and the failure is the one shape a constructor must not
-        // absorb: a durable record and the runtime it was recovered beside,
-        // standing at one position and disagreeing about the committed
-        // membership there. Nothing has been published when this refuses.
+        // Fallible, and the failures are the shapes a constructor must not
+        // absorb: a crossing the replay carried disagreeing with the restored
+        // record, and the record and the runtime standing at one position and
+        // disagreeing about the committed membership there. **Nothing has been
+        // published when this refuses**, including whatever a valid prefix of the
+        // replay would have licensed.
         driver
             .inner
             .lock()
-            .publish_adopted_membership()
+            .commit_membership_transaction()
             .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
         Ok(driver)
     }
@@ -890,109 +903,5 @@ where
             .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason });
         state.publish_metrics();
         applied.and(published)
-    }
-}
-
-impl<G, A, R, T, V> DriverCommandSender<G, A::Command, A::Query, A::CommandResult, A::QueryResult>
-    for TransportRaftDriver<G, A, R, T, V>
-where
-    G: Clone + Ord + Debug + Send + Sync + 'static,
-    A: ReplicatedStateMachine + Send + 'static,
-    A::Command: Send + 'static,
-    A::CommandResult: Clone + Send + 'static,
-    A::Query: Clone + Send + 'static,
-    A::QueryResult: Send + 'static,
-    R: PersistedRaftRuntime + Send + 'static,
-    T: RaftTransport<G>,
-    V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
-{
-    fn write(
-        &self,
-        group_id: G,
-        command: A::Command,
-        options: WriteOptions,
-    ) -> DriverFuture<Result<WriteReceipt<A::CommandResult>, WriteError>> {
-        // Registered synchronously, polled later: the waiter exists before the
-        // group is stepped, so a terminal event emitted inside that very step
-        // resolves it rather than arriving before anything is listening.
-        let started = self.inner.lock().begin_write(&group_id, command, options);
-        match started {
-            Ok(local_proposal_id) => self.write_future(local_proposal_id),
-            Err(error) => Box::pin(ready(Err(error))),
-        }
-    }
-
-    fn read(
-        &self,
-        group_id: G,
-        query: A::Query,
-        consistency: ReadConsistency,
-        options: ReadOptions,
-    ) -> DriverFuture<Result<QueryReceipt<G, A::QueryResult>, ReadError>> {
-        let started = self
-            .inner
-            .lock()
-            .begin_read(&group_id, query, consistency, options);
-        match started {
-            Ok(StartedRead::Barrier(read_id)) => self.barrier_future(read_id),
-            // A local read is already finished. No waiter was registered, so
-            // there is no guard to hold and nothing to poll.
-            Ok(StartedRead::Answered(answered)) => Box::pin(ready(answered)),
-            Err(error) => Box::pin(ready(Err(error))),
-        }
-    }
-
-    fn transfer_leadership(
-        &self,
-        group_id: G,
-        target: NodeId,
-    ) -> DriverFuture<Result<(), TransferLeadershipError>> {
-        let inner = self.inner.clone();
-        Box::pin(async move {
-            let mut state = inner.lock();
-            if state.shutting_down {
-                return Err(TransferLeadershipError::ShuttingDown);
-            }
-            if group_id != state.group_id {
-                return Err(TransferLeadershipError::WrongGroup);
-            }
-            // Through the state's own stepping path, not around it: a transfer
-            // step can commit, apply, and poison, and the drain that resolves
-            // what a poison captured runs there on both paths.
-            let rejection = state
-                .step_transfer(target)
-                .map_err(|failure| match failure {
-                    StepFailure::NoGroup => TransferLeadershipError::Transport {
-                        cause: ErrorCause::new(ManagedDriverError::NoGroup),
-                    },
-                    StepFailure::Group(error) => transfer_error_from_group(error),
-                })?;
-            rejection.map_or(Ok(()), Err)
-        })
-    }
-
-    fn metrics(&self, group_id: G) -> Result<MetricsWatch<G>, MetricsError> {
-        let state = self.inner.lock();
-        if group_id != state.group_id {
-            return Err(MetricsError::WrongGroup);
-        }
-        Ok(state.metrics.watch())
-    }
-
-    fn shutdown(&self, group_id: G) -> DriverFuture<Result<(), ShutdownError>> {
-        let inner = self.inner.clone();
-        Box::pin(async move {
-            let mut state = inner.lock();
-            if group_id != state.group_id {
-                return Err(ShutdownError::WrongGroup);
-            }
-            if state.shutting_down {
-                return Err(ShutdownError::AlreadyShutDown);
-            }
-            state.shutting_down = true;
-            state.release_waiters();
-            state.metrics.close();
-            Ok(())
-        })
     }
 }

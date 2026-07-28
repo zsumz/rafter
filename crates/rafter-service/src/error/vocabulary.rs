@@ -135,8 +135,16 @@ pub enum DriverUnavailableReason {
     /// Two observations of the committed membership at one log position
     /// disagree about it, so this driver has no trustworthy statement to make
     /// about who may speak. Terminal for the incarnation; the supervisor
-    /// releases and rebuilds.
+    /// releases and reseeds deliberately.
     ContradictoryCurrentState,
+    /// A committed transition declares a predecessor this driver's own record is
+    /// not, at the position immediately below the transition.
+    ///
+    /// The same refusal as [`DriverUnavailableReason::ContradictoryCurrentState`]
+    /// and a different diagnosis: the log's own account of its own history is one
+    /// side of it, so the record beside the log is what an operator has to look
+    /// at rather than either of two observations.
+    ContradictoryTransitionPredecessor,
     /// The driver released its group and has not adopted another.
     Released,
     /// The driver has shut down, which is terminal.
@@ -169,6 +177,9 @@ impl DriverUnavailableReason {
             crate::DriverServiceState::ContradictoryCurrentState { .. } => {
                 Some(Self::ContradictoryCurrentState)
             }
+            crate::DriverServiceState::ContradictoryTransitionPredecessor { .. } => {
+                Some(Self::ContradictoryTransitionPredecessor)
+            }
             crate::DriverServiceState::Released => Some(Self::Released),
             crate::DriverServiceState::ShuttingDown => Some(Self::ShuttingDown),
         }
@@ -182,6 +193,9 @@ impl fmt::Display for DriverUnavailableReason {
             Self::NotMember => "no configuration this driver knows names this replica",
             Self::ContradictoryCurrentState => {
                 "two observations of the committed membership at one position disagree"
+            }
+            Self::ContradictoryTransitionPredecessor => {
+                "a committed transition declares a predecessor this driver's record is not"
             }
             Self::Released => "the driver released its group and holds none",
             Self::ShuttingDown => "the driver has shut down",

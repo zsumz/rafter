@@ -40,12 +40,39 @@ use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
 use super::super::*;
 use super::checkpoint::{
-    merge_current_state, restore_checkpoint, CurrentCommittedState, IncomingObservation,
+    live, merge_current_state, restore_checkpoint, CurrentCommittedState, IncomingObservation,
+    RecordJoin,
 };
+use super::condition::Contradiction;
 use super::observation::{
     observed_membership, CommittedObservation, MembershipFact, ObservedMembership,
 };
 use super::state::TransportDriverState;
+
+/// One membership transaction that outlives a single batch.
+///
+/// **Construction's transaction, and it is the only one that has to be held
+/// across calls.** A live report is one batch folded and installed inside one
+/// call, so its candidate is a local. Construction's inputs arrive in three
+/// separate steps — the recovered record, then every crossing the replay
+/// produces, then the runtime's own endpoint — with the group's stepping
+/// machinery in between, so the candidate has to live on the driver for the
+/// routing path to reach it.
+///
+/// The refusal travels with it for the same reason the candidate does. Recovery
+/// routing is reached from `route_report`, which returns nothing, so a batch that
+/// refuses records here and the constructor asks once every input has been read.
+pub(super) struct StagedMembership {
+    /// The candidate every input of the construction folds into.
+    pub(super) candidate: MembershipCandidate,
+    /// The first refusal any of them produced, if one did.
+    ///
+    /// First rather than last, matching the batch rule: once a candidate has
+    /// refused it is dropped whole, so nothing after the first refusal is folded
+    /// and a later one would be a refusal of a fact this transaction never
+    /// reached.
+    pub(super) refused: Option<ControlPlaneCheckpointError>,
+}
 
 /// The membership fields of one driver, staged.
 ///
@@ -181,15 +208,19 @@ impl MembershipCandidate {
     ///
     /// # Errors
     ///
-    /// Returns [`ControlPlaneCheckpointError::ContradictoryCurrentState`] when
-    /// this fact and the register stand at one position and still disagree about
-    /// the membership there after normalization. **Nothing is mutated on that
-    /// path**: every value is computed into a local and assigned only once the
-    /// merge has answered.
+    /// Returns [`ControlPlaneCheckpointError::ContradictoryTransitionPredecessor`]
+    /// when this fact is a transition standing immediately above the register and
+    /// declares a predecessor the register is not, and
+    /// [`ControlPlaneCheckpointError::ContradictoryCurrentState`] when this fact
+    /// and the register stand at one position and still disagree about the
+    /// membership there after normalization. **Nothing is mutated on either
+    /// path**: the ancestry check runs first and every value below it is computed
+    /// into a local and assigned only once the merge has answered.
     fn observe_committed(
         &mut self,
         fact: CommittedObservation,
     ) -> Result<(), ControlPlaneCheckpointError> {
+        self.check_ancestry(&fact)?;
         let was_spent = self.spent_before();
         let current = merge_current_state(
             self.current_committed.as_ref(),
@@ -239,6 +270,7 @@ impl MembershipCandidate {
     ///
     /// As [`MembershipCandidate::observe_committed`].
     fn probe(&self, fact: &CommittedObservation) -> Result<(), ControlPlaneCheckpointError> {
+        self.check_ancestry(fact)?;
         let was_spent = self.spent_before();
         merge_current_state(
             self.current_committed.as_ref(),
@@ -250,6 +282,67 @@ impl MembershipCandidate {
             &was_spent,
         )
         .map(|_| ())
+    }
+
+    /// Refuses a transition whose declared predecessor this candidate is not.
+    ///
+    /// **The one-chain contract, made executable.** Every crossing carries the
+    /// membership the kernel computed as standing immediately before its own
+    /// entry — see [`rafter::Output::ConfigurationCommitted`] — and a register
+    /// standing exactly one position below it is a claim about that same
+    /// committed configuration. Two claims about one committed membership that
+    /// still differ are not two readings to reconcile; they are proof that the
+    /// record and the log are not one chain, which is the strongest evidence of a
+    /// fork this driver can hold and was previously discarded on the way in.
+    ///
+    /// Discarding it was not merely a lost diagnosis. Folded anyway, the merge
+    /// reads the register-minus-transition difference as a committed removal *and*
+    /// absorbs the transition's own removal set, so a single contradictory pair
+    /// retires two identities at once — one of them named by neither side's
+    /// removal — and a retirement floor never falls.
+    ///
+    /// **Adjacency is required and its absence is not a weaker check, it is no
+    /// check at all.** See
+    /// [`CommittedObservation::membership_claimed_at`]: a transition that does
+    /// not stand immediately above the register makes no claim about where the
+    /// register stands, because the entries between them may be application
+    /// entries — across which the committed membership does not move — or
+    /// configuration entries this driver never saw. Comparing across a gap would
+    /// manufacture the very contradiction the check exists to detect.
+    ///
+    /// Both sides are normalized by what this candidate has already proven spent,
+    /// for the reason [`merge_current_state`] gives: a cluster that names a
+    /// retired identity again has broken the single-use contract, which is a
+    /// counted violation with an answer of its own rather than a damaged record.
+    /// The register's own membership is already the live reading, so the
+    /// normalization only ever moves the incoming side.
+    ///
+    /// # Errors
+    ///
+    /// Returns
+    /// [`ControlPlaneCheckpointError::ContradictoryTransitionPredecessor`], naming
+    /// the position whose committed membership the two disagree about — the
+    /// register's own, not the transition's.
+    fn check_ancestry(
+        &self,
+        fact: &CommittedObservation,
+    ) -> Result<(), ControlPlaneCheckpointError> {
+        let Some(held) = self.current_committed.as_ref() else {
+            return Ok(());
+        };
+        let Some(claimed) = fact.membership_claimed_at(held.through) else {
+            return Ok(());
+        };
+        let was_spent = self.spent_before();
+        let nothing = BTreeSet::new();
+        if live(&held.membership, &nothing, &was_spent) != live(claimed, &nothing, &was_spent) {
+            return Err(
+                ControlPlaneCheckpointError::ContradictoryTransitionPredecessor {
+                    through: held.through,
+                },
+            );
+        }
+        Ok(())
     }
 }
 
@@ -304,10 +397,32 @@ where
     /// The epoch moves only if the *checkpointable* half actually changed, which
     /// is the contract an embedder persists against: a batch whose facts the
     /// driver had already absorbed asks nobody to write a file.
+    ///
+    /// **A contradicted driver takes the live half and keeps the record it
+    /// froze**, and this is the one place that rule lives so every installer
+    /// inherits it. `contradicted_at` used to stop the flush and nothing else, so
+    /// ordinary reconciliation went on folding later batches into the mark and
+    /// the register and went on advancing the epoch — the embedder persisted a
+    /// *newer* record carrying no trace of the fork, and a restart from it
+    /// started clean. The unresolved same-position fork disappeared across a
+    /// restart, which is the one thing a terminal state must not permit.
+    ///
+    /// **The live half is deliberately not frozen with it**, and the asymmetry is
+    /// the same one [`super::policy`] already draws. The two runtime facts answer
+    /// "who is this replica's own stream saying may speak", which is what the
+    /// inbound admission check reads — and a driver in this state is still
+    /// supposed to be a useful follower, still stepping and still catching up.
+    /// Freezing them would refuse frames from every replica the cluster admits
+    /// afterwards, which stops the catch-up the terminal state explicitly allows.
+    /// Nothing is derived from them either way: the flush is guarded, so the two
+    /// halves cannot come apart in anything this driver *states*.
     fn assign_membership(&mut self, candidate: MembershipCandidate) {
-        let before = self.control_plane_checkpoint();
         self.effective_members = candidate.effective_members;
         self.committed_members = candidate.committed_members;
+        if self.contradiction.is_some() {
+            return;
+        }
+        let before = self.control_plane_checkpoint();
         self.current_committed = candidate.current_committed;
         self.committed_id_high_water = candidate.committed_id_high_water;
         if before != self.control_plane_checkpoint() {
@@ -327,6 +442,34 @@ where
     /// [`DriverServiceState::ContradictoryCurrentState`] is how a supervisor
     /// hears about it.
     pub(super) fn route_membership_events(&mut self, events: &[MembershipEvent<G>]) {
+        // **A batch of nothing installs nothing and states nothing.** Most steps
+        // move no membership at all, and the error-path reconciliation is empty
+        // after every successful one — so without this the commonest path in the
+        // driver would re-derive and re-attempt a policy the link layer has
+        // already been offered, turning a refused publication's retry into
+        // something that happens per step rather than per entry point. The
+        // entry points flush on their own; this is a reconciliation.
+        if events.is_empty() {
+            return;
+        }
+        // Construction's transaction is open, so this batch is one input of a
+        // larger one: it folds into the candidate that is being staged and
+        // installs nothing. See [`StagedMembership`].
+        //
+        // A construction that has *already* recorded a contradiction — its
+        // recovered record arrived carrying the durable marker — folds nothing at
+        // all. There is no conclusion left for the transaction to reach: it will
+        // publish nothing and its durable record is frozen where the marker says,
+        // so staging a fact would only be work whose result is discarded.
+        if let Some(mut staged) = self.staged_membership.take() {
+            if staged.refused.is_none() && self.contradiction.is_none() {
+                staged.refused = self
+                    .fold_membership_events(&mut staged.candidate, events)
+                    .err();
+            }
+            self.staged_membership = Some(staged);
+            return;
+        }
         // The refusal is already recorded on the state by the time this returns;
         // there is no caller here that could act on a second copy of it.
         let _ = self.absorb_membership_events(events);
@@ -336,17 +479,33 @@ where
         &mut self,
         events: &[MembershipEvent<G>],
     ) -> Result<(), ControlPlaneCheckpointError> {
-        // **A batch of nothing installs nothing and states nothing.** Most steps
-        // move no membership at all, and the error-path reconciliation is empty
-        // after every successful one — so without this the commonest path in the
-        // driver would re-derive and re-attempt a policy the link layer has
-        // already been offered, turning a refused publication's retry into
-        // something that happens per step rather than per entry point. The
-        // entry points flush on their own; this is a reconciliation.
-        if events.is_empty() {
-            return Ok(());
-        }
         let mut candidate = self.membership_candidate();
+        if let Err(reason) = self.fold_membership_events(&mut candidate, events) {
+            self.record_contradiction(reason);
+            return Err(reason);
+        }
+        self.install_membership(candidate);
+        Ok(())
+    }
+
+    /// Folds one batch of membership events into a candidate, keeping the first
+    /// refusal.
+    ///
+    /// Shared by the live transaction and construction's, so a batch asserts the
+    /// same facts whichever one is open. It installs nothing and publishes
+    /// nothing: what a surviving candidate is *for* is the caller's decision, and
+    /// that is the only difference between the two.
+    ///
+    /// # Errors
+    ///
+    /// As [`MembershipCandidate::apply`]. The candidate is left holding the
+    /// prefix that folded, which is why every caller drops it on a refusal rather
+    /// than installing it.
+    fn fold_membership_events(
+        &self,
+        candidate: &mut MembershipCandidate,
+        events: &[MembershipEvent<G>],
+    ) -> Result<(), ControlPlaneCheckpointError> {
         for event in events {
             let fact = match observed_membership(event) {
                 ObservedMembership::Effective(effective) => MembershipFact::Effective(effective),
@@ -364,27 +523,42 @@ where
                 },
                 ObservedMembership::Nothing => continue,
             };
-            if let Err(reason) = candidate.apply(fact) {
-                self.record_contradiction(reason);
-                return Err(reason);
-            }
+            candidate.apply(fact)?;
         }
-        self.install_membership(candidate);
         Ok(())
     }
 
     /// Records a contradiction so a supervisor polling
     /// [`TransportDriverState::service_state`] sees it.
     ///
-    /// Only the one variant is terminal for the incarnation. The others are
-    /// refusals of an *input* — a damaged record, a foreign group, a record older
-    /// than what this driver holds — and every one of them is raised where a
-    /// caller can still be told, so recording them here would report a driver as
-    /// sick for a file it declined to open.
+    /// Only the two terminal shapes are recorded, and
+    /// [`Contradiction::of`] is where that line is drawn. The rest are refusals
+    /// of an *input* — a damaged record, a foreign group, a record older than
+    /// what this driver holds — and every one of them is raised where a caller
+    /// can still be told, so recording them here would report a driver as sick
+    /// for a file it declined to open.
+    ///
+    /// **The first one wins**, because the state is terminal and there is nothing
+    /// a second could add: the driver is already frozen and already publishing
+    /// nothing, and overwriting the position would move the marker off the
+    /// disagreement an operator is being pointed at.
+    ///
+    /// **Setting it moves the checkpoint epoch**, because the marker is a
+    /// checkpointable field — see
+    /// [`PeerControlPlaneCheckpoint::contradicted_at`]. It is also the *only*
+    /// checkpointable change a contradiction makes: the batch that produced it
+    /// installed nothing, and every later batch is frozen out, so an embedder
+    /// that persists on the epoch would otherwise never write the one record that
+    /// says this replica must not serve again.
     fn record_contradiction(&mut self, reason: ControlPlaneCheckpointError) {
-        if let ControlPlaneCheckpointError::ContradictoryCurrentState { through } = reason {
-            self.contradicted_at = Some(through);
+        let Some(contradiction) = Contradiction::of(reason) else {
+            return;
+        };
+        if self.contradiction.is_some() {
+            return;
         }
+        self.contradiction = Some(contradiction);
+        self.advance_checkpoint_epoch();
     }
 
     /// The contradiction this driver recorded while routing, if it recorded one.
@@ -397,8 +571,7 @@ where
     /// durable record its own replayed history contradicts would be serving from
     /// inputs it has already declared untrustworthy.
     pub(super) fn recorded_contradiction(&self) -> Option<ControlPlaneCheckpointError> {
-        self.contradicted_at
-            .map(|through| ControlPlaneCheckpointError::ContradictoryCurrentState { through })
+        self.contradiction.map(Contradiction::refusal)
     }
 
     /// Joins a recovered checkpoint into a candidate and asks the offered runtime
@@ -431,30 +604,129 @@ where
         runtime: &R,
     ) -> Result<MembershipCandidate, ControlPlaneCheckpointError> {
         let mut candidate = self.membership_candidate();
-        restore_checkpoint(&mut candidate, checkpoint, &self.group_id)?;
+        restore_checkpoint(
+            &mut candidate,
+            checkpoint,
+            &self.group_id,
+            RecordJoin::Merge,
+        )?;
         let (committed, _) = Self::adopted_observation(runtime);
         candidate.probe(&committed)?;
         Ok(candidate)
     }
 
-    /// Joins a recovered checkpoint into this driver, with no runtime to check it
-    /// against yet.
+    /// Opens the construction-wide membership transaction over a recovered
+    /// record.
     ///
-    /// Construction's half of the same transaction. The group is already this
-    /// driver's by the time this runs, so there is nothing to refuse an adoption
-    /// of — what the restore protects is the same thing: a record that cannot be
-    /// installed whole is installed not at all.
+    /// **Construction ran two membership transactions and needed one.** The
+    /// record was restored and installed; the replay's crossings were then folded
+    /// and *published* as an ordinary batch; and only afterwards did the runtime's
+    /// final endpoint get compared against the result. So a record whose position
+    /// no crossing ties with — every crossing folding cleanly beneath it — got a
+    /// peer set and a retirement floor onto the caller's link layer, and the
+    /// endpoint then refused the construction. A `PeerPolicy` is the external
+    /// installation of the whole admission policy rather than scratch state:
+    /// nothing takes one back, and the process that stated it never started.
+    ///
+    /// So the record, every recovery membership event, and the runtime's endpoint
+    /// fold into one candidate, and
+    /// [`TransportDriverState::commit_membership_transaction`] is the single
+    /// installation and the single publication behind it. Everything loss-tolerant
+    /// the replay produces — peer messages, snapshot directives, proposal and read
+    /// resolutions — routes normally throughout, for the reason the module header
+    /// gives.
+    ///
+    /// A restored contradiction marker is recorded here rather than at the commit,
+    /// and the order is what makes the freeze cover the replay: the guard in
+    /// [`TransportDriverState::route_membership_events`] reads the driver's own
+    /// state, so a marker set only at the end would let every replayed crossing
+    /// move the register first.
     ///
     /// # Errors
     ///
     /// As [`TransportDriverState::adoption_candidate`], less the runtime probe.
-    pub(super) fn restore_control_plane_checkpoint(
+    pub(super) fn open_membership_transaction(
         &mut self,
         checkpoint: PeerControlPlaneCheckpoint<G>,
     ) -> Result<(), ControlPlaneCheckpointError> {
         let mut candidate = self.membership_candidate();
-        restore_checkpoint(&mut candidate, checkpoint, &self.group_id)?;
-        self.install_restored_membership(candidate);
+        let restored = restore_checkpoint(
+            &mut candidate,
+            checkpoint,
+            &self.group_id,
+            RecordJoin::Resume,
+        )?;
+        if let Some(through) = restored {
+            // **The record goes on before the marker does**, and that order is
+            // load-bearing: [`TransportDriverState::assign_membership`] freezes
+            // the durable half once the marker is set, so recording it first
+            // would leave this driver holding an *empty* record and reporting it
+            // to an embedder that would then persist the fork away. Nothing is
+            // stated to the link layer — `install_restored_membership` does not
+            // flush — and from here nothing ever will be.
+            self.install_restored_membership(candidate);
+            self.record_contradiction(Contradiction::restored(through).refusal());
+            candidate = self.membership_candidate();
+        }
+        self.staged_membership = Some(StagedMembership {
+            candidate,
+            refused: None,
+        });
+        Ok(())
+    }
+
+    /// Closes it: folds the runtime's endpoint, installs once, and states the
+    /// result once.
+    ///
+    /// The one publication the construction makes. Nothing reaches the link layer
+    /// before this and nothing reaches it at all when any input refused, which is
+    /// the whole of the transaction's promise one level up.
+    ///
+    /// **A driver whose record arrived already contradicted reads the endpoint
+    /// for its live half alone.** The fold exists to derive a policy worth
+    /// publishing and this driver will publish nothing ever again, so what is
+    /// left of the endpoint is the two runtime facts — which the inbound
+    /// admission check reads, and which a replica that must not serve still needs
+    /// in order to catch up. Its record was installed when the transaction opened
+    /// and is frozen where the marker says, so nothing here can move it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first refusal any input of the transaction produced. Nothing
+    /// is installed and nothing is published on that path.
+    pub(super) fn commit_membership_transaction(
+        &mut self,
+    ) -> Result<(), ControlPlaneCheckpointError> {
+        let Some(staged) = self.staged_membership.take() else {
+            // Unreachable behind the constructor, which opens one before this
+            // runs. Publishing the endpoint the ordinary way is the honest
+            // fallback rather than a panic: it is exactly what a driver with no
+            // transaction open owes its link layer.
+            return self.publish_adopted_membership();
+        };
+        let StagedMembership {
+            mut candidate,
+            refused,
+        } = staged;
+        if let Some(reason) = refused {
+            self.record_contradiction(reason);
+            return Err(reason);
+        }
+        if self.contradiction.is_some() {
+            self.assign_runtime_membership();
+            return Ok(());
+        }
+        if let Some(group) = self.group.as_ref() {
+            let (committed, effective) = Self::adopted_observation(group.runtime());
+            if let Err(reason) = candidate.apply(MembershipFact::Committed {
+                committed,
+                effective,
+            }) {
+                self.record_contradiction(reason);
+                return Err(reason);
+            }
+        }
+        self.install_membership(candidate);
         Ok(())
     }
 
@@ -547,6 +819,25 @@ where
         }
         self.install_membership(candidate);
         Ok(())
+    }
+
+    /// Assigns the two runtime facts straight from the group, touching no
+    /// durable field.
+    ///
+    /// The one thing a frozen driver still takes from its runtime. Both are
+    /// *observations* rather than conclusions — "what does this replica's own
+    /// stream say the cluster has committed, and what is in effect here" — so
+    /// neither is licensed by the record the marker froze, and the inbound
+    /// admission check needs both to let a replica the cluster admitted afterward
+    /// speak. A driver holding no group assigns nothing rather than clearing what
+    /// it has: an absent runtime is not a narrowing.
+    fn assign_runtime_membership(&mut self) {
+        let Some(group) = self.group.as_ref() else {
+            return;
+        };
+        let (committed, effective) = Self::adopted_observation(group.runtime());
+        self.committed_members = committed.membership;
+        self.effective_members = effective;
     }
 
     /// Reads the group's effective membership, or `None` if it holds no group.

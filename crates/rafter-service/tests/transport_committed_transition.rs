@@ -31,13 +31,14 @@ use rafter::{ConfigurationEntry, ConfigurationId, MembershipSet, NodeConfig};
 use rafter_app::group::RaftGroup;
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
-    ControlPlaneCheckpointError, CurrentCommittedState, ManagedDriverError,
+    ControlPlaneCheckpointError, CurrentCommittedState, DriverServiceState, ManagedDriverError,
     PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
     PersistedRaftLogEntry, RaftHardState, RaftHardStateStore, RaftLogSegment,
 };
+use support::scripted::*;
 use support::transport::*;
 use support::*;
 
@@ -206,6 +207,29 @@ fn adopt_above(
     configurations: [&[u64]; 2],
     applied_floor: LogIndex,
 ) -> (Driver, QueueTransport) {
+    let (opened, transport) = try_adopt_above(checkpoint, configurations, applied_floor);
+    (opened.expect("a recovered replica opens"), transport)
+}
+
+/// The same, returning the refusal rather than panicking on it.
+fn try_adopt_under(
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
+    configurations: [&[u64]; 2],
+) -> Result<Driver, ManagedDriverError> {
+    try_adopt_above(checkpoint, configurations, APPLIED_FLOOR).0
+}
+
+/// The one opener every fixture above is a shape of.
+///
+/// The transport comes back beside the refusal, which is what a "published
+/// nothing" assertion needs: a constructor that returns no driver still had a
+/// link layer, and the only way to ask what it was told is to keep a handle on
+/// it.
+fn try_adopt_above(
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
+    configurations: [&[u64]; 2],
+    applied_floor: LogIndex,
+) -> (Result<Driver, ManagedDriverError>, QueueTransport) {
     let (runtime, recovery_outputs) = recovered_runtime(configurations, applied_floor);
     let transport = QueueTransport::default();
     let validator = Validator {
@@ -218,42 +242,15 @@ fn adopt_above(
         ..KvStateMachine::default()
     };
     let group = RaftGroup::with_applied_index(GROUP, NodeId(1), runtime, app, applied_floor);
-    let driver = TransportRaftDriver::with_control_plane_checkpoint(
+    let opened = TransportRaftDriver::with_control_plane_checkpoint(
         group,
         recovery_outputs,
         transport.clone(),
         validator,
         TransportDriverOptions::default(),
         checkpoint,
-    )
-    .expect("a recovered replica opens");
-    (driver, transport)
-}
-
-/// The same, returning the refusal rather than panicking on it.
-fn try_adopt_under(
-    checkpoint: PeerControlPlaneCheckpoint<u64>,
-    configurations: [&[u64]; 2],
-) -> Result<Driver, ManagedDriverError> {
-    let (runtime, recovery_outputs) = recovered_runtime(configurations, APPLIED_FLOOR);
-    let transport = QueueTransport::default();
-    let validator = Validator {
-        transport: transport.clone(),
-        authorized: [NodeId(2), NodeId(3), NodeId(5)].into_iter().collect(),
-        nameable: Nameable::all(),
-    };
-    let app = KvStateMachine {
-        applied_index: APPLIED_FLOOR,
-        ..KvStateMachine::default()
-    };
-    TransportRaftDriver::with_control_plane_checkpoint(
-        RaftGroup::with_applied_index(GROUP, NodeId(1), runtime, app, APPLIED_FLOOR),
-        recovery_outputs,
-        transport.clone(),
-        validator,
-        TransportDriverOptions::default(),
-        checkpoint,
-    )
+    );
+    (opened, transport)
 }
 
 /// A record that disagrees with the kernel's own transition at that transition's
@@ -690,4 +687,120 @@ fn a_removal_is_absorbed_even_when_a_later_record_still_names_it() {
     driver
         .adopt_group_with_checkpoint(group, Vec::new(), checkpoint)
         .expect("a driver's own record is a record it can be handed back");
+}
+
+/// A history whose second entry declares a predecessor the record cannot be.
+///
+/// `{1,2,4}` at index 6 and `{1,2}` at index 7, joined into a record standing at
+/// index 6 and calling the committed membership `{1,2,3}` there. No index exists
+/// between 6 and 7, so the transition's own `previous` and the record's
+/// membership are two claims about the *same* committed configuration.
+const PREDECESSOR_DISAGREES: [&[u64]; 2] = [&[1, 2, 4], &[1, 2]];
+
+/// A crossing whose declared predecessor contradicts the record it lands on
+/// refuses to open.
+///
+/// **The transition's most useful executable evidence, which used to be thrown
+/// away.** `MembershipEvent::Applied` carries the membership the kernel computed
+/// as standing immediately before the entry, and the driver reduced it to a
+/// removed set and a named set — so the predecessor itself never met the state it
+/// is a claim about.
+///
+/// Here it disagrees, and the disagreement is not reconcilable by position: the
+/// record stands at index 6, the crossing at index 7, and there is no entry
+/// between them for the difference to have happened at. Folded anyway, the merge
+/// retires node 3 by the record-minus-transition inference *and* node 4 by the
+/// exact removal — two identities consumed on the strength of a pair that proves
+/// the record and the log are not one chain.
+///
+/// The refusal lands before any mark, register, or policy moves, which is what
+/// separates it from a driver that opens and then reports itself sick.
+#[test]
+fn a_crossing_whose_predecessor_contradicts_the_record_refuses_to_open() {
+    let (opened, transport) = try_adopt_above(
+        record_at(3, &[1, 2, 3], FIRST_AT),
+        PREDECESSOR_DISAGREES,
+        FIRST_AT,
+    );
+
+    assert!(
+        matches!(
+            opened.as_ref().map(|_| ()),
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::ContradictoryTransitionPredecessor { through }
+            }) if *through == FIRST_AT
+        ),
+        "the transition at index {} declares `{{1,2,4}}` stood at index {}, and \
+         the record calls it `{{1,2,3}}`: got {:?}",
+        SECOND_AT.0,
+        FIRST_AT.0,
+        opened.map(|_| "a driver")
+    );
+    assert!(
+        transport.policies().is_empty(),
+        "and nothing was published on the way to the refusal: {:?}",
+        transport.policies()
+    );
+}
+
+/// The same refusal on the live path, where the crossing arrives as an event.
+///
+/// A second call site rather than a second path: `route_membership_events` runs
+/// from every step outcome and has nowhere to return a refusal, so it records one
+/// and the driver stops serving. What must hold either way is that the transition
+/// is checked against the state it is a claim about *before* anything moves — the
+/// mark, the register, and the policy are all downstream of the same fold.
+///
+/// The register stands at index 5 after construction, so the crossing at index 6
+/// is adjacent to it and its `previous` is a claim about index 5. The driver holds
+/// `{1,2,3}` there and the crossing says `{1,2,4}`.
+#[test]
+fn a_live_crossing_whose_predecessor_contradicts_the_register_stops_the_driver() {
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
+    let handle = runtime.handle();
+    let (driver, transport) = scripted_driver(runtime, Nameable::all());
+    let policies_before = transport.policies();
+    let checkpoint_before = driver.control_plane_checkpoint();
+
+    outputs_on_step(
+        &handle,
+        vec![RaftOutput::ConfigurationCommitted {
+            index: LogIndex(6),
+            term: Term(1),
+            previous: config_of(&[1, 2, 4]),
+            configuration: stable(3, &[1, 2]),
+        }],
+    );
+    driver.tick().expect("the protocol still advances");
+
+    assert_eq!(
+        driver.service_state(),
+        DriverServiceState::ContradictoryTransitionPredecessor {
+            through: LogIndex(5)
+        },
+        "the crossing at index 6 declares `{{1,2,4}}` stood at index 5, and this \
+         driver's register calls it `{{1,2,3}}`"
+    );
+    assert_eq!(
+        transport.policies(),
+        policies_before,
+        "and the link layer was told nothing: {:?}",
+        transport.policies()
+    );
+    let after = driver.control_plane_checkpoint();
+    assert_eq!(
+        (after.committed_id_high_water, after.current_committed),
+        (
+            checkpoint_before.committed_id_high_water,
+            checkpoint_before.current_committed
+        ),
+        "nor did the retirement record move — neither node 3 by inference nor \
+         node 4 by the transition's own removal was retired"
+    );
+    assert_eq!(
+        after.contradicted_at,
+        Some(LogIndex(5)),
+        "the one thing that did move is the marker, which is what makes the \
+         refusal survive a restart"
+    );
 }

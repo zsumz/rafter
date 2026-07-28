@@ -102,6 +102,54 @@ fn durable_state(
     (hard_state_store, log_segment)
 }
 
+/// The same durable state with a no-op committed above the last configuration.
+///
+/// **The ordinary shape of a replica that changed its membership and then kept
+/// running**, and the one that separates a replay's crossings from the endpoint
+/// its runtime reports. Every leader appends a no-op on election and no
+/// configuration accompanies it, so the commit index comes to name a position no
+/// configuration entry occupies — which is exactly when the crossings all fold
+/// *beneath* the record's position, without an equal-position tie, while the
+/// endpoint at the commit index can still contradict it.
+///
+/// `durable_state` cannot state that: its commit index is the last configuration
+/// entry's own index, so a record standing at the commit index collides with the
+/// last crossing and refuses there instead.
+fn durable_state_above_last_configuration(
+    configurations: [&[u64]; 2],
+) -> (InMemoryRaftHardStateStore, InMemoryRaftLogSegment) {
+    let mut hard_state_store = InMemoryRaftHardStateStore::new();
+    hard_state_store
+        .write_hard_state(RaftHardState {
+            current_term: Term(1),
+            voted_for: None,
+            commit_index: COMMIT_ABOVE_CONFIGURATIONS,
+            committed_configuration: None,
+        })
+        .expect("durable commit floor writes");
+    let mut log_segment = InMemoryRaftLogSegment::new();
+    log_segment
+        .append_entries(&[
+            PersistedRaftLogEntry::configuration(LogIndex(1), Term(1), stable(0, STARTS_FROM)),
+            PersistedRaftLogEntry::configuration(
+                LogIndex(2),
+                Term(1),
+                stable(1, configurations[0]),
+            ),
+            PersistedRaftLogEntry::configuration(
+                LogIndex(3),
+                Term(1),
+                stable(2, configurations[1]),
+            ),
+            PersistedRaftLogEntry::noop(COMMIT_ABOVE_CONFIGURATIONS, Term(1)),
+        ])
+        .expect("committed entries persist");
+    (hard_state_store, log_segment)
+}
+
+/// Where the commit index stands when a no-op sits above the last configuration.
+const COMMIT_ABOVE_CONFIGURATIONS: LogIndex = LogIndex(4);
+
 /// Rebuilds one replica's runtime from that durable state, with the outputs the
 /// recovery released.
 ///
@@ -122,7 +170,16 @@ fn recovered_runtime_for(
     peers: &[NodeId],
     configurations: [&[u64]; 2],
 ) -> (DurableRaftNode, Vec<RaftOutput>) {
-    let (hard_state_store, log_segment) = durable_state(configurations);
+    recovered_runtime_over(node_id, peers, durable_state(configurations))
+}
+
+/// The same recovery over durable state the caller built.
+fn recovered_runtime_over(
+    node_id: NodeId,
+    peers: &[NodeId],
+    durable: (InMemoryRaftHardStateStore, InMemoryRaftLogSegment),
+) -> (DurableRaftNode, Vec<RaftOutput>) {
+    let (hard_state_store, log_segment) = durable;
     let (runtime, recovery_outputs) =
         DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
             NodeConfig::new(node_id, peers.to_vec(), 5).expect("test node config is valid"),
@@ -194,7 +251,20 @@ fn try_recover_node_with(
     checkpoint: PeerControlPlaneCheckpoint<u64>,
     configurations: [&[u64]; 2],
 ) -> (Result<Driver, ManagedDriverError>, QueueTransport) {
-    let (runtime, recovery_outputs) = recovered_runtime_for(node_id, peers, configurations);
+    try_recover_node_over(
+        node_id,
+        checkpoint,
+        recovered_runtime_for(node_id, peers, configurations),
+    )
+}
+
+/// The same, over a recovery the caller performed.
+fn try_recover_node_over(
+    node_id: NodeId,
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
+    recovered: (DurableRaftNode, Vec<RaftOutput>),
+) -> (Result<Driver, ManagedDriverError>, QueueTransport) {
+    let (runtime, recovery_outputs) = recovered;
     let transport = QueueTransport::default();
     let validator = Validator {
         transport: transport.clone(),
@@ -701,5 +771,70 @@ fn a_contradictory_replay_leaves_the_transport_it_was_handed_untouched() {
     assert!(
         !transport.retires(NodeId(4)),
         "so no floor was raised over an identity this process never settled on"
+    );
+}
+
+/// A construction whose *endpoint* refuses publishes nothing either, including
+/// what its replay licensed on the way there.
+///
+/// **The reviewer's twelfth-round counterexample, and the case the replay
+/// regression above cannot reach.** There the contradiction is inside the
+/// replayed batch, so the one transaction that batch already had refused it whole.
+/// Here every crossing is valid *and* stands beneath the record's position, so
+/// they fold cleanly, install, and state a peer set and a floor to the link layer
+/// — and only then does the runtime's own endpoint, at a commit index no
+/// configuration entry occupies, collide with the record at index 4 and refuse the
+/// construction.
+///
+/// Two membership transactions is what makes that possible: report routing ran
+/// one and the endpoint publication ran another, so the refusal in the second
+/// arrived after the first had already published. A caller's transport is left
+/// holding a permanent statement licensed by an input the constructor went on to
+/// declare contradictory, and `update_peers` is the external installation of the
+/// whole admission policy rather than scratch state — nothing takes it back.
+#[test]
+fn a_construction_whose_endpoint_refuses_publishes_nothing_its_replay_licensed() {
+    // `{through 4, mark 4, live {1,2,3,4}}`: a record whose position is the
+    // commit index and whose membership names node 4, which the log never
+    // committed. Both crossings are below it, so neither ties with it.
+    let mut record = PeerControlPlaneCheckpoint::empty(GROUP);
+    record.committed_id_high_water = Some(NodeId(4));
+    record.current_committed = Some(CurrentCommittedState::new(
+        COMMIT_ABOVE_CONFIGURATIONS,
+        [1, 2, 3, 4].into_iter().map(NodeId).collect(),
+    ));
+
+    let (opened, transport) = try_recover_node_over(
+        NodeId(1),
+        record,
+        recovered_runtime_over(
+            NodeId(1),
+            &[NodeId(2), NodeId(3)],
+            durable_state_above_last_configuration(ADMIT_THEN_REMOVE),
+        ),
+    );
+
+    assert!(
+        matches!(
+            opened,
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::ContradictoryCurrentState {
+                    through: COMMIT_ABOVE_CONFIGURATIONS
+                }
+            })
+        ),
+        "the runtime's endpoint and the record stand at index {COMMIT_ABOVE_CONFIGURATIONS} \
+         and name different committed memberships there: got {opened:?}"
+    );
+    assert!(
+        transport.policies().is_empty(),
+        "and the process that refused to open told its link layer nothing: {:?}",
+        transport.policies()
+    );
+    assert_eq!(
+        transport.retirement_floor(),
+        None,
+        "so no retirement floor was raised by a constructor that never returned a \
+         driver"
     );
 }

@@ -212,6 +212,36 @@ pub enum ControlPlaneCheckpointError {
     /// it, calls the membership something else. That is damaged, truncated, or
     /// foreign durable state.
     ContradictoryCurrentState { through: LogIndex },
+    /// A committed transition declares a predecessor the driver's own register
+    /// is not, at the position they both name.
+    ///
+    /// **The one-chain contract's most direct evidence.** A crossing carries the
+    /// membership the kernel computed as standing immediately before its own
+    /// entry, so a crossing at index `n+1` and a register standing at index `n`
+    /// are two claims about the committed configuration at `n`. There is no index
+    /// between them for the difference to have happened at, so a difference that
+    /// survives normalization is proof that the record and the log are not one
+    /// chain — which is a stronger statement than
+    /// [`ControlPlaneCheckpointError::ContradictoryCurrentState`] makes, because
+    /// the kernel computed this side of it where the chronology was known.
+    ///
+    /// Kept as its own variant rather than folded into that one because the two
+    /// point an operator at different artifacts. A contradictory current state is
+    /// two *observations* colliding, and either could be the damaged one. This is
+    /// a durable record colliding with the log's own account of its own history:
+    /// the log is the authority, and what is wrong is the record beside it.
+    ///
+    /// `through` is the position whose membership is contradicted — the
+    /// register's, one below the transition's own index — because that is the
+    /// committed configuration the two disagree about.
+    ///
+    /// **Only raised where the two are adjacent.** A transition separated from
+    /// the register by any gap makes no claim about where the register stands:
+    /// the entries between them are ordinarily application entries, across which
+    /// the committed membership does not move, and may equally be configuration
+    /// entries a compaction erased. Comparing across one would manufacture the
+    /// contradiction rather than detect it.
+    ContradictoryTransitionPredecessor { through: LogIndex },
     /// A checkpoint observed the committed membership *before* the driver it was
     /// offered to did.
     ///
@@ -238,6 +268,49 @@ pub enum ControlPlaneCheckpointError {
     /// A supervisor holding another process's record builds a driver around it
     /// rather than joining it into one that has already observed something.
     StaleCurrentState { held: LogIndex, incoming: LogIndex },
+    /// A record carrying a contradiction marker was offered to an adoption.
+    ///
+    /// **A marked record is evidence of an unresolved fork, and merging one is
+    /// licensing what it refused.** The mark and register such a record carries
+    /// were derived from a chain that observed two irreconcilable claims about
+    /// one committed configuration; joining them into a driver that has been
+    /// running would take that chain's retirement conclusions on trust and lose
+    /// the marker in the join, since the joined record describes a driver that
+    /// never saw the fork.
+    ///
+    /// **The constructor is the supported way to read one back.**
+    /// [`crate::TransportRaftDriver::with_control_plane_checkpoint`] restores into
+    /// empty held state, which is this chain resuming itself: it carries the
+    /// marker, starts the driver refusing, and publishes nothing. So refusing
+    /// here loses no record — the file is still on the embedder's disk — and what
+    /// it costs is exactly the operation that must not happen.
+    ///
+    /// There is no retry that clears this. The operator's move is to decide what
+    /// this replica's control plane should be, with the deployment's own record
+    /// of what was retired, and reseed it deliberately.
+    ContradictedRecordMerged { through: LogIndex },
+    /// A checkpoint carries a contradiction marker and no current committed
+    /// state.
+    ///
+    /// Not producible: a contradiction is a disagreement *between* the register
+    /// and something else, so a driver that has observed nothing cannot record
+    /// one. Absorbed, it would be a record that is unreadable rather than
+    /// terminal — every identity at or below its mark would read as spent, on top
+    /// of a driver that refuses everything anyway — so the honest answer is that
+    /// the file was damaged.
+    ContradictionWithoutCurrentState,
+    /// A checkpoint's contradiction marker stands below its current committed
+    /// state.
+    ///
+    /// The register freezes the moment the marker is set, and the candidate that
+    /// found the contradiction may already have folded earlier facts of the same
+    /// batch — so the marker's position is at or above the register's and never
+    /// beneath it. A record that says otherwise has had one of the two damaged,
+    /// and the pair no longer describes any state a driver reached.
+    ContradictionBeneathCurrentState {
+        contradicted_at: LogIndex,
+        through: LogIndex,
+    },
 }
 
 impl fmt::Display for ControlPlaneCheckpointError {
@@ -263,10 +336,34 @@ impl fmt::Display for ControlPlaneCheckpointError {
                 formatter,
                 "two observations disagree about the committed membership at index {through}"
             ),
+            Self::ContradictoryTransitionPredecessor { through } => write!(
+                formatter,
+                "the committed transition at index {} declares a membership at index \
+                 {through} that this driver's own record contradicts",
+                through.next()
+            ),
             Self::StaleCurrentState { held, incoming } => write!(
                 formatter,
                 "the checkpoint observed the committed membership at index {incoming}, before \
                  this driver's own observation at index {held}, so the two are not one chain"
+            ),
+            Self::ContradictedRecordMerged { through } => write!(
+                formatter,
+                "the checkpoint records an unresolved contradiction at index {through}, so \
+                 merging it into a running driver would license the fork it refused; open a \
+                 driver over it instead, or reseed this replica's control plane deliberately"
+            ),
+            Self::ContradictionWithoutCurrentState => formatter.write_str(
+                "the checkpoint records a contradiction and no committed membership for it to \
+                 have contradicted, so the record no driver could have written it",
+            ),
+            Self::ContradictionBeneathCurrentState {
+                contradicted_at,
+                through,
+            } => write!(
+                formatter,
+                "the checkpoint records a contradiction at index {contradicted_at} beneath its \
+                 own observation at index {through}, and a record freezes where it contradicts"
             ),
         }
     }

@@ -173,7 +173,7 @@ where
     /// deferred queue exactly as [`super::state::DriverShared::reclaim`]
     /// describes.
     pub(super) fn flush_peer_policy(&mut self) {
-        if self.contradicted_at.is_some() {
+        if self.contradiction.is_some() {
             return;
         }
         let desired = self.desired_policy();
@@ -345,10 +345,10 @@ where
     /// **Ordered by what a supervisor can still do about it**, most terminal
     /// first. Shutdown outranks everything because nothing else changes what
     /// happens next; a released driver is reported before anything derived from
-    /// a group it does not hold; a contradiction outranks both conclusions drawn
-    /// from the membership facts, because it says those facts cannot be trusted;
-    /// and decommissioning outranks the condition that ends, because a rollback
-    /// can be re-proposed and a spent identity cannot.
+    /// a group it does not hold; either contradiction outranks both conclusions
+    /// drawn from the membership facts, because it says those facts cannot be
+    /// trusted; and decommissioning outranks the condition that ends, because a
+    /// rollback can be re-proposed and a spent identity cannot.
     pub(super) fn service_state(&self) -> DriverServiceState {
         if self.shutting_down {
             return DriverServiceState::ShuttingDown;
@@ -356,8 +356,8 @@ where
         if self.group.is_none() {
             return DriverServiceState::Released;
         }
-        if let Some(through) = self.contradicted_at {
-            return DriverServiceState::ContradictoryCurrentState { through };
+        if let Some(contradiction) = self.contradiction {
+            return contradiction.service_state();
         }
         if self.is_decommissioned() {
             return DriverServiceState::Decommissioned {
@@ -394,6 +394,9 @@ where
             DriverServiceState::NotMember { .. } => Err(DriverUnavailableReason::NotMember),
             DriverServiceState::ContradictoryCurrentState { .. } => {
                 Err(DriverUnavailableReason::ContradictoryCurrentState)
+            }
+            DriverServiceState::ContradictoryTransitionPredecessor { .. } => {
+                Err(DriverUnavailableReason::ContradictoryTransitionPredecessor)
             }
             DriverServiceState::Released => Err(DriverUnavailableReason::Released),
             // Every client surface refuses shutdown ahead of this call with its
