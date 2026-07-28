@@ -735,6 +735,45 @@ where
     /// re-adopt needs none of this and passes an empty checkpoint through
     /// [`TransportRaftDriver::adopt_group`], because nothing was lost.
     ///
+    /// # What an `Err` leaves behind
+    ///
+    /// **Two kinds of `Err`, and they differ in whether the group was
+    /// installed.** `Result<(), _>` cannot say which, so it is said here and
+    /// pinned in `tests/adoption.rs`.
+    ///
+    /// Everything above the installation is a *refusal*: shutdown, a group
+    /// already held, a foreign group ID, a checkpoint that contradicts this
+    /// driver's invariants, a node ID a committed removal has spent, and
+    /// watermarks a released incarnation had already passed. Each leaves the
+    /// driver holding no group, so [`TransportRaftDriver::with_group`] answers
+    /// [`ManagedDriverError::NoGroup`] and the next adoption is an ordinary
+    /// first attempt. The group itself is consumed and dropped, which is what a
+    /// refusal means: the supervisor rebuilds and offers a new one.
+    ///
+    /// **Only the recovery outputs fail after the group is installed, and that
+    /// adoption is not rolled back.** The driver holds the group, `with_group`
+    /// reads it, and `service_state` answers for it —
+    /// [`TransportRaftDriver::release_group`] is how a supervisor gets it back,
+    /// and is required before another adoption, which would otherwise raise
+    /// [`ManagedDriverError::GroupAlreadyAdopted`]. Rolling back instead would
+    /// *drop* the group on the floor, which is strictly worse: a caller holding
+    /// a `Result<(), _>` has no other way to reach it.
+    ///
+    /// The link layer is told what the installed group requires whether or not
+    /// the outputs applied, because that is the one statement a later call
+    /// cannot repair on its own: a peer set left describing the retired
+    /// incarnation is not stale, it is wrong about who may speak, and nothing
+    /// re-derives it until the cluster's next configuration change.
+    ///
+    /// **Retry is legal, and re-sending is sound.** The checkpoint is merged
+    /// before the failure and stays merged; the join is monotone and idempotent,
+    /// so offering the same record again adds nothing. Transport calls that
+    /// already flew are lost-message-equivalent under this repo's own model —
+    /// [`RaftTransport`] states that Raft safety tolerates dropped, duplicated,
+    /// and reordered peer messages — so a supervisor that releases, rebuilds the
+    /// runtime, and adopts again re-sends what it must and duplicates what it
+    /// need not.
+    ///
     /// # Errors
     ///
     /// As [`TransportRaftDriver::adopt_group`].
@@ -800,12 +839,21 @@ where
         // one of them as a removal of what the endpoint had added. A takeover
         // reaches this with a checkpoint from another process and is the case
         // that most needs it.
-        if !recovery_outputs.is_empty() {
-            state.apply_recovery_outputs(recovery_outputs)?;
-        }
+        // **The publication runs whether or not the outputs applied**, and the
+        // `?` that used to sit on this line is the whole of the defect. The
+        // group is installed by now, so this driver *is* the replica the link
+        // layer authorizes for — and returning early left the transport
+        // describing the retired incarnation with nothing to re-derive it from,
+        // because the peer set is only republished when the cluster's
+        // membership moves.
+        let applied = if recovery_outputs.is_empty() {
+            Ok(())
+        } else {
+            state.apply_recovery_outputs(recovery_outputs)
+        };
         state.publish_adopted_membership();
         state.publish_metrics();
-        Ok(())
+        applied
     }
 }
 

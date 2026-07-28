@@ -10,7 +10,7 @@
 
 mod support;
 
-use rafter_service::{DriverCommandSender, WriteOptions};
+use rafter_service::{DriverCommandSender, PeerControlPlaneCheckpoint, WriteOptions};
 
 use support::transport::{driver_for, tick_past_election_timeout, GROUP};
 use support::*;
@@ -361,5 +361,199 @@ fn in_memory_driver_rejects_groups_that_do_not_share_one_group_id() {
     assert!(
         matches!(error, ManagedDriverError::MixedGroups),
         "got {error:?}"
+    );
+}
+
+/// The membership every replica in the cases below bootstraps under.
+///
+/// **Two replicas rather than one, so a replacement incarnation names the same
+/// committed membership the retired one did.** A single-voter fixture would give
+/// node 1's group `{1}` and node 2's `{2}` at the same commit index, which is
+/// two different answers to "what did this group commit at index 0" — and a
+/// driver reading the pair concludes node 1 was removed. That is the right
+/// conclusion about a fixture no cluster produces, and it is not what these
+/// cases are about.
+const CLUSTER: [u64; 2] = [1, 2];
+
+/// The peers of `node_id` within [`CLUSTER`].
+fn peers_of(node_id: u64) -> Vec<u64> {
+    CLUSTER.into_iter().filter(|id| *id != node_id).collect()
+}
+
+/// A replica of [`CLUSTER`] whose state machine refuses every apply.
+///
+/// The one way an adoption can fail *after* the group is installed: the
+/// watermark and identity checks all run before it, so the recovery outputs are
+/// what separates a refusal from a partial adoption.
+fn refusing_group(node_id: u64) -> NumberedGroup {
+    numbered_group_with_app(
+        GROUP,
+        node_id,
+        &peers_of(node_id),
+        3,
+        KvStateMachine {
+            fail_apply: true,
+            ..KvStateMachine::default()
+        },
+    )
+}
+
+/// An ordinary replica of [`CLUSTER`].
+fn cluster_group(node_id: u64) -> NumberedGroup {
+    numbered_group(GROUP, node_id, &peers_of(node_id), 3)
+}
+
+/// One recovery output the state machine above will refuse.
+fn a_refused_apply() -> Vec<RaftOutput> {
+    vec![RaftOutput::Apply {
+        index: LogIndex(1),
+        term: Term(1),
+        payload: SharedPayload::from(&b"key\nvalue"[..]),
+        local_proposal_id: None,
+    }]
+}
+
+/// A failed adoption still installs the group, and says so.
+///
+/// **`Result<(), _>` cannot distinguish a refusal from a partial adoption, so
+/// the distinction is pinned here.** Everything the method checks before it
+/// installs anything leaves the driver holding no group; only the recovery
+/// outputs fail afterwards, and that adoption is not rolled back. Rolling it
+/// back would *drop* the group, and a caller holding a unit result has no other
+/// way to reach it — so the group stays installed and `release_group` is how a
+/// supervisor gets it back.
+#[test]
+fn a_failed_adoption_installs_the_group_and_leaves_it_reachable() {
+    let (driver, _transport) = driver_for(1, &peers_of(1));
+    let _retired = driver.release_group().expect("the driver holds a group");
+
+    let failed = driver.adopt_group(refusing_group(2), a_refused_apply());
+
+    assert!(failed.is_err(), "the state machine refused the apply");
+    assert_eq!(
+        driver
+            .with_group(RaftGroup::node_id)
+            .expect("the group is installed despite the error"),
+        NodeId(2),
+        "the identity moved with it, so this driver is the replica it adopted"
+    );
+    assert!(
+        matches!(
+            driver.adopt_group(cluster_group(1), Vec::new()),
+            Err(ManagedDriverError::GroupAlreadyAdopted)
+        ),
+        "a second adoption is refused until the first is released"
+    );
+    driver
+        .release_group()
+        .expect("release is how a supervisor recovers the group");
+}
+
+/// The link layer hears about the installed group even when the outputs failed.
+///
+/// The one statement a later call cannot repair on its own. A peer set left
+/// describing the retired incarnation is not stale, it is wrong about who may
+/// speak — and nothing re-derives it until the cluster's next configuration
+/// change, which may never come. So the publication runs after the recovery
+/// outputs whatever they did, and the `?` that used to sit on that line is the
+/// whole of the defect this pins.
+#[test]
+fn a_failed_adoption_still_publishes_what_the_installed_group_requires() {
+    let (driver, transport) = driver_for(1, &peers_of(1));
+    let _retired = driver.release_group().expect("the driver holds a group");
+    let published_before = transport.peer_sets().len();
+
+    let failed = driver.adopt_group(refusing_group(2), a_refused_apply());
+
+    assert!(failed.is_err());
+    assert!(
+        transport.peer_sets().len() > published_before,
+        "the transport was told what the adopted group requires: {:?}",
+        transport.peer_sets()
+    );
+}
+
+/// A refusal before the installation leaves the driver holding no group.
+///
+/// The other half of the contract, and the reason the two are separate
+/// paragraphs at the method: a supervisor reading an `Err` needs to know whether
+/// its next call is `release_group` or another `adopt_group`.
+#[test]
+fn a_refusal_before_the_installation_leaves_no_group_behind() {
+    let (driver, _transport) = driver_for(1, &peers_of(1));
+    let _retired = driver.release_group().expect("the driver holds a group");
+
+    let refused = driver.adopt_group(numbered_group(FOREIGN, 2, &[1], 3), Vec::new());
+
+    assert!(
+        matches!(refused, Err(ManagedDriverError::MixedGroups)),
+        "got {refused:?}"
+    );
+    assert!(
+        matches!(
+            driver.with_group(RaftGroup::node_id),
+            Err(ManagedDriverError::NoGroup)
+        ),
+        "a refusal installs nothing, so the next call is another adoption"
+    );
+    driver
+        .adopt_group(cluster_group(2), Vec::new())
+        .expect("and that adoption is an ordinary first attempt");
+}
+
+/// A retry after a failed adoption is legal, and the checkpoint it merged stays
+/// merged.
+///
+/// The join is monotone and idempotent, so offering the same record again adds
+/// nothing — which is what makes "release, rebuild, adopt again" the whole
+/// recovery procedure rather than one that has to reason about what the failed
+/// attempt absorbed.
+#[test]
+fn a_retry_after_a_failed_adoption_reaches_the_same_record() {
+    let (driver, _transport) = driver_for(1, &peers_of(1));
+    let _retired = driver.release_group().expect("the driver holds a group");
+    let checkpoint = driver.control_plane_checkpoint();
+
+    assert!(driver
+        .adopt_group_with_checkpoint(refusing_group(2), a_refused_apply(), checkpoint.clone())
+        .is_err());
+    let after_failure = driver.control_plane_checkpoint();
+    let _half_adopted = driver.release_group().expect("the group is reachable");
+
+    driver
+        .adopt_group_with_checkpoint(cluster_group(2), Vec::new(), checkpoint)
+        .expect("the same record is offered again and adds nothing");
+
+    assert_eq!(
+        driver.control_plane_checkpoint().committed_id_high_water,
+        after_failure.committed_id_high_water,
+        "the retry re-derived the same retirement record"
+    );
+    assert_eq!(
+        driver.control_plane_checkpoint().pending_fences,
+        after_failure.pending_fences,
+        "and owes exactly what it owed"
+    );
+}
+
+/// The control: an empty checkpoint through the same path still adopts.
+#[test]
+fn an_adoption_with_a_checkpoint_and_no_recovery_outputs_succeeds() {
+    let (driver, _transport) = driver_for(1, &peers_of(1));
+    let _retired = driver.release_group().expect("the driver holds a group");
+
+    driver
+        .adopt_group_with_checkpoint(
+            cluster_group(2),
+            Vec::new(),
+            PeerControlPlaneCheckpoint::empty(GROUP),
+        )
+        .expect("an ordinary adoption");
+
+    assert_eq!(
+        driver
+            .with_group(RaftGroup::node_id)
+            .expect("the driver holds the adopted group"),
+        NodeId(2)
     );
 }
