@@ -11,7 +11,7 @@
 //! The deterministic driver decides when a node ticks. This one cannot: a real
 //! process ticks on its own clock, a real socket delivers when it delivers, and
 //! a real `SIGKILL` lands where it lands. Real time is therefore load bearing
-//! in exactly three places, and each is bounded rather than assumed:
+//! in exactly four places, and each is bounded rather than assumed:
 //!
 //! 1. **Waiting for a condition.** Every wait is a predicate polled on a short
 //!    interval against a deadline ([`wait_until`]). There is no "sleep and
@@ -32,6 +32,13 @@
 //!    down. Tests that kill mid-write assert the property that holds for both
 //!    readings — the command took effect exactly once, or provably not at all —
 //!    rather than asserting one reading and hoping.
+//! 4. **Whether a kill leaves a restartable journal.** An append writes and
+//!    syncs a frame before it seals that frame. A kill between those operations
+//!    leaves a complete unsealed frame that recovery refuses because it cannot
+//!    distinguish interrupted publication from damage. [`ProcessCluster::restart`]
+//!    treats `NEEDS_REPAIR` as that legitimate branch: it records the refusal,
+//!    repairs only after the process names the remedy, and lets ordinary
+//!    replication restore any discarded suffix.
 //!
 //! Ports are never assigned by this harness. Each replica binds an ephemeral
 //! port and publishes it, which removes the one flake source a port-picking
@@ -201,6 +208,26 @@ pub struct NodeStatus {
     pub leader: Option<NodeId>,
 }
 
+/// How a restarted replica got its durable journal open.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Escalation {
+    /// The replica whose journal refused a plain restart.
+    pub node_id: NodeId,
+    /// The explicit recovery mode selected after the refusal.
+    pub mode: String,
+    /// The lifecycle line that authorized the escalation.
+    pub refusal: String,
+}
+
+/// What a freshly spawned replica settled into.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Started {
+    /// Recovery completed and the replica serves from this applied floor.
+    Ready { applied: LogIndex },
+    /// The durable journal requires an explicit repair decision.
+    NeedsRepair { line: String },
+}
+
 /// A blocking client connection speaking the documented line protocol.
 ///
 /// The parsing here is written against the protocol document rather than shared
@@ -340,47 +367,61 @@ impl NodeProcess {
         self.client_addr
     }
 
-    /// Waits for this replica to announce complete recovery.
+    /// Waits for this replica to either finish recovery or request repair.
     ///
-    /// Returns the applied index it recovered to, which is the durable floor a
-    /// restart test asserts against.
-    ///
-    /// A replica whose application journal will not open is never going to
-    /// announce readiness, so this refuses it immediately rather than spending
-    /// the whole timeout on a wait that cannot end. That refusal is the process
-    /// half of the store's fail-closed rule: the readiness gate is where a
-    /// journal needing an operator's decision stops the replica, and a harness
-    /// that waited it out would be asserting nothing.
-    pub fn wait_ready(&mut self) -> LogIndex {
+    /// Both are terminal startup outcomes. Returning the refusal is what lets a
+    /// restart harness escalate deliberately rather than panic on a legal crash
+    /// window or repair without the process first authorizing it.
+    fn wait_started(&mut self) -> Started {
         let node_id = self.node_id;
         let deadline = Instant::now() + WAIT_TIMEOUT;
-        let line = loop {
+        loop {
             self.drain_lifecycle();
             if let Some(line) = self
                 .seen
                 .iter()
                 .find(|line| line.starts_with("NEEDS_REPAIR"))
             {
-                panic!("replica {} refused to serve: {line}", node_id.0);
+                return Started::NeedsRepair { line: line.clone() };
             }
             if let Some(line) = self.seen.iter().find(|line| line.starts_with("READY")) {
-                break line.clone();
+                return Started::Ready {
+                    applied: LogIndex(
+                        line.split_whitespace()
+                            .nth(3)
+                            .expect("a READY line names an applied index")
+                            .parse()
+                            .expect("the announced applied index parses"),
+                    ),
+                };
             }
             assert!(
                 Instant::now() < deadline,
-                "replica {} never announced READY; it announced {:?}",
+                "replica {} neither served nor requested repair; it announced {:?}",
                 node_id.0,
                 self.seen
             );
             thread::sleep(POLL_INTERVAL);
-        };
-        LogIndex(
-            line.split_whitespace()
-                .nth(3)
-                .expect("a READY line names an applied index")
-                .parse()
-                .expect("the announced applied index parses"),
-        )
+        }
+    }
+
+    /// Waits for this replica to announce complete recovery.
+    ///
+    /// Returns the applied index it recovered to, which is the durable floor a
+    /// restart test asserts against.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the journal requests repair, because a caller that asks only
+    /// for readiness has already decided that plain recovery must succeed.
+    #[track_caller]
+    pub fn wait_ready(&mut self) -> LogIndex {
+        match self.wait_started() {
+            Started::Ready { applied } => applied,
+            Started::NeedsRepair { line } => {
+                panic!("replica {} refused to serve: {line}", self.node_id.0)
+            }
+        }
     }
 
     /// Returns this replica's directory under the cluster root.
@@ -517,6 +558,7 @@ pub struct ProcessCluster {
     config: LedgerConfig,
     nodes: BTreeMap<NodeId, NodeProcess>,
     history: Vec<HistoryEvent>,
+    escalations: Vec<Escalation>,
     next_operation_id: u64,
 }
 
@@ -529,6 +571,7 @@ impl ProcessCluster {
             config,
             nodes: BTreeMap::new(),
             history: Vec::new(),
+            escalations: Vec::new(),
             next_operation_id: 1,
         };
         for node_id in NODE_IDS {
@@ -558,6 +601,14 @@ impl ProcessCluster {
     /// Returns the recorded client history.
     pub fn history(&self) -> &[HistoryEvent] {
         &self.history
+    }
+
+    /// Returns every restart that required explicit journal repair.
+    ///
+    /// Empty is the common case, not an assumption tests may make: a kill can
+    /// legitimately land after a frame sync and before its seal.
+    pub fn escalations(&self) -> &[Escalation] {
+        &self.escalations
     }
 
     /// Returns the live replicas, lowest identifier first.
@@ -702,6 +753,11 @@ impl ProcessCluster {
     }
 
     /// Starts a replica that is not currently running and waits for it to serve.
+    ///
+    /// A plain restart is always attempted first. If the journal requests
+    /// repair, the harness records that refusal and retries once with the
+    /// explicit repair flag. Repair is never selected speculatively.
+    #[track_caller]
     pub fn restart(&mut self, node_id: NodeId) -> LogIndex {
         assert!(
             !self.nodes.contains_key(&node_id),
@@ -709,7 +765,19 @@ impl ProcessCluster {
             node_id.0
         );
         let mut process = NodeProcess::spawn(self.root.path(), node_id, self.config);
-        let applied = process.wait_ready();
+        let applied = match process.wait_started() {
+            Started::Ready { applied } => applied,
+            Started::NeedsRepair { line } => {
+                drop(process);
+                self.escalations.push(Escalation {
+                    node_id,
+                    mode: String::from("repair"),
+                    refusal: line,
+                });
+                process = NodeProcess::spawn_repairing(self.root.path(), node_id, self.config);
+                process.wait_ready()
+            }
+        };
         self.nodes.insert(node_id, process);
         applied
     }

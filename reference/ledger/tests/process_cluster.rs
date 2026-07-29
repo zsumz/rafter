@@ -651,6 +651,17 @@ fn acknowledged_commands_never_re_execute_after_a_cluster_wide_restart() {
     for node_id in process::NODE_IDS {
         cluster.restart(node_id);
     }
+    // A kill may land after a complete frame is synced but before it is
+    // sealed. That branch is timing-dependent, so the test does not require
+    // it; when it occurs, it must be an explicit response to the process's
+    // refusal rather than an eager repair hidden by the harness.
+    for escalation in cluster.escalations() {
+        assert_eq!(escalation.mode, "repair");
+        assert!(
+            escalation.refusal.contains("--repair-app-store"),
+            "repair must follow a refusal that names the mode, observed {escalation:?}"
+        );
+    }
 
     let restarted_leader = cluster.wait_for_leader();
     assert!(
