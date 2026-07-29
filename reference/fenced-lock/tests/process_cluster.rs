@@ -93,10 +93,11 @@ use std::collections::BTreeMap;
 
 use rafter::{LogIndex, NodeId};
 use rafter_reference_fenced_lock::{
+    check_evidence,
     store::{raw_slot, SlotIndex, SLOT_HEADER_LEN, SLOT_TRAILER_LEN},
-    ApplyDisposition, Command, FencingToken, GuardedRejection, GuardedResource, GuardedWrite,
-    HistoryEvent, LockConfig, LockRejection, LockResponse, Operation, OperationResult,
-    RequestRejection, ResourceName,
+    ApplyDisposition, FencingToken, GuardedHistoryEvent, GuardedRejection, GuardedWrite,
+    LockConfig, LockRejection, LockResponse, OperationResult, RecordingGuardedResource,
+    RequestRejection,
 };
 
 use process::{ProcessCluster, SubmitOutcome};
@@ -134,122 +135,21 @@ fn assert_operation(outcome: &SubmitOutcome, expected: OperationResult) {
     );
 }
 
-/// Asserts the recorded history has one invocation and one terminal event per
-/// operation, and that it placed at least one of them.
-///
-/// The lock has no linearizability checker of its own — the ledger owns that
-/// code and the two consumers share nothing — so this is a structural check on
-/// the recorder rather than a decision about orderings, and it is described as
-/// exactly that. What the history is genuinely load bearing for is
-/// [`assert_tokens_never_reissue`], which is a real safety property read off
-/// the client-visible events alone.
+/// Runs both independent black-box checks and proves this scenario contributed
+/// real lock evidence.
 #[track_caller]
-fn assert_history_well_formed(cluster: &ProcessCluster) {
-    let mut invoked = BTreeMap::new();
-    let mut terminal = BTreeMap::new();
-    for event in cluster.history() {
-        let operation_id = event.operation_id();
-        let counter = match event {
-            HistoryEvent::Invoked { .. } => &mut invoked,
-            HistoryEvent::Completed { .. }
-            | HistoryEvent::Unknown { .. }
-            | HistoryEvent::NotCommitted { .. } => &mut terminal,
-        };
-        *counter.entry(operation_id).or_insert(0_u32) += 1;
-    }
+fn assert_process_evidence(cluster: &ProcessCluster, guarded_history: &[GuardedHistoryEvent]) {
+    let report = check_evidence(process_config(), cluster.history(), guarded_history)
+        .unwrap_or_else(|error| panic!("black-box process evidence failed: {error}"));
     assert!(
-        !invoked.is_empty(),
-        "a process history that recorded no operations proves nothing"
+        report.lock.searched_operations() + report.lock.discharged_operations() > 0,
+        "a green process history that searched or discharged nothing proves nothing"
     );
-    for (operation_id, count) in &invoked {
-        assert_eq!(
-            *count, 1,
-            "operation {operation_id:?} was invoked {count} times"
+    if !guarded_history.is_empty() {
+        assert!(
+            report.guarded.checked_operations() > 0,
+            "a nonempty guarded history must check at least one operation"
         );
-        assert_eq!(
-            terminal.get(operation_id).copied().unwrap_or(0),
-            1,
-            "operation {operation_id:?} has no single terminal event"
-        );
-    }
-    assert_eq!(
-        invoked.len(),
-        terminal.len(),
-        "every terminal event must belong to an invocation"
-    );
-}
-
-/// One request's identity, minus the fingerprint the protocol does not carry.
-///
-/// Comparable, so it can key a map. A retry repeats this triple exactly, which
-/// is what makes it a retry.
-type Identity = (u32, u64, u64);
-
-/// Asserts no two *distinct* requests ever received the same fencing token for
-/// one resource.
-///
-/// Read off the client-visible history alone: the invocation supplies the
-/// resource name and the request identity, the completion supplies the token,
-/// and the two are correlated by operation id. Tokens for different resource
-/// names are never compared, because the contract says they are unrelated.
-///
-/// "Distinct requests" is the whole of the property and not a softening of it.
-/// A replayed retry legitimately returns the token its original execution
-/// issued — that is what a session cache is for — and the history vocabulary
-/// carries no disposition, so a checker reading it cannot tell an execution
-/// from a replay and must not try. Keying on the identity is what makes the
-/// assertion decidable from the history alone: within one identity a repeated
-/// token is the cache working, and across two identities it is the failure the
-/// guarded resource exists to catch.
-#[track_caller]
-fn assert_tokens_never_reissue(cluster: &ProcessCluster) {
-    let mut invocations: BTreeMap<u64, (ResourceName, Identity)> = BTreeMap::new();
-    for event in cluster.history() {
-        if let HistoryEvent::Invoked {
-            operation_id,
-            command:
-                Command::Submit {
-                    request,
-                    operation: Operation::Acquire { resource, .. },
-                },
-        } = event
-        {
-            invocations.insert(
-                operation_id.get(),
-                (
-                    *resource,
-                    (
-                        request.client_id.get(),
-                        request.session_epoch.get(),
-                        request.sequence.get(),
-                    ),
-                ),
-            );
-        }
-    }
-
-    let mut issued: BTreeMap<(ResourceName, FencingToken), Identity> = BTreeMap::new();
-    for event in cluster.history() {
-        let HistoryEvent::Completed {
-            operation_id,
-            response: LockResponse::Operation(OperationResult::Acquired { token, .. }),
-        } = event
-        else {
-            continue;
-        };
-        let Some((resource, identity)) = invocations.get(&operation_id.get()) else {
-            panic!("an acquisition completed without a recorded invocation: {event:?}");
-        };
-        match issued.insert((*resource, *token), *identity) {
-            None => {}
-            Some(previous) => assert_eq!(
-                previous,
-                *identity,
-                "resource {} issued token {} to two different requests",
-                resource.as_str(),
-                token.get()
-            ),
-        }
     }
 }
 
@@ -259,7 +159,7 @@ fn assert_tokens_never_reissue(cluster: &ProcessCluster) {
 /// naming a different one is a separate rejection the lock service has no part
 /// in and no test here is about.
 fn guarded_write(
-    guarded: &mut GuardedResource,
+    guarded: &mut RecordingGuardedResource,
     token: FencingToken,
     value: u64,
 ) -> Result<u64, GuardedRejection> {
@@ -392,8 +292,7 @@ fn three_processes_elect_a_leader_and_serve_the_lock() {
         "a new tenure is strictly above the resource's high-water mark"
     );
 
-    assert_history_well_formed(&cluster);
-    assert_tokens_never_reissue(&cluster);
+    assert_process_evidence(&cluster, &[]);
     cluster.shutdown();
 }
 
@@ -448,8 +347,7 @@ fn a_session_retry_after_the_leader_is_killed_returns_the_cached_result() {
         "the replay issued no token, so the high-water mark did not move"
     );
 
-    assert_history_well_formed(&cluster);
-    assert_tokens_never_reissue(&cluster);
+    assert_process_evidence(&cluster, &[]);
     cluster.shutdown();
 }
 
@@ -537,8 +435,7 @@ fn a_killed_replica_recovers_its_durable_floor_and_rejoins() {
         "and it holds the same fencing high-water mark"
     );
 
-    assert_history_well_formed(&cluster);
-    assert_tokens_never_reissue(&cluster);
+    assert_process_evidence(&cluster, &[]);
     cluster.shutdown();
 }
 
@@ -563,7 +460,7 @@ fn a_killed_replica_recovers_its_durable_floor_and_rejoins() {
 #[ignore = "spawns real processes; run with --ignored (see the module docs)"]
 fn fencing_survives_a_killed_owner_and_a_cluster_wide_restart() {
     let vault = resource("vault");
-    let mut guarded = GuardedResource::new(vault);
+    let mut guarded = RecordingGuardedResource::new(vault);
     let mut cluster = ProcessCluster::start("fencing-across-processes", process_config());
     let leader = cluster.wait_for_leader();
 
@@ -675,8 +572,7 @@ fn fencing_survives_a_killed_owner_and_a_cluster_wide_restart() {
     assert_eq!(guarded.value(), 33);
     assert_eq!(guarded.accepted_writes(), 3);
 
-    assert_history_well_formed(&cluster);
-    assert_tokens_never_reissue(&cluster);
+    assert_process_evidence(&cluster, guarded.history());
     cluster.shutdown();
 }
 
@@ -743,8 +639,7 @@ fn token_marks_are_monotone_across_a_cluster_wide_restart() {
         );
     }
 
-    assert_history_well_formed(&cluster);
-    assert_tokens_never_reissue(&cluster);
+    assert_process_evidence(&cluster, &[]);
     cluster.shutdown();
 }
 
@@ -839,8 +734,7 @@ fn readiness_refuses_service_until_recovery_completes() {
         "including the fencing high-water mark it never issued itself"
     );
 
-    assert_history_well_formed(&cluster);
-    assert_tokens_never_reissue(&cluster);
+    assert_process_evidence(&cluster, &[]);
     cluster.shutdown();
 }
 
@@ -957,8 +851,7 @@ fn a_damaged_slot_refuses_a_plain_restart_and_names_its_way_out() {
         "the repaired replica holds the fencing high-water mark the cluster acknowledged"
     );
 
-    assert_history_well_formed(&cluster);
-    assert_tokens_never_reissue(&cluster);
+    assert_process_evidence(&cluster, &[]);
     cluster.shutdown();
 }
 
@@ -1016,9 +909,13 @@ fn an_unauthenticated_client_may_claim_any_identity() {
         .acquired_token();
 
     // A raw line on a fresh connection, carrying nothing that names its sender.
+    let impersonated_release = submit(0, 1, 2, release("vault", token.get()));
     let impersonated = cluster
-        .node_mut(leader)
-        .ask(&format!("SUBMIT 0 1 2 RELEASE vault {}", token.get()))
+        .submit_raw(
+            leader,
+            impersonated_release,
+            &format!("SUBMIT 0 1 2 RELEASE vault {}", token.get()),
+        )
         .expect("the replica answers");
     assert!(
         impersonated.starts_with("OK APPLIED OP RELEASED"),
@@ -1063,7 +960,6 @@ fn an_unauthenticated_client_may_claim_any_identity() {
         "and the rejection names the sequence the impersonated session reached"
     );
 
-    assert_history_well_formed(&cluster);
-    assert_tokens_never_reissue(&cluster);
+    assert_process_evidence(&cluster, &[]);
     cluster.shutdown();
 }

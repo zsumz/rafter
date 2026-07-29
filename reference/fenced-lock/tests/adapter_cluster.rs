@@ -17,13 +17,11 @@ mod cluster;
 #[path = "support/transport.rs"]
 mod transport;
 
-use std::collections::BTreeMap;
-
 use rafter::{LogIndex, NodeId, ReadIndexCancelReason, Role};
 use rafter_reference_fenced_lock::{
-    unknown_outcome_reason, ApplyDisposition, Command, FencingToken, GuardedRejection,
-    GuardedResource, GuardedWrite, HistoryEvent, LockRejection, LockResponse, LogicalTime,
-    OperationId, OperationResult, QueryOutcome, ReferenceLockService, RequestFingerprint,
+    check_evidence, unknown_outcome_reason, ApplyDisposition, Command, FencingToken,
+    GuardedHistoryEvent, GuardedRejection, GuardedWrite, HistoryEvent, LockRejection, LockResponse,
+    LogicalTime, OperationResult, QueryOutcome, RecordingGuardedResource, RequestFingerprint,
     RequestRejection, ResourceStatus, SubmitOutcome,
 };
 use rafter_service::{
@@ -92,7 +90,7 @@ fn acquire_renew_and_release_round_trip_with_fencing_tokens() {
 
     cluster.settle();
     assert_replicas_agree(&cluster, leader);
-    assert_history_agrees_with_oracle(&cluster, leader);
+    assert_cluster_evidence(&cluster, &[]);
 }
 
 #[test]
@@ -172,7 +170,7 @@ fn a_leadership_loss_closes_the_outcome_window_and_a_retry_replays_it() {
             .any(|event| matches!(event, HistoryEvent::Unknown { .. })),
         "the history retains the unknown-outcome window"
     );
-    assert_history_agrees_with_oracle(&cluster, second_leader);
+    assert_cluster_evidence(&cluster, &[]);
 }
 
 #[test]
@@ -196,7 +194,7 @@ fn a_stale_former_owner_is_refused_by_the_guarded_resource() {
     let (token_a, _) = acquisition(acquired);
     cluster.settle();
 
-    let mut guarded = GuardedResource::new(resource(RESOURCE));
+    let mut guarded = RecordingGuardedResource::new(resource(RESOURCE));
     assert_eq!(
         guarded.apply(GuardedWrite {
             resource: resource(RESOURCE),
@@ -276,7 +274,7 @@ fn a_stale_former_owner_is_refused_by_the_guarded_resource() {
     );
 
     cluster.settle();
-    assert_history_agrees_with_oracle(&cluster, second_leader);
+    assert_cluster_evidence(&cluster, guarded.history());
 }
 
 #[test]
@@ -363,7 +361,7 @@ fn expiration_advances_logical_time_only_through_committed_horizons() {
     assert_eq!(cluster.logical_time(leader), time(9));
 
     assert_replicas_agree(&cluster, leader);
-    assert_history_agrees_with_oracle(&cluster, leader);
+    assert_cluster_evidence(&cluster, &[]);
 }
 
 #[test]
@@ -414,7 +412,7 @@ fn a_linearizable_query_resolves_to_a_non_answer_when_leadership_is_lost() {
     // or below the read index, so a read-only workload survives the election.
     let status = answered(cluster.get_lock(second_leader, resource(RESOURCE)));
     assert_eq!(status.holder.map(|holder| holder.owner), Some(client(0)));
-    assert_history_agrees_with_oracle(&cluster, second_leader);
+    assert_cluster_evidence(&cluster, &[]);
 }
 
 #[test]
@@ -486,7 +484,7 @@ fn retries_gaps_and_epoch_displacement_survive_real_replication() {
 
     cluster.settle();
     assert_replicas_agree(&cluster, leader);
-    assert_history_agrees_with_oracle(&cluster, leader);
+    assert_cluster_evidence(&cluster, &[]);
 }
 
 #[test]
@@ -521,6 +519,7 @@ fn a_follower_cannot_serve_the_linearizable_query_itself() {
         Role::Leader,
         "the handle observes its node through the managed metrics surface"
     );
+    assert_cluster_evidence(&cluster, &[]);
 }
 
 #[test]
@@ -571,7 +570,7 @@ fn a_proposal_stranded_on_an_isolated_leader_is_dropped_and_retried_once() {
         "the former leader reported that it lost its proposal's outcome"
     );
     assert_replicas_agree(&cluster, second_leader);
-    assert_history_agrees_with_oracle(&cluster, second_leader);
+    assert_cluster_evidence(&cluster, &[]);
 }
 
 #[test]
@@ -672,7 +671,7 @@ fn a_refused_acquisition_is_recorded_as_provably_uncommitted() {
         "no outcome was lost here, so the weaker terminal event must not appear"
     );
     assert_replicas_agree(&cluster, leader);
-    assert_history_agrees_with_oracle(&cluster, leader);
+    assert_cluster_evidence(&cluster, &[]);
 }
 
 #[test]
@@ -724,6 +723,7 @@ fn a_restarted_replica_recovers_its_locks_and_keeps_replicating() {
         "the reopened replica kept replicating and the mark advanced once"
     );
     assert_replicas_agree(&cluster, leader);
+    assert_cluster_evidence(&cluster, &[]);
 }
 
 /// Submits one command and asserts that it committed, returning its response.
@@ -777,60 +777,21 @@ fn assert_replicas_agree(cluster: &LockCluster, leader: NodeId) {
     }
 }
 
-/// Replays the real committed command sequence through the independent oracle
-/// and checks every terminal client response against it.
-///
-/// Operations that ended in an unknown outcome constrain nothing, which is
-/// exactly what the contract's `Unknown` event means.
-fn assert_history_agrees_with_oracle(cluster: &LockCluster, node_id: NodeId) {
-    let mut oracle = ReferenceLockService::new(cluster.config());
-    let replayed = cluster
-        .committed_commands(node_id)
-        .into_iter()
-        .map(|command| (command, oracle.apply(command).response))
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        cluster.service_view(node_id),
-        oracle.view(),
-        "the replicated lock service diverged from the independent oracle"
+/// Runs both independent black-box checks and proves this scenario contributed
+/// real lock evidence.
+fn assert_cluster_evidence(cluster: &LockCluster, guarded_history: &[GuardedHistoryEvent]) {
+    let report = check_evidence(cluster.config(), cluster.history(), guarded_history)
+        .unwrap_or_else(|error| panic!("black-box deterministic evidence failed: {error}"));
+    assert!(
+        report.lock.searched_operations() + report.lock.discharged_operations() > 0,
+        "a green deterministic history that searched or discharged nothing proves nothing"
     );
-
-    let mut invoked = BTreeMap::<OperationId, Command>::new();
-    for event in cluster.history() {
-        if let HistoryEvent::Invoked {
-            operation_id,
-            command,
-        } = event
-        {
-            invoked.insert(*operation_id, *command);
-        }
-    }
-
-    let mut checked = 0_usize;
-    for event in cluster.history() {
-        let HistoryEvent::Completed {
-            operation_id,
-            response,
-        } = event
-        else {
-            continue;
-        };
-        let command = invoked
-            .get(operation_id)
-            .expect("every completion follows its invocation");
+    if !guarded_history.is_empty() {
         assert!(
-            replayed
-                .iter()
-                .any(
-                    |(replayed_command, replayed_response)| replayed_command == command
-                        && replayed_response == response
-                ),
-            "no committed execution of {command:?} produced the observed response {response:?}"
+            report.guarded.checked_operations() > 0,
+            "a nonempty guarded history must check at least one operation"
         );
-        checked += 1;
     }
-    assert!(checked > 0, "the history checked no completed operations");
 }
 
 /// A late frame from an identity the membership does not name is dropped, and
@@ -878,5 +839,5 @@ fn a_late_frame_from_an_unnamed_identity_is_dropped_and_the_replica_keeps_servin
         token(1),
         "the replica still serves client work after the dropped frame"
     );
-    assert_history_agrees_with_oracle(&cluster, leader);
+    assert_cluster_evidence(&cluster, &[]);
 }

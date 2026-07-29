@@ -19,7 +19,11 @@
 #![forbid(unsafe_code)]
 
 mod adapter;
+mod checker;
+mod evidence;
 mod guarded;
+mod guarded_checker;
+mod guarded_history;
 mod history;
 mod model;
 mod oracle;
@@ -32,7 +36,18 @@ pub use adapter::{
     LockAdapterError, LockClient, LockCodecError, LockHandle, LockQuery, LockQueryResult,
     LockStateMachine, NonZeroField, QueryOutcome, SubmitOutcome,
 };
+pub use checker::{
+    check_linearizable, check_linearizable_with_budget, Blocked, BlockedReason, CheckError,
+    CheckReport, HistoryDefect, SearchBudget, Violation, MAX_HISTORY_OPERATIONS,
+    MAX_SEARCH_CONFIGURATIONS,
+};
+pub use evidence::{check_evidence, EvidenceError, EvidenceReport};
 pub use guarded::{GuardedRejection, GuardedResource, GuardedWrite};
+pub use guarded_checker::{
+    check_guarded_history, GuardedCheckError, GuardedCheckReport, GuardedHistoryDefect,
+    GuardedViolation,
+};
+pub use guarded_history::{GuardedHistoryEvent, RecordingGuardedResource};
 pub use history::{HistoryEvent, OperationId};
 pub use model::{LockService, LockServiceSnapshot, SnapshotError};
 pub use oracle::ReferenceLockService;

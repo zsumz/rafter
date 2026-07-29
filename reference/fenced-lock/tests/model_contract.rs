@@ -691,7 +691,10 @@ fn history_vocabulary_represents_completion_rejection_and_lost_outcomes() {
         HistoryEvent::NotCommitted { operation_id },
         HistoryEvent::Completed {
             operation_id,
-            response: LockResponse::Rejected(RequestRejection::SessionNotOpen),
+            outcome: ApplyOutcome {
+                disposition: ApplyDisposition::Rejected,
+                response: LockResponse::Rejected(RequestRejection::SessionNotOpen),
+            },
         },
     ];
 

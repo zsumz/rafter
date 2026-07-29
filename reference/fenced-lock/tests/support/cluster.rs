@@ -48,8 +48,8 @@ use std::{
 };
 
 use rafter::{
-    LocalProposalId, LogEntryKind, LogIndex, Message, NodeConfig, NodeId, Output as RaftOutput,
-    ReadId, RequestVote, Role, Term,
+    LocalProposalId, LogIndex, Message, NodeConfig, NodeId, Output as RaftOutput, ReadId,
+    RequestVote, Role, Term,
 };
 use rafter_app::{
     group::{RaftGroup, RaftGroupParts},
@@ -225,6 +225,7 @@ impl fmt::Debug for PendingSubmit {
 
 /// One linearizable query in flight against a chosen replica.
 pub struct PendingQuery {
+    operation_id: OperationId,
     node_id: NodeId,
     /// The ID the driver allocated for this barrier, learned the same way and
     /// for the same reason as [`PendingSubmit::local_proposal_id`].
@@ -236,6 +237,7 @@ impl fmt::Debug for PendingQuery {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PendingQuery")
+            .field("operation_id", &self.operation_id)
             .field("node_id", &self.node_id)
             .finish_non_exhaustive()
     }
@@ -473,39 +475,6 @@ impl<A: LockApps> LockCluster<A> {
         self.node(node_id)
             .driver
             .committed_application_index()
-            .expect("a running replica holds its group")
-    }
-
-    /// Returns the commands committed on one replica, in log order.
-    ///
-    /// This reads the durable log through the public runtime accessor and
-    /// decodes it with the same adapter the replica applies with, so the
-    /// checker can replay a real replicated history through the oracle. Both
-    /// halves come off the same borrowed group, which is why this is a closure
-    /// rather than two forwarders.
-    pub fn committed_commands(&self, node_id: NodeId) -> Vec<Command> {
-        self.node(node_id)
-            .driver
-            .with_group(|group| {
-                let runtime = group.runtime();
-                let commit_index = runtime.commit_index();
-                let first_index = runtime.snapshot_index().0 + 1;
-                runtime
-                    .log_entries_from(LogIndex(first_index))
-                    .into_iter()
-                    .zip(first_index..)
-                    .take_while(|(_, index)| LogIndex(*index) <= commit_index)
-                    .filter_map(|(entry, _)| match entry.kind {
-                        LogEntryKind::Application(payload) => Some(
-                            group
-                                .state_machine()
-                                .decode_command(payload.as_ref())
-                                .expect("replicas only append frames this adapter encoded"),
-                        ),
-                        LogEntryKind::Configuration(_) | LogEntryKind::Noop => None,
-                    })
-                    .collect()
-            })
             .expect("a running replica holds its group")
     }
 
@@ -802,10 +771,12 @@ impl<A: LockApps> LockCluster<A> {
 
     /// Starts one linearizable `GetLock` against `node_id` without waiting.
     pub fn begin_query(&mut self, node_id: NodeId, resource: ResourceName) -> PendingQuery {
+        let query = LockQuery::GetLock { resource };
+        let operation_id = self.record_query_invocation(query);
         let started = self
             .node(node_id)
             .driver
-            .begin_read(LockQuery::GetLock { resource }, ReadOptions::default());
+            .begin_read(query, ReadOptions::default());
         let (read_id, future) = match started {
             Ok((read_id, future)) => (Some(read_id), future),
             Err(error) => (
@@ -814,6 +785,7 @@ impl<A: LockApps> LockCluster<A> {
             ),
         };
         PendingQuery {
+            operation_id,
             node_id,
             read_id,
             future: Box::pin(async move { QueryOutcome::from_read_result(future.await) }),
@@ -835,12 +807,12 @@ impl<A: LockApps> LockCluster<A> {
     ) -> QueryOutcome<LockGroupId> {
         for _ in 0..rounds {
             if let Poll::Ready(outcome) = poll_once(&mut pending.future) {
-                return outcome;
+                return self.record_query_completion(pending.operation_id, outcome);
             }
             self.run_rounds(1);
         }
         if let Poll::Ready(outcome) = poll_once(&mut pending.future) {
-            return outcome;
+            return self.record_query_completion(pending.operation_id, outcome);
         }
         let read_id = pending
             .read_id
@@ -852,7 +824,7 @@ impl<A: LockApps> LockCluster<A> {
         let Poll::Ready(outcome) = poll_once(&mut pending.future) else {
             panic!("an abandoned barrier resolves its client before this returns");
         };
-        outcome
+        self.record_query_completion(pending.operation_id, outcome)
     }
 
     /// Runs one linearizable `GetLock` under the default round budget.
@@ -928,12 +900,38 @@ impl<A: LockApps> LockCluster<A> {
         operation_id
     }
 
+    fn record_query_invocation(&mut self, query: LockQuery) -> OperationId {
+        let operation_id = OperationId::new(self.next_operation_id);
+        self.next_operation_id += 1;
+        self.history.push(HistoryEvent::QueryInvoked {
+            operation_id,
+            query,
+        });
+        operation_id
+    }
+
     fn record_completion(
         &mut self,
         operation_id: OperationId,
         outcome: SubmitOutcome,
     ) -> SubmitOutcome {
         self.history.push(outcome.history_event(operation_id));
+        outcome
+    }
+
+    fn record_query_completion(
+        &mut self,
+        operation_id: OperationId,
+        outcome: QueryOutcome<LockGroupId>,
+    ) -> QueryOutcome<LockGroupId> {
+        let event = match &outcome {
+            QueryOutcome::Answered { status, .. } => HistoryEvent::QueryCompleted {
+                operation_id,
+                result: LockQueryResult::Lock(*status),
+            },
+            QueryOutcome::Unavailable { .. } => HistoryEvent::QueryAbandoned { operation_id },
+        };
+        self.history.push(event);
         outcome
     }
 

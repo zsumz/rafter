@@ -100,7 +100,7 @@ impl SubmitOutcome {
         match self {
             Self::Completed { outcome, .. } => HistoryEvent::Completed {
                 operation_id,
-                response: outcome.response,
+                outcome: *outcome,
             },
             Self::Refused { .. } => HistoryEvent::NotCommitted { operation_id },
             Self::Unknown { .. } => HistoryEvent::Unknown { operation_id },

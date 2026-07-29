@@ -361,11 +361,12 @@ The implementation and oracle must establish:
 15. A stale former owner is refused by the guarded resource once a later owner
     has written.
 
-Aggregate invariants do not imply linearizability. The later process adapter
-will record invocation, completion, rejection, unknown outcome, provable
-refusal, and real-time ordering for an independent history checker, and will
-cover leadership loss, read cancellation, isolated former leaders, and
-stale-owner attempts against the guarded resource.
+Aggregate invariants do not imply linearizability. The deterministic and
+process adapters record invocation, completion, rejection, unknown outcome,
+provable refusal, linearizable-query cancellation, and real-time order. A
+bounded black-box checker decides those histories against the independent
+oracle. A separate guarded-resource history proves stale-owner exclusion
+without folding the downstream resource into the lock state machine.
 
 ## Independent Oracle Rule
 
@@ -1095,14 +1096,12 @@ here does because nothing here removes anything.
   documentation states and its code does — and counts the refusal on the `LINK`
   line so a violation is visible. No test here has made it fire, and none
   claims to have.
-- **A linearizability decision over process histories.** The lock records the
-  history vocabulary below and checks two properties over it: that every
-  operation has exactly one invocation and one terminal event, and that no two
-  distinct request identities ever received the same fencing token for one
-  resource. It does not decide linearizability, because this crate has no
-  checker and the ledger's is not shared with it. The second property is a real
-  safety check read off client-visible events alone; the first is a check on the
-  recorder.
+- **Bounded linearizability evidence.** The checker places at most 24
+  operations and visits at most 200,000 configurations per history. A history
+  above either bound is undecided and fails closed; this
+  suite does not claim an unbounded proof. Within those limits, the process
+  histories are decided solely from the client-visible vocabulary below,
+  without logs, replica state, applied indexes, or membership.
 
 ## History Vocabulary
 
@@ -1110,21 +1109,27 @@ A client operation history contains:
 
 ```text
 Invoked(operation_id, command)
-Completed(operation_id, response)
+Completed(operation_id, disposition, response)
 Unknown(operation_id)
 NotCommitted(operation_id)
+QueryInvoked(operation_id, GetLock(resource))
+QueryCompleted(operation_id, typed_resource_status)
+QueryAbandoned(operation_id)
 ```
 
 Deterministic rejections are normal completed responses. Every invocation
 carries its full command, so retries under one request identity are recoverable
-from the history alone.
+from the history alone. Every operation has exactly one invocation and one
+terminal event. An operation whose terminal precedes another invocation must
+linearize first; overlapping intervals may be ordered either way.
 
 ### Mutation outcomes
 
 The three terminal outcomes differ only in what the caller can prove:
 
-- `Completed` carries the replicated response, lock and request rejections
-  included.
+- `Completed` carries both the replicated response and `ApplyDisposition`,
+  including lock and request rejections. A replay therefore cannot be explained
+  as a fresh application.
 - `NotCommitted` means the command provably never entered the replicated log.
   No copy of that attempt can commit later, so it minted no fencing token and
   consumed no sequence, and the caller may issue a fresh attempt under the same
@@ -1176,6 +1181,49 @@ The distinction is worth drawing because `Unknown` is the weaker claim: a
 checker must allow an `Unknown` operation to have taken effect, so an
 implementation that minted a token for a refused acquisition would be explained
 away. `NotCommitted` removes that excuse.
+
+### Query outcomes
+
+Only ordinary linearizable `QUERY LOCK` operations enter this history. A
+successful query records its exact typed `ResourceStatus`; a barrier refusal,
+cancellation, connection loss, or caller abandonment records
+`QueryAbandoned`, which supplies no invented value and is discharged by the
+checker. `LOCAL LOCK` is explicitly excluded because it is a local, potentially
+stale observation rather than a linearizable operation.
+
+### Black-box decision
+
+The checker validates operation intervals before searching. Duplicate
+invocations, duplicate terminals, terminals without invocations, unterminated
+operations, and crossed mutation/query terminals are malformed histories and
+are never weakened into something searchable.
+
+For a well-formed history it performs a bounded Wing–Gong-style backtracking
+search over operations minimal in real-time order. `ReferenceLockService` is
+the sequential specification. Completed mutations must match both disposition
+and response, an `Unknown` mutation branches between applied and absent,
+`NotCommitted` is absent, completed queries must equal the oracle at their
+chosen linearization point, and abandoned queries are absent. Failed
+`(unplaced operations, oracle state)` configurations are memoized. A failure
+retains the exact history, deepest placed prefix, and every blocked candidate
+so it can be replayed.
+
+### Guarded-resource history
+
+The downstream guard has a separate history:
+
+```text
+GuardedInvoked(operation_id, guarded_resource, claimed_resource, token, value)
+GuardedCompleted(operation_id, accepted_value_or_exact_rejection)
+```
+
+A recording wrapper places these events immediately around the external
+guard's `apply`. Its checker requires one completion per invocation, keeps an
+independent accepted-token floor per protected resource name, accepts retries
+at the current token, and rejects any recorded acceptance below a later token.
+Wrong-resource and stale-token refusals must match exactly. Deterministic and
+process scenarios run this checker together with the lock checker, but the two
+specifications and histories remain separate.
 
 ## First Milestone Boundary
 

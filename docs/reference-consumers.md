@@ -2,14 +2,12 @@
 
 Status: active API-discovery and acceptance program for Rafter 1.0. Two of the
 three systems are built: the ledger through all eight of its slices, and the
-fenced lock through its durable backend and crash points, with process
-composition still outstanding. The sharded counter has started and is the
-furthest from Rafter: its contract, its implementation model, its independent
-oracle, and its deterministic suites exist, but it declares no dependency at
-all — not even a Rafter one — because the managed scheduler it specifies does
-not exist yet, so the crate is that scheduler's design input rather than an
-integration against it. Eleven APIs have been promoted under the rule below and
-are recorded in [`docs/api-promotions.md`](./api-promotions.md).
+fenced lock through deterministic, durable, package, and real-process
+composition. The sharded counter has started and is the furthest from Rafter:
+its contract, implementation model, independent oracle, and deterministic
+suites are the design input for the managed scheduler it needs. Eleven APIs
+have been promoted under the rule below and are recorded in
+[`docs/api-promotions.md`](./api-promotions.md).
 
 Sequencing: the reference consumers are built before the 1.0 public surface is
 frozen. They reveal which mechanisms belong in Rafter and prove that each
@@ -326,9 +324,18 @@ The required safety property is not merely that tokens increase; it is that a
 stale former owner cannot modify the guarded resource after a later owner is
 established.
 
-The history checker must cover acquisition and renewal retries, leadership
-loss, read cancellation, unknown outcomes, isolated former leaders, snapshot
-recovery, and stale-owner attempts against the guarded resource.
+The lock records full command dispositions and typed linearizable-query
+results in both deterministic and process compositions. Its bounded black-box
+checker searches those client-visible histories against the structurally
+independent oracle, including retries, leadership loss, read cancellation,
+unknown and provably absent outcomes, isolated former leaders, and restart.
+Local/stale reads are not mislabeled as linearizable evidence.
+
+Guarded-resource writes have a separate recording wrapper and checker. It
+proves per-resource token monotonicity, equal-token retry acceptance, exact
+stale-token refusal, and resource-name separation without merging the
+downstream guard into the lock's sequential specification. Substantive
+deterministic and process scenarios run both checks and reject an empty proof.
 
 ## Sharded Counter Service
 
@@ -590,12 +597,11 @@ All eight are complete. None extracted a shared framework.
 5. Add durable snapshots, restart, processes, and package-mode tests.
 6. Extract only the orchestration code now proven common with the ledger.
 
-Slices 1 through 4 are complete. Slice 5 is complete except for process
-composition: the lock's durable backend, its snapshots, its restart path, and
-its package-mode coverage are in place, but every replica still runs in one
-process. Slice 6 is not reached, and nothing has been extracted — the ledger
-now has a process suite of its own, so that is where the common orchestration,
-if any, will first be visible.
+Slices 1 through 5 are complete, including one operating-system process per
+replica and black-box lock and guarded-resource checks over the real-process
+history. Slice 6 is next. Nothing has been extracted yet; the ledger and lock
+now expose the two proven checker and orchestration shapes from which a shared
+substrate can be derived.
 
 ### Sharded counter and scheduler
 

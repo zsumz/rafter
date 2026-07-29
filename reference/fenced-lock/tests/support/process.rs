@@ -89,6 +89,9 @@ use rafter_reference_fenced_lock::{
 
 use crate::scratch::ScratchDir;
 
+#[path = "process_history.rs"]
+mod process_history;
+
 /// Node identifiers of the three-replica process cluster.
 pub const NODE_IDS: [NodeId; 3] = [NodeId(1), NodeId(2), NodeId(3)];
 
@@ -1137,6 +1140,29 @@ impl ProcessCluster {
         self.resolve_submit(pending)
     }
 
+    /// Sends a hand-authored protocol line and retains its exact command.
+    pub fn submit_raw(
+        &mut self,
+        node_id: NodeId,
+        command: Command,
+        line: &str,
+    ) -> Result<String, String> {
+        let operation_id = self.allocate_operation_id();
+        self.history.push(HistoryEvent::Invoked {
+            operation_id,
+            command,
+        });
+        let raw = self.node_mut(node_id).ask(line);
+        let outcome = match &raw {
+            Ok(response) => parse_submit_response(response),
+            Err(detail) => SubmitOutcome::Unknown {
+                detail: detail.clone(),
+            },
+        };
+        self.record_submit(operation_id, &outcome);
+        raw
+    }
+
     /// Starts one command on its own connection without waiting for it.
     ///
     /// The submission runs on its own thread and its own socket, so the caller
@@ -1175,17 +1201,19 @@ impl ProcessCluster {
         outcome
     }
 
-    /// Runs one linearizable `GetLock` against a chosen replica.
-    ///
-    /// Queries are deliberately absent from the recorded history: the lock's
-    /// history vocabulary has no query events, so recording one would mean
-    /// inventing a term this contract does not define.
+    /// Runs and records one linearizable `GetLock`.
     pub fn query(&mut self, node_id: NodeId, resource: ResourceName) -> QueryOutcome {
+        let operation_id = self.allocate_operation_id();
+        self.history
+            .push(process_history::query_invocation(operation_id, resource));
         let line = format!("QUERY LOCK {}", resource.as_str());
-        match self.node_mut(node_id).ask(&line) {
+        let outcome = match self.node_mut(node_id).ask(&line) {
             Ok(response) => parse_query_response(&response),
             Err(detail) => QueryOutcome::Abandoned { detail },
-        }
+        };
+        let terminal = process_history::query_terminal(operation_id, &outcome);
+        self.history.push(terminal);
+        outcome
     }
 
     /// Reads one replica's own applied state, which may be stale.
@@ -1215,25 +1243,8 @@ impl ProcessCluster {
     }
 
     fn record_submit(&mut self, operation_id: OperationId, outcome: &SubmitOutcome) {
-        match outcome {
-            SubmitOutcome::Applied { response, .. } => self.history.push(HistoryEvent::Completed {
-                operation_id,
-                response: *response,
-            }),
-            // Both refusals are provable, and for the same reason: the bytes
-            // never reached a replicated log. `NOTCOMMITTED` is the driver's
-            // own `WriteFate::NotAppended` reported across the process
-            // boundary; `NOTREADY` is the replica's readiness gate refusing
-            // before the command was handed to `rafter-service` at all, which
-            // is strictly earlier. Neither leaves a copy of the attempt
-            // anywhere.
-            SubmitOutcome::NotCommitted { .. } | SubmitOutcome::NotReady { .. } => self
-                .history
-                .push(HistoryEvent::NotCommitted { operation_id }),
-            SubmitOutcome::Unknown { .. } => {
-                self.history.push(HistoryEvent::Unknown { operation_id });
-            }
-        }
+        self.history
+            .push(process_history::submit_terminal(operation_id, outcome));
     }
 
     fn allocate_operation_id(&mut self) -> OperationId {

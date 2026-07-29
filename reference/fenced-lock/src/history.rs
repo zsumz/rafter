@@ -1,4 +1,4 @@
-use crate::{Command, LockResponse, RequestIdentity};
+use crate::{ApplyOutcome, Command, LockQuery, LockQueryResult, RequestIdentity};
 
 /// Stable identifier for one client-visible operation in an observed history.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -20,18 +20,18 @@ impl OperationId {
 
 /// A client-visible event retained for later history checking.
 ///
-/// A history is the recorded sequence of these events, and every operation
-/// contributes exactly one invocation event and exactly one terminal event,
-/// correlated by [`OperationId`]. The three terminal outcomes differ only in
-/// what the caller can prove, which is why they are distinct events rather than
-/// one lost-outcome event: a checker must allow a [`HistoryEvent::Unknown`]
-/// operation to have taken effect, so recording a provable refusal as unknown
-/// would explain away an implementation that minted a token for a command the
-/// cluster refused.
+/// A history is the recorded sequence of these events. Position in that
+/// sequence *is* real-time order: an operation whose terminal event appears
+/// before another operation's invocation happened before it, while overlapping
+/// intervals may be linearized in either order. Every operation contributes
+/// exactly one invocation and one terminal event, correlated by
+/// [`OperationId`].
 ///
-/// This crate records histories and asserts against them directly; it has no
-/// linearizability checker of its own, and the real-time ordering property is
-/// left to the process adapter that `CONTRACT.md` describes.
+/// Mutation terminals preserve both the stable response and its
+/// [`crate::ApplyDisposition`]. The distinction is load-bearing for exact
+/// retries: a replay must not be explained as a fresh execution. Queries use
+/// their own invocation and terminal variants so a mutation can never satisfy
+/// a query interval or vice versa.
 ///
 /// The vocabulary is closed and in-memory. It is deliberately not a wire
 /// format: the versioned frames this crate defines are the replicated command
@@ -40,20 +40,20 @@ impl OperationId {
 /// `CONTRACT.md`, not a compatibility negotiation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HistoryEvent {
-    /// The client invoked a command.
+    /// The client invoked a replicated command.
     Invoked {
         /// Operation identity unique within the history.
         operation_id: OperationId,
         /// Exact command issued by the client.
         command: Command,
     },
-    /// The client observed a terminal response, including deterministic
-    /// rejection responses.
+    /// The client observed a terminal replicated outcome, including
+    /// deterministic rejection responses.
     Completed {
         /// Operation identity from the matching invocation.
         operation_id: OperationId,
-        /// Response observed by the client.
-        response: LockResponse,
+        /// Exact response and apply disposition observed by the client.
+        outcome: ApplyOutcome,
     },
     /// The connection or process failed without revealing whether the command
     /// committed.
@@ -76,6 +76,29 @@ pub enum HistoryEvent {
         /// Operation identity from the matching invocation.
         operation_id: OperationId,
     },
+    /// The client invoked a linearizable query.
+    QueryInvoked {
+        /// Operation identity unique within the history.
+        operation_id: OperationId,
+        /// Exact query issued by the client.
+        query: LockQuery,
+    },
+    /// The client observed a query result.
+    QueryCompleted {
+        /// Operation identity from the matching invocation.
+        operation_id: OperationId,
+        /// Result observed by the client.
+        result: LockQueryResult,
+    },
+    /// The query ended without returning a value to the client.
+    ///
+    /// A refused barrier, canceled barrier, connection loss, and a caller that
+    /// stopped waiting all constrain no sequential value because none delivered
+    /// one.
+    QueryAbandoned {
+        /// Operation identity from the matching invocation.
+        operation_id: OperationId,
+    },
 }
 
 impl HistoryEvent {
@@ -86,7 +109,10 @@ impl HistoryEvent {
             Self::Invoked { operation_id, .. }
             | Self::Completed { operation_id, .. }
             | Self::Unknown { operation_id }
-            | Self::NotCommitted { operation_id } => operation_id,
+            | Self::NotCommitted { operation_id }
+            | Self::QueryInvoked { operation_id, .. }
+            | Self::QueryCompleted { operation_id, .. }
+            | Self::QueryAbandoned { operation_id } => operation_id,
         }
     }
 

@@ -14,7 +14,7 @@ pub const MAX_RESOURCE_NAME_LEN: usize = 64;
 /// never exceed [`MAX_RESOURCE_NAME_LEN`]. Names are compared byte-exactly:
 /// replicas must reach the same naming decision from the same bytes without
 /// consulting case or normalization tables that can differ between builds.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct ResourceName {
     bytes: [u8; MAX_RESOURCE_NAME_LEN],
     len: usize,
@@ -120,7 +120,7 @@ pub enum ResourceNameError {
 }
 
 /// Index of one bounded client-session slot.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ClientId(u32);
 
 impl ClientId {
@@ -138,7 +138,7 @@ impl ClientId {
 }
 
 /// Nonzero session generation for one client slot.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SessionEpoch(NonZeroU64);
 
 impl SessionEpoch {
@@ -159,7 +159,7 @@ impl SessionEpoch {
 }
 
 /// Nonzero monotonically increasing request sequence within one session.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Sequence(NonZeroU64);
 
 impl Sequence {
@@ -201,7 +201,7 @@ impl Sequence {
 ///
 /// Tokens issued for different resource names are unrelated and must never be
 /// compared.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FencingToken(NonZeroU64);
 
 impl FencingToken {
@@ -247,7 +247,7 @@ impl FencingToken {
 ///
 /// This is a counter, not a clock. It advances only through
 /// [`Operation::ExpireThrough`] and carries no real-world duration meaning.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct LogicalTime(u64);
 
 impl LogicalTime {
@@ -280,7 +280,7 @@ impl LogicalTime {
 ///
 /// A nonzero lease is what guarantees that an acquired lock is never born
 /// expired.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct LeaseDuration(NonZeroU64);
 
 impl LeaseDuration {
@@ -471,7 +471,7 @@ pub struct RequestIdentity {
 }
 
 /// Deterministic operation applied by the lock service.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Operation {
     /// Takes ownership of a free resource and issues its next fencing token.
     Acquire {
@@ -509,7 +509,7 @@ pub enum Command {
 }
 
 /// Deterministic result of an admitted operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum OperationResult {
     /// A tenure began and received a fencing token.
     Acquired {
@@ -534,7 +534,7 @@ pub enum OperationResult {
 }
 
 /// Lock-level deterministic rejection that consumes and caches its sequence.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LockRejection {
     /// The resource is held, possibly by the requesting client.
     LockHeld {
@@ -618,7 +618,7 @@ pub struct ApplyOutcome {
 }
 
 /// Public view of one current tenure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct LockHolderView {
     /// Client slot that owns the tenure.
     pub owner: ClientId,
@@ -642,7 +642,7 @@ pub struct ResourceStatus {
 }
 
 /// Canonical deterministic view of one tracked resource.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ResourceView {
     /// Tracked resource name.
     pub resource: ResourceName,
@@ -653,7 +653,7 @@ pub struct ResourceView {
 }
 
 /// Public deterministic inspection of one active client session.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SessionView {
     /// Client slot that owns the session.
     pub client_id: ClientId,
@@ -664,7 +664,7 @@ pub struct SessionView {
 }
 
 /// Canonical deterministic state view shared only for differential assertions.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ServiceView {
     /// Tracked resources sorted by name.
     pub resources: Vec<ResourceView>,
