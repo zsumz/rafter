@@ -1374,13 +1374,13 @@ The three lost-outcome forms differ only in what the caller can prove:
   so the caller must retry the *same* request identity and let the session
   decide.
 
-`NotAdmitted` is the counterpart of the siblings' `NotCommitted`, and it is
-reserved rather than earned in this milestone: there is no client process
-transport yet, so nothing here can lose a refusal and later prove where it
-stopped. What earns it is defined where that refusal becomes observable, and
-until then the vocabulary slot exists so a future transport has somewhere
-honest to put the distinction. Recording a provable refusal as `Unknown` would
-let an implementation that serviced it be explained away.
+`NotAdmitted` is the counterpart of the siblings' `NotCommitted`. The process
+protocol now earns the distinction at its boundary: malformed requests, stale
+incarnations, lifecycle refusals, session conflicts, and queue refusals return
+before a proposal is accepted, while a proposal whose terminal result cannot be
+proved returns `ERR UNKNOWN`. The bounded process history keeps the exact
+request identity across that second branch. Recording a provable refusal as
+`Unknown` would let an implementation that serviced it be explained away.
 
 ## Deterministic Adoption Evidence and Boundary
 
@@ -1461,17 +1461,83 @@ occupancy, conservation, and ready-set span; each mutation is rejected. The
 older independent oracle retains its more detailed release/stall controls,
 including early, late, fabricated, and expired occupancy histories.
 
+### Durable process composition
+
+The integration fixture runs one `counter-node` operating-system process per
+host, three hosts, 16 groups, and therefore 48 durable Raft replicas. Sixteen is
+large enough to keep hot, cold, slow, poisoned, snapshot, and bulk cohorts
+distinct while keeping the main process lane bounded; the thousand-group
+fairness claim belongs to the deterministic profiles below. Every host binds
+ephemeral loopback ports and publishes its peer address under its own durable
+directory. No test picks a port.
+
+Each group owns `FileRaftNodeStores` and one checksummed application record.
+The application record atomically publishes the applied index, counter value,
+session epochs, completed-request cache, exact outstanding request,
+incarnation, lifecycle, and quota. A restart recovers both stores, replays from
+the application's durable applied floor, and announces readiness only after
+that recovery/catch-up boundary. Snapshot requests build the application
+payload, compact the real Raft log, and preserve the same value and completion
+cache across `SIGKILL` and restart.
+
+The client and peer paths are bounded. Client lines, connections, the global
+job queue, group queues, peer frames, per-peer outbound queues, and the global
+inbound queue all have explicit limits. Scheduler evidence is bounded too:
+stdout carries lifecycle lines, while `AUDIT` returns plan and turn digests,
+coverage, opportunity spread, class-order failures, and the exact queue
+conservation equation rather than retaining every tick forever.
+
+The reviewed process inventory exercises:
+
+- all 16 groups under hot/cold load;
+- slow-group occupancy beside snapshot and bulk pressure, while another group
+  still completes control and command work;
+- one poisoned group beside a healthy group;
+- per-group and global backpressure;
+- `SIGKILL`, exact retry after an unknown outcome, clean restart, snapshot,
+  compaction, and durable catch-up;
+- drain, remove, reopen under a greater incarnation, and terminal tombstone;
+- stale client requests and an independently encoded stale peer frame; and
+- nonempty process histories checked against a harness-owned per-group counter
+  model after each substantive phase.
+
+The exact names live in
+`verification/reference-process-test-inventory.sharded-counter.txt`; both
+selection and execution go through `scripts/reference-process-check`.
+
+### Replayable scheduling profiles
+
+`scripts/counter-profile` exposes three fixed profiles:
+
+```text
+counter-fast      64 groups, short source and package lanes, 30 s budget
+counter-nightly   1,024 groups, burst/pressure/failure/churn, 240 s budget
+counter-weekly    4,096 groups, wider burst/pressure/failure/churn, 1,200 s budget
+```
+
+All use the real three-replica adapter. They mix a cold baseline with hot
+bursts, slow groups, snapshot and bulk pressure, poison, reopen, and tombstone.
+Every run writes its seed, exact command, full profile, complete operation
+history, minimized failure (or `none`), fairness report, queue-conservation
+report, lifecycle diagnostics, and summary. A budget overrun is red and writes
+the same replay inputs. The fixed nightly run at seed
+`3011935486285905953` covers 1,024 groups, 2,048 counter operations, a
+1,024-group zero-gap baseline pass, 1,280 mixed-pressure work items, and final
+accounting of 18,440 admitted = 18,438 serviced + 2 failed.
+
 Named consequences, so they are not discovered later:
 
-- **The deterministic matrix is complete; process composition is not.** This
-  adapter proves the scheduler with real in-memory Rafter groups. Durable
-  application/Raft stores, sockets, process restart, process-visible histories,
-  and nightly/weekly profiles belong to the process milestone and are not
-  inferred from deterministic success.
-- **The deterministic network is not production transport.** It is bounded,
-  routes every peer envelope, and uses real Raft groups, but has no sockets,
-  authentication, disk backend, or wall-clock behavior. Process composition
-  and production-composition evidence remain later milestones.
+- **Integration process composition is complete.** Durable stores, sockets,
+  process restart, process-visible histories, and nightly/weekly profiles are
+  exercised. This closes the integration milestone only.
+- **The process peer link is not production transport.** It is bounded and
+  identity-consistent, but deliberately unauthenticated and advertised as such
+  in both source and process output. Authenticated transport, production
+  configuration, secret handling, operational metrics export, and multi-node
+  deployment evidence belong to the production-composition milestone.
+- **The deterministic network is not process evidence.** It remains the
+  replayable mechanism for the larger profiles; only the reviewed 16-group
+  suite makes restart, disk, socket, and wall-clock claims.
 - **Ticks and costs are not durations.** A tick is the scheduler's unit of
   attention and a cost is worker occupancy. Nothing in this document may be read
   as a wall-clock or timeout guarantee, and the fairness bound in particular

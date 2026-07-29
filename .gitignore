@@ -7,6 +7,7 @@
 __pycache__/
 *.pyc
 /artifacts/invariants/
+/artifacts/reference-counter/
 /bench-compare/target
 /fuzz/target
 **/*.rs.bk

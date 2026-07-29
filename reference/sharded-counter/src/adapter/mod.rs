@@ -23,5 +23,6 @@ pub use cluster::{
 pub use codec::{MAX_COMMAND_BYTES, MAX_SNAPSHOT_BYTES};
 pub use state_machine::{
     CounterApplyRejection, CounterApplyResult, CounterCompletedView, CounterSessionView,
-    CounterStateMachine, CounterStateView, ReplicatedCounterCommand, SessionApplyResult,
+    CounterStateMachine, CounterStateMachineError, CounterStateView, ReplicatedCounterCommand,
+    SessionApplyResult,
 };

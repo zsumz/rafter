@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Run one replayable real-adapter counter profile and retain its evidence.
+set -euo pipefail
+
+usage() {
+    echo "usage: scripts/counter-profile <counter-fast|counter-nightly|counter-weekly> [--seed <u64>] [--artifacts <dir>]"
+}
+
+if [[ $# -eq 0 ]]; then
+    usage >&2
+    exit 2
+fi
+
+profile="$1"
+shift
+case "$profile" in
+    counter-fast | counter-nightly | counter-weekly) ;;
+    *)
+        echo "error: unknown counter profile: $profile" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+artifacts="${repo_root}/artifacts/reference-counter/${profile}"
+forward=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --seed)
+            [[ $# -ge 2 ]] || {
+                echo "error: --seed requires a value" >&2
+                exit 2
+            }
+            forward+=("$1" "$2")
+            shift 2
+            ;;
+        --artifacts)
+            [[ $# -ge 2 ]] || {
+                echo "error: --artifacts requires a value" >&2
+                exit 2
+            }
+            artifacts="$2"
+            shift 2
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+patch=()
+while IFS= read -r argument; do
+    [[ -n "$argument" ]] || continue
+    patch+=("$argument")
+done < <("${repo_root}/scripts/reference-source-check" --print-args)
+
+CARGO_NET_OFFLINE=true cargo run \
+    --manifest-path "${repo_root}/reference/Cargo.toml" \
+    "${patch[@]}" \
+    -p rafter-reference-sharded-counter \
+    --bin counter-profile -- \
+    --profile "$profile" \
+    --artifacts "$artifacts" \
+    ${forward[@]+"${forward[@]}"}

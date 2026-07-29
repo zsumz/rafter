@@ -479,6 +479,9 @@ begin_phase 4
 
 cargo_run build --workspace --all-targets --locked
 cargo_run test --workspace --locked
+cargo_run run --locked -p rafter-reference-sharded-counter --bin counter-profile -- \
+    --profile counter-fast \
+    --artifacts "$workdir/counter-fast-package-artifacts"
 
 end_phase
 

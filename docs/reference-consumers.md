@@ -381,9 +381,11 @@ a useful lower-level API, but none of the scheduler claims below rely on it.
 
 ### Workload
 
-The independent deterministic workload models 3,000 groups, and the real
-Rafter-backed acceptance profile drives 1,024 groups. The process suite will
-use a smaller production-shaped group count.
+The independent deterministic workload models 3,000 groups. The replayable
+real-Rafter profiles drive 64, 1,024, and 4,096 groups, and the durable process
+suite uses 16 groups (48 Raft replicas). That smaller process count keeps
+`SIGKILL`, socket, storage, and lifecycle scenarios bounded while retaining
+separate hot, cold, slow, poisoned, snapshot, and bulk cohorts.
 
 It must include:
 
@@ -511,9 +513,9 @@ reach it; its process composition owns the equivalent decisions itself.
 
 | Lane | Required work | Executed by |
 | --- | --- | --- |
-| Every PR | Package build, pure implementation and reference-model tests, codec vectors, short deterministic simulations, small history checks, and the durable process suite's membership | `reference-source` and `reference-package` in `ci.yml` |
-| Main/nightly | Durable process tests executed: restart, partitions, duplication, snapshots, and application crash points | `reference-process` in `ci.yml` on pushes to main, and `reference-process-nightly` in `nightly.yml` |
-| Weekly | Long randomized histories, storage faults, snapshot pressure, and hot/cold multi-group scheduling | Nothing. `weekly.yml` has no reference-consumer job |
+| Every PR | Package build, pure implementation and reference-model tests, codec vectors, short deterministic simulations, the counter-fast profile, small history checks, and the durable process suite's membership | `reference-source`, `reference-package`, and `counter-reference-fast` in `ci.yml` |
+| Main/nightly | Durable process tests executed plus the 1,024-group counter profile | `reference-process` in `ci.yml`, and `reference-process-nightly` plus `counter-reference-nightly` in `nightly.yml` |
+| Weekly | The 4,096-group randomized counter profile with slow groups, snapshot/bulk pressure, poison, and lifecycle churn | `counter-reference-weekly` in `weekly.yml` |
 | Release | Exact package archives, full process suite, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md`'s pre-publish block runs both lanes by hand; there is no release workflow, no mixed-version coverage, and no pinned downstream canary |
 
 The third column is the whole point of the table. Until the two lanes were
@@ -523,21 +525,19 @@ wired, the "required work" column described work that nothing performed:
 `.github/`. A row here is a claim about a job that exists, or it says which
 jobs do not exist yet.
 
-The two rows without a workflow job follow the delivery plan rather than
-contradicting it. Weekly wants long randomized histories and hot/cold
-multi-group scheduling; the sharded counter that would supply the multi-group
-half declares no Rafter dependency yet. Release integration is its own set of
-slices below, and only the first of them is partly done.
+The release row remains intentionally incomplete. Mixed-version package
+coverage, a pinned downstream canary, and a tag-gating release workflow are
+separate release-integration slices and are not inferred from the now-complete
+counter profile jobs.
 
-Both process rows run the same `#[ignore]`d suite through
+Both process rows run the same `#[ignore]`d suites through
 `scripts/reference-process-check`, which drives `scripts/cargo-test-exact`
-against the reviewed inventory at
-`verification/reference-process-test-inventory.txt`. The expected count is read
-from that file, so the count and the names cannot disagree. Neither is
-decoration: the suite is selected by `--ignored`, so a selection expressed only
-by `--ignored` reports success over zero tests the moment those attributes
-change, and a count alone accepts a right number of entirely different tests.
-The inventory rejects both.
+against one reviewed inventory per consumer. The sharded-counter inventory is
+`verification/reference-process-test-inventory.sharded-counter.txt`. Each
+expected count is read from its inventory, so the count and names cannot
+disagree. Neither is decoration: `--ignored` alone reports success over zero
+tests when attributes drift, and a count alone accepts a right number of
+different tests. The inventories reject both.
 
 The membership check and the execution sit on different tiers on purpose.
 `reference-process` runs the suite, and it is skipped on pull requests --
@@ -646,9 +646,9 @@ inventoried and extracted separately.
 3. Add hot/cold, slow, poisoned, and snapshot-heavy groups.
 4. Add removal, tombstone, reopening, and late-message behavior.
 5. Add bounded process composition and package-mode tests.
-6. Add long nightly, weekly, and release scheduling profiles.
+6. Add long nightly and weekly scheduling profiles.
 
-Slices 1 through 4 are complete. `ManagedScheduler`,
+All six slices are complete. `ManagedScheduler`,
 `ReferenceScheduler`, and the real Rafter-backed managed counter remain three
 structurally independent shapes. The real matrix covers all workload classes,
 queue pressure and lossless retries, full lifecycle/reopen/tombstone behavior,
@@ -656,11 +656,16 @@ slow and poisoned isolation, actual application and descriptor-based snapshot
 install paths, late-incarnation fencing, and a 1,024-group fairness profile.
 The canonical manifest names only versioned public Rafter crates, so both
 source and exact-package lanes exercise the scheduler through an external
-consumer shape.
+consumer shape. The process fixture adds three durable hosts, bounded sockets,
+transactional application records, `SIGKILL`/clean restart, real compaction,
+exact retry, late-client/peer fencing, and lifecycle removal/reopen/tombstone.
+The 64/1,024/4,096-group profiles retain replay inputs and quantitative
+fairness, conservation, failure, and lifecycle artifacts.
 
-Slices 5 and 6 remain: bounded durable process composition and the long
-nightly/weekly scheduling profiles. Until those land, deterministic success is
-not described as process-restart or production-composition evidence.
+This completes integration composition, not production composition. The
+fixture's peer link is deliberately unauthenticated; authenticated transport,
+production configuration and secrets, operational metrics export, and
+deployment evidence remain the next slice.
 
 ### Release integration
 
@@ -669,9 +674,8 @@ not described as process-restart or production-composition evidence.
 3. Pin the downstream product canary revision and Rafter dependency.
 4. Make the release lane mandatory for a 1.0 tag.
 
-Slice 1 is done for the every-PR and main/nightly rows of the lane table above
-and not for the weekly or release rows; the table names the job behind each row
-and says plainly where there is none. Slices 2 through 4 are not started: there
+Slice 1 is done for the every-PR, main/nightly, and weekly rows of the lane
+table above, but not the release row. Slices 2 through 4 are not started: there
 is no mixed-version coverage, no pinned downstream canary, and no release
 workflow for a tag to be gated on.
 

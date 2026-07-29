@@ -476,3 +476,25 @@ jobs:
           test "$VERIFIER_READBACK_RESULT" = "success"
           jq -e '.summary.total == 44 and .summary.green == 44 and .summary.red == 0 and (.invariants | length) == 44' \
             "$RUNNER_TEMP/$INVARIANT_REPORT_DIR/weekly.json" >/dev/null
+
+  counter-reference-weekly:
+    name: counter-reference-weekly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750b5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Counter reference weekly profile
+        run: scripts/counter-profile counter-weekly
+      - name: Upload counter weekly evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: counter-reference-weekly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/reference-counter/counter-weekly/
+          if-no-files-found: error

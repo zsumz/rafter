@@ -631,7 +631,16 @@ jobs:
         # success over zero tests the moment those attributes changed. The
         # reviewed inventory in verification/ pins which tests run, not just
         # how many: a right count over a different set is rejected.
-        run: scripts/reference-process-check
+        run: |
+          mkdir -p artifacts/reference-counter
+          scripts/reference-process-check 2>&1 | tee artifacts/reference-counter/process-suite-nightly.log
+      - name: Upload durable reference process diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reference-process-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/reference-counter/process-suite-nightly.log
+          if-no-files-found: error
 
   multi-gigabyte-test:
     name: multi-gigabyte-test
@@ -659,3 +668,25 @@ jobs:
           name: multi-gigabyte-test-log
           path: multi-gigabyte.log
           if-no-files-found: ignore
+
+  counter-reference-nightly:
+    name: counter-reference-nightly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750b5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Counter reference nightly profile
+        run: scripts/counter-profile counter-nightly
+      - name: Upload counter nightly evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: counter-reference-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/reference-counter/counter-nightly/
+          if-no-files-found: error
