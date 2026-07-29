@@ -473,16 +473,20 @@ impl ExplorationState {
                 index,
                 term,
             });
-        if !exact_tracking
-            || !matches!(
-                status,
-                ClientWriteStatus::Accepted {
+        let status_accepts_drop = matches!(
+            status,
+            ClientWriteStatus::Accepted {
                     node_id: accepted_by,
                     index: accepted_index,
                     term: accepted_term,
                 } if accepted_by == node_id && accepted_index == index && accepted_term == term
-            )
-        {
+        ) || matches!(
+            status,
+            ClientWriteStatus::Unknown {
+                reason: ClientWriteUnknownReason::StaleLeader
+            }
+        );
+        if !exact_tracking || !status_accepts_drop {
             self.record_client_instrumentation_error(
                 proposal_id,
                 "dropped",

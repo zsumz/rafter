@@ -304,6 +304,54 @@ fn stale_unknown_write_may_later_apply_without_becoming_required() {
         .expect("a stale unknown write that later applies remains optional");
 }
 
+#[test]
+fn stale_unknown_write_may_later_drop_exactly_once() {
+    use crate::records::LocalProposalEvent;
+
+    let proposal_id = crate::model_check::ProposalId(15);
+    let payload = crate::model_check::helpers::proposal_payload(proposal_id);
+    let mut state = state_with_uncommitted_applications(Term(6), &[&payload]);
+    state.record_client_proposal(NodeId(1), proposal_id, true);
+    let dropped = LocalProposalEvent::Dropped {
+        node_id: NodeId(1),
+        proposal_id: rafter::LocalProposalId(proposal_id.0),
+        index: LogIndex(1),
+        term: Term(6),
+        reason: rafter::LocalProposalDropReason::LeadershipLost,
+    };
+    state.record_local_proposal_events(&[
+        LocalProposalEvent::Appended {
+            node_id: NodeId(1),
+            proposal_id: rafter::LocalProposalId(proposal_id.0),
+            index: LogIndex(1),
+            term: Term(6),
+        },
+        dropped.clone(),
+    ]);
+
+    assert!(matches!(
+        state.client_history().writes[&proposal_id].status,
+        ClientWriteStatus::Unknown {
+            reason: ClientWriteUnknownReason::LocalTrackingDropped
+        }
+    ));
+    check_client_history_linearizability(&state, &[])
+        .expect("a stale unknown write may later lose local tracking");
+
+    state.record_local_proposal_events(&[dropped]);
+    let failure = check_client_history_linearizability(&state, &[])
+        .expect_err("a duplicate drop must still fail closed");
+    assert_eq!(
+        failure.kind(),
+        crate::model_check::FailureKind::HarnessError
+    );
+    assert!(
+        failure.message.contains("dropped event contradicted"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
 fn state_with_uncommitted_applications(term: Term, payloads: &[&[u8]]) -> ExplorationState {
     let config =
         NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3).expect("test config is valid");
