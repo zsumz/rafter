@@ -630,7 +630,7 @@ fn held_ids_do_not_regress_across_release_and_re_adoption() {
 
 /// A runtime that emits no proposal lifecycle event told the app layer nothing
 /// about whether the entry was appended. The app layer turns that silence into
-/// `ProposalUnknownOutcomeReason::ProposalDidNotStart`, and the driver must not
+/// `ProposalUnknownOutcomeReason::LifecycleUnreported`, and the driver must not
 /// strengthen it into `WriteFate::NotAppended` — "it cannot commit, now or
 /// later" — because nobody made that claim.
 #[test]

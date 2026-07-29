@@ -7083,7 +7083,7 @@ comparison-derived delta does.
 The paragraph above records the round-10 behavior, not the final one.
 `GroupError::ProposalDidNotStart` is removed. When a runtime accepts a proposal
 but emits no lifecycle output, `rafter-app` now appends
-`ProposalEvent::UnknownOutcome { reason: ProposalDidNotStart }` to the
+`ProposalEvent::UnknownOutcome { reason: LifecycleUnreported }` to the
 `GroupStepReport` it already built and returns that report normally. Proposal,
 read, apply, snapshot, transfer, peer-message, and membership content therefore
 cross the boundary together; no stream needs error-path reconstruction.

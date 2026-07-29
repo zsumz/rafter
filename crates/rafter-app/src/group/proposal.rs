@@ -34,7 +34,7 @@ where
     /// below the runtime's snapshot boundary, command encoding fails, the
     /// runtime rejects the proposal input, or applying a synchronously committed
     /// entry fails. A runtime that accepts the input but emits no lifecycle event
-    /// is returned as [`ProposalUnknownOutcomeReason::ProposalDidNotStart`].
+    /// is returned as [`ProposalUnknownOutcomeReason::LifecycleUnreported`].
     #[allow(clippy::needless_pass_by_value)]
     pub fn begin_proposal_outcome(
         &mut self,
@@ -61,7 +61,7 @@ where
     /// below the runtime's snapshot boundary, command encoding fails, the
     /// runtime rejects the proposal input, or applying a synchronously committed
     /// entry fails. A runtime that accepts the input but emits no lifecycle event
-    /// is returned as [`ProposalUnknownOutcomeReason::ProposalDidNotStart`].
+    /// is returned as [`ProposalUnknownOutcomeReason::LifecycleUnreported`].
     #[allow(clippy::needless_pass_by_value)]
     pub fn begin_proposal(
         &mut self,
@@ -222,7 +222,7 @@ where
             report.proposal_events.push(ProposalEvent::UnknownOutcome {
                 local_proposal_id: *local_proposal_id,
                 client_request_id,
-                reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+                reason: ProposalUnknownOutcomeReason::LifecycleUnreported,
             });
         }
     }

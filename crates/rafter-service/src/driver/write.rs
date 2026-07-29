@@ -434,7 +434,7 @@ pub(super) fn managed_unknown_reason_from_app(
     match reason {
         ProposalUnknownOutcomeReason::GroupPoisoned => UnknownOutcomeReason::GroupPoisoned,
         ProposalUnknownOutcomeReason::LocalProposalDropped { .. }
-        | ProposalUnknownOutcomeReason::ProposalDidNotStart => {
+        | ProposalUnknownOutcomeReason::LifecycleUnreported => {
             UnknownOutcomeReason::RuntimeDroppedProposal
         }
         _ => unknown_future_app_reason(),

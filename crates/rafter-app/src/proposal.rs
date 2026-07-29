@@ -45,7 +45,7 @@ pub struct Proposal<C> {
 /// leader; it is not client-facing write success. A managed write must wait
 /// for a later committed apply result. `UnknownOutcome` means the runtime can
 /// no longer prove whether the proposal will commit and apply. It is distinct
-/// from a provable rejection; `ProposalDidNotStart` means the runtime emitted
+/// from a provable rejection; `LifecycleUnreported` means the runtime emitted
 /// no lifecycle evidence, not that the proposal definitely failed to start.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -101,7 +101,7 @@ pub enum ProposalUnknownOutcomeReason {
     ///
     /// Silence is not proof that the proposal stayed out of durable state, so
     /// callers must treat its fate as unresolved.
-    ProposalDidNotStart,
+    LifecycleUnreported,
 }
 
 /// Proposal lifecycle events emitted by the app/group layer.

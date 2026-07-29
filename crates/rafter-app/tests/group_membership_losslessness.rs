@@ -499,7 +499,7 @@ fn a_runtime_silent_proposal_reports_its_membership_delta_in_the_same_step() {
     assert!(matches!(
         &report.proposal_events[..],
         [ProposalEvent::UnknownOutcome {
-            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            reason: ProposalUnknownOutcomeReason::LifecycleUnreported,
             ..
         }]
     ));

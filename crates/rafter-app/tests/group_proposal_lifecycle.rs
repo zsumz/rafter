@@ -189,7 +189,7 @@ fn command_encode_failure_does_not_consume_local_proposal_id() {
     assert!(matches!(
         retry,
         ProposalBegin::UnknownOutcome {
-            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            reason: ProposalUnknownOutcomeReason::LifecycleUnreported,
             ..
         }
     ));
@@ -534,7 +534,7 @@ fn begin_proposal_batch_reports_runtime_silence_without_losing_the_other_proposa
         &started.begins[1],
         ProposalBegin::UnknownOutcome {
             local_proposal_id,
-            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            reason: ProposalUnknownOutcomeReason::LifecycleUnreported,
             ..
         } if *local_proposal_id == second_id
     ));
@@ -570,7 +570,7 @@ fn begin_proposal_reports_runtime_silence_as_unknown_and_consumes_the_id() {
         ProposalBegin::UnknownOutcome {
             local_proposal_id,
             client_request_id: returned_client_request_id,
-            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            reason: ProposalUnknownOutcomeReason::LifecycleUnreported,
             ..
         } if local_proposal_id == proposal_id
             && returned_client_request_id == client_request_id
@@ -620,7 +620,7 @@ fn group_step_reports_runtime_silence_as_an_unknown_lifecycle_event() {
         vec![ProposalEvent::UnknownOutcome {
             local_proposal_id: proposal_id,
             client_request_id,
-            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            reason: ProposalUnknownOutcomeReason::LifecycleUnreported,
         }]
     );
     assert_eq!(group.metrics().pending_proposals, 0);
@@ -682,7 +682,7 @@ fn runtime_silence_keeps_other_proposal_and_read_events_in_the_report() {
         &report.proposal_events[1],
         ProposalEvent::UnknownOutcome {
             local_proposal_id,
-            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            reason: ProposalUnknownOutcomeReason::LifecycleUnreported,
             ..
         } if *local_proposal_id == missing_proposal_id
     ));
