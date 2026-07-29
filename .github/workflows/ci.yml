@@ -806,14 +806,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      # Deliberately not the workspace 1.88 pin. `cargo package -p a -p b`
-      # only resolves a crate's versioned dependency on a sibling against the
-      # archive it just produced on newer Cargo; on 1.88 phase 1 fails outright
-      # with "no matching package named `rafter-crc32` found", because it looks
-      # for the sibling on crates.io where 0.0.1 is not yet live, and --no-verify
-      # does not avoid it. 1.96.1 is the toolchain benchmarks.yml already pins.
-      # The compatibility floor is not what this lane measures: reference-source
-      # above builds the same consumer sources on 1.88.
+      # Deliberately not the workspace 1.88 pin. This lane validates packaging
+      # mechanics as well as the exact unpacked archive graph, while
+      # reference-source above holds the same consumer sources to 1.88. 1.96.1
+      # is the toolchain benchmarks.yml already pins.
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: 1.96.1

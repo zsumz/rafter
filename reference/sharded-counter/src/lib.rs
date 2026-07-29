@@ -1,13 +1,10 @@
 //! Deterministic sharded counter service used to discover and verify the
 //! contracts a managed many-group Rafter scheduler must meet.
 //!
-//! This consumer inverts the order the other two reference systems ran in. The
-//! ledger and the fenced lock were written against Rafter surfaces that already
-//! existed; the managed scheduler this crate specifies does not exist yet, so
-//! the contract here is an input to its design rather than a report on it. That
-//! is why the crate has no dependencies at all: every bound, every lifecycle
-//! edge, and every fairness statement in `CONTRACT.md` had to be arguable on its
-//! own before any of it could be asked of Rafter.
+//! The independent model and oracle were written before Rafter had a managed
+//! scheduler. The [`adapter`] module now drives real three-node Rafter groups
+//! through the promoted managed layer, while the original transition systems
+//! remain structurally independent comparison authorities.
 //!
 //! The implementation and independent oracle share only the public vocabulary
 //! in this crate. Their transition code is separate by design, and so is their
@@ -20,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod adapter;
 mod history;
 mod model;
 mod oracle;

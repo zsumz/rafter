@@ -2312,9 +2312,9 @@ mod tests {
     /// closes this one. Two checks passing the same site would leave one of
     /// them with no deliberate violator while every compile-time mechanism
     /// stayed satisfied, and detecting it from the type system needs variant
-    /// reflection that a crate with no dependencies has no way to obtain. So it
-    /// is decided from the text instead, which is the honest form of "this part
-    /// is not the compiler's".
+    /// reflection that Rust exposes no stable surface to obtain here. So it is
+    /// decided from the text instead, which is the honest form of "this part is
+    /// not the compiler's".
     #[test]
     fn every_fault_site_is_raised_by_exactly_one_check() {
         let calls = concat!("self.", "fault(");

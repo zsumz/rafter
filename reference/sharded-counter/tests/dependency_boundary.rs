@@ -35,37 +35,28 @@ fn canonical_consumer_manifest_has_no_checkout_or_internal_hook_dependency() {
     );
 }
 
-/// This consumer's boundary is stricter than its siblings', and deliberately so.
-///
-/// The managed scheduler it specifies does not exist in Rafter yet. A Rafter
-/// dependency here would mean this contract had been shaped by a surface it was
-/// supposed to be shaping, so the absence is the invariant, not an accident of
-/// the crate being small.
 #[test]
-fn the_scheduler_contract_depends_on_nothing_at_all() {
-    for section in [
-        "[dependencies]",
-        "[dev-dependencies]",
-        "[build-dependencies]",
+fn the_real_adapter_uses_only_versioned_public_rafter_crates() {
+    assert!(SHARDED_COUNTER_MANIFEST.contains("[dependencies]"));
+    for dependency in [
+        "rafter",
+        "rafter-app",
+        "rafter-multiraft",
+        "rafter-runtime",
+        "rafter-storage",
     ] {
+        let requirement = format!("{dependency} = \"0.0.1\"");
         assert!(
-            !SHARDED_COUNTER_MANIFEST.contains(section),
-            "the sharded counter's contract must be arguable before any API exists to argue it against, so {section} may not appear"
+            SHARDED_COUNTER_MANIFEST
+                .lines()
+                .any(|line| line.trim() == requirement),
+            "the real adapter must name {dependency} by version"
         );
     }
-
-    // The package's own name starts with `rafter-`, so a substring search would
-    // find itself. A requirement is a `name = ` line outside `[package]`.
-    let requirements: Vec<&str> = SHARDED_COUNTER_MANIFEST
-        .lines()
-        .skip_while(|line| line.trim() != "[package]")
-        .skip(1)
-        .take_while(|line| !line.trim_start().starts_with('[') || line.trim() == "[package]")
-        .filter(|line| line.contains(" = ") && line.trim_start().starts_with("rafter-"))
-        .collect();
     assert!(
-        requirements.is_empty(),
-        "no Rafter crate may be required until the managed scheduler this contract specifies exists: {requirements:?}"
+        !SHARDED_COUNTER_MANIFEST.contains("[dev-dependencies]")
+            && !SHARDED_COUNTER_MANIFEST.contains("[build-dependencies]"),
+        "the adapter needs no test-only or build-only dependency path"
     );
 }
 

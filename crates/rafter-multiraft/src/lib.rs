@@ -50,6 +50,8 @@ pub mod driver;
 pub mod error;
 /// Untyped many-group host over encoded command/result boundaries.
 pub mod host;
+/// Deterministic bounded scheduling above the manual hosts.
+pub mod managed;
 /// Each open group's own metrics, collected in key order.
 pub mod metrics;
 /// One complete pass over every group a host holds.

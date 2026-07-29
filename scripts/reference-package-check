@@ -5,7 +5,7 @@
 #   scripts/reference-package-check              # full package-consumer lane
 #   scripts/reference-package-check --keep       # keep the temporary workdir
 #   scripts/reference-package-check --offline    # pass --offline to every cargo call
-#   scripts/reference-package-check --no-verify  # skip Cargo's own archive verification
+#   scripts/reference-package-check --no-verify  # compatibility alias; now the default
 #
 # docs/reference-consumers.md defines two dependency modes over one set of
 # consumer sources. This script is package-consumer mode: it packages every
@@ -18,16 +18,14 @@
 # scripts/reference-source-check; this script never builds a consumer against
 # `crates/`.
 #
-# Why one `cargo package` invocation covers the whole publish set:
-# the workspace crates depend on each other by version as well as by path, so
-# packaging one crate on its own makes Cargo resolve `rafter = "0.0.1"` against
-# crates.io and fail until that version is live there. Packaging the whole set
-# in a single invocation lets Cargo resolve those requirements against the
-# sibling archives it just produced, build a temporary registry from them, and
-# still verify each archive by compiling it. The archives stay exact and
-# --no-verify is not needed. --no-verify remains available for slow machines;
-# the real proof that the artifacts compose is phase 5, which builds the
-# consumers against nothing but the unpacked archives.
+# Why packaging skips Cargo's built-in archive verification:
+# the workspace crates depend on each other by version as well as by path.
+# Once that version exists on crates.io, Cargo verifies a dependent archive
+# against the already-published sibling rather than the sibling archive built
+# from this checkout. That can either fail on a newly promoted API or, worse,
+# pass without checking the package set together. Phase 5 is the authoritative
+# verification: it builds and tests the consumers against nothing but the
+# exact unpacked sibling archives.
 #
 # Network use: every Rafter crate in the consumer graph resolves through
 # [patch.crates-io] to an unpacked archive, so none of them is ever fetched.
@@ -41,7 +39,6 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 keep_workdir=false
 offline=false
-verify_packages=true
 workdir=""
 
 usage() {
@@ -57,7 +54,8 @@ while [[ $# -gt 0 ]]; do
             offline=true
             ;;
         --no-verify)
-            verify_packages=false
+            # Archive verification is intentionally disabled for every run.
+            # Keep accepting the old explicit flag so existing callers do not break.
             ;;
         -h | --help)
             usage
@@ -325,9 +323,7 @@ package_args=()
 for crate in "${packaged_crates[@]}"; do
     package_args+=(-p "$crate")
 done
-if [[ "$verify_packages" == false ]]; then
-    package_args+=(--no-verify)
-fi
+package_args+=(--no-verify)
 
 # --locked keeps the checkout's Cargo.lock exactly as committed; CARGO_TARGET_DIR
 # keeps every build artifact inside the workdir. --allow-dirty lets the lane run

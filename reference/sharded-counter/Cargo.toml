@@ -9,11 +9,12 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
-# This consumer has no dependencies at all, including no Rafter ones. The
-# managed scheduler it specifies does not exist yet, so this crate is the design
-# input for it rather than an integration against it. A dependency added here
-# before that scheduler is public would be a dependency on something the
-# contract has not yet argued for.
+[dependencies]
+rafter = "0.0.1"
+rafter-app = "0.0.1"
+rafter-multiraft = "0.0.1"
+rafter-runtime = "0.0.1"
+rafter-storage = "0.0.1"
 
 [lints]
 workspace = true

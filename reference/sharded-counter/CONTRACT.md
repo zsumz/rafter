@@ -1,20 +1,17 @@
 # Sharded Counter Service Contract
 
-Status: third reference-consumer contract for Rafter 1.0 API discovery. This is
-its foundation milestone: the contract, the bounded schema, a deterministic
-scheduler, a structurally independent oracle, the history vocabulary, and their
-tests.
+Status: third reference consumer for Rafter 1.0 API discovery. The independent
+contract, model, and oracle now sit beside the first real adoption of Rafter's
+managed many-group scheduler: three-node counter groups, replicated sessions,
+bounded codecs and snapshots, and deterministic peer routing.
 
-This crate runs the program's sequencing backwards from its siblings, on
-purpose. The ledger and the fenced lock were written against Rafter surfaces
-that already existed, and each reported what it found missing. The managed
-many-group scheduler this document describes does not exist yet. Repeated calls
-to the current manual `tick_all` host are a useful example and are not evidence
-of production scheduling, bounded fairness, or isolation, so there is nothing
-here to report on — there is something to specify. This contract is the design
-input for that scheduler, and the crate has **no dependencies at all**, so that
-every bound and every edge below had to be arguable before any API existed to
-argue it against.
+This crate ran the program's sequencing backwards from its siblings, on
+purpose. The ledger and fenced lock began against existing Rafter surfaces;
+this counter first specified the missing managed layer with a dependency-free
+model and structurally independent oracle. The promoted API is now exercised
+through versioned public Rafter dependencies. Source mode supplies checkout
+patches and package mode supplies exact unpacked archives; the canonical
+manifest contains neither checkout paths nor unpublished hooks.
 
 The sharded counter is deliberately small. It exists to prove:
 
@@ -132,15 +129,11 @@ ordinary queue.
 
 ### Schema version
 
-This is version 1 of the counter schema. The schema is closed and in-memory:
-this milestone has no transport, so it has no frame, and a version number
-without a frame to carry it would be decoration.
-
-What the version means is a rule the adapter inherits rather than invents. When
-a frame exists it must carry this version, and a build that does not recognize
-a version must refuse the frame rather than reinterpret it — the discipline the
-ledger's and the lock's codecs already keep. Adding a variant to any type below
-is a change to this document first.
+This is version 1 of the counter schema. The independent model vocabulary stays
+closed and in-memory. The real adapter gives its replicated command an explicit
+bounded frame carrying this version; an unrecognized version, oversized frame,
+malformed field, or trailing byte is refused rather than reinterpreted. Adding a
+variant to either vocabulary is a change to this document first.
 
 ## Session Protocol
 
@@ -288,15 +281,18 @@ group's session table is emptied only when the group is removed. Retirement and
 eviction policy for a long-lived group must become explicit before durable
 process admission.
 
-### Sessions are not replicated here
+### Model sessions and real adapter replication
 
 `OpenSession` is an admission-gate action rather than queued work. Queueing it
 would mean a client needed a queue slot to open the session that a queue-full
 rejection tells it to retry under, which is a circle with no exit.
 
-When the Rafter adapter exists, session establishment becomes a replicated
-command like its siblings'. It is immediate here because this milestone models
-the scheduler, not the log.
+The independent model therefore establishes a session immediately. The real
+adapter admits the same policy action as control work and replicates
+`OpenSession` through the group's Raft log before counter commands can use it.
+This difference is deliberate: the model remains a scheduler oracle rather
+than sharing the adapter's log transitions, while both produce the same
+client-visible session state.
 
 ## Group Lifecycle
 
@@ -1207,13 +1203,13 @@ what it does and does not close:
 | `oracle::tests::every_fault_site_is_raised_by_exactly_one_check` scans the fold's own source | two checks passing one site | test failure |
 
 The last row is a test rather than a compile error, and that is stated rather
-than glossed: detecting that two checks name one site needs variant reflection a
-crate with no dependencies has no way to obtain. What *no* mechanism here closes
-is a site declared after the end marker — which is a statement that the marker
-is not the end, rather than an omission. `Cheat::ALL` is closed the same way and
-for the same reason: it was `[Self; 23]`, a literal a twenty-fourth variant could
-be left out of without anything complaining, under a test asserting the family
-covered what it claimed to.
+than glossed: Rust exposes no variant-reflection surface that can enumerate
+these sites, so the test scans the fold's own source. What *no* mechanism here
+closes is a site declared after the end marker — which is a statement that the
+marker is not the end, rather than an omission. `Cheat::ALL` is closed the same
+way and for the same reason: it was `[Self; 23]`, a literal a twenty-fourth
+variant could be left out of without anything complaining, under a test
+asserting the family covered what it claimed to.
 
 Two sites declare themselves unreachable instead of claiming a control, and each
 has to survive this document's own standard for an unreachable answer, stated
@@ -1377,20 +1373,20 @@ The three lost-outcome forms differ only in what the caller can prove:
   decide.
 
 `NotAdmitted` is the counterpart of the siblings' `NotCommitted`, and it is
-reserved rather than earned in this milestone: there is no transport yet, so
-nothing here can prove a refusal it did not observe directly. What earns it is
-defined where the refusal becomes observable — in the adapter — and until then
-the vocabulary slot exists so that a future transport has somewhere honest to
-put the distinction. Recording a provable refusal as `Unknown` would let an
-implementation that serviced it be explained away.
+reserved rather than earned in this milestone: there is no client process
+transport yet, so nothing here can lose a refusal and later prove where it
+stopped. What earns it is defined where that refusal becomes observable, and
+until then the vocabulary slot exists so a future transport has somewhere
+honest to put the distinction. Recording a provable refusal as `Unknown` would
+let an implementation that serviced it be explained away.
 
 ## What This Milestone Does Not Close
 
-This is the foundation slice. It contains the contract, bounded command and
-result types, a deterministic ready-set scheduler with a per-group counter
-machine, a structurally independent oracle, the history vocabulary, invariant
-tests, a deliberately-violating scheduler for every one of the 29 rules the
-audit decides, and seeded differential workloads over thousands of groups.
+The foundation contains the contract, bounded command and result types, a
+deterministic ready-set model with a per-group counter machine, a structurally
+independent oracle, the history vocabulary, invariant tests, a
+deliberately-violating scheduler for every one of the 29 rules the audit
+decides, and seeded differential workloads over thousands of groups.
 
 The differential workloads cover the dimensions separately and together, and the
 numbers they run at are restated here rather than described:
@@ -1424,21 +1420,26 @@ what the red-team schedulers are for, and it is why invariant 24 exists — and
 invariant 24 in turn proves that each rule fires, not that the rules cover. Both
 limits are named where each claim is made.
 
-It intentionally contained no Rafter dependency, adapter, transport, disk
-backend, shared reference framework, or new Rafter public API. The
-stopping point is the same one the ledger and the lock used: it gives the
-adapter an application contract to meet instead of letting integration
-convenience define the application.
+The first adapter slice now adds versioned public Rafter dependencies and
+drives a managed local host containing three independent groups. Every group
+has three real `RaftGroup` replicas on a bounded deterministic network. Session
+establishment and request deduplication are replicated; counter commands use a
+bounded versioned codec; state snapshots round-trip the value, applied index,
+and bounded session cache. Queue overflow returns the untouched proposal, pass
+plans prove one opportunity per ready group, and a consumer apply fault poisons
+only its group while later groups keep committing.
 
 Named consequences, so they are not discovered later:
 
-- **The scheduler is not integrated.** `rafter-multiraft` has no managed
-  scheduler today, and this contract is the input to designing one rather than a
-  report on using one. The next slices add hot/cold, slow, poisoned, and
-  snapshot-heavy groups against a real host, then removal, tombstone, reopening,
-  and late-message behavior, then bounded process composition.
-- **Sessions are not replicated.** Session establishment is immediate here, and
-  becomes a replicated command when there is a log to put it in.
+- **The complete acceptance matrix is still separate work.** The first real
+  slice proves three groups, bounded admission, sessions, reads, fairness, and
+  poison isolation. Hot/cold and slow groups, snapshot pressure, lifecycle
+  churn, removal/tombstone/reopening, late traffic, and scale profiles remain
+  the next deterministic acceptance slice.
+- **The deterministic network is not production transport.** It is bounded,
+  routes every peer envelope, and uses real Raft groups, but has no sockets,
+  authentication, disk backend, or wall-clock behavior. Process composition
+  and production-composition evidence remain later milestones.
 - **Ticks and costs are not durations.** A tick is the scheduler's unit of
   attention and a cost is worker occupancy. Nothing in this document may be read
   as a wall-clock or timeout guarantee, and the fairness bound in particular

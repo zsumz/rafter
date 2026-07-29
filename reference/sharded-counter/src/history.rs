@@ -106,8 +106,8 @@ pub enum OperationOutcome {
 /// folded the third would be copying the conclusions it is supposed to be
 /// checking.
 ///
-/// The vocabulary is closed and in-memory. It is deliberately not a wire
-/// format: this consumer has no replicated frames yet, and a history never
+/// The vocabulary is closed and in-memory. It is deliberately not the real
+/// adapter's replicated-command format: a history never enters the Raft log or
 /// crosses a process boundary. Adding an outcome here is a contract change
 /// recorded in `CONTRACT.md`, not a compatibility negotiation.
 #[derive(Clone, Debug, Eq, PartialEq)]

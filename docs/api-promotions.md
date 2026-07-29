@@ -50,7 +50,8 @@ what it is, and each of these three changes a public kernel shape. None of them
 adds an API a consumer asked for; each removes a promise the kernel was making
 and could not keep.
 
-The last entry is the same kind of arrival one crate higher. A cold audit of
+The many-group correction immediately before the newest entry is the same kind
+of arrival one crate higher. A cold audit of
 `crates/rafter-multiraft` — the only public crate no adversarial generation had
 read — found that the many-group host drops committed apply results and starves
 every group behind a failing one. Its consumer has not been written yet, so the
@@ -58,6 +59,12 @@ entry is unusual in this document: it is designed against a *stated* acceptance
 contract rather than against a workaround someone had to write. That is the
 weaker kind of evidence, and the entry says which of its shapes the contract
 forces and which are the author's judgement.
+
+The newest entry closes that evidence gap. The sharded-counter consumer first
+specified bounded many-group scheduling with an independent model and oracle,
+then adopted the promoted mechanism through real three-node Rafter groups. The
+promotion and its first consumer therefore land as one vertical slice: neither
+an unused scheduler abstraction nor a consumer that proves only its own model.
 
 The couplings are recorded in [Coupled designs](#coupled-designs), and the
 implementation sequence in [Adoption order](#adoption-order).
@@ -12875,12 +12882,66 @@ the driver's public contract, and what an embedder never names lives beside it �
 so the split is where it would have gone anyway. It is recorded because the
 design's blast radius named the file and not the module that came out of it.
 
+## Managed Many-Group Scheduling and Typed-Host Composition
+
+### Origin
+
+`MultiRaftHost` and `TypedMultiRaftHost` step the group a caller names and
+`tick_all` measures a complete key-ordered pass. They deliberately have no
+queue, ready set, quota, admission bound, worker occupancy, or begin/complete
+protocol. The sharded-counter contract requires those mechanisms and already
+contains two independent consumer-owned implementations used to decide
+fairness and conservation. Repeating either implementation beside the manual
+host would leave every adopter to reconcile two sources of scheduling truth.
+
+### Classification
+
+The promoted surface is neutral hosting mechanism:
+
+- bounded per-group and host-wide admission;
+- deterministic passes over the ready set;
+- one opportunity per ready group per pass;
+- per-group quotas and within-turn work-class priority;
+- stable work, pass, and dispatch identities;
+- explicit in-flight occupancy and completion/failure disposition;
+- lossless typed-host reports and per-item driver failures; and
+- bounded metrics for queues, passes, occupancies, service, and failure.
+
+The following remains counter policy and is not promoted: group incarnation,
+create/recover/serve/drain/remove/tombstone transitions, tombstone retention,
+sessions, request fingerprints, deduplication, counter commands and snapshots,
+and operator recovery decisions.
+
+### Bounds and failures
+
+Configuration uses nonzero workers, queue bounds, and quotas. Admission returns
+the rejected payload on an unknown group or a full group/global queue. A
+dispatch occupies one worker only when it removes at least one item for
+service, and only an exact completion for that dispatch releases it. Invalid,
+early, late, or fabricated completion is typed and leaves the occupancy and
+accepted work accounted for. Public metrics preserve the conservation
+identity across queued, in-flight, serviced, and failed work.
+
+The scheduler is deterministic sans-I/O code. Threads, storage, transport,
+application lifecycle, and wall-clock fairness are outside it. A partitioned
+broker is a second plausible adopter: partitions are groups, replication and
+administration are work classes, while topic retention and partition lifecycle
+remain broker policy.
+
+### Adoption proof
+
+The first adoption is part of the promotion rather than a later promise.
+`reference/sharded-counter` declares versioned public Rafter dependencies,
+drives three independent three-node counter groups through the managed layer,
+and compares client-visible values and queue/fairness outcomes with its
+independent oracle. Source mode and exact-package mode both exercise that path.
+
 ## Coupled designs
 
-The eleven promotions form seven surfaces, not eleven independent additions.
-The first six form four; the service-layer cluster adds three more, one of
-which reaches back into the app layer. The entries that arrived after those
-eleven add two further couplings, recorded in the last two paragraphs below.
+The promotions form coupled surfaces, not a list of independent additions. The
+first six form four; the service-layer cluster adds three more, one of which
+reaches back into the app layer. Later entries add the couplings recorded in
+the final paragraphs below.
 
 **Step reporting — the read report and the rejection hint.** Both establish the
 same rule: *a step report is the complete record of its step, and every event in
@@ -13203,3 +13264,15 @@ depends on, then the second, then the consumer.
 Steps 22 and 23 are additive: the refusal becoming a service is a widening, and
 both `begin_*` methods are new. `reference/` and `bench-compare/` are outside the
 root workspace and must be built explicitly for both, and for step 24.
+
+The managed scheduler is a fifth wave and deliberately compresses design,
+mechanism, and first adoption into one slice. Its acceptance claim is weaker if
+any one of the three lands alone.
+
+25. **Managed scheduling plus real counter adoption.** Record the promotion,
+    add the bounded sans-I/O scheduler and typed-host composition without
+    changing the manual hosts, then drive three independent three-node counter
+    groups through it. Run the public scheduler suite, the counter's independent
+    differential suite, source mode, and exact-package mode. This step is
+    additive; lifecycle, session, deduplication, snapshot, and operator policy
+    stay in the consumer.

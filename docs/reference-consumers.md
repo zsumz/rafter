@@ -151,13 +151,13 @@ feature, and resolver 2 unifies features across every package one invocation
 selects, so every `--workspace` command over the root workspace compiles
 `rafter` with that hook on. Only this lane resolves a graph in which it is off.
 
-The lane needs a newer Cargo than the workspace's 1.88 `rust-version`. Packaging
-several interdependent crates in one invocation only resolves each versioned
-sibling dependency against the archive just produced on later Cargo; on 1.88 the
-first phase fails with `no matching package named rafter-crc32 found`, because
-it searches crates.io for a version that is not live there, and `--no-verify`
-does not avoid it. Fast source mode is what holds the consumers to the 1.88
-compatibility floor.
+The lane packages with Cargo's per-archive verification disabled, then performs
+the stronger portfolio check itself. Once a Rafter version exists on crates.io,
+Cargo can verify a dependent archive against that older published sibling
+instead of the sibling archive produced by the current checkout. The lane
+therefore unpacks every newly produced archive, patches the copied consumer
+workspace to those exact directories, and builds and tests that graph. Fast
+source mode is what holds the consumers to the 1.88 compatibility floor.
 
 This mode tests the artifact users receive, not merely the source tree that
 produced it.

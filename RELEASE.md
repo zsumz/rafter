@@ -124,12 +124,13 @@ and resolver 2 unifies that feature into every `--workspace` invocation: a
 workspace-only doc build documents `rafter` in a shape no published consumer
 can produce.
 
-`scripts/reference-package-check` needs a newer Cargo than the workspace's 1.88
-`rust-version`. Packaging several interdependent crates in one invocation only
-resolves each versioned sibling dependency against the archive just produced on
-later Cargo; on 1.88 the lane fails in its first phase with `no matching package
-named rafter-crc32 found`, and `--no-verify` does not avoid it. CI runs this
-lane on 1.96.1.
+`scripts/reference-package-check` disables Cargo's per-archive verification.
+Once a Rafter version is already published, Cargo can verify a dependent
+archive against that older registry sibling rather than the sibling archive
+produced by the checkout. The lane instead unpacks the complete newly packaged
+set and builds and tests consumers against those exact archives. CI runs this
+lane on 1.96.1; fast source mode holds the consumer sources to the workspace's
+1.88 compatibility floor.
 
 These commands leave three things unchecked, none of which is implied away
 elsewhere in this file:
