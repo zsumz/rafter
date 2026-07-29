@@ -195,7 +195,8 @@ write_metadata
 printf 'step\tstatus\tduration_seconds\tstarted_at\tfinished_at\tcommand\n' > "$SUMMARY"
 
 run_step "model-check-$MODEL_PROFILE" \
-  "$CARGO" "${MODEL_CHECK_CARGO_ARGS[@]}" -- --profile "$MODEL_PROFILE" "${SEED_ARGS[@]}"
+  "$CARGO" "${MODEL_CHECK_CARGO_ARGS[@]}" -- --profile "$MODEL_PROFILE" \
+  ${SEED_ARGS[@]+"${SEED_ARGS[@]}"}
 
 run_step storage-tests "$CARGO" test --locked -p rafter-storage
 
