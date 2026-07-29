@@ -9,6 +9,7 @@
 
 mod operation;
 mod outcome;
+pub mod process;
 mod search;
 mod specification;
 

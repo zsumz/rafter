@@ -67,17 +67,15 @@
 
 use std::{
     collections::BTreeMap,
-    io::{BufRead, BufReader, Write},
-    net::{SocketAddr, TcpStream},
+    net::SocketAddr,
     path::{Path, PathBuf},
-    process::{Child, ChildStdout, Command as OsCommand, Stdio},
+    process::Command as OsCommand,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{self, Receiver},
         Arc,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use rafter::{LogIndex, NodeId};
@@ -85,6 +83,9 @@ use rafter_reference_fenced_lock::{
     ApplyDisposition, ClientId, Command, FencingToken, HistoryEvent, LockConfig, LockRejection,
     LockResponse, LogicalTime, OperationId, OperationResult, RequestRejection, ResourceName,
     Sequence, SessionEpoch,
+};
+use rafter_reference_harness::process::{
+    ChildProcess, ConnectionTimeouts, LineConnection, ReconnectingClient, Wait,
 };
 
 use crate::scratch::ScratchDir;
@@ -130,6 +131,14 @@ const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often a bounded wait re-evaluates its predicate.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+const PROCESS_WAIT: Wait = Wait::new(WAIT_TIMEOUT, POLL_INTERVAL);
+
+const CONNECTION_TIMEOUTS: ConnectionTimeouts = ConnectionTimeouts::new(
+    Duration::from_secs(5),
+    CLIENT_READ_TIMEOUT,
+    Duration::from_secs(5),
+);
+
 /// Polls `predicate` until it yields a value or [`WAIT_TIMEOUT`] elapses.
 ///
 /// This is the only shape of waiting this harness performs. It never sleeps for
@@ -140,18 +149,10 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 ///
 /// Panics with `description` when the deadline passes first.
 #[track_caller]
-pub fn wait_until<T>(description: &str, mut predicate: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
-    loop {
-        if let Some(value) = predicate() {
-            return value;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out after {WAIT_TIMEOUT:?} waiting for {description}"
-        );
-        thread::sleep(POLL_INTERVAL);
-    }
+pub fn wait_until<T>(description: &str, predicate: impl FnMut() -> Option<T>) -> T {
+    PROCESS_WAIT
+        .until(description, predicate)
+        .unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Terminal outcome of one submitted command, as this client observed it.
@@ -273,35 +274,6 @@ pub struct Escalation {
     pub refusal: String,
 }
 
-/// A blocking client connection speaking the documented line protocol.
-#[derive(Debug)]
-struct LockConn {
-    reader: BufReader<TcpStream>,
-    writer: TcpStream,
-}
-
-impl LockConn {
-    fn connect(addr: SocketAddr) -> std::io::Result<Self> {
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
-        stream.set_read_timeout(Some(CLIENT_READ_TIMEOUT))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-        Ok(Self {
-            reader: BufReader::new(stream.try_clone()?),
-            writer: stream,
-        })
-    }
-
-    fn request(&mut self, line: &str) -> std::io::Result<String> {
-        writeln!(self.writer, "{line}")?;
-        self.writer.flush()?;
-        let mut response = String::new();
-        if self.reader.read_line(&mut response)? == 0 {
-            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
-        }
-        Ok(response.trim_end().to_string())
-    }
-}
-
 /// What a freshly spawned replica settled into.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Started {
@@ -327,13 +299,9 @@ pub struct Refusal {
 #[derive(Debug)]
 pub struct NodeProcess {
     node_id: NodeId,
-    child: Child,
-    lifecycle: Receiver<String>,
-    /// Lifecycle lines already read off the channel, kept so a later question
-    /// about an earlier line can still be answered.
-    seen: Vec<String>,
+    child: ChildProcess,
     client_addr: SocketAddr,
-    client: Option<LockConn>,
+    client: ReconnectingClient,
 }
 
 impl NodeProcess {
@@ -419,29 +387,22 @@ impl NodeProcess {
             .arg("--max-resources")
             .arg(config.max_resources().to_string())
             .arg("--recover")
-            .arg(mode)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .arg(mode);
         if let Some(fault_after) = control_plane_fault_after {
             command
                 .arg("--control-plane-fault-after")
                 .arg(fault_after.to_string());
         }
 
-        let mut child = command
-            .spawn()
+        let child = ChildProcess::spawn(format!("replica {}", node_id.0), &mut command)
             .unwrap_or_else(|error| panic!("could not spawn replica {}: {error}", node_id.0));
-        let stdout = child.stdout.take().expect("replica stdout is piped");
-        let lifecycle = spawn_lifecycle_reader(stdout);
+        let placeholder = "127.0.0.1:0".parse().expect("a placeholder address parses");
 
         let mut process = Self {
             node_id,
             child,
-            lifecycle,
-            seen: Vec::new(),
-            client_addr: "127.0.0.1:0".parse().expect("a placeholder address parses"),
-            client: None,
+            client_addr: placeholder,
+            client: ReconnectingClient::new(placeholder, CONNECTION_TIMEOUTS),
         };
         let listening = process.wait_for_line("LISTENING");
         process.client_addr = listening
@@ -450,6 +411,7 @@ impl NodeProcess {
             .expect("a LISTENING line names an address")
             .parse()
             .expect("the announced client address parses");
+        process.client.set_addr(process.client_addr);
         process
     }
 
@@ -482,39 +444,30 @@ impl NodeProcess {
     /// panicking is what lets a caller escalate deliberately.
     pub fn wait_started(&mut self) -> Started {
         let node_id = self.node_id;
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        loop {
-            self.drain_lifecycle();
-            if let Some(line) = self
-                .seen
-                .iter()
-                .find(|line| line.starts_with("NEEDS_DECISION"))
-            {
-                let next_mode = next_recovery_mode(line);
-                return Started::NeedsDecision {
-                    line: line.clone(),
-                    next_mode,
-                };
-            }
-            if let Some(line) = self.seen.iter().find(|line| line.starts_with("READY")) {
-                return Started::Ready {
-                    applied: LogIndex(
-                        line.split_whitespace()
-                            .nth(3)
-                            .expect("a READY line names an applied index")
-                            .parse()
-                            .expect("the announced applied index parses"),
-                    ),
-                };
-            }
-            assert!(
-                Instant::now() < deadline,
-                "replica {} neither served nor refused; it announced {:?}",
-                node_id.0,
-                self.seen
-            );
-            thread::sleep(POLL_INTERVAL);
-        }
+        self.child
+            .wait_for_stdout("replica to serve or refuse", PROCESS_WAIT, |lines| {
+                if let Some(line) = lines.iter().find(|line| line.starts_with("NEEDS_DECISION")) {
+                    return Some(Started::NeedsDecision {
+                        line: line.clone(),
+                        next_mode: next_recovery_mode(line),
+                    });
+                }
+                lines
+                    .iter()
+                    .find(|line| line.starts_with("READY"))
+                    .map(|line| Started::Ready {
+                        applied: LogIndex(
+                            line.split_whitespace()
+                                .nth(3)
+                                .expect("a READY line names an applied index")
+                                .parse()
+                                .expect("the announced applied index parses"),
+                        ),
+                    })
+            })
+            .unwrap_or_else(|error| {
+                panic!("replica {} neither served nor refused: {error}", node_id.0)
+            })
     }
 
     /// Waits for this replica to announce complete recovery.
@@ -541,29 +494,14 @@ impl NodeProcess {
     /// Non-blocking, so a test can assert that a replica is *not* ready without
     /// waiting for it to become so.
     pub fn has_announced(&mut self, prefix: &str) -> bool {
-        self.drain_lifecycle();
-        self.seen.iter().any(|line| line.starts_with(prefix))
+        self.child.has_stdout_prefix(prefix)
     }
 
     /// Waits for a lifecycle line beginning with `prefix`.
     pub fn wait_for_line(&mut self, prefix: &str) -> String {
-        let node_id = self.node_id;
-        // Borrowck: the predicate needs `self` mutably, so the wait is written
-        // inline rather than through `wait_until`.
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        loop {
-            self.drain_lifecycle();
-            if let Some(line) = self.seen.iter().find(|line| line.starts_with(prefix)) {
-                return line.clone();
-            }
-            assert!(
-                Instant::now() < deadline,
-                "replica {} never announced {prefix}; it announced {:?}",
-                node_id.0,
-                self.seen
-            );
-            thread::sleep(POLL_INTERVAL);
-        }
+        self.child
+            .wait_for_stdout_prefix(prefix, PROCESS_WAIT)
+            .unwrap_or_else(|error| panic!("{error}"))
     }
 
     /// Sends one protocol line and returns the raw response.
@@ -572,29 +510,7 @@ impl NodeProcess {
     /// replica was killed mid-request observes exactly this, and turning it
     /// into a panic would delete the unknown outcome the suite is here to test.
     pub fn ask(&mut self, line: &str) -> Result<String, String> {
-        for attempt in 0..2 {
-            if self.client.is_none() {
-                match LockConn::connect(self.client_addr) {
-                    Ok(client) => self.client = Some(client),
-                    Err(error) => return Err(format!("connect failed: {error}")),
-                }
-            }
-            let client = self.client.as_mut().expect("a client was just connected");
-            match client.request(line) {
-                Ok(response) => return Ok(response),
-                Err(error) => {
-                    self.client = None;
-                    // One reconnect, and only on the first attempt: a cached
-                    // connection may have been closed by an earlier kill, which
-                    // says nothing about this request. A second failure is the
-                    // replica being gone.
-                    if attempt == 1 {
-                        return Err(format!("request failed: {error}"));
-                    }
-                }
-            }
-        }
-        Err(String::from("request failed after one reconnect"))
+        self.client.request(line).map_err(|error| error.to_string())
     }
 
     /// Waits for this replica to exit on its own, and reports how it went.
@@ -605,25 +521,13 @@ impl NodeProcess {
     /// the process wrote is collected, because the reader thread runs to EOF and
     /// the channel closes when the child's stdout does.
     pub fn wait_refused(&mut self) -> Refusal {
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        let status = loop {
-            if let Some(status) = self.child.try_wait().expect("the child is waitable") {
-                break status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "replica {} neither served nor exited; it announced {:?}",
-                self.node_id.0,
-                self.seen
-            );
-            thread::sleep(POLL_INTERVAL);
-        };
-        while let Ok(line) = self.lifecycle.recv_timeout(WAIT_TIMEOUT) {
-            self.seen.push(line);
-        }
+        let status = self
+            .child
+            .wait_for_exit(PROCESS_WAIT)
+            .unwrap_or_else(|error| panic!("{error}"));
         Refusal {
             status,
-            stdout: self.seen.join("\n"),
+            stdout: self.child.stdout_lines().join("\n"),
         }
     }
 
@@ -633,30 +537,17 @@ impl NodeProcess {
     /// is the point: every recovery this suite asserts is recovery from a
     /// process that was given no chance to tidy up.
     pub fn kill(&mut self) {
-        self.client = None;
-        drop(self.child.kill());
-        drop(self.child.wait());
+        self.client.disconnect();
+        drop(self.child.kill_and_reap());
     }
 
     /// Asks this replica to stop cleanly and waits for it to exit.
     pub fn shutdown(&mut self) {
         drop(self.ask("SHUTDOWN"));
-        self.client = None;
-        drop(self.child.wait());
-    }
-
-    fn drain_lifecycle(&mut self) {
-        while let Ok(line) = self.lifecycle.try_recv() {
-            self.seen.push(line);
-        }
-    }
-}
-
-impl Drop for NodeProcess {
-    /// A failing test must not leave a replica holding a port and a directory.
-    fn drop(&mut self) {
-        drop(self.child.kill());
-        drop(self.child.wait());
+        self.client.disconnect();
+        self.child
+            .wait_for_exit(PROCESS_WAIT)
+            .unwrap_or_else(|error| panic!("{error}"));
     }
 }
 
@@ -671,18 +562,6 @@ fn next_recovery_mode(line: &str) -> String {
             || panic!("a refusal must name the mode that follows it: {line}"),
             |mode| (*mode).to_string(),
         )
-}
-
-fn spawn_lifecycle_reader(stdout: ChildStdout) -> Receiver<String> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    rx
 }
 
 /// A continuous stream of immediately-answered client requests against one
@@ -724,7 +603,7 @@ impl StatusFlood {
                 // the flood is load, and a load generator that panics when its
                 // target legitimately exits would turn every success into a
                 // failure.
-                let Ok(mut conn) = LockConn::connect(addr) else {
+                let Ok(mut conn) = LineConnection::connect(addr, CONNECTION_TIMEOUTS) else {
                     return;
                 };
                 while !stop.load(Ordering::Relaxed) {
@@ -793,7 +672,7 @@ impl Drop for StatusFlood {
 /// what makes that expressible.
 #[derive(Debug)]
 pub struct QueuedRequest {
-    conn: LockConn,
+    conn: LineConnection,
 }
 
 impl QueuedRequest {
@@ -803,24 +682,21 @@ impl QueuedRequest {
     /// [`QueuedRequest::send`] is one write on an established socket.
     pub fn connect(addr: SocketAddr) -> Self {
         Self {
-            conn: LockConn::connect(addr).expect("the replica accepts a client connection"),
+            conn: LineConnection::connect(addr, CONNECTION_TIMEOUTS)
+                .expect("the replica accepts a client connection"),
         }
     }
 
     /// Writes one request line and returns without reading the answer.
     pub fn send(&mut self, line: &str) {
-        writeln!(self.conn.writer, "{line}").expect("the request is written");
-        self.conn.writer.flush().expect("the request is flushed");
+        self.conn
+            .send_line(line)
+            .expect("the request is written and flushed");
     }
 
     /// Reads the answer to whatever was sent.
     pub fn recv(&mut self) -> Result<String, String> {
-        let mut response = String::new();
-        match self.conn.reader.read_line(&mut response) {
-            Ok(0) => Err(String::from("the replica closed the connection")),
-            Ok(_) => Ok(response.trim_end().to_string()),
-            Err(error) => Err(error.to_string()),
-        }
+        self.conn.receive_line().map_err(|error| error.to_string())
     }
 }
 
@@ -966,20 +842,22 @@ impl ProcessCluster {
     /// contract obligation and hiding it here would delete the case the suite
     /// exists to test.
     pub fn submit_to_leader(&mut self, command: Command) -> SubmitOutcome {
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        loop {
+        let mut last_outcome = None;
+        match PROCESS_WAIT.until("a replica to accept the command", || {
             let leader = self.wait_for_leader();
             let outcome = self.submit(leader, command);
-            match &outcome {
-                SubmitOutcome::NotCommitted { .. } | SubmitOutcome::NotReady { .. } => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "no replica accepted the command within {WAIT_TIMEOUT:?}: {outcome:?}"
-                    );
-                    thread::sleep(POLL_INTERVAL);
-                }
-                _ => return outcome,
+            if matches!(
+                outcome,
+                SubmitOutcome::NotCommitted { .. } | SubmitOutcome::NotReady { .. }
+            ) {
+                last_outcome = Some(outcome);
+                None
+            } else {
+                Some(outcome)
             }
+        }) {
+            Ok(outcome) => outcome,
+            Err(error) => panic!("{error}: last outcome {last_outcome:?}"),
         }
     }
 
@@ -990,18 +868,19 @@ impl ProcessCluster {
     /// so retrying it is a client decision rather than a weakening of the
     /// check: an attempt that answered nothing constrains no ordering.
     pub fn get_lock(&mut self, resource: ResourceName) -> LockView {
-        let deadline = Instant::now() + WAIT_TIMEOUT;
-        loop {
+        let mut last_outcome = None;
+        match PROCESS_WAIT.until("a replica to answer the query", || {
             let leader = self.wait_for_leader();
             let outcome = self.query(leader, resource);
             if let QueryOutcome::Ready(view) = outcome {
-                return view;
+                Some(view)
+            } else {
+                last_outcome = Some(outcome);
+                None
             }
-            assert!(
-                Instant::now() < deadline,
-                "no replica answered the query within {WAIT_TIMEOUT:?}: {outcome:?}"
-            );
-            thread::sleep(POLL_INTERVAL);
+        }) {
+            Ok(view) => view,
+            Err(error) => panic!("{error}: last outcome {last_outcome:?}"),
         }
     }
 
@@ -1176,7 +1055,8 @@ impl ProcessCluster {
         let line = render_command(command);
         let addr = self.node_mut(node_id).client_addr();
         let handle = thread::spawn(move || {
-            let mut client = LockConn::connect(addr).map_err(|error| error.to_string())?;
+            let mut client = LineConnection::connect(addr, CONNECTION_TIMEOUTS)
+                .map_err(|error| error.to_string())?;
             client.request(&line).map_err(|error| error.to_string())
         });
         PendingSubmit {

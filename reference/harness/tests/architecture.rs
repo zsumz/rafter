@@ -8,6 +8,15 @@ const FORBIDDEN_TERMS: &[&str] = &[
     "ledger", "account", "balance", "lock", "fencing", "token", "counter", "shard", "session",
     "dedup",
 ];
+const CONSUMER_PROTOCOL_STRINGS: &[&str] = &[
+    "STATUS",
+    "SHUTDOWN",
+    "READY",
+    "LISTENING",
+    "NEEDS_REPAIR",
+    "NEEDS_DECISION",
+    "--recover",
+];
 
 #[test]
 fn production_sources_contain_no_product_vocabulary() {
@@ -29,6 +38,27 @@ fn production_sources_contain_no_product_vocabulary() {
             assert!(
                 !inspected.contains(term),
                 "{} contains forbidden product term {term:?}",
+                relative.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn production_sources_contain_no_consumer_protocol_strings() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_files(&source_root, &mut files);
+
+    for path in files {
+        let relative = path
+            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            .expect("source paths stay below the manifest directory");
+        let text = fs::read_to_string(&path).expect("production source is UTF-8");
+        for protocol_string in CONSUMER_PROTOCOL_STRINGS {
+            assert!(
+                !text.contains(protocol_string),
+                "{} contains consumer protocol string {protocol_string:?}",
                 relative.display()
             );
         }
