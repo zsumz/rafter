@@ -10,11 +10,16 @@ use crate::NodeId;
 /// over these structural errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NodeConfigError {
+    /// Static configuration contains no voter.
     EmptyVoters,
+    /// The local node was also listed as a peer.
     SelfPeer {
+        /// Local node identifier repeated in the peer list.
         id: NodeId,
     },
+    /// One peer identifier appears more than once.
     DuplicatePeer {
+        /// Repeated peer identifier.
         peer: NodeId,
     },
     /// A zero election timeout can never fire; it was previously accepted

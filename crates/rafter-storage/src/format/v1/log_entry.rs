@@ -131,10 +131,16 @@ impl From<BorrowedPersistedRaftLogEntry<'_>> for PersistedRaftLogEntry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EncodeRaftLogEntryError {
     /// Application payload length does not fit in the u32 length prefix.
-    PayloadTooLarge { len: usize },
+    PayloadTooLarge {
+        /// Encoded payload length in bytes.
+        len: usize,
+    },
     /// Stable or joint membership contains more node ids than the format can
     /// represent.
-    TooManyMembers { len: usize },
+    TooManyMembers {
+        /// Number of node identifiers in the membership.
+        len: usize,
+    },
     /// The entry sits at `u64::MAX`, the one log index with no successor.
     ///
     /// Encoding is refused so the format cannot durably record an entry that
@@ -151,7 +157,12 @@ pub enum EncodeRaftLogEntryError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DecodeRaftLogEntryError {
     /// The envelope ended before the requested field could be read.
-    UnexpectedEof { needed: usize, remaining: usize },
+    UnexpectedEof {
+        /// Bytes required by the field.
+        needed: usize,
+        /// Bytes remaining in the envelope.
+        remaining: usize,
+    },
     /// The envelope magic did not match [`RAFT_LOG_ENTRY_MAGIC`].
     InvalidMagic([u8; 4]),
     /// The version byte is not supported by this decoder.
@@ -167,12 +178,20 @@ pub enum DecodeRaftLogEntryError {
     InvalidMembership(MembershipValidationError),
     /// Member ids were valid but not stored in canonical ascending order.
     NonCanonicalMembershipOrder {
+        /// Membership set being decoded.
         member_kind: &'static str,
+        /// Prior node identifier in encoded order.
         previous: NodeId,
+        /// Node identifier that broke ascending order.
         actual: NodeId,
     },
     /// The stored checksum did not match the envelope bytes.
-    ChecksumMismatch { expected: u32, actual: u32 },
+    ChecksumMismatch {
+        /// Checksum stored in the envelope.
+        expected: u32,
+        /// Checksum computed from the envelope bytes.
+        actual: u32,
+    },
     /// Valid entry bytes were followed by unused trailing bytes.
     TrailingBytes(usize),
 }

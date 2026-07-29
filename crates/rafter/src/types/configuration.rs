@@ -14,7 +14,9 @@ pub struct ConfigurationId(pub u64);
 /// phases.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ConfigurationPhase {
+    /// One voter set determines quorum.
     Stable,
+    /// Both old and new voter sets must reach quorum.
     Joint,
 }
 
@@ -24,12 +26,18 @@ pub enum ConfigurationPhase {
 /// joint.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum ConfigurationEntry {
+    /// Enter or replace a single stable membership.
     Stable {
+        /// Monotonic identity of this configuration.
         config_id: ConfigurationId,
+        /// Stable voter and learner set.
         membership: MembershipSet,
     },
+    /// Enter joint consensus between old and new memberships.
     Joint {
+        /// Monotonic identity of this configuration.
         config_id: ConfigurationId,
+        /// Old and new memberships participating in joint quorum.
         membership: JointMembership,
     },
 }
@@ -37,14 +45,18 @@ pub enum ConfigurationEntry {
 /// Committed configuration identity and the log index that committed it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct CommittedConfiguration {
+    /// Log position of the committed configuration entry.
     pub index: LogIndex,
+    /// Monotonic identity carried by that entry.
     pub config_id: ConfigurationId,
 }
 
 /// Replication match-index barrier required before promoting one learner.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PromotionBarrier {
+    /// Learner that may be promoted after catching up.
     pub learner_id: NodeId,
+    /// Minimum replicated match index required for promotion.
     pub required_match_index: LogIndex,
 }
 
@@ -54,8 +66,11 @@ pub struct PromotionBarrier {
 /// configuration changes, or leadership no-ops.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum LogEntryKind {
+    /// Opaque replicated application command bytes.
     Application(super::SharedPayload),
+    /// Replicated membership transition.
     Configuration(ConfigurationEntry),
+    /// Leadership no-op used to establish the current term.
     Noop,
 }
 

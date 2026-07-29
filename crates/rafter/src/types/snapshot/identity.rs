@@ -68,15 +68,23 @@ impl fmt::Display for ApplicationSnapshotKind {
 /// length, emptiness, and character-set checks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SnapshotIdError {
+    /// A required identity component was empty.
     Empty {
+        /// Invalid identity field.
         field: &'static str,
     },
+    /// An identity component exceeded the maximum byte length.
     TooLong {
+        /// Invalid identity field.
         field: &'static str,
+        /// Encoded field length in bytes.
         len: usize,
     },
+    /// An identity component contained a character outside its safe alphabet.
     InvalidCharacter {
+        /// Invalid identity field.
         field: &'static str,
+        /// Rejected character.
         character: char,
     },
 }

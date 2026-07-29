@@ -41,15 +41,24 @@ pub struct FileRaftNodeStores {
 /// directory operation failed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OpenFileRaftNodeStoresError {
+    /// Another cooperating process already owns the replica directory.
     AlreadyOpen {
+        /// Replica directory whose ownership lock was already held.
         directory: PathBuf,
     },
+    /// Opening or recovering the hard-state store failed.
     HardState(OpenRaftHardStateStoreError),
+    /// Opening, replaying, or repairing the log store failed.
     Log(OpenRaftLogSegmentError),
+    /// Opening or recovering the snapshot store failed.
     Snapshot(OpenRaftSnapshotStoreError),
+    /// A replica-directory operation failed.
     Io {
+        /// Stable name of the failed filesystem operation.
         operation: &'static str,
+        /// Path on which the operation failed.
         path: PathBuf,
+        /// Preserved I/O failure.
         source: StorageIoError,
     },
 }

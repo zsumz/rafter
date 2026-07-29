@@ -13,12 +13,18 @@ use crate::{
 /// protocol, clock, client, and configuration events.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Input {
+    /// Advances the node's logical clock by one tick.
     Tick,
+    /// Delivers one peer protocol message.
     Message {
+        /// Authenticated sending node.
         from: NodeId,
+        /// Protocol frame to process.
         message: Message,
     },
+    /// Proposes opaque application bytes without local correlation metadata.
     ClientProposal {
+        /// Opaque application command.
         payload: Vec<u8>,
     },
     /// Proposes an application payload while attaching local-only volatile
@@ -27,7 +33,9 @@ pub enum Input {
     /// The proposal ID must not affect Raft protocol behavior and is not
     /// replicated or persisted.
     TrackedClientProposal {
+        /// Local-only correlation identity.
         proposal_id: LocalProposalId,
+        /// Opaque application command.
         payload: Vec<u8>,
     },
     /// Adds a non-voting replica to the stable membership.
@@ -48,6 +56,7 @@ pub enum Input {
     /// be: the managed service driver refuses a re-added ID and reports it,
     /// because the transport fence a removal installed is permanent.
     AddLearner {
+        /// Fresh replica identity to add as a learner.
         learner_id: NodeId,
     },
     /// Promotes an existing learner through a derived joint configuration.
@@ -55,13 +64,16 @@ pub enum Input {
     /// Admits no new identity: `learner_id` is already a member, so the
     /// single-use rule on [`Input::AddLearner`] was answered when it joined.
     PromoteLearner {
+        /// Existing learner to promote.
         learner_id: NodeId,
+        /// Replication evidence proving the learner caught up.
         promotion_barrier: PromotionBarrier,
     },
     /// Removes a voter through a derived joint configuration.
     ///
     /// A committed removal retires `voter_id` permanently; see [`NodeId`].
     RemoveVoter {
+        /// Existing voter to remove.
         voter_id: NodeId,
     },
     /// Enters joint consensus with the current stable membership as the old
@@ -73,7 +85,9 @@ pub enum Input {
     /// This path checks even less than that one — a target set is taken as
     /// given — so the obligation is entirely the caller's.
     EnterJoint {
+        /// Desired new stable membership.
         target: MembershipSet,
+        /// Catch-up evidence for every learner becoming a voter.
         promotion_barriers: Vec<PromotionBarrier>,
     },
     /// Leaves the current joint configuration by committing its new side as
@@ -89,7 +103,9 @@ pub enum Input {
     /// membership does not name is a new member, and it must never be one this
     /// group has already retired.
     ChangeMembership {
+        /// Desired final stable membership.
         target: MembershipSet,
+        /// Catch-up evidence for every learner becoming a voter.
         promotion_barriers: Vec<PromotionBarrier>,
     },
     /// Raw configuration escape hatch for tests, repair tools, and protocol
@@ -101,11 +117,14 @@ pub enum Input {
     /// [`Input::ChangeMembership`].
     #[doc(hidden)]
     DangerousRawConfigurationProposal {
+        /// Configuration entry to append without transition validation.
         configuration: ConfigurationEntry,
+        /// Catch-up evidence for promoted learners.
         promotion_barriers: Vec<PromotionBarrier>,
     },
     /// Asks a leader to hand leadership to `target` (thesis 3.10).
     TransferLeadership {
+        /// Voter requested as the next leader.
         target: NodeId,
     },
     /// Requests a linearizable read barrier (thesis 6.4). A granted barrier
@@ -114,6 +133,7 @@ pub enum Input {
     /// request was made. The kernel guarantees the index; the caller waits
     /// for its own apply progress to reach it.
     ReadIndex {
+        /// Local-only correlation identity for the barrier.
         read_id: ReadId,
     },
 }

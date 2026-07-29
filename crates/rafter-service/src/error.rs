@@ -59,15 +59,23 @@ pub use vocabulary::{
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum WriteError {
+    /// The local replica is not the leader and did not append the command.
     NotLeader {
+        /// Current leader, when known.
         leader_hint: Option<NodeId>,
+        /// Term in which the replica rejected the write.
         term: Term,
     },
+    /// The Raft runtime rejected the proposal before appending it.
     Rejected {
+        /// Protocol reason the proposal could not start.
         reason: ProposalRejection,
     },
+    /// The encoded command exceeds the configured payload limit.
     PayloadTooLarge {
+        /// Maximum accepted encoded payload size in bytes.
         max: usize,
+        /// Actual encoded payload size in bytes.
         actual: usize,
     },
     /// The operation may or may not have committed and applied.
@@ -75,8 +83,11 @@ pub enum WriteError {
     /// Retry only with application-level idempotency if duplicate effects
     /// matter.
     UnknownOutcome {
+        /// Local proposal identifier whose outcome was lost.
         local_proposal_id: LocalProposalId,
+        /// Application request identity, when the caller supplied one.
         client_request_id: Option<ClientRequestId>,
+        /// Boundary at which the driver lost certainty.
         reason: UnknownOutcomeReason,
     },
     /// The request named a group this driver does not own.
@@ -90,18 +101,25 @@ pub enum WriteError {
     /// load-bearing: encoding a command, reading an applied index, and applying
     /// a batch fail for unrelated reasons and at unrelated moments.
     StateMachine {
+        /// State-machine callback that failed.
         operation: StateMachineOperation,
+        /// Strongest fate the driver can prove for the command.
         fate: WriteFate,
+        /// Preserved typed application failure.
         cause: ErrorCause,
     },
     /// The Raft runtime failed to persist or query local durable state.
     Storage {
+        /// Strongest fate the driver can prove for the command.
         fate: WriteFate,
+        /// Preserved typed storage failure.
         cause: ErrorCause,
     },
     /// The driver could not route or deliver the work this write required.
     Transport {
+        /// Strongest fate the driver can prove for the command.
         fate: WriteFate,
+        /// Preserved typed transport failure.
         cause: ErrorCause,
     },
     /// The driver refused the write on its own standing rather than on any
@@ -112,8 +130,10 @@ pub enum WriteError {
     /// caller's request identity is still unused. `reason` is a typed category,
     /// not a rendered string; see [`DriverUnavailableReason`].
     Unavailable {
+        /// Driver condition that refused the write.
         reason: DriverUnavailableReason,
     },
+    /// Service shutdown began before the command was appended.
     ShuttingDown,
     /// The group is permanently poisoned.
     ///
@@ -121,17 +141,23 @@ pub enum WriteError {
     /// a typed failure. It is `None` for a poison with no underlying error,
     /// such as a malformed snapshot output.
     Poisoned {
+        /// Strongest fate the driver can prove for the command.
         fate: WriteFate,
+        /// Stable explanation retained when the group poisoned.
         reason: String,
+        /// Preserved typed cause, when poisoning originated in a callback.
         cause: Option<ErrorCause>,
     },
+    /// No proposal identifier exists above the driver's durable watermark.
     LocalProposalIdExhausted,
     /// The driver violated one of its own documented invariants.
     ///
     /// This is the one variant whose message is authored rather than rendered:
     /// a driver reporting its own bug has no underlying error to preserve.
     ManagedInvariantViolation {
+        /// Strongest fate the driver can prove for the command.
         fate: WriteFate,
+        /// Stable diagnostic for the violated invariant.
         message: String,
     },
 }
@@ -292,28 +318,44 @@ impl Error for WriteError {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ReadError {
+    /// The local replica is not the leader required for this read.
     NotLeader {
+        /// Current leader, when known.
         leader_hint: Option<NodeId>,
+        /// Term in which the replica rejected the read.
         term: Term,
     },
+    /// The Raft runtime rejected a linearizable read barrier.
     Rejected {
+        /// Reserved read identifier, when reservation completed.
         read_id: Option<ReadId>,
+        /// Protocol reason the barrier could not start.
         reason: ReadIndexRejection,
+        /// Current leader, when known.
         leader_hint: Option<NodeId>,
     },
+    /// An active linearizable read barrier was canceled.
     Canceled {
+        /// Identifier of the canceled read.
         read_id: ReadId,
+        /// Protocol reason the barrier was canceled.
         reason: ReadIndexCancelReason,
+        /// Current leader, when known.
         leader_hint: Option<NodeId>,
     },
+    /// The requested consistency mode is not supported by this path.
     UnsupportedConsistency {
+        /// Rejected consistency mode.
         consistency: ReadConsistency,
     },
+    /// The local state machine cannot prove the requested freshness.
     FreshnessUnavailable {
         /// The local read ID for an abandoned linearizable read. Local
         /// freshness gaps do not consume a read ID and report `None`.
         read_id: Option<ReadId>,
+        /// Minimum applied index required by the completed barrier.
         required_applied_index: LogIndex,
+        /// Applied index currently reported by the local state machine.
         local_applied_index: LogIndex,
     },
     /// The driver stopped waiting for this barrier and released it.
@@ -331,22 +373,28 @@ pub enum ReadError {
     /// queried state, which is the correct result when freshness cannot be
     /// proved.
     Abandoned {
+        /// Identifier of the barrier the driver stopped awaiting.
         read_id: ReadId,
+        /// Boundary at which the driver abandoned the read.
         reason: ReadAbandonReason,
     },
     /// The request named a group this driver does not own.
     WrongGroup,
     /// The application state machine failed.
     StateMachine {
+        /// State-machine callback that failed.
         operation: StateMachineOperation,
+        /// Preserved typed application failure.
         cause: ErrorCause,
     },
     /// The Raft runtime failed to persist or query local durable state.
     Storage {
+        /// Preserved typed storage failure.
         cause: ErrorCause,
     },
     /// The driver could not route or deliver the work this read required.
     Transport {
+        /// Preserved typed transport failure.
         cause: ErrorCause,
     },
     /// The driver refused the read on its own standing rather than on any
@@ -358,17 +406,22 @@ pub enum ReadError {
     /// local read from a view with no bound on how stale it is, and that is the
     /// one refusal a client could not otherwise tell from a fresh answer.
     Unavailable {
+        /// Driver condition that refused the read.
         reason: DriverUnavailableReason,
     },
+    /// Service shutdown began before the read completed.
     ShuttingDown,
     /// The group is permanently poisoned.
     ///
     /// `cause` is the error that poisoned the group, when the poison came from
     /// a typed failure.
     Poisoned {
+        /// Stable explanation retained when the group poisoned.
         reason: String,
+        /// Preserved typed cause, when poisoning originated in a callback.
         cause: Option<ErrorCause>,
     },
+    /// No read identifier exists above the driver's durable watermark.
     ReadIdExhausted,
     /// The driver violated one of its own documented invariants.
     ///
@@ -377,6 +430,7 @@ pub enum ReadError {
     /// own bug has no underlying error to preserve. There is no fate here
     /// because a read takes no effect.
     ManagedInvariantViolation {
+        /// Stable diagnostic for the violated invariant.
         message: String,
     },
 }
@@ -515,20 +569,30 @@ impl Error for ReadError {
 pub enum TransferLeadershipError {
     /// Only a leader can hand leadership over, and this node is not one.
     NotLeader {
+        /// Current leader, when known.
         leader_hint: Option<NodeId>,
+        /// Term in which the replica rejected the transfer.
         term: Term,
     },
     /// The leader refused the transfer; `reason` names which precondition failed.
     Rejected {
+        /// Protocol reason the transfer could not start.
         reason: LeadershipTransferRejection,
+        /// Current leader, when known.
         leader_hint: Option<NodeId>,
     },
     /// The request named a group this driver does not own.
     WrongGroup,
     /// The Raft runtime failed to persist or query local durable state.
-    Storage { cause: ErrorCause },
+    Storage {
+        /// Preserved typed storage failure.
+        cause: ErrorCause,
+    },
     /// The driver could not route or deliver the work this transfer required.
-    Transport { cause: ErrorCause },
+    Transport {
+        /// Preserved typed transport failure.
+        cause: ErrorCause,
+    },
     /// The service is shutting down and started no transfer.
     ShuttingDown,
     /// The group is permanently poisoned.
@@ -536,7 +600,9 @@ pub enum TransferLeadershipError {
     /// `cause` is the error that poisoned the group, when the poison came from
     /// a typed failure.
     Poisoned {
+        /// Stable explanation retained when the group poisoned.
         reason: String,
+        /// Preserved typed cause, when poisoning originated in a callback.
         cause: Option<ErrorCause>,
     },
 }
@@ -617,6 +683,7 @@ impl Error for TransferLeadershipError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum MetricsError {
+    /// The request named a group this driver does not own.
     WrongGroup,
 }
 
@@ -641,7 +708,10 @@ pub enum ShutdownError {
     /// The request named a group this driver does not own.
     WrongGroup,
     /// The driver could not route or deliver the work shutdown required.
-    Transport { cause: ErrorCause },
+    Transport {
+        /// Preserved typed transport failure.
+        cause: ErrorCause,
+    },
     /// Shutdown had already completed.
     ///
     /// Reported rather than succeeding again so a supervisor can tell "I

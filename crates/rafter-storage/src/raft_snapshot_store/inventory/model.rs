@@ -113,13 +113,22 @@ pub enum SnapshotInventoryError {
     /// inventory can safely identify the selected snapshot.
     StoreRequiresReopen,
     /// The cached current manifest selects a file that is no longer present.
-    CurrentSnapshotMissing { path: PathBuf },
+    CurrentSnapshotMissing {
+        /// Expected path of the selected snapshot file.
+        path: PathBuf,
+    },
     /// The cached current manifest selects a non-regular directory entry.
-    CurrentSnapshotNotRegularFile { path: PathBuf },
+    CurrentSnapshotNotRegularFile {
+        /// Selected path whose directory entry is not a regular file.
+        path: PathBuf,
+    },
     /// A filesystem operation failed during inspection.
     Io {
+        /// Stable name of the failed filesystem operation.
         operation: &'static str,
+        /// Path on which the operation failed.
         path: PathBuf,
+        /// Preserved I/O failure.
         source: StorageIoError,
     },
 }
@@ -138,9 +147,13 @@ pub enum SnapshotPruneError {
     /// observability and idempotent retry; a directory sync may not have
     /// completed.
     Io {
+        /// Stable name of the failed filesystem operation.
         operation: &'static str,
+        /// Path on which the operation failed.
         path: PathBuf,
+        /// Preserved I/O failure.
         source: StorageIoError,
+        /// Removal prefix completed before the failure.
         removed: SnapshotPruneReport,
     },
 }

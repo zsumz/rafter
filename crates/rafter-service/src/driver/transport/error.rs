@@ -18,6 +18,7 @@ pub enum InboundEnvelopeError {
     /// The envelope failed inbound validation and was dropped. The group was
     /// not stepped and no state changed.
     Rejected {
+        /// Exact validation error returned by the authenticated envelope.
         source: AuthenticatedPeerEnvelopeError,
     },
     /// The validator authorized the sender and this driver's own membership
@@ -32,9 +33,15 @@ pub enum InboundEnvelopeError {
     /// does not yet reach the identity the cluster spent. An operator who cannot
     /// tell them apart cannot tell a hostile peer from a control plane that is
     /// behind.
-    NotInMembership { node_id: NodeId },
+    NotInMembership {
+        /// Authenticated sender absent from the driver's current membership.
+        node_id: NodeId,
+    },
     /// The group step failed after the envelope was accepted.
-    Driver { source: ManagedDriverError },
+    Driver {
+        /// Exact managed-driver failure raised while stepping the group.
+        source: ManagedDriverError,
+    },
 }
 
 impl fmt::Display for InboundEnvelopeError {

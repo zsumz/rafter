@@ -30,14 +30,23 @@ impl fmt::Display for SnapshotTransferId {
 /// follower's acknowledged offset.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SnapshotChunkSend {
+    /// Leader term.
     pub term: Term,
+    /// Node sending the snapshot.
     pub leader_id: NodeId,
+    /// Stable transfer identity.
     pub transfer_id: SnapshotTransferId,
+    /// Raft-visible snapshot descriptor.
     pub metadata: RaftSnapshotMetadata,
+    /// Complete payload length.
     pub total_payload_len: u64,
+    /// Checksum of the complete payload.
     pub application_payload_crc32: u32,
+    /// Starting payload offset.
     pub offset: u64,
+    /// Exact number of payload bytes to read and send.
     pub len: u32,
+    /// Whether this chunk reaches the payload end.
     pub done: bool,
 }
 
@@ -50,24 +59,38 @@ pub struct SnapshotChunkSend {
 /// alongside it refers to the staged content.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct StagedSnapshotChunk {
+    /// Leader that sent the chunk.
     pub leader_id: NodeId,
+    /// Stable transfer identity.
     pub transfer_id: SnapshotTransferId,
+    /// Raft-visible snapshot descriptor.
     pub metadata: RaftSnapshotMetadata,
+    /// Complete payload length.
     pub total_payload_len: u64,
+    /// Checksum of the complete payload.
     pub application_payload_crc32: u32,
+    /// Starting payload offset.
     pub offset: u64,
+    /// Opaque application payload bytes.
     pub bytes: Vec<u8>,
+    /// Whether this chunk completes the payload.
     pub done: bool,
 }
 
 /// Receiver-side progress for a partially staged snapshot transfer.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct PendingSnapshotTransfer {
+    /// Leader that owns the inbound transfer.
     pub leader_id: NodeId,
+    /// Stable transfer identity.
     pub transfer_id: SnapshotTransferId,
+    /// Raft-visible snapshot descriptor.
     pub metadata: RaftSnapshotMetadata,
+    /// Complete payload length.
     pub total_payload_len: u64,
+    /// Checksum of the complete payload.
     pub application_payload_crc32: u32,
+    /// Payload bytes durably staged so far.
     pub received_len: u64,
 }
 

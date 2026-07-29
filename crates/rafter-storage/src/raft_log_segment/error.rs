@@ -16,18 +16,24 @@ use crate::{
 /// reopened after an earlier ambiguous I/O failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RaftLogSegmentAppendError {
+    /// The appended entry does not immediately follow the retained suffix.
     NonContiguous {
+        /// Next log index required by the segment.
         expected: LogIndex,
+        /// Log index carried by the appended entry.
         actual: LogIndex,
     },
     /// An append naming `u64::MAX` was requested. `next_index()` is the stored
     /// index plus one, so storing that entry would leave the segment with no
     /// representable next index.
     IndexAtMaximum,
+    /// An entry could not be represented in the persisted envelope.
     Encode(EncodeRaftLogEntryError),
     /// The append may have changed the file. Reopen before another mutation.
     Io {
+        /// Stable name of the failed filesystem operation.
         operation: &'static str,
+        /// Preserved I/O failure.
         source: StorageIoError,
     },
     /// An earlier mutating I/O error made this file-backed handle unsafe to use.
@@ -73,19 +79,28 @@ impl Error for RaftLogSegmentAppendError {
 /// encoding, filesystem, and post-error handle-state failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RaftLogSegmentTruncateError {
+    /// The truncation point lies beyond the segment's next index.
     OutOfBounds {
+        /// First index after the retained suffix.
         next_index: LogIndex,
+        /// Requested truncation index.
         actual: LogIndex,
     },
+    /// The truncation point lies inside the already-compacted prefix.
     BeforeCompactedPrefix {
+        /// Greatest index already compacted.
         compacted_through: LogIndex,
+        /// Requested truncation index.
         actual: LogIndex,
     },
+    /// A retained entry could not be represented in the replacement segment.
     Encode(EncodeRaftLogEntryError),
     /// The replacement may have changed the stable path. Reopen before another
     /// mutation.
     Io {
+        /// Stable name of the failed filesystem operation.
         operation: &'static str,
+        /// Preserved I/O failure.
         source: StorageIoError,
     },
     /// An earlier mutating I/O error made this file-backed handle unsafe to use.
@@ -138,26 +153,35 @@ impl Error for RaftLogSegmentTruncateError {
 /// It is exhaustive so callers can handle those commit states explicitly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RaftLogSegmentCompactError {
+    /// The requested boundary is outside the compactable retained range.
     OutOfBounds {
+        /// Greatest index already compacted.
         compacted_through: LogIndex,
+        /// First index after the retained suffix.
         next_index: LogIndex,
     },
     /// Compaction through `u64::MAX` was requested. The retained suffix starts
     /// at `through_index.next()`, so this boundary leaves nowhere for it to
     /// start and would publish a marker that reopening must reject.
     ThroughIndexAtMaximum,
+    /// A retained entry could not be represented during physical rewrite.
     Encode(EncodeRaftLogEntryError),
     /// The compaction commit point was not confirmed. Reopen to determine which
     /// durable state won before another mutation.
     Io {
+        /// Stable name of the failed filesystem operation.
         operation: &'static str,
+        /// Preserved I/O failure.
         source: StorageIoError,
     },
     /// The compaction marker is durable, but rewriting the log to reclaim old
     /// frame bytes failed. Reopen reconstructs the committed compacted suffix.
     CompactedButReclamationFailed {
+        /// Boundary durably committed by the compaction marker.
         compacted_through: LogIndex,
+        /// Stable name of the failed reclamation operation.
         operation: &'static str,
+        /// Preserved I/O failure.
         source: StorageIoError,
     },
     /// An earlier mutating I/O error made this file-backed handle unsafe to use.
@@ -218,15 +242,24 @@ impl Error for RaftLogSegmentCompactError {
 /// corrupt compaction markers, and non-contiguous replay.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OpenRaftLogSegmentError {
+    /// A filesystem operation failed while opening the segment.
     Io {
+        /// Stable name of the failed filesystem operation.
         operation: &'static str,
+        /// Path on which the operation failed.
         path: PathBuf,
+        /// Preserved I/O failure.
         source: StorageIoError,
     },
+    /// A retained frame was truncated or corrupt.
     Replay(RaftLogReplayError),
+    /// The durable compaction marker was corrupt or unsupported.
     CompactionMarker(DecodeRaftLogCompactionMarkerError),
+    /// Replayed entries did not form a contiguous retained suffix.
     NonContiguous {
+        /// Log index required at this replay position.
         expected: LogIndex,
+        /// Log index decoded from the stored frame.
         actual: LogIndex,
     },
 }
@@ -275,17 +308,27 @@ impl Error for OpenRaftLogSegmentError {
 /// frame structure and corrupt entry payloads.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RaftLogReplayError {
+    /// The file ended part-way through a frame-length prefix.
     PartialFrameHeader {
+        /// Byte offset at which the frame began.
         offset: usize,
+        /// Bytes remaining after the partial header.
         remaining: usize,
     },
+    /// The file ended before the declared entry payload completed.
     PartialEntry {
+        /// Byte offset at which the frame began.
         offset: usize,
+        /// Entry bytes declared by the frame header.
         expected: usize,
+        /// Entry bytes remaining in the file.
         remaining: usize,
     },
+    /// A complete frame contained an invalid entry envelope.
     CorruptEntry {
+        /// Byte offset at which the frame began.
         offset: usize,
+        /// Exact entry decoding failure.
         source: DecodeRaftLogEntryError,
     },
 }

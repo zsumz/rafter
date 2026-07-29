@@ -62,19 +62,28 @@ impl ApplicationSnapshotMetadata {
 /// Raft-owned snapshot metadata that defines the compacted log boundary.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RaftSnapshotMetadata {
+    /// Logical Raft group whose state is captured.
     pub group_id: SnapshotGroupId,
+    /// Replica that authored the snapshot.
     pub writer_id: NodeId,
+    /// Greatest log index covered by the snapshot.
     pub last_included_index: LogIndex,
+    /// Term stored at `last_included_index`.
     pub last_included_term: Term,
+    /// Greatest term visible to the writer's durable hard state.
     pub hard_state_term: Term,
+    /// Application snapshot format identity and version.
     pub application: ApplicationSnapshotMetadata,
+    /// Committed membership state captured at the boundary, when known.
     pub committed_configuration: Option<SnapshotCommittedConfiguration>,
 }
 
 /// Committed configuration state captured in a snapshot.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SnapshotCommittedConfiguration {
+    /// Committed configuration identity, when the log supplied one.
     pub configuration: Option<CommittedConfiguration>,
+    /// Effective committed membership at the snapshot boundary.
     pub membership: MembershipConfig,
 }
 
@@ -190,8 +199,11 @@ impl RaftSnapshotMetadata {
 /// before making the snapshot visible.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct RaftSnapshot {
+    /// Raft-visible snapshot descriptor.
     pub metadata: RaftSnapshotMetadata,
+    /// Complete opaque application payload length.
     pub application_payload_len: u64,
+    /// CRC32 of the complete opaque application payload.
     pub application_payload_crc32: u32,
 }
 

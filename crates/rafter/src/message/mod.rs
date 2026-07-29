@@ -25,14 +25,24 @@ pub use snapshot::{InstallSnapshot, InstallSnapshotChunk, InstallSnapshotRespons
 /// over these request and response frames.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Message {
+    /// Heartbeat or log-replication request.
     AppendEntries(AppendEntries),
+    /// Follower acknowledgement or rejection of an append request.
     AppendEntriesResponse(AppendEntriesResponse),
+    /// Complete in-memory snapshot installation request.
     InstallSnapshot(InstallSnapshot),
+    /// Streaming snapshot installation chunk.
     InstallSnapshotChunk(InstallSnapshotChunk),
+    /// Follower snapshot-install progress response.
     InstallSnapshotResponse(InstallSnapshotResponse),
+    /// Non-binding poll before a real election.
     PreVote(PreVote),
+    /// Response to a pre-vote poll.
     PreVoteResponse(PreVoteResponse),
+    /// Leadership-transfer instruction to begin an election immediately.
     TimeoutNow(TimeoutNow),
+    /// Binding election vote request.
     RequestVote(RequestVote),
+    /// Response to a binding vote request.
     RequestVoteResponse(RequestVoteResponse),
 }

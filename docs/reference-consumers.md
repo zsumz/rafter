@@ -1,14 +1,16 @@
 # Reference Consumers
 
-Status: active API-discovery and acceptance program for Rafter 1.0. The ledger
-is complete through all eight of its slices, and the fenced lock is complete
-through deterministic, durable, package, and real-process composition. The
-sharded counter has completed deterministic adoption of the public managed
-scheduler: its dependency-free model, independent oracle, real Rafter adapter,
-thousands-of-groups profiles, and red-team audit now agree. Durable process
-composition and long profiles remain next. The ledger and lock share only a
-neutral bounded history-search engine. Eleven APIs have been promoted under the
-rule below and are recorded in
+Status: the initial three-consumer engineering program is complete. The ledger
+has deterministic acceptance, an independent linearizability checker, source
+and exact-package modes, durable integration-process composition, and
+exact-package process execution. The fenced lock adds independent
+linearizability and guarded-resource checkers, durable integration-process
+composition, a bounded authenticated production-composition fixture, and
+exact-package process execution. The sharded counter uses the public managed
+scheduler beside an independent model/oracle/fairness audit, deterministic
+64/1,024/4,096-group profiles, durable process composition, source and exact
+package/process modes, and nightly/weekly profiles. The consumers share only a
+neutral bounded history-search engine. Promoted APIs are recorded in
 [`docs/api-promotions.md`](./api-promotions.md).
 
 Sequencing: the reference consumers are built before the 1.0 public surface is
@@ -554,9 +556,10 @@ reach it; its process composition owns the equivalent decisions itself.
 
 | Lane | Required work | Executed by |
 | --- | --- | --- |
-| Every PR | Source and exact-package deterministic tests, published-shape Rust 1.88 build/test plus process smoke, the counter-fast profile, small history checks, and durable process inventory membership | `reference-source`, `reference-package`, `reference-package-msrv`, and `counter-reference-fast` in `ci.yml` |
-| Main/nightly | All reviewed process tests in source mode and against exact archives, plus the 1,024-group counter profile | `reference-process` and `reference-package-process` in `ci.yml`, and `reference-process-nightly` plus `counter-reference-nightly` in `nightly.yml` |
-| Weekly | The 4,096-group randomized counter profile with slow groups, snapshot/bulk pressure, poison, and lifecycle churn | `counter-reference-weekly` in `weekly.yml` |
+| Every PR | Source and exact-package deterministic tests, process-inventory membership, published-shape Rust 1.88 build/test plus process smoke, the counter-fast profile, and the deterministic invariant aggregate | `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` in `ci.yml` |
+| Main | All reviewed process tests in source mode and against exact archives | `reference-process` and `reference-package-process` in `ci.yml` |
+| Nightly | All reviewed source process tests, burn-in, real pinned Maelstrom, randomized/replayable invariant evidence, bounded multi-gigabyte snapshot streaming, and the 1,024-group counter profile | `reference-process`, `burn-in`, `invariants-maelstrom`, `invariants-nightly`, `multi-gigabyte-test`, and `counter-reference-nightly` in `nightly.yml` |
+| Weekly | Deep tests/model checking, storage and snapshot histories, three-trial pinned Maelstrom, and the 4,096-group randomized counter profile with slow groups, snapshot/bulk pressure, poison, and lifecycle churn | `invariants-weekly`, `invariants-maelstrom`, and `counter-reference-weekly` in `weekly.yml` |
 | Release | Exact package archives, full same-version process suite, published-shape MSRV, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md`'s pre-publish block runs the source, exact-package, process, and MSRV lanes by hand; there is no release workflow, no mixed-version coverage, and no pinned downstream canary |
 
 The third column is the whole point of the table. Until the two lanes were
@@ -703,10 +706,12 @@ exact retry, late-client/peer fencing, and lifecycle removal/reopen/tombstone.
 The 64/1,024/4,096-group profiles retain replay inputs and quantitative
 fairness, conservation, failure, and lifecycle artifacts.
 
-This completes integration composition, not production composition. The
-fixture's peer link is deliberately unauthenticated; authenticated transport,
-production configuration and secrets, operational metrics export, and
-deployment evidence remain the next slice.
+This completes the counter's initial integration-composition scope. Its peer
+link is deliberately unauthenticated and makes no production-transport claim.
+Authenticated counter transport, production configuration and secrets,
+operational metrics export, and deployment evidence are additive future work,
+not hidden requirements of this completed scope. The portfolio's bounded
+production-composability evidence is the fenced-lock fixture described above.
 
 ### Release integration
 

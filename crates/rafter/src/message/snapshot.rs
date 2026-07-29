@@ -19,23 +19,36 @@ use crate::{
 /// kernel state.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct InstallSnapshot {
+    /// Leader term.
     pub term: Term,
+    /// Node sending the snapshot.
     pub leader_id: NodeId,
+    /// Raft-visible snapshot descriptor.
     pub metadata: RaftSnapshotMetadata,
+    /// Complete opaque application payload.
     pub application_payload: Vec<u8>,
 }
 
 /// One chunk of an install-snapshot transfer.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct InstallSnapshotChunk {
+    /// Leader term.
     pub term: Term,
+    /// Node sending the chunk.
     pub leader_id: NodeId,
+    /// Stable identity of this transfer.
     pub transfer_id: SnapshotTransferId,
+    /// Raft-visible snapshot descriptor.
     pub metadata: RaftSnapshotMetadata,
+    /// Complete application payload length.
     pub total_payload_len: u64,
+    /// Checksum of the complete application payload.
     pub application_payload_crc32: u32,
+    /// Starting payload offset of this chunk.
     pub offset: u64,
+    /// Opaque application payload bytes at `offset`.
     pub chunk: Vec<u8>,
+    /// Whether this chunk reaches the declared payload end.
     pub done: bool,
 }
 
@@ -80,10 +93,16 @@ impl SnapshotChunkSend {
 /// Response to an install-snapshot message or chunk.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct InstallSnapshotResponse {
+    /// Current follower term.
     pub term: Term,
+    /// Node sending the response.
     pub follower_id: NodeId,
+    /// Whether the chunk or complete snapshot was accepted.
     pub success: bool,
+    /// Snapshot boundary named by the response.
     pub last_included_index: LogIndex,
+    /// Streaming transfer identity, or `None` for a whole snapshot.
     pub transfer_id: Option<SnapshotTransferId>,
+    /// Next payload offset the follower requires.
     pub next_offset: u64,
 }

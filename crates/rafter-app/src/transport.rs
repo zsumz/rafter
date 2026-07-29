@@ -16,9 +16,13 @@ use rafter::{Message, NodeId};
 /// message under its own routing and admission policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerEnvelope<G> {
+    /// Caller-defined Raft group identity.
     pub group_id: G,
+    /// Raft sender identity.
     pub from: NodeId,
+    /// Raft recipient identity.
     pub to: NodeId,
+    /// Protocol message to route without reinterpretation.
     pub message: Message,
 }
 
@@ -35,17 +39,24 @@ pub struct PeerEnvelope<G> {
 /// - the sender embedded in the Raft message matches `raft_from`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthenticatedPeerEnvelope<G, P> {
+    /// Caller-defined Raft group identity.
     pub group_id: G,
+    /// Principal established by the transport security boundary.
     pub authenticated_peer: P,
+    /// Raft sender claimed by the envelope.
     pub raft_from: NodeId,
+    /// Raft recipient claimed by the envelope.
     pub raft_to: NodeId,
+    /// Protocol message whose embedded sender must agree with the envelope.
     pub message: Message,
 }
 
 /// Policy used to validate authenticated transport envelopes.
 pub trait AuthenticatedPeerValidator<G, P> {
+    /// Returns whether this runtime currently hosts `group_id`.
     fn is_known_group(&self, group_id: &G) -> bool;
 
+    /// Maps an authenticated principal to its stable Raft identity.
     fn node_for_authenticated_peer(&self, group_id: &G, peer: &P) -> Option<NodeId>;
 
     /// Returns the principal this deployment issues to `node_id`, when it can
@@ -136,24 +147,39 @@ pub trait AuthenticatedPeerValidator<G, P> {
 /// transport helper.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthenticatedPeerEnvelopeError {
+    /// The runtime does not host the envelope's group.
     UnknownGroup,
+    /// The authenticated principal has no Raft identity in this group.
     AuthenticatedPeerNotMapped,
+    /// The principal's mapped identity differs from the envelope sender.
     AuthenticatedPeerMismatch {
+        /// Raft identity established by the authenticated principal map.
         expected: NodeId,
+        /// Raft identity claimed by the envelope.
         actual: NodeId,
     },
+    /// The envelope targets a different local node.
     WrongRecipient {
+        /// Local node identity.
         expected: NodeId,
+        /// Recipient claimed by the envelope.
         actual: NodeId,
     },
+    /// The sender is not in the group's current authorization policy.
     UnauthorizedPeer {
+        /// Refused sender identity.
         node_id: NodeId,
     },
+    /// A committed removal permanently retired the sender identity.
     RetiredPeer {
+        /// Refused retired identity.
         node_id: NodeId,
     },
+    /// The message's embedded sender differs from its authenticated envelope.
     SenderMismatch {
+        /// Sender identity established by the envelope.
         envelope_from: NodeId,
+        /// Sender identity encoded inside the Raft message.
         message_from: NodeId,
     },
 }

@@ -42,8 +42,11 @@ pub const DEFAULT_MAX_FRAME_LEN: usize = 1024 * 1024;
 /// Bounded reconnect policy for outbound TCP sends.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReconnectBackoff {
+    /// Total connection attempts, including the initial attempt.
     pub max_attempts: usize,
+    /// Delay before the first reconnect attempt.
     pub initial_delay: Duration,
+    /// Maximum delay between successive reconnect attempts.
     pub max_delay: Duration,
 }
 
@@ -72,8 +75,13 @@ impl ReconnectBackoff {
 /// Message decoded from an accepted TCP connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReceivedPeerMessage {
+    /// Claimed sender identity decoded from the peer message.
+    ///
+    /// This demo transport does not authenticate the claim.
     pub from: NodeId,
+    /// Decoded Raft peer message.
     pub message: Message,
+    /// Socket address of the accepted TCP connection.
     pub peer_addr: SocketAddr,
 }
 
@@ -81,8 +89,14 @@ pub struct ReceivedPeerMessage {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WriteFrameError {
+    /// The peer message could not be encoded.
     Encode(EncodePeerMessageError),
-    FrameTooLarge { len: usize },
+    /// The encoded frame cannot be represented by the four-byte prefix.
+    FrameTooLarge {
+        /// Encoded payload length in bytes.
+        len: usize,
+    },
+    /// Writing the length prefix or payload failed.
     Io(io::Error),
 }
 
@@ -90,8 +104,16 @@ pub enum WriteFrameError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ReadFrameError {
+    /// Reading the length prefix or payload failed.
     Io(io::Error),
-    FrameTooLarge { len: usize, max: usize },
+    /// The declared payload exceeds the caller's receive bound.
+    FrameTooLarge {
+        /// Declared payload length in bytes.
+        len: usize,
+        /// Configured maximum payload length in bytes.
+        max: usize,
+    },
+    /// The bounded payload could not be decoded as a peer message.
     Decode(DecodePeerMessageError),
 }
 
@@ -99,12 +121,24 @@ pub enum ReadFrameError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum TcpTransportError {
+    /// No destination address is configured for the named peer.
     UnknownPeer(NodeId),
+    /// Binding the local listener failed.
     Bind(io::Error),
+    /// Reading the bound listener's effective address failed.
     LocalAddr(io::Error),
-    Connect { peer: NodeId, source: io::Error },
+    /// Connecting to a configured peer failed after bounded retries.
+    Connect {
+        /// Destination node identity.
+        peer: NodeId,
+        /// Final connection error.
+        source: io::Error,
+    },
+    /// Encoding or writing an outbound frame failed.
     Write(WriteFrameError),
+    /// Reading or decoding an inbound frame failed.
     Read(ReadFrameError),
+    /// Accepting an inbound TCP connection failed.
     Accept(io::Error),
 }
 

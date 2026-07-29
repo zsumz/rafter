@@ -10,17 +10,25 @@ use super::super::{LogIndex, Term};
 /// these structural checks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SnapshotMetadataError {
+    /// Application snapshot version zero is reserved and invalid.
     ZeroApplicationSnapshotVersion,
+    /// A snapshot cannot represent the empty log prefix.
     ZeroLastIncludedIndex,
     /// A boundary at the maximum log index has no successor: nothing could
     /// ever be appended after it, and index arithmetic on it overflows.
     LastIncludedIndexAtMaximum,
+    /// A non-empty snapshot boundary carried term zero.
     ZeroLastIncludedTerm {
+        /// Boundary index whose term was zero.
         last_included_index: LogIndex,
     },
+    /// The snapshot boundary term exceeds the writer's visible hard-state term.
     SnapshotTermAheadOfHardState {
+        /// Snapshot boundary index.
         last_included_index: LogIndex,
+        /// Term stored at the snapshot boundary.
         last_included_term: Term,
+        /// Greatest term visible in durable hard state.
         hard_state_term: Term,
     },
 }

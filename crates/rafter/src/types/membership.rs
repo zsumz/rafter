@@ -9,7 +9,9 @@ use super::NodeId;
 /// This enum is exhaustive because membership is either stable or joint.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum MembershipConfig {
+    /// One stable membership set.
     Stable(MembershipSet),
+    /// Joint consensus over old and new stable memberships.
     Joint(JointMembership),
 }
 
@@ -33,10 +35,23 @@ pub struct JointMembership {
 /// structural errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MembershipValidationError {
+    /// A stable membership contains no voter.
     EmptyVoters,
-    DuplicateVoter { node_id: NodeId },
-    DuplicateLearner { node_id: NodeId },
-    LearnerVoterOverlap { node_id: NodeId },
+    /// A voter identifier appears more than once.
+    DuplicateVoter {
+        /// Repeated voter identifier.
+        node_id: NodeId,
+    },
+    /// A learner identifier appears more than once.
+    DuplicateLearner {
+        /// Repeated learner identifier.
+        node_id: NodeId,
+    },
+    /// One identifier appears as both voter and learner.
+    LearnerVoterOverlap {
+        /// Overlapping replica identifier.
+        node_id: NodeId,
+    },
 }
 
 impl MembershipConfig {

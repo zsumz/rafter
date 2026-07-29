@@ -261,18 +261,31 @@ impl WriteFate {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum WriteErrorKind {
+    /// The local replica was not leader.
     NotLeader,
+    /// The Raft runtime rejected the proposal.
     Rejected,
+    /// The encoded command exceeded the configured limit.
     PayloadTooLarge,
+    /// The driver cannot prove whether the command took effect.
     UnknownOutcome,
+    /// The request named another group.
     WrongGroup,
+    /// An application state-machine callback failed.
     StateMachine,
+    /// Durable storage failed.
     Storage,
+    /// Message transport failed.
     Transport,
+    /// The driver refused work because of its current service state.
     Unavailable,
+    /// Service shutdown is in progress.
     ShuttingDown,
+    /// The group is permanently poisoned.
     Poisoned,
+    /// The local proposal-identifier space is exhausted.
     LocalProposalIdExhausted,
+    /// The managed driver violated its own invariant.
     ManagedInvariantViolation,
 }
 
@@ -287,12 +300,19 @@ pub enum WriteErrorKind {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TransferLeadershipErrorKind {
+    /// The local replica was not leader.
     NotLeader,
+    /// The Raft runtime rejected the transfer.
     Rejected,
+    /// The request named another group.
     WrongGroup,
+    /// Durable storage failed.
     Storage,
+    /// Message transport failed.
     Transport,
+    /// Service shutdown is in progress.
     ShuttingDown,
+    /// The group is permanently poisoned.
     Poisoned,
 }
 
@@ -304,8 +324,11 @@ pub enum TransferLeadershipErrorKind {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ShutdownErrorKind {
+    /// The request named another group.
     WrongGroup,
+    /// Message transport failed.
     Transport,
+    /// Shutdown had already completed.
     AlreadyShutDown,
 }
 
@@ -316,19 +339,34 @@ pub enum ShutdownErrorKind {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ReadErrorKind {
+    /// The local replica was not leader.
     NotLeader,
+    /// The Raft runtime rejected the read barrier.
     Rejected,
+    /// An active read barrier was canceled.
     Canceled,
+    /// The requested consistency mode is unsupported.
     UnsupportedConsistency,
+    /// Local state could not satisfy the required freshness.
     FreshnessUnavailable,
+    /// The driver abandoned an active read barrier.
     Abandoned,
+    /// The request named another group.
     WrongGroup,
+    /// An application state-machine callback failed.
     StateMachine,
+    /// Durable storage failed.
     Storage,
+    /// Message transport failed.
     Transport,
+    /// The driver refused work because of its current service state.
     Unavailable,
+    /// Service shutdown is in progress.
     ShuttingDown,
+    /// The group is permanently poisoned.
     Poisoned,
+    /// The local read-identifier space is exhausted.
     ReadIdExhausted,
+    /// The managed driver violated its own invariant.
     ManagedInvariantViolation,
 }

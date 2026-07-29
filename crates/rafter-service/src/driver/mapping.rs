@@ -28,23 +28,37 @@ pub enum ManagedDriverError {
     ///
     /// The primary is the replica the in-memory driver proposes through, so a
     /// driver without one cannot serve a write at all.
-    MissingPrimary { node_id: NodeId },
+    MissingPrimary {
+        /// Node selected as primary.
+        node_id: NodeId,
+    },
     /// A frame was addressed to a node this driver does not own.
     ///
     /// The in-memory network routes by node ID, so this is a routing fault
     /// rather than a cluster-membership one.
-    MissingNode { node_id: NodeId },
+    MissingNode {
+        /// Destination absent from the driver's replica set.
+        node_id: NodeId,
+    },
     /// Two supplied groups claim the same node ID.
     ///
     /// Refused rather than deduplicated: the driver correlates outcomes by node,
     /// and two replicas answering to one ID make that correspondence undefined.
-    DuplicateNode { node_id: NodeId },
+    DuplicateNode {
+        /// Node identifier claimed by more than one supplied group.
+        node_id: NodeId,
+    },
     /// A group offered for adoption is poisoned, or still holds waiters a poison
     /// captured.
     ///
     /// A poisoned group emits no further events for those waiters, so adopting
     /// one would install clients that can never be resolved.
-    PoisonedGroup { node_id: NodeId, reason: String },
+    PoisonedGroup {
+        /// Node identifier of the poisoned group.
+        node_id: NodeId,
+        /// Stable poison explanation retained by the group.
+        reason: String,
+    },
     /// A group offered for adoption still tracks proposals or reads.
     ///
     /// A driver resolves only the waiters it created, so a waiter arriving with
@@ -52,8 +66,11 @@ pub enum ManagedDriverError {
     /// is the one exception, and only for proposals: a released group's writes
     /// were already answered, and its entries are durable.
     NonQuiescentGroup {
+        /// Node identifier of the non-quiescent group.
         node_id: NodeId,
+        /// Proposals still awaiting terminal outcomes.
         pending_proposals: usize,
+        /// Read identifiers still reserved by the group.
         reserved_reads: usize,
     },
     /// The adopted local proposal ID watermark cannot be advanced.
@@ -61,13 +78,17 @@ pub enum ManagedDriverError {
     /// Generated IDs must stay strictly above every ID the group has seen, and
     /// there is no ID above this one.
     LocalProposalIdExhausted {
+        /// Node identifier of the adopted group.
         node_id: NodeId,
+        /// Greatest proposal identifier already observed.
         last_seen_local_proposal_id: LocalProposalId,
     },
     /// The adopted read ID watermark cannot be advanced, for the reason
     /// [`ManagedDriverError::LocalProposalIdExhausted`] gives.
     ReadIdExhausted {
+        /// Node identifier of the adopted group.
         node_id: NodeId,
+        /// Greatest read identifier already observed.
         last_seen_read_id: ReadId,
     },
     /// A group offered to a driver does not belong to the group ID that driver
@@ -84,7 +105,10 @@ pub enum ManagedDriverError {
     ///
     /// A refusal rather than an unbounded wait, so a protocol that cannot
     /// advance surfaces as a typed error instead of a hang.
-    Stalled { max_steps: usize },
+    Stalled {
+        /// Maximum drive steps attempted without reaching a terminal outcome.
+        max_steps: usize,
+    },
     /// The driver has shut down, which is terminal.
     ///
     /// A supervisor that wants to serve again builds a driver; adopting a group
@@ -99,7 +123,9 @@ pub enum ManagedDriverError {
     GroupAlreadyAdopted,
     /// A [`crate::TransportDriverOptions`] field was outside its valid range.
     InvalidOptions {
+        /// Invalid option name.
         field: &'static str,
+        /// Stable explanation of the rejected value.
         reason: &'static str,
     },
     /// A group was offered for adoption under a node ID a committed removal has
@@ -116,7 +142,10 @@ pub enum ManagedDriverError {
     /// and the supervisor's next move is to allocate a *fresh* ID — greater than
     /// every ID this group has ever committed — and adopt under that. There is
     /// no retry that clears this: see [`rafter::NodeId`].
-    RetiredNodeId { node_id: NodeId },
+    RetiredNodeId {
+        /// Spent node identifier offered for adoption.
+        node_id: NodeId,
+    },
     /// A recovered peer-control-plane checkpoint was refused, and nothing about
     /// it was installed.
     ///
@@ -126,7 +155,10 @@ pub enum ManagedDriverError {
     /// can be wrong lowers a retirement record — a smaller mark, an extra live
     /// identity, a fence against an active member — so it is refused whole
     /// rather than absorbed in part. The driver's own state is untouched.
-    InvalidControlPlaneCheckpoint { reason: ControlPlaneCheckpointError },
+    InvalidControlPlaneCheckpoint {
+        /// Checkpoint invariant that was violated.
+        reason: ControlPlaneCheckpointError,
+    },
     /// This driver already carries an unresolved contradiction, which is
     /// terminal for the incarnation — including across a group release.
     ///
@@ -135,13 +167,19 @@ pub enum ManagedDriverError {
     /// belongs to the driver already in memory. A supervisor that wants to
     /// recover builds a new driver from deliberately repaired or reseeded
     /// state; it does not rearm this one by handing it another group.
-    ControlPlaneContradicted { reason: ControlPlaneCheckpointError },
+    ControlPlaneContradicted {
+        /// Contradiction already retained by the driver.
+        reason: ControlPlaneCheckpointError,
+    },
     /// A group operation failed while the driver was driving it.
     ///
     /// The category is the variant and the detail is the preserved cause; there
     /// is no free-text message field, so nothing downstream can be tempted to
     /// match on rendered text.
-    Group { cause: ErrorCause },
+    Group {
+        /// Preserved typed group failure.
+        cause: ErrorCause,
+    },
 }
 
 /// Why a peer-control-plane checkpoint could not be installed.
@@ -166,7 +204,12 @@ pub enum ControlPlaneCheckpointError {
     /// direction: an identity above the mark is unjudgeable by the spent test,
     /// so a lowered mark is how a corrupted record un-retires everything above
     /// it.
-    LiveMemberAboveMark { node_id: NodeId, mark: NodeId },
+    LiveMemberAboveMark {
+        /// Live member beyond the checkpoint's claimed identity range.
+        node_id: NodeId,
+        /// Greatest identity the checkpoint claims to cover.
+        mark: NodeId,
+    },
     /// The checkpoint carries retirement state and no current committed state.
     ///
     /// **The dangerous half of the coupling, and it is not subtle.** The spent
@@ -220,7 +263,10 @@ pub enum ControlPlaneCheckpointError {
     /// position where the other, with a mark too low to have any opinion about
     /// it, calls the membership something else. That is damaged, truncated, or
     /// foreign durable state.
-    ContradictoryCurrentState { through: LogIndex },
+    ContradictoryCurrentState {
+        /// Log position at which the observations disagree.
+        through: LogIndex,
+    },
     /// A committed transition declares a predecessor the driver's own register
     /// is not, at the position they both name.
     ///
@@ -250,7 +296,10 @@ pub enum ControlPlaneCheckpointError {
     /// the committed membership does not move, and may equally be configuration
     /// entries a compaction erased. Comparing across one would manufacture the
     /// contradiction rather than detect it.
-    ContradictoryTransitionPredecessor { through: LogIndex },
+    ContradictoryTransitionPredecessor {
+        /// Log position whose membership the transition contradicts.
+        through: LogIndex,
+    },
     /// A checkpoint observed the committed membership *before* the driver it was
     /// offered to did.
     ///
@@ -276,7 +325,12 @@ pub enum ControlPlaneCheckpointError {
     /// restores into empty held state and is the documented crash-recovery path.
     /// A supervisor holding another process's record builds a driver around it
     /// rather than joining it into one that has already observed something.
-    StaleCurrentState { held: LogIndex, incoming: LogIndex },
+    StaleCurrentState {
+        /// Position of the driver's current observation.
+        held: LogIndex,
+        /// Earlier position carried by the incoming checkpoint.
+        incoming: LogIndex,
+    },
     /// A record carrying a contradiction marker was offered to an adoption.
     ///
     /// **A marked record is evidence of an unresolved fork, and merging one is
@@ -297,7 +351,10 @@ pub enum ControlPlaneCheckpointError {
     /// There is no retry that clears this. The operator's move is to decide what
     /// this replica's control plane should be, with the deployment's own record
     /// of what was retired, and reseed it deliberately.
-    ContradictedRecordMerged { through: LogIndex },
+    ContradictedRecordMerged {
+        /// Position named by the incoming contradiction marker.
+        through: LogIndex,
+    },
     /// A checkpoint carries a contradiction marker and no current committed
     /// state.
     ///
@@ -317,7 +374,9 @@ pub enum ControlPlaneCheckpointError {
     /// beneath it. A record that says otherwise has had one of the two damaged,
     /// and the pair no longer describes any state a driver reached.
     ContradictionBeneathCurrentState {
+        /// Position named by the contradiction marker.
         contradicted_at: LogIndex,
+        /// Later position of the checkpoint's current state.
         through: LogIndex,
     },
 }

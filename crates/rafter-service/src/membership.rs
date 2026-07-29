@@ -20,7 +20,9 @@ pub struct MembershipController<G> {
 /// A planned membership change and its safe flow.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlannedMembershipChange<G> {
+    /// Change that was planned.
     pub change: MembershipChange,
+    /// Safe transition plan for applying the change.
     pub plan: MembershipPlan<G>,
 }
 

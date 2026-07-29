@@ -40,8 +40,11 @@ pub enum Output {
     /// API must wait for the later committed application output before
     /// reporting success.
     LocalProposalAppended {
+        /// Local-only proposal identity.
         proposal_id: LocalProposalId,
+        /// Assigned log index.
         index: LogIndex,
+        /// Term in which the entry was appended.
         term: Term,
     },
     /// Volatile local tracking for a proposal was cleared before the proposal
@@ -52,9 +55,13 @@ pub enum Output {
     /// protocol state. The proposal may still commit elsewhere; upper layers
     /// should treat this as an unknown-outcome boundary for local waiters.
     LocalProposalDropped {
+        /// Local-only proposal identity.
         proposal_id: LocalProposalId,
+        /// Log index formerly correlated with the proposal.
         index: LogIndex,
+        /// Term formerly correlated with the proposal.
         term: Term,
+        /// Boundary at which local tracking was lost.
         reason: LocalProposalDropReason,
     },
     /// The committed entry at `index` is ready for the state machine.
@@ -63,9 +70,13 @@ pub enum Output {
     /// volatile local tracking for a tracked proposal at the same index and
     /// term. The payload shares the log's allocation; holding it is cheap.
     Apply {
+        /// Committed log index.
         index: LogIndex,
+        /// Term stored with the committed entry.
         term: Term,
+        /// Opaque application command.
         payload: SharedPayload,
+        /// Local-only proposal correlation, when still tracked.
         local_proposal_id: Option<LocalProposalId>,
     },
     /// The configuration entry at `index` crossed the commit index.
@@ -125,7 +136,9 @@ pub enum Output {
     /// consumer does not. So a consumer may fold these in any order, from any
     /// starting state, any number of times.
     ConfigurationCommitted {
+        /// Log index of the committed configuration entry.
         index: LogIndex,
+        /// Term of the committed configuration entry.
         term: Term,
         /// The membership in effect immediately before `configuration`.
         ///
@@ -139,6 +152,7 @@ pub enum Output {
         /// to answer — "what do I subtract?" — and it would be absent precisely
         /// at a boundary, which is where a wrong answer costs a live replica.
         previous: MembershipConfig,
+        /// Configuration entry that crossed the commit index.
         configuration: ConfigurationEntry,
     },
     /// A snapshot at `snapshot.metadata.last_included_index` replaces the
@@ -147,40 +161,56 @@ pub enum Output {
     /// the [`Output::StageSnapshotChunk`] emitted in the same step (or, for
     /// an application-installed snapshot, already in the application's
     /// store). Promote the staged content before acting on this output.
-    ApplySnapshot { snapshot: RaftSnapshot },
+    ApplySnapshot {
+        /// Snapshot descriptor whose staged application payload must be installed.
+        snapshot: RaftSnapshot,
+    },
     /// Streams one snapshot chunk toward `to`. The transport resolves the
     /// directive against its [`SnapshotChunkSource`](crate::SnapshotChunkSource)
     /// via [`SnapshotChunkSend::resolve`] and sends the resulting
     /// [`InstallSnapshotChunk`](crate::InstallSnapshotChunk) message. An
     /// unresolvable directive is dropped like a lost message.
     SendSnapshotChunk {
+        /// Follower receiving the chunk.
         to: NodeId,
+        /// Payload-free chunk directive for the transport to resolve.
         chunk: SnapshotChunkSend,
     },
     /// A validated inbound snapshot chunk for the receiver's snapshot store.
     /// Stage it durably before releasing the acknowledgement emitted in the
     /// same step — the persist-before-output contract; a crash between the
     /// two must never leave the leader ahead of the staged prefix.
-    StageSnapshotChunk { chunk: StagedSnapshotChunk },
+    StageSnapshotChunk {
+        /// Validated chunk to persist in receiver staging.
+        chunk: StagedSnapshotChunk,
+    },
     /// A client proposal was rejected without being appended.
     RejectProposal {
+        /// Local-only proposal identity, when the input supplied one.
         proposal_id: Option<LocalProposalId>,
+        /// Protocol reason the proposal was not appended.
         reason: ProposalRejection,
     },
     /// A leadership-transfer request was rejected.
     LeadershipTransferRejected {
+        /// Requested transfer target.
         target: NodeId,
+        /// Protocol reason the transfer could not start.
         reason: LeadershipTransferRejection,
     },
     /// The read barrier `read_id` is confirmed at `read_index`: a quorum
     /// acknowledged this node's leadership after the barrier was registered.
     ReadIndexGranted {
+        /// Local-only read barrier identity.
         read_id: ReadId,
+        /// Applied-index floor required before reading application state.
         read_index: LogIndex,
     },
     /// A read-index request was rejected without being registered.
     ReadIndexRejected {
+        /// Local-only read barrier identity.
         read_id: ReadId,
+        /// Protocol reason the barrier was not registered.
         reason: ReadIndexRejection,
     },
     /// A previously pending local read-index request was cleared before it
@@ -191,9 +221,16 @@ pub enum Output {
     /// state. Callers may retry the read by issuing a new barrier to the
     /// current leader.
     ReadIndexCanceled {
+        /// Local-only identity of the canceled barrier.
         read_id: ReadId,
+        /// Boundary at which the pending barrier was cleared.
         reason: ReadIndexCancelReason,
     },
     /// Sends one Raft protocol message to `to`.
-    Send { to: NodeId, message: Message },
+    Send {
+        /// Destination node.
+        to: NodeId,
+        /// Protocol frame to transmit.
+        message: Message,
+    },
 }

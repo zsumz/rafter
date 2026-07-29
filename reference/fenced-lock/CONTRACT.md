@@ -1,6 +1,10 @@
 # Fenced Lock Service Contract
 
-Status: second reference-consumer contract for Rafter 1.0 API discovery.
+Status: completed authority acceptance consumer. Its deterministic histories,
+independent bounded linearizability checker, and independent guarded-resource
+checker run in source and exact-package modes. Its integration process suite
+and bounded authenticated production-composition fixture run in source and
+exact-package process modes.
 
 This crate began as a dependency-free deterministic lock service and now carries
 that same application contract onto Rafter's public crates, over a durable
@@ -1287,9 +1291,10 @@ ledger's own inventory.
 
 Four limits stay, and none of them is an oversight:
 
-1. The composition is the integration level. Everything under [what it
-   deliberately does not establish](#what-it-deliberately-does-not-establish)
-   remains open, and the production-composition criterion is untouched.
+1. This `lock-node` composition is the integration level. The separate
+   [`lock-production-node`](#production-composition-boundary) fixture closes the
+   bounded production-composability acceptance criterion without turning the
+   fixture into a generic server, transport, or deployment product.
 2. Real time is load bearing in a way the deterministic driver never allowed.
    The suite bounds it rather than eliminating it: every wait is a polled
    predicate against a deadline, no test sleeps and assumes, and every test that

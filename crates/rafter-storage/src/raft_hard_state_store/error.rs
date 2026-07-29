@@ -17,8 +17,11 @@ pub enum RaftHardStateStoreWriteError {
     /// A filesystem operation failed. The file-backed handle now requires a
     /// fresh [`super::FileRaftHardStateStore::open`] before another mutation.
     Io {
+        /// Stable name of the failed filesystem operation.
         operation: &'static str,
+        /// Path on which the operation failed.
         path: PathBuf,
+        /// Preserved I/O failure.
         source: StorageIoError,
     },
     /// An earlier mutating I/O failure poisoned this file-backed handle.
@@ -31,11 +34,16 @@ pub enum RaftHardStateStoreWriteError {
 /// persisted bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OpenRaftHardStateStoreError {
+    /// A filesystem operation failed while opening or publishing initial state.
     Io {
+        /// Stable name of the failed filesystem operation.
         operation: &'static str,
+        /// Path on which the operation failed.
         path: PathBuf,
+        /// Preserved I/O failure.
         source: StorageIoError,
     },
+    /// The persisted hard-state envelope was corrupt or unsupported.
     Decode(DecodeRaftHardStateError),
 }
 

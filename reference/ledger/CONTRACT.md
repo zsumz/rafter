@@ -1,6 +1,10 @@
 # Replicated Ledger Contract
 
-Status: first reference-consumer contract for Rafter 1.0 API discovery.
+Status: completed application-durability acceptance consumer. Its deterministic
+adapter and independent bounded linearizability checker run against public
+Rafter APIs in source and exact-package modes. Its integration process suite
+runs one durable operating-system process per replica in both source and
+exact-package process modes.
 
 This crate began as a dependency-free deterministic ledger. It now also carries
 the `rafter-app` adapter that runs that exact application contract through
@@ -939,10 +943,12 @@ boundary without needing anything the client could not observe.
 
 The suite is labelled integration evidence, and it is `#[ignore]`d by default:
 `docs/reference-consumers.md` puts durable process tests in the main and
-nightly lanes, while the every-PR lane wants a package build and the
-deterministic suites. Both dependency modes still compile the binary and the
-suite, so a consumer that stopped building is caught everywhere; only running
-it is deferred.
+nightly lanes, while the every-PR lane runs deterministic source/package
+acceptance and checks the reviewed process inventory. Main executes the suite
+from source and from the exact unpacked archives; nightly reruns the source
+suite. The ignored repair-escalation acceptance case is part of that inventory,
+so it is executed by the dedicated reference-process lane rather than the
+ordinary workspace process step.
 
 Three limits stay, and none of them is an oversight:
 

@@ -1,6 +1,6 @@
 # rafter-multiraft
 
-Manual many-group host layer for Rafter.
+Manual and bounded managed many-group hosting for Rafter.
 
 `rafter-multiraft` holds many caller-defined Raft groups in one process and
 steps the one you name. It provides untyped and typed host APIs so sharded
@@ -9,9 +9,11 @@ while keeping group identity separate from node identity.
 
 Use `MultiRaftHost` when groups are dynamic or heterogeneous. Use
 `TypedMultiRaftHost` when groups share one command type and one apply result
-type.
+type. Use `ManagedScheduler` or `ManagedTypedMultiRaftHost` when work must pass
+through deterministic ready-set turns, explicit quotas, bounded admission, and
+exact completion accounting.
 
-## This is a manual host, not a scheduler
+## Manual host
 
 The host steps what the caller tells it to step. `tick_all` walks every open
 group once, in key order, and returns one outcome per group; nothing else here
@@ -29,7 +31,19 @@ decides when work happens. In particular this crate does **not**:
   reported as an unknown group.
 
 `TickPass::visited` is a fairness *measurement* — it proves the pass reached
-every group — not a fairness *mechanism*. The managed multi-Raft scheduler that
-bounds fairness, isolates failure, and enforces quotas is a separate 1.0
-component described in `docs/reference-consumers.md`, and it does not exist
-yet.
+every group — not a fairness *mechanism*.
+
+## Managed scheduler
+
+The `managed` module provides the bounded mechanism above the manual host:
+
+- deterministic one-opportunity-per-ready-group passes;
+- per-group and global queue limits with lossless refusal;
+- per-group quotas and fixed work-class ordering;
+- explicit worker occupancy and exact-once completion permits;
+- failure isolation and queue-conservation metrics; and
+- typed composition through `ManagedTypedMultiRaftHost`.
+
+It remains sans-I/O. The caller owns threads, clocks, storage, network,
+application retry policy, group-incarnation/tombstone policy, and readiness
+signals.

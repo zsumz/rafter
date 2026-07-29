@@ -63,17 +63,25 @@ pub enum ReadRequest<G, Q> {
     /// Reads local state only. This may be stale and does not consume a
     /// `ReadId`.
     Local {
+        /// Group whose local state machine is queried.
         group_id: G,
+        /// Application query.
         query: Q,
+        /// Optional caller-required application freshness floor.
         min_applied_index: Option<LogIndex>,
     },
     /// Uses the Raft read-index primitive and requires a strictly increasing
     /// local `ReadId`.
     Linearizable {
+        /// Group whose state machine is queried.
         group_id: G,
+        /// Strictly increasing local read correlation ID.
         read_id: ReadId,
+        /// Application query.
         query: Q,
+        /// Optional caller-required application freshness floor.
         min_applied_index: Option<LogIndex>,
+        /// Opaque bytes echoed through the read-index quorum round.
         context: Vec<u8>,
     },
     /// Fast leader-local reads. Reserved for future app-layer lease support.
@@ -83,8 +91,11 @@ pub enum ReadRequest<G, Q> {
     /// instead of serving lease reads.
     #[doc(hidden)]
     Lease {
+        /// Group whose state machine would be queried.
         group_id: G,
+        /// Application query.
         query: Q,
+        /// Optional caller-required application freshness floor.
         min_applied_index: Option<LogIndex>,
     },
 }
@@ -95,7 +106,9 @@ pub enum ReadRequest<G, Q> {
 pub enum ReadOutcome<G, R> {
     /// The read completed against the local state machine.
     Ready {
+        /// Application query result.
         result: R,
+        /// Linearizable proof, or `None` for a local read.
         proof: Option<ReadProof<G>>,
     },
     /// The read-index round is still in flight. Keep driving the group and
@@ -108,20 +121,28 @@ pub enum ReadOutcome<G, R> {
     /// this one, never both — routing both sends every read-index frame
     /// twice.
     Pending {
+        /// Consumed read correlation ID.
         read_id: ReadId,
+        /// Peer messages the caller must route exactly once.
         peer_messages: Vec<PeerEnvelope<G>>,
     },
     /// The read was rejected and no local helper state remains reserved.
     Rejected {
+        /// Consumed read correlation ID.
         read_id: ReadId,
+        /// Protocol reason the read-index request did not start.
         reason: ReadIndexRejection,
+        /// Best-effort leader identity observed with the refusal.
         leader_hint: Option<NodeId>,
     },
     /// The read was canceled by local runtime lifecycle, usually leadership
     /// loss, and no local helper state remains reserved.
     Canceled {
+        /// Consumed read correlation ID.
         read_id: ReadId,
+        /// Lifecycle event that invalidated the pending proof.
         reason: ReadIndexCancelReason,
+        /// Best-effort leader identity observed with the cancellation.
         leader_hint: Option<NodeId>,
     },
     /// A linearizable read-index proof exists or is in progress, but the local
@@ -131,15 +152,20 @@ pub enum ReadOutcome<G, R> {
     /// read. Canceling removes local waiter state; it does not make the
     /// submitted `ReadId` reusable.
     LinearizableFreshnessUnavailable {
+        /// Consumed read correlation ID whose proof remains pending locally.
         read_id: ReadId,
+        /// Application index the state machine must reach.
         required_applied_index: LogIndex,
+        /// Application index currently reported by the state machine.
         local_applied_index: LogIndex,
     },
     /// A local read requested a minimum applied index that the local state
     /// machine has not reached. No read-index operation was submitted and no
     /// local read state is reserved.
     LocalFreshnessUnavailable {
+        /// Application index the caller required.
         required_applied_index: LogIndex,
+        /// Application index currently reported by the state machine.
         local_applied_index: LogIndex,
     },
 }
@@ -151,9 +177,13 @@ pub enum ReadOutcome<G, R> {
 /// earlier read was rejected, canceled, dropped, or abandoned locally.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadBarrierRequest<G> {
+    /// Group whose read authority is requested.
     pub group_id: G,
+    /// Strictly increasing local read correlation ID.
     pub read_id: ReadId,
+    /// Optional caller-required application freshness floor.
     pub min_applied_index: Option<LogIndex>,
+    /// Opaque bytes echoed through the read-index quorum round.
     pub context: Vec<u8>,
 }
 
@@ -171,11 +201,17 @@ pub struct ReadBarrierRequest<G> {
 /// linearizable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadProof<G> {
+    /// Group for which the proof was granted.
     pub group_id: G,
+    /// Node that completed the quorum round.
     pub issued_by: NodeId,
+    /// Leader term that granted the proof.
     pub term: Term,
+    /// Commit index certified by the quorum round.
     pub read_index: LogIndex,
+    /// Application index required to serve the read.
     pub required_applied_index: LogIndex,
+    /// Application index observed when the proof was completed.
     pub local_applied_index: LogIndex,
 }
 
@@ -184,26 +220,37 @@ pub struct ReadProof<G> {
 #[non_exhaustive]
 pub enum ReadProofOutcome<G> {
     /// The barrier is satisfied and includes a proof for the required index.
-    Granted { proof: ReadProof<G> },
+    Granted {
+        /// Completed linearizable-read proof.
+        proof: ReadProof<G>,
+    },
     /// The read-index round is still in flight. Route `peer_messages`, keep
     /// driving the group, and retry or observe later [`ReadEvent`] values.
     /// The `ReadId` remains consumed even if the caller later cancels the
     /// local waiter.
     Pending {
+        /// Consumed read correlation ID.
         read_id: ReadId,
+        /// Peer messages the caller must route exactly once.
         peer_messages: Vec<PeerEnvelope<G>>,
     },
     /// The barrier was rejected and no local barrier state remains reserved.
     Rejected {
+        /// Consumed read correlation ID.
         read_id: ReadId,
+        /// Protocol reason the read-index request did not start.
         reason: ReadIndexRejection,
+        /// Best-effort leader identity observed with the refusal.
         leader_hint: Option<NodeId>,
     },
     /// The barrier was canceled by local runtime lifecycle and no local
     /// barrier state remains reserved.
     Canceled {
+        /// Consumed read correlation ID.
         read_id: ReadId,
+        /// Lifecycle event that invalidated the pending proof.
         reason: ReadIndexCancelReason,
+        /// Best-effort leader identity observed with the cancellation.
         leader_hint: Option<NodeId>,
     },
     /// The barrier has a read index, but the local state machine has not
@@ -212,8 +259,11 @@ pub enum ReadProofOutcome<G> {
     /// canceled locally with `RaftGroup::cancel_read`; local cancellation does
     /// not make the submitted `ReadId` reusable.
     FreshnessUnavailable {
+        /// Consumed read correlation ID whose proof remains active.
         read_id: ReadId,
+        /// Application index the state machine must reach.
         required_applied_index: LogIndex,
+        /// Application index currently reported by the state machine.
         local_applied_index: LogIndex,
     },
 }
@@ -224,29 +274,40 @@ pub enum ReadProofOutcome<G> {
 pub enum ReadEvent<G> {
     /// A previously pending barrier is now satisfied.
     Granted {
+        /// Consumed read correlation ID.
         read_id: ReadId,
+        /// Completed linearizable-read proof.
         proof: ReadProof<G>,
     },
     /// A previously pending barrier was rejected and local waiter state was
     /// cleared.
     Rejected {
+        /// Consumed read correlation ID.
         read_id: ReadId,
+        /// Protocol reason the read-index request did not start.
         reason: ReadIndexRejection,
+        /// Best-effort leader identity observed with the refusal.
         leader_hint: Option<NodeId>,
     },
     /// A previously pending barrier was canceled by local runtime lifecycle and
     /// local waiter state was cleared.
     Canceled {
+        /// Consumed read correlation ID.
         read_id: ReadId,
+        /// Lifecycle event that invalidated the pending proof.
         reason: ReadIndexCancelReason,
+        /// Best-effort leader identity observed with the cancellation.
         leader_hint: Option<NodeId>,
     },
     /// A read-index is known, but the local state machine has not applied far
     /// enough yet. The read remains pending unless the caller cancels it. The
     /// `ReadId` remains consumed after cancellation.
     FreshnessUnavailable {
+        /// Consumed read correlation ID whose proof remains active.
         read_id: ReadId,
+        /// Application index the state machine must reach.
         required_applied_index: LogIndex,
+        /// Application index currently reported by the state machine.
         local_applied_index: LogIndex,
     },
 }

@@ -29,7 +29,9 @@ pub enum LocalSnapshotInstallError {
     /// retained, so such a descriptor cannot even be checked against the local
     /// log — this is the refusal, not a term disagreement.
     BoundaryBelowInstalledSnapshot {
+        /// Boundary proposed by the caller.
         snapshot_index: LogIndex,
+        /// Boundary of the snapshot already installed.
         installed_index: LogIndex,
     },
     /// The descriptor's boundary lies beyond this node's committed prefix.
@@ -37,7 +39,9 @@ pub enum LocalSnapshotInstallError {
     /// Installing it would compact away entries no quorum has accepted and
     /// raise this node's commit index on the strength of a local call.
     BoundaryAheadOfCommit {
+        /// Boundary proposed by the caller.
         snapshot_index: LogIndex,
+        /// Greatest locally committed index.
         commit_index: LogIndex,
     },
     /// The boundary is committed, but this node has not applied through it.
@@ -50,7 +54,9 @@ pub enum LocalSnapshotInstallError {
     /// [`Node::from_bootstrap_applied_through`](crate::Node::from_bootstrap_applied_through)
     /// and [`Node::drain_committed_outputs`](crate::Node::drain_committed_outputs).
     BoundaryAheadOfApplied {
+        /// Boundary proposed by the caller.
         snapshot_index: LogIndex,
+        /// Greatest index already handed to the application.
         applied_index: LogIndex,
     },
     /// The descriptor's boundary term disagrees with the local log.
@@ -60,8 +66,11 @@ pub enum LocalSnapshotInstallError {
     /// suffix belongs to another history and is discarded; a *local* descriptor
     /// carries no such authority, so the same disagreement is caller error.
     BoundaryTermMismatch {
+        /// Boundary proposed by the caller.
         snapshot_index: LogIndex,
+        /// Boundary term declared by the snapshot.
         snapshot_term: Term,
+        /// Boundary term retained locally, when the position is available.
         local_term: Option<Term>,
     },
     /// The descriptor records committed membership the local node does not
@@ -71,15 +80,21 @@ pub enum LocalSnapshotInstallError {
     /// membership of record below the boundary, so a disagreeing copy would
     /// redefine the voter set out of a local call.
     CommittedMembershipMismatch {
+        /// Boundary proposed by the caller.
         snapshot_index: LogIndex,
+        /// Membership derived from the local committed history.
         expected: Box<MembershipConfig>,
+        /// Membership declared by the snapshot.
         actual: Box<MembershipConfig>,
     },
     /// The descriptor records a committed configuration identity the local node
     /// does not derive at the boundary.
     CommittedConfigurationMismatch {
+        /// Boundary proposed by the caller.
         snapshot_index: LogIndex,
+        /// Configuration identity derived from local committed history.
         expected: Option<CommittedConfiguration>,
+        /// Configuration identity declared by the snapshot.
         actual: Option<CommittedConfiguration>,
     },
 }

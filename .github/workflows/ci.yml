@@ -71,6 +71,8 @@ jobs:
         # relying on --workspace, which unifies rafter's internal-test-hooks
         # feature in from rafter-sim and so documents a shape that never ships.
         run: scripts/rustdoc-check
+      - name: work-completion proof references
+        run: scripts/work-completion-check
       - name: out-of-workspace manifests
         # `cargo fmt --all` and `cargo clippy --workspace` above stop at the
         # workspace members. fuzz/ and bench-compare/ keep their own manifests
@@ -953,7 +955,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750b5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust

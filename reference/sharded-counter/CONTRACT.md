@@ -1,10 +1,12 @@
 # Sharded Counter Service Contract
 
-Status: third reference consumer for Rafter 1.0 API discovery. The independent
-contract, model, and oracle now sit beside complete deterministic adoption of
-Rafter's managed many-group scheduler: thousands of real managed groups,
-three-node counter groups, replicated sessions, bounded codecs and snapshots,
-full lifecycle and incarnation policy, and deterministic peer routing.
+Status: completed managed-scheduler acceptance consumer. Its independent
+contract, model, oracle, and fairness audit sit beside public managed-scheduler
+adoption: thousands of real managed groups, three-node counter groups,
+replicated sessions, bounded codecs and snapshots, full lifecycle/incarnation
+policy, deterministic peer routing, durable process composition,
+source/exact-package/exact-package-process modes, and retained nightly and
+weekly profiles.
 
 This crate ran the program's sequencing backwards from its siblings, on
 purpose. The ledger and fenced lock began against existing Rafter surfaces;

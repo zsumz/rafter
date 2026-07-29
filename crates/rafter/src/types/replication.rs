@@ -5,9 +5,13 @@ use super::{LogIndex, NodeId};
 /// Leader replication progress for one follower.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReplicationProgress {
+    /// Follower whose progress is described.
     pub follower_id: NodeId,
+    /// Greatest index known replicated on the follower.
     pub match_index: LogIndex,
+    /// Next log index the leader will attempt to send.
     pub next_index: LogIndex,
+    /// Current leader-side send discipline.
     pub state: ReplicationState,
 }
 

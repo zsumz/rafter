@@ -98,11 +98,15 @@ for output in node.step(Input::Tick) {
 Rafter's 1.0 plan includes three independent acceptance systems: a replicated
 ledger, a fenced lock service, and a sharded counter service. They exist to
 prove application durability, linearizable authority, and managed multi-group
-scheduling without moving product policy into Rafter. The ledger and the lock
-do so against real Rafter APIs today; the sharded counter declares no
-dependency yet, because the managed scheduler it specifies is not a public
-surface. Their contracts, isolation rules, verification lanes, and delivery
-order live in [`docs/reference-consumers.md`](./docs/reference-consumers.md).
+scheduling without moving product policy into Rafter. All three use versioned
+public Rafter dependencies in canonical manifests and run in source and
+exact-package modes. The ledger and lock add durable process histories; the
+lock also carries a bounded authenticated production-composition fixture. The
+counter drives the public managed scheduler through deterministic 64, 1,024,
+and 4,096-group profiles plus durable process coverage. Their contracts,
+isolation rules, and executable verification lanes live in
+[`docs/reference-consumers.md`](./docs/reference-consumers.md), with the stable
+proof map in [`docs/work-completion.md`](./docs/work-completion.md).
 
 ## Testing
 

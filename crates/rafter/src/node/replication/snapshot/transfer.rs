@@ -95,23 +95,37 @@ impl Node {
 /// snapshot identity, authorization, and length checks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PendingSnapshotTransferResumeError {
+    /// Snapshot membership does not authorize the recorded leader.
     LeaderNotAuthorized {
+        /// Leader recorded in the pending transfer.
         leader_id: NodeId,
     },
+    /// Persisted progress exceeds the declared payload length.
     ReceivedPayloadTooLong {
+        /// Payload bytes recorded as received.
         received_bytes: u64,
+        /// Complete payload length declared by the transfer.
         total_payload_len: u64,
     },
+    /// Recorded transfer identity disagrees with its descriptor.
     TransferIdMismatch {
+        /// Transfer identity derived from the descriptor.
         expected: SnapshotTransferId,
+        /// Transfer identity stored with the pending state.
         actual: SnapshotTransferId,
     },
+    /// Snapshot metadata violates node or membership invariants.
     InvalidMetadata,
+    /// The pending transfer does not advance the installed snapshot boundary.
     StaleSnapshot {
+        /// Currently installed snapshot boundary.
         snapshot_index: LogIndex,
+        /// Boundary carried by the pending transfer.
         transfer_last_included_index: LogIndex,
     },
+    /// Durable staging says the payload is complete but was never promoted.
     CompleteTransferNotInstalled {
+        /// Boundary of the complete uninstalled transfer.
         last_included_index: LogIndex,
     },
 }

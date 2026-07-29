@@ -13,11 +13,11 @@
 //! identity remains caller-defined, and messages are routed explicitly by
 //! group ID.
 //!
-//! # This is a manual host, not a scheduler
+//! # Manual and managed hosting
 //!
 //! [`MultiRaftHost::tick_all`] walks every open group once, in key order, and
-//! returns one outcome per group. Nothing else here decides when work happens.
-//! In particular this crate does **not**:
+//! returns one outcome per group. The manual host does not decide when work
+//! happens. In particular it does **not**:
 //!
 //! - decide when to step anything — ticks arrive only as often as the caller
 //!   loops;
@@ -30,10 +30,15 @@
 //! - keep tombstones, so a retired key is reopenable and late traffic for it
 //!   is reported as an unknown group.
 //!
-//! [`TickPass::visited`] is a fairness *measurement* — it proves the pass
-//! reached every group — not a fairness *mechanism*. The managed multi-Raft
-//! scheduler that bounds fairness, isolates failure, and enforces quotas is a
-//! separate 1.0 component, and it does not exist yet.
+//! [`TickPass::visited`] is a fairness *measurement* — it proves the manual
+//! pass reached every group — not a fairness *mechanism*.
+//!
+//! The [`managed`] module is the bounded alternative. It owns deterministic
+//! ready-set passes, per-group and global queue bounds, quotas, work-class
+//! order, worker occupancy, lossless refusal, exact completion permits, and
+//! conservation metrics. It remains sans-I/O: callers own threads, clocks,
+//! sockets, storage, retry policy, group-incarnation policy, and the decision
+//! to make a group available.
 //!
 //! # Choosing a host
 //!
@@ -42,7 +47,9 @@
 //! [`TypedMultiRaftHost`] when groups share one command type and one apply
 //! result type and user code should step typed proposals without downcasts.
 //! [`rafter_app::group::RaftGroup`] implements [`TypedGroupDriver`], so real
-//! embedded Rafter groups can be opened in a typed host directly.
+//! embedded Rafter groups can be opened in a typed host directly. Use
+//! [`managed::ManagedTypedMultiRaftHost`] when the same typed groups should be
+//! admitted and dispatched through bounded scheduling.
 
 /// Driver traits implemented by many-group group adapters.
 pub mod driver;

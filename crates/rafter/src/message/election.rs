@@ -11,17 +11,24 @@ use crate::{LogIndex, NodeId, Term};
 /// of whether a real election could be won.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PreVote {
+    /// Proposed next election term.
     pub term: Term,
+    /// Node polling whether it could win that term.
     pub candidate_id: NodeId,
+    /// Candidate's last log index.
     pub last_log_index: LogIndex,
+    /// Term of the candidate's last log entry.
     pub last_log_term: Term,
 }
 
 /// Response to a [`PreVote`] poll; `term` echoes the proposed request term.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PreVoteResponse {
+    /// Proposed term echoed from the request.
     pub term: Term,
+    /// Node answering the poll.
     pub voter_id: NodeId,
+    /// Whether this voter would grant a real vote.
     pub vote_granted: bool,
 }
 
@@ -30,23 +37,32 @@ pub struct PreVoteResponse {
 /// transfer (thesis 3.10).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TimeoutNow {
+    /// Current leader term authorizing the transfer.
     pub term: Term,
+    /// Leader requesting the immediate election.
     pub leader_id: NodeId,
 }
 
 /// Real `RequestVote` election request.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RequestVote {
+    /// Election term.
     pub term: Term,
+    /// Candidate requesting the vote.
     pub candidate_id: NodeId,
+    /// Candidate's last log index.
     pub last_log_index: LogIndex,
+    /// Term of the candidate's last log entry.
     pub last_log_term: Term,
 }
 
 /// Response to a [`RequestVote`] election request.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RequestVoteResponse {
+    /// Voter's current term.
     pub term: Term,
+    /// Node answering the request.
     pub voter_id: NodeId,
+    /// Whether the binding vote was granted.
     pub vote_granted: bool,
 }

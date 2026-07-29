@@ -31,11 +31,17 @@ pub trait SnapshotChunkSource {
 /// identity every chunk of the transfer carries.
 #[derive(Clone, Copy, Debug)]
 pub struct SnapshotChunkRequest<'a> {
+    /// Stable identity of the requested transfer.
     pub transfer_id: SnapshotTransferId,
+    /// Raft-visible descriptor of the requested snapshot.
     pub metadata: &'a RaftSnapshotMetadata,
+    /// Complete application payload length.
     pub total_payload_len: u64,
+    /// Checksum of the complete application payload.
     pub application_payload_crc32: u32,
+    /// Starting payload offset.
     pub offset: u64,
+    /// Exact number of bytes requested.
     pub len: u32,
 }
 
@@ -108,7 +114,13 @@ impl SnapshotChunkSource for InMemorySnapshotChunkSource {
 /// before accepting a payload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InMemorySnapshotSourceError {
-    PayloadLengthMismatch { declared: u64, actual: u64 },
+    /// Supplied payload length disagrees with its snapshot descriptor.
+    PayloadLengthMismatch {
+        /// Payload length declared by the snapshot.
+        declared: u64,
+        /// Supplied payload length.
+        actual: u64,
+    },
 }
 
 impl fmt::Display for InMemorySnapshotSourceError {

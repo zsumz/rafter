@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Verify the stable proof references in docs/work-completion.md.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+document="$repo_root/docs/work-completion.md"
+
+if [[ ! -f "$document" ]]; then
+    echo "error: docs/work-completion.md is missing" >&2
+    exit 1
+fi
+
+manifest="$(
+    awk '
+        /^```text completion-manifest$/ { inside = 1; next }
+        inside && /^```$/ { inside = 0; found = 1; next }
+        inside { print }
+        END {
+            if (!found) {
+                exit 1
+            }
+        }
+    ' "$document"
+)" || {
+    echo "error: work-completion manifest is missing or unterminated" >&2
+    exit 1
+}
+
+if [[ -z "$manifest" ]]; then
+    echo "error: work-completion manifest is empty" >&2
+    exit 1
+fi
+
+duplicates="$(printf '%s\n' "$manifest" | sed '/^$/d' | sort | uniq -d)"
+if [[ -n "$duplicates" ]]; then
+    echo "error: duplicate work-completion entries:" >&2
+    printf '%s\n' "$duplicates" >&2
+    exit 1
+fi
+
+entry_count=0
+
+while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    read -r kind path name extra <<< "$line"
+    entry_count=$((entry_count + 1))
+
+    case "$kind" in
+        script)
+            if [[ -n "${name:-}" || -n "${extra:-}" ]]; then
+                echo "error: malformed script entry: $line" >&2
+                exit 1
+            fi
+            if [[ "$path" != scripts/* || ! -f "$repo_root/$path" || ! -x "$repo_root/$path" ]]; then
+                echo "error: referenced script is missing or not executable: $path" >&2
+                exit 1
+            fi
+            ;;
+        workflow-job)
+            if [[ -z "${name:-}" || -n "${extra:-}" ]]; then
+                echo "error: malformed workflow-job entry: $line" >&2
+                exit 1
+            fi
+            if [[ "$path" != .github/workflows/*.yml || ! -f "$repo_root/$path" ]]; then
+                echo "error: referenced workflow is missing: $path" >&2
+                exit 1
+            fi
+            if [[ ! "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                echo "error: invalid workflow job identifier: $name" >&2
+                exit 1
+            fi
+            if ! awk -v job="$name" '
+                /^jobs:$/ { in_jobs = 1; next }
+                in_jobs && $0 == "  " job ":" { found = 1 }
+                END { exit(found ? 0 : 1) }
+            ' "$repo_root/$path"; then
+                echo "error: workflow $path has no job id $name" >&2
+                exit 1
+            fi
+            ;;
+        *)
+            echo "error: unknown work-completion entry: $line" >&2
+            exit 1
+            ;;
+    esac
+done <<< "$manifest"
+
+echo "work-completion proof manifest passed ($entry_count entries)"

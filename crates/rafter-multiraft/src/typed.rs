@@ -25,7 +25,9 @@ use crate::{
 
 /// Typed driver surface for groups that share command and result types.
 pub trait TypedGroupDriver<G>: Debug {
+    /// Application command accepted by this group.
     type Command;
+    /// Application result produced after a command is committed and applied.
     type CommandResult;
 
     /// Steps one typed group input and returns explicit side effects.
@@ -41,6 +43,10 @@ pub trait TypedGroupDriver<G>: Debug {
         input: GroupInput<G, Self::Command>,
     ) -> Result<GroupStepReport<G, Self::CommandResult>, DriverError>;
 
+    /// Returns the group's current identity, role, progress, and fatal state.
+    ///
+    /// Reading metrics does not step the group or acknowledge any pending
+    /// output.
     fn metrics(&self) -> RaftGroupMetrics<G>;
 }
 

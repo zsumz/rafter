@@ -45,31 +45,51 @@ pub(crate) struct PendingTransferManifest {
 /// these envelope, nested-snapshot, and descriptor-validation failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DecodePendingSnapshotTransferError {
+    /// The manifest ended before the requested field could be read.
     UnexpectedEof {
+        /// Bytes required by the field.
         needed: usize,
+        /// Bytes remaining in the manifest.
         remaining: usize,
     },
+    /// The manifest magic was not the version-1 RFPT marker.
     InvalidMagic([u8; 4]),
+    /// The manifest version is not supported.
     UnsupportedVersion(u8),
+    /// The manifest checksum did not match its bytes.
     EnvelopeChecksumMismatch {
+        /// Checksum stored in the manifest.
         expected: u32,
+        /// Checksum computed from the manifest bytes.
         actual: u32,
     },
+    /// The nested metadata envelope exceeds the defensive size limit.
     SnapshotEnvelopeTooLarge {
+        /// Encoded nested-envelope size in bytes.
         len: u64,
     },
+    /// The metadata-only nested snapshot unexpectedly carried payload bytes.
     SnapshotEnvelopePayloadNotEmpty {
+        /// Unexpected payload length in bytes.
         len: usize,
     },
+    /// The nested snapshot metadata envelope was invalid.
     Snapshot(DecodeRaftSnapshotError),
+    /// Persisted progress exceeds the declared payload length.
     ReceivedPayloadTooLong {
+        /// Bytes recorded as durably received.
         received_bytes: u64,
+        /// Declared complete payload length.
         total_payload_len: u64,
     },
+    /// The manifest's transfer identifier disagrees with its snapshot metadata.
     TransferIdMismatch {
+        /// Transfer identifier derived from the snapshot metadata.
         expected: SnapshotTransferId,
+        /// Transfer identifier stored in the manifest.
         actual: SnapshotTransferId,
     },
+    /// Valid manifest bytes were followed by unused trailing bytes.
     TrailingBytes(usize),
 }
 

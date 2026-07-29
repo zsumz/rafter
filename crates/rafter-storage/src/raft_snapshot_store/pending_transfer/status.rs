@@ -9,8 +9,12 @@
 /// resumable [`rafter::PendingSnapshotTransfer`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PendingSnapshotTransferStagingStatus {
+    /// Whether the canonical pending-transfer manifest exists.
     pub manifest_present: bool,
+    /// Whether the canonical pending-transfer payload body exists.
     pub body_present: bool,
+    /// Body length in bytes when metadata inspection succeeded.
     pub body_bytes: Option<u64>,
+    /// Whether a body exists without a valid resumable manifest.
     pub abandoned_body: bool,
 }

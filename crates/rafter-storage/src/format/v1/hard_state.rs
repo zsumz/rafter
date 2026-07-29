@@ -22,9 +22,13 @@ pub const RAFT_HARD_STATE_VERSION: u8 = 1;
 /// committed configuration identity used to validate recovery against the log.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RaftHardState {
+    /// Greatest term this replica has observed.
     pub current_term: Term,
+    /// Candidate this replica voted for in the current term.
     pub voted_for: Option<NodeId>,
+    /// Greatest log index durably known committed.
     pub commit_index: LogIndex,
+    /// Identity of the committed configuration at its durable position.
     pub committed_configuration: Option<CommittedConfiguration>,
 }
 
@@ -34,25 +38,38 @@ pub struct RaftHardState {
 /// corruption and format failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DecodeRaftHardStateError {
+    /// The envelope ended before the requested field could be read.
     UnexpectedEof {
+        /// Bytes required by the field.
         needed: usize,
+        /// Bytes remaining in the envelope.
         remaining: usize,
     },
+    /// The envelope magic was not [`RAFT_HARD_STATE_MAGIC`].
     InvalidMagic([u8; 4]),
+    /// The envelope version is not supported.
     UnsupportedVersion(u8),
+    /// The vote-presence tag was neither zero nor one.
     InvalidVotedForFlag(u8),
     /// An absent vote carried a non-zero reserved node-id field.
     NonCanonicalAbsentVotedFor(NodeId),
+    /// The committed-configuration presence tag was neither zero nor one.
     InvalidCommittedConfigurationFlag(u8),
     /// An absent committed configuration carried non-zero reserved fields.
     NonCanonicalAbsentCommittedConfiguration {
+        /// Non-zero reserved configuration index.
         index: LogIndex,
+        /// Non-zero reserved configuration identifier.
         config_id: ConfigurationId,
     },
+    /// The stored checksum did not match the envelope bytes.
     ChecksumMismatch {
+        /// Checksum stored in the envelope.
         expected: u32,
+        /// Checksum computed from the envelope bytes.
         actual: u32,
     },
+    /// Valid envelope bytes were followed by unused trailing bytes.
     TrailingBytes(usize),
 }
 

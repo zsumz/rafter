@@ -11,11 +11,14 @@ use std::fmt;
 /// set of roles.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Role {
+    /// Passive replica following a current leader or awaiting election.
     Follower,
     /// Probing electability with a pre-vote round (thesis 9.6): the node has
     /// timed out but has not incremented its term or voted for itself.
     PreCandidate,
+    /// Replica campaigning in a binding election term.
     Candidate,
+    /// Replica currently authorized to replicate and commit entries.
     Leader,
 }
 

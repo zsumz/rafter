@@ -18,7 +18,9 @@ const CONFIGURATION_LOG_ENTRY_PER_MEMBER_BYTES: usize = 12;
 /// One Raft log entry: term plus logical entry kind.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LogEntry {
+    /// Term in which this entry was appended.
     pub term: Term,
+    /// Replicated application, configuration, or no-op payload.
     pub kind: LogEntryKind,
 }
 

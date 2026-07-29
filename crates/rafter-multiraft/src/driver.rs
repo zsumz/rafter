@@ -124,5 +124,9 @@ pub trait GroupDriver<G>: fmt::Debug {
         input: GroupInput<G, Vec<u8>>,
     ) -> Result<GroupStepReport<G, Vec<u8>>, DriverError>;
 
+    /// Returns the group's current identity, role, progress, and fatal state.
+    ///
+    /// Reading metrics does not step the group or acknowledge any pending
+    /// output.
     fn metrics(&self) -> RaftGroupMetrics<G>;
 }

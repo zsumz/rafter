@@ -19,7 +19,11 @@ pub(super) const SNAPSHOT_MANIFEST_VERSION: u8 = 1;
 /// when the generated file name exceeds the manifest length prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RaftSnapshotManifestEncodeError {
-    FileNameTooLong { len: usize },
+    /// The immutable snapshot file name exceeds the manifest length prefix.
+    FileNameTooLong {
+        /// Encoded file-name length in bytes.
+        len: usize,
+    },
 }
 
 /// Errors returned while decoding the current-snapshot manifest.
@@ -28,12 +32,29 @@ pub enum RaftSnapshotManifestEncodeError {
 /// corruption and format failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RaftSnapshotManifestDecodeError {
-    UnexpectedEof { needed: usize, remaining: usize },
+    /// The manifest ended before the requested field could be read.
+    UnexpectedEof {
+        /// Bytes required by the field.
+        needed: usize,
+        /// Bytes remaining in the manifest.
+        remaining: usize,
+    },
+    /// The manifest magic was not the version-1 RFSM marker.
     InvalidMagic([u8; 4]),
+    /// The manifest version is not supported.
     UnsupportedVersion(u8),
-    ManifestChecksumMismatch { expected: u32, actual: u32 },
+    /// The manifest checksum did not match its bytes.
+    ManifestChecksumMismatch {
+        /// Checksum stored in the manifest.
+        expected: u32,
+        /// Checksum computed from the manifest bytes.
+        actual: u32,
+    },
+    /// The selected snapshot file name was not valid UTF-8.
     InvalidFileNameUtf8,
+    /// The selected snapshot file name was not a safe plain file name.
     InvalidFileName,
+    /// Valid manifest bytes were followed by unused trailing bytes.
     TrailingBytes(usize),
 }
 

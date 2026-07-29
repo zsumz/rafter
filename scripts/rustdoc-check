@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the workspace's rustdoc under -D warnings, in the shape that ships.
+# Build the workspace's rustdoc under strict warnings, in the shape that ships.
 #
 # Usage:
 #   scripts/rustdoc-check
@@ -7,8 +7,11 @@
 # Two builds, because neither one covers the other:
 #
 #  1. RELEASE.md's publish list, selected by name. This is the HTML a crates.io
-#     reader lands on, so a doc that does not build is a defect in the
-#     artifact. The crates are named rather than reached through --workspace
+#     reader lands on, so a doc that does not build or a public item without
+#     rustdoc is a defect in the artifact. `-D missing-docs` covers public
+#     variants, fields, trait items, associated items, and re-exports in the
+#     compiler's resolved public surface rather than a source-text
+#     approximation. The crates are named rather than reached through --workspace
 #     because rafter-sim depends on rafter with the hidden internal-test-hooks
 #     feature, and resolver 2 unifies features across every package one
 #     invocation selects. `cargo doc --workspace` therefore documents rafter
@@ -80,7 +83,7 @@ done
 cd "$repo_root"
 
 echo "rustdoc: published crates (${publish_crates[*]})"
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked "${package_args[@]}"
+RUSTDOCFLAGS="-D warnings -D missing-docs" cargo doc --no-deps --locked "${package_args[@]}"
 
 echo "rustdoc: whole workspace"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked --workspace

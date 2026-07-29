@@ -12,8 +12,13 @@ use super::{
 /// until the caller replaces it through an explicit recovery path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GroupFatalState {
+    /// The group may continue accepting inputs.
     Healthy,
-    Poisoned { reason: String },
+    /// A permanent local fault ended this group incarnation.
+    Poisoned {
+        /// Human-readable summary suitable for metrics and readiness output.
+        reason: String,
+    },
 }
 
 /// Proposal and read waiters drained when a group enters a fatal poison state.
@@ -215,13 +220,38 @@ pub(super) struct CompletedQueryRead<G> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum GroupInput<G, C> {
+    /// Advance logical Raft time by one caller-owned tick.
     Tick,
-    PeerMessage { envelope: PeerEnvelope<G> },
-    Proposal { proposal: Proposal<C> },
-    ProposalBatch { proposals: Vec<Proposal<C>> },
-    ReadBarrier { request: ReadBarrierRequest<G> },
-    TransferLeadership { target: NodeId },
-    Membership { change: MembershipChange },
+    /// Deliver one authenticated and admitted peer message.
+    PeerMessage {
+        /// Group-aware peer envelope.
+        envelope: PeerEnvelope<G>,
+    },
+    /// Submit one application command.
+    Proposal {
+        /// Command and local correlation metadata.
+        proposal: Proposal<C>,
+    },
+    /// Submit commands in caller order.
+    ProposalBatch {
+        /// Ordered proposals; each receives its own lifecycle outcome.
+        proposals: Vec<Proposal<C>>,
+    },
+    /// Begin or retry a proof-producing read barrier.
+    ReadBarrier {
+        /// Group, read ID, freshness floor, and opaque context.
+        request: ReadBarrierRequest<G>,
+    },
+    /// Ask the leader to hand authority to a caught-up voter.
+    TransferLeadership {
+        /// Desired successor.
+        target: NodeId,
+    },
+    /// Submit one explicit membership operation.
+    Membership {
+        /// Membership change to validate and propose.
+        change: MembershipChange,
+    },
 }
 
 /// Controls which observability fields are materialized in a group step report.
@@ -232,6 +262,7 @@ pub enum GroupInput<G, C> {
 /// own metrics snapshot at a coarser boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StepReportOptions {
+    /// Whether the step walks and includes a fresh metrics snapshot.
     pub include_metrics: bool,
 }
 
@@ -353,21 +384,27 @@ pub struct GroupStepReport<G, R> {
 /// Full-fidelity result of beginning a local proposal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProposalBeginReport<G, R> {
+    /// Immediate proposal lifecycle result.
     pub begin: ProposalBegin<G, R>,
+    /// Every durable side effect released by the same runtime step.
     pub report: GroupStepReport<G, R>,
 }
 
 /// Full-fidelity result of beginning a local proposal batch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProposalBatchBeginReport<G, R> {
+    /// Immediate result for each proposal, in caller order.
     pub begins: Vec<ProposalBegin<G, R>>,
+    /// Every durable side effect released by the batch step.
     pub report: GroupStepReport<G, R>,
 }
 
 /// Full-fidelity result of beginning a read-index barrier.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadBarrierBeginReport<G, R> {
+    /// Immediate state of the requested read proof.
     pub outcome: ReadProofOutcome<G>,
+    /// Every durable side effect released by the same runtime step.
     pub report: GroupStepReport<G, R>,
 }
 
@@ -426,7 +463,9 @@ pub struct RaftGroupParts<G, A, R> {
 /// report's result type.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadReport<G, Q, R> {
+    /// Immediate query or freshness outcome.
     pub outcome: ReadOutcome<G, Q>,
+    /// Every durable side effect released by the same runtime step.
     pub report: GroupStepReport<G, R>,
 }
 
@@ -438,12 +477,18 @@ pub struct ReadReport<G, Q, R> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum LeadershipTransferEvent {
+    /// The local leader accepted a transfer request.
     Started {
+        /// Intended successor.
         target: NodeId,
     },
+    /// The local node proved the transfer did not start.
     Rejected {
+        /// Requested successor.
         target: NodeId,
+        /// Protocol refusal reason.
         reason: LeadershipTransferRejection,
+        /// Best-effort leader identity observed with the refusal.
         leader_hint: Option<NodeId>,
     },
 }

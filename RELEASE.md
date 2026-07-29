@@ -1,5 +1,47 @@
 # Release Checklist
 
+## Current work-completion preflight
+
+The initial reference-consumer and public-surface work is complete as an
+engineering milestone, not as a release candidate. The stable capability-to-job
+map is [`docs/work-completion.md`](docs/work-completion.md); its references are
+checked by `scripts/work-completion-check`.
+
+The current publishable graph remains the ten crates listed in the historical
+0.0.1 section below. `rafter-sim` remains unpublished until its hidden
+`internal-test-hooks` dependency is replaced by a clean, intentional public
+surface. C1 streaming snapshots and C2 replication pipelining remain additive
+future work and are not preconditions smuggled into this preflight.
+
+For a non-release completion run at one checked-out SHA, run and retain:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+scripts/rustdoc-check
+scripts/work-completion-check
+scripts/reference-source-check
+scripts/reference-package-check
+scripts/reference-process-check --list-only
+scripts/reference-process-check
+scripts/reference-package-process-check
+cargo run --locked -p rafter-invariants -- run-all --profile pr
+scripts/maelstrom-lin-kv
+scripts/raft-burn-in
+scripts/counter-profile counter-nightly
+scripts/counter-profile counter-weekly
+```
+
+The scheduled `invariants-nightly`, `invariants-weekly`, and pinned Maelstrom
+jobs remain the authoritative Linux evidence for their full profiles. The
+fenced-lock production-composition cases are included in the reviewed process
+inventory; that fixture proves bounded composability and is not a generic
+server, transport, certificate platform, or deployment controller.
+
+This section does not authorize a version change, RC, `1.0.0`, tag, publish,
+mandatory release workflow, or mixed-version compatibility claim.
+
 ## 0.0.1 Preview
 
 Rafter 0.0.1 is a pre-alpha packaging and API preview release. It reserves the

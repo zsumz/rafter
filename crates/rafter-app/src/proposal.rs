@@ -16,7 +16,9 @@ use crate::transport::PeerEnvelope;
 /// their command or state-machine layer.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ClientRequestId {
+    /// Application-defined client identity.
     pub client_id: u128,
+    /// Monotonic request sequence within that client identity.
     pub sequence: u64,
 }
 
@@ -34,8 +36,11 @@ pub struct ClientRequestId {
 /// confused with Raft-level proposal tracking.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proposal<C> {
+    /// Volatile group-local correlation ID, consumed after submission.
     pub local_proposal_id: LocalProposalId,
+    /// Optional durable application identity carried beside the command.
     pub client_request_id: Option<ClientRequestId>,
+    /// Application command to encode and replicate.
     pub command: C,
 }
 
@@ -50,32 +55,56 @@ pub struct Proposal<C> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ProposalBegin<G, R> {
+    /// The leader appended the command; commit and application are still pending.
     Appended {
+        /// Group that accepted the command.
         group_id: G,
+        /// Volatile local proposal correlation ID.
         local_proposal_id: LocalProposalId,
+        /// Log index assigned by the leader.
         index: LogIndex,
+        /// Leader term that appended the entry.
         term: Term,
+        /// Peer messages the caller must route.
         peer_messages: Vec<PeerEnvelope<G>>,
     },
+    /// A single-node group appended, committed, and applied the command.
     Completed {
+        /// Group that completed the command.
         group_id: G,
+        /// Volatile local proposal correlation ID.
         local_proposal_id: LocalProposalId,
+        /// Applied log index.
         index: LogIndex,
+        /// Term of the applied entry.
         term: Term,
+        /// Application result returned by the state machine.
         result: R,
+        /// Peer messages the caller must route.
         peer_messages: Vec<PeerEnvelope<G>>,
     },
+    /// The local node proved the command was not appended.
     Rejected {
+        /// Group that refused the command.
         group_id: G,
+        /// Volatile local proposal correlation ID.
         local_proposal_id: LocalProposalId,
+        /// Protocol reason the command did not enter the log.
         reason: ProposalRejection,
+        /// Best-effort leader identity observed with the refusal.
         leader_hint: Option<NodeId>,
     },
+    /// Submission occurred, but the app layer cannot prove the final fate.
     UnknownOutcome {
+        /// Group whose command fate is unresolved.
         group_id: G,
+        /// Volatile local proposal correlation ID.
         local_proposal_id: LocalProposalId,
+        /// Optional durable identity callers may use for safe retry.
         client_request_id: Option<ClientRequestId>,
+        /// Diagnostic explanation for the lost outcome.
         reason: ProposalUnknownOutcomeReason,
+        /// Peer messages still emitted by the submission step.
         peer_messages: Vec<PeerEnvelope<G>>,
     },
 }
@@ -90,8 +119,11 @@ pub enum ProposalUnknownOutcomeReason {
     /// The Raft/runtime layer reported that local tracking for this proposal
     /// was dropped before the app layer observed commit/apply.
     LocalProposalDropped {
+        /// Log index formerly correlated with the local proposal.
         index: LogIndex,
+        /// Term that appended the entry.
         term: Term,
+        /// Kernel lifecycle reason local tracking ended.
         reason: LocalProposalDropReason,
     },
     /// Reserved diagnostic for proposals abandoned because the group entered a
@@ -108,15 +140,24 @@ pub enum ProposalUnknownOutcomeReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ProposalEvent<R> {
+    /// The local leader appended the proposal.
     Appended {
+        /// Volatile local proposal correlation ID.
         local_proposal_id: LocalProposalId,
+        /// Assigned log index.
         index: LogIndex,
+        /// Leader term that appended the entry.
         term: Term,
     },
+    /// The committed proposal was applied to the state machine.
     Applied {
+        /// Volatile local proposal correlation ID.
         local_proposal_id: LocalProposalId,
+        /// Applied log index.
         index: LogIndex,
+        /// Term of the applied entry.
         term: Term,
+        /// Application result returned by the state machine.
         result: R,
     },
     /// The local node refused this proposal before replication.
@@ -130,8 +171,11 @@ pub enum ProposalEvent<R> {
     /// observes this rejection asynchronously sees the same value the immediate
     /// [`ProposalBegin::Rejected`] carries for the same rejection.
     Rejected {
+        /// Volatile local proposal correlation ID.
         local_proposal_id: LocalProposalId,
+        /// Protocol reason the proposal did not enter the log.
         reason: ProposalRejection,
+        /// Best-effort leader identity observed with the refusal.
         leader_hint: Option<NodeId>,
     },
     /// The runtime can no longer determine whether this local proposal
@@ -140,8 +184,11 @@ pub enum ProposalEvent<R> {
     /// This does not mean the write failed. Retry only with application-level
     /// idempotency if duplicate effects matter.
     UnknownOutcome {
+        /// Volatile local proposal correlation ID.
         local_proposal_id: LocalProposalId,
+        /// Optional durable identity callers may use for safe retry.
         client_request_id: Option<ClientRequestId>,
+        /// Diagnostic explanation for the lost outcome.
         reason: ProposalUnknownOutcomeReason,
     },
 }

@@ -66,7 +66,10 @@ pub enum DriverServiceState {
     ///
     /// Outranks every non-terminal state when several hold: a backlog drains and
     /// a rollback can be re-proposed, and a removal can be neither.
-    Decommissioned { node_id: NodeId },
+    Decommissioned {
+        /// Local identity spent by the committed removal.
+        node_id: NodeId,
+    },
     /// No configuration this driver knows names this replica, and no committed
     /// removal spent it either.
     ///
@@ -87,7 +90,10 @@ pub enum DriverServiceState {
     /// that without stepping.
     ///
     /// It clears by itself the moment a configuration names the ID again.
-    NotMember { node_id: NodeId },
+    NotMember {
+        /// Local identity absent from every known configuration.
+        node_id: NodeId,
+    },
     /// Two observations of the committed membership at `through` disagree about
     /// it.
     ///
@@ -113,7 +119,10 @@ pub enum DriverServiceState {
     /// [`ManagedDriverError::InvalidControlPlaneCheckpoint`] instead, and installs
     /// no group. The supervisor's move either way is
     /// [`TransportRaftDriver::release_group`] and a deliberate reseed.
-    ContradictoryCurrentState { through: LogIndex },
+    ContradictoryCurrentState {
+        /// Log position at which the observations disagree.
+        through: LogIndex,
+    },
     /// A committed transition declares a predecessor this driver's register at
     /// `through` is not.
     ///
@@ -130,7 +139,10 @@ pub enum DriverServiceState {
     /// because an operator reading it is looking at a different artifact — the
     /// record beside this log, rather than either of two observations. It is
     /// terminal on identical terms, and every refusal it produces is the same.
-    ContradictoryTransitionPredecessor { through: LogIndex },
+    ContradictoryTransitionPredecessor {
+        /// Position whose membership the committed transition contradicts.
+        through: LogIndex,
+    },
     /// The driver released its group and has not adopted another.
     ///
     /// Reported rather than folded into `Serving`, which is what it used to be:

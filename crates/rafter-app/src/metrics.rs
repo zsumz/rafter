@@ -57,5 +57,6 @@ pub struct RaftGroupMetrics<G> {
     pub completed_query_reads: usize,
     /// Distinct `ReadId`s reserved by any read table.
     pub reserved_reads: usize,
+    /// Whether this group remains usable or has permanently poisoned.
     pub fatal_state: GroupFatalState,
 }
