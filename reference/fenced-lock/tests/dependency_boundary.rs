@@ -14,7 +14,7 @@ fn reference_workspace_is_explicitly_isolated_from_the_root() {
     );
     assert!(
         REFERENCE_WORKSPACE
-            .contains("members = [\"fenced-lock\", \"ledger\", \"sharded-counter\"]"),
+            .contains("members = [\"fenced-lock\", \"harness\", \"ledger\", \"sharded-counter\"]"),
         "reference consumers must be listed one by one, never globbed"
     );
 }

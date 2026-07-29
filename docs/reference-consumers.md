@@ -5,8 +5,9 @@ three systems are built: the ledger through all eight of its slices, and the
 fenced lock through deterministic, durable, package, and real-process
 composition. The sharded counter has started and is the furthest from Rafter:
 its contract, implementation model, independent oracle, and deterministic
-suites are the design input for the managed scheduler it needs. Eleven APIs
-have been promoted under the rule below and are recorded in
+suites are the design input for the managed scheduler it needs. The ledger and
+lock now share only a neutral bounded history-search engine. Eleven APIs have
+been promoted under the rule below and are recorded in
 [`docs/api-promotions.md`](./api-promotions.md).
 
 Sequencing: the reference consumers are built before the 1.0 public surface is
@@ -78,12 +79,15 @@ reference/
   ledger/
   fenced-lock/
   sharded-counter/
-  harness/             # added only after demonstrated reuse
+  harness/             # neutral mechanisms proven by at least two consumers
 ```
 
 The root workspace excludes `reference/`. This prevents the consumers from
 accidentally inheriting root workspace dependencies, features, or metadata.
-Their canonical manifests depend on versioned Rafter crates.
+Their canonical manifests depend on versioned Rafter crates. The two history
+checkers also reach the unpublished harness through one workspace-local path;
+package mode copies that complete workspace and never resolves the harness from
+the checkout.
 
 Two dependency modes use those same consumer sources:
 
@@ -119,8 +123,9 @@ patched crates to checkout paths, and package-consumer mode resolves the same
 manifests against unpacked archives and generates its own lockfile. Neither
 resolution is the other's, so committing one would pin a lockfile that the
 other mode has to rewrite on every run. The reference workspace depends only on
-Rafter crates plus their published dependencies, so nothing else needs pinning
-here; the root workspace lockfile remains the pinned build.
+its dependency-free harness, Rafter crates, and their published dependencies,
+so nothing else needs pinning here; the root workspace lockfile remains the
+pinned build.
 
 ### Package-consumer mode
 
@@ -132,8 +137,9 @@ The acceptance job:
    directories in the checkout;
 4. generates a fresh lockfile;
 5. builds and runs the reference tests;
-6. rejects path dependencies that resolve back into the checkout;
-7. rejects internal test hooks and unpublished private crates; and
+6. rejects path dependencies except the exact copied-workspace harness edge;
+7. rejects checkout paths, internal test hooks, and unpublished private product
+   crates; and
 8. verifies required package contents, including README and format documents.
 
 `scripts/reference-package-check` runs that job and reports every boundary it
@@ -155,6 +161,31 @@ compatibility floor.
 
 This mode tests the artifact users receive, not merely the source tree that
 produced it.
+
+## Shared Reference Harness Boundary
+
+`reference/harness` exists because the ledger and fenced-lock checkers proved
+the same bounded-search shape independently. It is unpublished, has no
+dependencies, and owns only:
+
+- the shared `OperationId` and an already-parsed operation interval;
+- explicit operation and configuration limits;
+- real-time predecessor construction and minimal-candidate selection;
+- bounded depth-first search, two-way branch traversal, and failed-state
+  memoization; and
+- searched/discharged/configuration counts plus the deepest failed frontier.
+
+Each consumer still owns its event vocabulary and parser, malformed-history
+errors, sequential oracle, transition and query logic, state key, typed
+mismatch reasons, and replay rendering. The guarded-resource checker remains
+entirely in the fenced-lock consumer. The harness has no generic event schema
+and no process orchestration; the latter is a separate extraction only after
+its duplicated mechanisms are inventoried.
+
+Architecture tests scan every harness production source path and body for
+product vocabulary and reject any dependency from the harness back into a
+consumer. Package mode permits the one copied-workspace harness edge while
+continuing to reject every checkout path.
 
 Until `rafter-sim` has an intentional public surface without hidden internal
 hooks, package-mode consumers use a small consumer-owned deterministic cluster
@@ -545,8 +576,9 @@ A promoted API must:
 - receive its own focused tests outside the reference application.
 
 Repeated plumbing is extracted only after the second consumer demonstrates the
-same shape. Shared harness code may own process orchestration, fault injection,
-history recording, and package setup. It may not own domain transitions,
+same shape. Shared harness code may own neutral search and process mechanisms,
+fault injection, history recording, and package setup once each has two real
+uses. It may not own event schemas, parsing policy, domain transitions,
 validation, deduplication, or oracle logic.
 
 Every API promoted under this rule is recorded in
@@ -586,7 +618,8 @@ All three are complete.
 No shared application framework is extracted during the first three ledger
 slices.
 
-All eight are complete. None extracted a shared framework.
+All eight are complete. The later fenced-lock work extracted their common
+bounded-search mechanics, but no application framework or ledger behavior.
 
 ### Fenced lock
 
@@ -595,13 +628,13 @@ All eight are complete. None extracted a shared framework.
 3. Add the `rafter-service` adapter and linearizable query path.
 4. Add leadership-loss, cancellation, retry, and stale-owner histories.
 5. Add durable snapshots, restart, processes, and package-mode tests.
-6. Extract only the orchestration code now proven common with the ledger.
+6. Extract only mechanisms now proven common with the ledger.
 
 Slices 1 through 5 are complete, including one operating-system process per
 replica and black-box lock and guarded-resource checks over the real-process
-history. Slice 6 is next. Nothing has been extracted yet; the ledger and lock
-now expose the two proven checker and orchestration shapes from which a shared
-substrate can be derived.
+history. Slice 6 has begun with the shared bounded-search substrate. Process
+orchestration remains consumer-owned until its duplicated responsibilities are
+inventoried and extracted separately.
 
 ### Sharded counter and scheduler
 

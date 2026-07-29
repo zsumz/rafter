@@ -14,13 +14,18 @@
 
 mod error;
 mod parse;
-mod search;
 
 pub use error::{Blocked, BlockedReason, CheckError, CheckReport, HistoryDefect, Violation};
 
-use crate::{HistoryEvent, LockConfig};
+use rafter_reference_harness::{
+    search, CandidateReason, SearchError, SearchLimits, SequentialSpec, Step,
+};
 
-use search::{BudgetExhausted, Search};
+use crate::{
+    HistoryEvent, LockConfig, LockQuery, LockQueryResult, ReferenceLockService, ServiceView,
+};
+
+use parse::Action;
 
 /// Maximum number of operations one checked history may require the search to
 /// place.
@@ -42,29 +47,29 @@ const _: () = assert!(MAX_HISTORY_OPERATIONS <= u32::BITS as usize);
 /// single nonempty configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SearchBudget {
-    configurations: usize,
+    limits: SearchLimits,
 }
 
 impl SearchBudget {
     /// Creates a nonzero configuration budget.
     #[must_use]
     pub const fn new(configurations: usize) -> Option<Self> {
-        if configurations == 0 {
-            None
-        } else {
-            Some(Self { configurations })
+        match SearchLimits::new(MAX_HISTORY_OPERATIONS, configurations) {
+            Some(limits) => Some(Self { limits }),
+            None => None,
         }
     }
 
     /// Returns the maximum configurations this budget permits.
     #[must_use]
     pub const fn configurations(self) -> usize {
-        self.configurations
+        self.limits.configurations()
     }
 }
 
-const DEFAULT_SEARCH_BUDGET: SearchBudget = SearchBudget {
-    configurations: MAX_SEARCH_CONFIGURATIONS,
+const DEFAULT_SEARCH_BUDGET: SearchBudget = match SearchBudget::new(MAX_SEARCH_CONFIGURATIONS) {
+    Some(budget) => budget,
+    None => panic!("the reviewed limits must fit the shared engine"),
 };
 
 /// Checks that a recorded history admits a legal real-time ordering.
@@ -100,29 +105,97 @@ pub fn check_linearizable_with_budget(
     budget: SearchBudget,
 ) -> Result<CheckReport, CheckError> {
     let parsed = parse::parse(history)?;
-    if parsed.operations.len() > MAX_HISTORY_OPERATIONS {
-        return Err(CheckError::HistoryTooLong {
-            operations: parsed.operations.len(),
-            bound: MAX_HISTORY_OPERATIONS,
-        });
+    match search(
+        &parsed.operations,
+        parsed.discharged,
+        &ReferenceLockService::new(config),
+        &LockSpecification,
+        budget.limits,
+    ) {
+        Ok(report) => Ok(CheckReport::new(
+            report.searched_operations(),
+            report.discharged_operations(),
+            report.configurations(),
+        )),
+        Err(SearchError::TooManyOperations { operations, bound }) => {
+            Err(CheckError::HistoryTooLong { operations, bound })
+        }
+        Err(SearchError::BudgetExhausted {
+            configurations,
+            bound,
+        }) => Err(CheckError::BudgetExhausted {
+            configurations,
+            bound,
+        }),
+        Err(SearchError::NoOrder(frontier)) => {
+            let (placed, candidates) = frontier.into_parts();
+            let blocked = candidates
+                .into_iter()
+                .map(|candidate| Blocked {
+                    operation_id: candidate.operation_id,
+                    reason: match candidate.reason {
+                        CandidateReason::Mismatch(reason) => reason,
+                        CandidateReason::NoContinuation => BlockedReason::NoContinuation,
+                    },
+                })
+                .collect();
+            Err(CheckError::NotLinearizable(Violation::new(
+                history.to_vec(),
+                placed,
+                blocked,
+            )))
+        }
+    }
+}
+
+struct LockSpecification;
+
+impl SequentialSpec<Action> for LockSpecification {
+    type State = ReferenceLockService;
+    type Key = ServiceView;
+    type Mismatch = BlockedReason;
+
+    fn key(&self, state: &Self::State) -> Self::Key {
+        state.view()
     }
 
-    let all_unplaced = (1_u32 << parsed.operations.len()) - 1;
-    let mut search = Search::new(&parsed.operations, budget);
-    match search.explore(all_unplaced, &crate::ReferenceLockService::new(config)) {
-        Ok(true) => Ok(CheckReport::new(
-            parsed.operations.len(),
-            parsed.discharged,
-            search.configurations(),
-        )),
-        Ok(false) => Err(CheckError::NotLinearizable(Violation::new(
-            history.to_vec(),
-            search.deepest_placed().to_vec(),
-            search.deepest_blocked().to_vec(),
-        ))),
-        Err(BudgetExhausted) => Err(CheckError::BudgetExhausted {
-            configurations: search.configurations(),
-            bound: budget.configurations(),
-        }),
+    fn step(&self, state: &Self::State, action: &Action) -> Step<Self::State, Self::Mismatch> {
+        match *action {
+            Action::Mutation { command, outcome } => {
+                let mut next = state.clone();
+                let specified = next.apply(command);
+                if specified == outcome {
+                    Step::Next(next)
+                } else {
+                    Step::Impossible(BlockedReason::OutcomeMismatch {
+                        expected: specified,
+                        observed: outcome,
+                    })
+                }
+            }
+            Action::UnknownMutation { command } => {
+                let mut applied = state.clone();
+                applied.apply(command);
+                Step::Choice {
+                    first: applied,
+                    second: state.clone(),
+                }
+            }
+            Action::Query { query, result } => {
+                let specified = match query {
+                    LockQuery::GetLock { resource } => {
+                        LockQueryResult::Lock(state.status(resource))
+                    }
+                };
+                if specified == result {
+                    Step::Next(state.clone())
+                } else {
+                    Step::Impossible(BlockedReason::QueryMismatch {
+                        expected: specified,
+                        observed: result,
+                    })
+                }
+            }
+        }
     }
 }

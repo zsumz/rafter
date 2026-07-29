@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 rafter = "0.0.1"
 rafter-app = "0.0.1"
+rafter-reference-harness.workspace = true
 rafter-runtime = "0.0.1"
 rafter-service = "0.0.1"
 rafter-storage = "0.0.1"

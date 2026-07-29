@@ -1,22 +1,6 @@
 use crate::{Command, LedgerQuery, LedgerQueryResult, LedgerResponse};
 
-/// Stable identifier for one client-visible operation in an observed history.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct OperationId(u64);
-
-impl OperationId {
-    /// Creates an operation identifier.
-    #[must_use]
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    /// Returns the numeric identifier.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
+pub use rafter_reference_harness::OperationId;
 
 /// A client-visible event retained for later history checking.
 ///

@@ -1,6 +1,9 @@
 [workspace]
-members = ["fenced-lock", "ledger", "sharded-counter"]
+members = ["fenced-lock", "harness", "ledger", "sharded-counter"]
 resolver = "2"
+
+[workspace.dependencies]
+rafter-reference-harness = { path = "harness" }
 
 [workspace.package]
 edition = "2021"

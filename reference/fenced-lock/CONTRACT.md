@@ -384,9 +384,13 @@ They do not share:
 - deduplication logic; or
 - snapshot reconstruction.
 
-No code is shared with any other reference consumer either. No common harness
-exists yet, and none will be extracted before a second consumer proves the same
-shape is needed.
+No transition, validation, session, token, snapshot, or oracle code is shared
+with another reference consumer. The unpublished reference harness now owns
+only the `OperationId`, complete-interval representation, bounds, real-time
+predecessor construction, bounded backtracking, memoization, and generic
+frontier counts proven common by the ledger and lock checkers. This crate still
+owns the event parser, state key, every sequential action, typed mismatch
+reason, guarded-resource check, and replay rendering.
 
 The implementation keeps one ordered record per tracked resource, with the
 holder embedded in that record and the high-water mark stored beside it. The
@@ -1246,9 +1250,10 @@ The first milestone contained:
 - the history vocabulary.
 
 It intentionally contained no Rafter dependency, transport, filesystem backend,
-shared reference framework, or new Rafter public API. Two of those still hold:
-there is no shared reference framework and no new Rafter public API. The
-transport exclusion no longer does —
+shared reference framework, or new Rafter public API. There is still no shared
+application framework and no new Rafter public API. A later unpublished harness
+shares only neutral bounded-search mechanics. The transport exclusion no longer
+does —
 [Process Composition](#process-composition) puts replicas on real sockets — and
 the deterministic suites keep their in-process network because controlling
 delivery is what they are for.

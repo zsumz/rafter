@@ -1,0 +1,12 @@
+[package]
+name = "rafter-reference-harness"
+version = "0.0.0"
+description = "Neutral test mechanisms shared by the Rafter reference workspace."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true

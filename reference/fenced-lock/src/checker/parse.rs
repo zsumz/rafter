@@ -1,17 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use rafter_reference_harness::Operation;
+
 use crate::{ApplyOutcome, Command, HistoryEvent, LockQuery, LockQueryResult, OperationId};
 
 use super::{CheckError, HistoryDefect};
-
-/// One operation the search must place.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Operation {
-    pub(super) id: OperationId,
-    pub(super) action: Action,
-    /// Operations that returned before this one was invoked.
-    pub(super) must_follow: u32,
-}
 
 /// What one placed operation does to the specification.
 #[derive(Clone, Copy, Debug)]
@@ -30,7 +23,7 @@ pub(super) enum Action {
 }
 
 pub(super) struct Parsed {
-    pub(super) operations: Vec<Operation>,
+    pub(super) operations: Vec<Operation<Action>>,
     pub(super) discharged: usize,
 }
 
@@ -141,14 +134,8 @@ fn build_operations(
 
     let operations = searchable
         .iter()
-        .map(|(operation_id, action, invoked_at, _)| Operation {
-            id: *operation_id,
-            action: *action,
-            must_follow: searchable
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, _, _, returned_at))| returned_at < invoked_at)
-                .fold(0, |mask, (index, _)| mask | bit(index)),
+        .map(|(operation_id, action, invoked_at, returned_at)| {
+            Operation::new(*operation_id, *action, *invoked_at, *returned_at)
         })
         .collect();
     Ok(Parsed {
@@ -180,8 +167,4 @@ fn action_for(
             }));
         }
     })
-}
-
-pub(super) const fn bit(index: usize) -> u32 {
-    1_u32 << index
 }

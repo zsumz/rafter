@@ -43,9 +43,13 @@
 //! checked.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
+};
+
+use rafter_reference_harness::{
+    search, CandidateReason, Operation, SearchError, SearchLimits, SequentialSpec, Step,
 };
 
 use crate::{
@@ -69,6 +73,11 @@ pub const MAX_SEARCH_CONFIGURATIONS: usize = 200_000;
 
 /// The unplaced-operation set is a bit set, so the history bound has to fit it.
 const _: () = assert!(MAX_HISTORY_OPERATIONS <= u32::BITS as usize);
+const SEARCH_LIMITS: SearchLimits =
+    match SearchLimits::new(MAX_HISTORY_OPERATIONS, MAX_SEARCH_CONFIGURATIONS) {
+        Some(limits) => limits,
+        None => panic!("the reviewed limits must fit the shared engine"),
+    };
 
 /// Checks that a recorded history admits a legal real-time ordering.
 ///
@@ -87,38 +96,46 @@ pub fn check_linearizable(
     history: &[HistoryEvent],
 ) -> Result<CheckReport, CheckError> {
     let parsed = parse(history)?;
-    if parsed.operations.len() > MAX_HISTORY_OPERATIONS {
-        return Err(CheckError::HistoryTooLong {
-            operations: parsed.operations.len(),
-            bound: MAX_HISTORY_OPERATIONS,
-        });
-    }
-
-    // The bound checked above keeps the count strictly below `u32::BITS`, so
-    // this shift is always defined.
-    let all_unplaced = (1_u32 << parsed.operations.len()) - 1;
-    let mut search = Search {
-        operations: &parsed.operations,
-        failed: HashSet::new(),
-        configurations: 0,
-        placed: Vec::new(),
-        deepest: Frontier::default(),
-    };
-    match search.explore(all_unplaced, &ReferenceLedger::new(config)) {
-        Ok(true) => Ok(CheckReport {
-            checked_operations: parsed.operations.len(),
-            discharged_operations: parsed.discharged,
-            configurations: search.configurations,
+    match search(
+        &parsed.operations,
+        parsed.discharged,
+        &ReferenceLedger::new(config),
+        &LedgerSpecification,
+        SEARCH_LIMITS,
+    ) {
+        Ok(report) => Ok(CheckReport {
+            checked_operations: report.searched_operations(),
+            discharged_operations: report.discharged_operations(),
+            configurations: report.configurations(),
         }),
-        Ok(false) => Err(CheckError::NotLinearizable(Violation {
-            history: history.to_vec(),
-            placed: search.deepest.placed,
-            blocked: search.deepest.blocked,
-        })),
-        Err(BudgetExhausted) => Err(CheckError::BudgetExhausted {
-            configurations: search.configurations,
-            bound: MAX_SEARCH_CONFIGURATIONS,
+        Err(SearchError::TooManyOperations { operations, bound }) => {
+            Err(CheckError::HistoryTooLong { operations, bound })
+        }
+        Err(SearchError::BudgetExhausted {
+            configurations,
+            bound,
+        }) => Err(CheckError::BudgetExhausted {
+            configurations,
+            bound,
         }),
+        Err(SearchError::NoOrder(frontier)) => {
+            let (placed, candidates) = frontier.into_parts();
+            let blocked = candidates
+                .into_iter()
+                .map(|candidate| Blocked {
+                    operation_id: candidate.operation_id,
+                    reason: match candidate.reason {
+                        CandidateReason::Mismatch(reason) => reason,
+                        CandidateReason::NoContinuation => BlockedReason::NoContinuation,
+                    },
+                })
+                .collect();
+            Err(CheckError::NotLinearizable(Violation {
+                history: history.to_vec(),
+                placed,
+                blocked,
+            }))
+        }
     }
 }
 
@@ -324,18 +341,6 @@ impl fmt::Display for BlockedReason {
     }
 }
 
-/// One operation the search must place.
-#[derive(Clone, Debug)]
-struct Operation {
-    id: OperationId,
-    action: Action,
-    /// Operations that returned before this one was invoked.
-    ///
-    /// Real time forces every one of them ahead of this operation, so this is
-    /// the whole of the ordering constraint the history imposes.
-    must_follow: u32,
-}
-
 /// What one placed operation does to the specification.
 #[derive(Clone, Debug)]
 enum Action {
@@ -356,186 +361,56 @@ enum Action {
 }
 
 struct Parsed {
-    operations: Vec<Operation>,
+    operations: Vec<Operation<Action>>,
     discharged: usize,
 }
 
-/// Marker that the search stopped at its configuration budget.
-struct BudgetExhausted;
+struct LedgerSpecification;
 
-#[derive(Default)]
-struct Frontier {
-    placed: Vec<OperationId>,
-    blocked: Vec<Blocked>,
-}
+impl SequentialSpec<Action> for LedgerSpecification {
+    type State = ReferenceLedger;
+    type Key = LedgerView;
+    type Mismatch = BlockedReason;
 
-struct Search<'a> {
-    operations: &'a [Operation],
-    /// Configurations already proven unexplainable.
-    ///
-    /// The set is only ever inserted into and probed, never iterated, so the
-    /// standard hasher's per-process seed cannot make one check disagree with
-    /// another over the same history.
-    failed: HashSet<(u32, LedgerView)>,
-    configurations: usize,
-    /// Operations placed on the path currently being explored.
-    placed: Vec<OperationId>,
-    /// The deepest dead end reached so far, kept as failure evidence.
-    deepest: Frontier,
-}
+    fn key(&self, state: &Self::State) -> Self::Key {
+        state.view()
+    }
 
-impl Search<'_> {
-    /// Returns whether `unplaced` can be ordered legally from `state`.
-    fn explore(&mut self, unplaced: u32, state: &ReferenceLedger) -> Result<bool, BudgetExhausted> {
-        if unplaced == 0 {
-            return Ok(true);
-        }
-        self.configurations += 1;
-        if self.configurations > MAX_SEARCH_CONFIGURATIONS {
-            return Err(BudgetExhausted);
-        }
-        let configuration = (unplaced, state.view());
-        if self.failed.contains(&configuration) {
-            return Ok(false);
-        }
-
-        // Real-time precedence is a strict partial order, so a nonempty
-        // unplaced set always has a minimal element and this loop always
-        // attempts at least one candidate.
-        let mut blocked = Vec::new();
-        for index in self.candidates(unplaced) {
-            let operation = &self.operations[index];
-            let remainder = unplaced & !bit(index);
-            let attempt = match &operation.action {
-                Action::Mutation { command, response } => {
-                    self.place_mutation(operation.id, command, response, remainder, state)?
+    fn step(&self, state: &Self::State, action: &Action) -> Step<Self::State, Self::Mismatch> {
+        match action {
+            Action::Mutation { command, response } => {
+                let mut next = state.clone();
+                let specified = next.apply(command.clone()).response;
+                if specified == *response {
+                    Step::Next(next)
+                } else {
+                    Step::Impossible(BlockedReason::ResponseMismatch {
+                        expected: specified,
+                        observed: response.clone(),
+                    })
                 }
-                Action::UnknownMutation { command } => {
-                    self.place_unknown_mutation(operation.id, command, remainder, state)?
+            }
+            Action::UnknownMutation { command } => {
+                let mut applied = state.clone();
+                applied.apply(command.clone());
+                Step::Choice {
+                    first: applied,
+                    second: state.clone(),
                 }
-                Action::Query { query, result } => {
-                    self.place_query(operation.id, *query, *result, remainder, state)?
+            }
+            Action::Query { query, result } => {
+                let specified = state.query(*query);
+                if specified == *result {
+                    Step::Next(state.clone())
+                } else {
+                    Step::Impossible(BlockedReason::QueryMismatch {
+                        expected: specified,
+                        observed: *result,
+                    })
                 }
-            };
-            match attempt {
-                Attempt::Linearized => return Ok(true),
-                Attempt::Blocked(reason) => blocked.push(Blocked {
-                    operation_id: operation.id,
-                    reason,
-                }),
             }
         }
-
-        // A configuration already known to fail returns above without coming
-        // back here, so the recorded frontier can name a shallower path than
-        // the deepest one actually reached. That costs evidence detail, never
-        // soundness.
-        if self.placed.len() >= self.deepest.placed.len() {
-            self.deepest = Frontier {
-                placed: self.placed.clone(),
-                blocked,
-            };
-        }
-        self.failed.insert(configuration);
-        Ok(false)
     }
-
-    fn place_mutation(
-        &mut self,
-        id: OperationId,
-        command: &Command,
-        response: &LedgerResponse,
-        remainder: u32,
-        state: &ReferenceLedger,
-    ) -> Result<Attempt, BudgetExhausted> {
-        let mut next = state.clone();
-        let specified = next.apply(command.clone()).response;
-        if specified != *response {
-            return Ok(Attempt::Blocked(BlockedReason::ResponseMismatch {
-                expected: specified,
-                observed: response.clone(),
-            }));
-        }
-        self.descend(id, remainder, &next)
-    }
-
-    /// Tries an unresolved command as taken-effect first, then as never-run.
-    ///
-    /// Both readings are legal for the client, so both must be explored before
-    /// the operation is called a dead end. Trying taken-effect first is
-    /// arbitrary; the search backtracks into the other reading whenever a later
-    /// observation rules the first one out.
-    fn place_unknown_mutation(
-        &mut self,
-        id: OperationId,
-        command: &Command,
-        remainder: u32,
-        state: &ReferenceLedger,
-    ) -> Result<Attempt, BudgetExhausted> {
-        let mut applied = state.clone();
-        applied.apply(command.clone());
-        if matches!(self.descend(id, remainder, &applied)?, Attempt::Linearized) {
-            return Ok(Attempt::Linearized);
-        }
-        self.descend(id, remainder, state)
-    }
-
-    fn place_query(
-        &mut self,
-        id: OperationId,
-        query: LedgerQuery,
-        result: LedgerQueryResult,
-        remainder: u32,
-        state: &ReferenceLedger,
-    ) -> Result<Attempt, BudgetExhausted> {
-        let specified = state.query(query);
-        if specified != result {
-            return Ok(Attempt::Blocked(BlockedReason::QueryMismatch {
-                expected: specified,
-                observed: result,
-            }));
-        }
-        // A query leaves the specification where it was, so the continuation
-        // starts from the same state.
-        self.descend(id, remainder, state)
-    }
-
-    fn descend(
-        &mut self,
-        id: OperationId,
-        remainder: u32,
-        state: &ReferenceLedger,
-    ) -> Result<Attempt, BudgetExhausted> {
-        self.placed.push(id);
-        let linearized = self.explore(remainder, state)?;
-        self.placed.pop();
-        Ok(if linearized {
-            Attempt::Linearized
-        } else {
-            Attempt::Blocked(BlockedReason::NoContinuation)
-        })
-    }
-
-    /// Returns the unplaced operations no other unplaced operation precedes.
-    ///
-    /// The result is collected rather than iterated lazily because the search
-    /// mutates its own memo while descending.
-    fn candidates(&self, unplaced: u32) -> Vec<usize> {
-        (0..self.operations.len())
-            .filter(|index| unplaced & bit(*index) != 0)
-            .filter(|index| self.operations[*index].must_follow & unplaced == 0)
-            .collect()
-    }
-}
-
-/// Outcome of trying one candidate at one point in the search.
-enum Attempt {
-    Linearized,
-    Blocked(BlockedReason),
-}
-
-const fn bit(index: usize) -> u32 {
-    1_u32 << index
 }
 
 /// What one invocation event asked for.
@@ -654,14 +529,8 @@ fn build_operations(
 
     let operations = searchable
         .iter()
-        .map(|(operation_id, action, invoked_at, _)| Operation {
-            id: *operation_id,
-            action: action.clone(),
-            must_follow: searchable
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, _, _, returned_at))| returned_at < invoked_at)
-                .fold(0, |mask, (index, _)| mask | bit(index)),
+        .map(|(operation_id, action, invoked_at, returned_at)| {
+            Operation::new(*operation_id, action.clone(), *invoked_at, *returned_at)
         })
         .collect();
     Ok(Parsed {

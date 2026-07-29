@@ -831,7 +831,7 @@ The first milestone contains:
 - differential exploration over small command histories; and
 - the history vocabulary.
 
-It intentionally contains no transport, filesystem backend, shared reference
+It intentionally contained no transport, filesystem backend, shared reference
 framework, or new Rafter public API.
 
 ## Adapter Boundary
@@ -848,8 +848,8 @@ The adapter slice adds:
 
 The adapter adapts the implementation model only. It never touches the oracle,
 never re-derives a ledger, session, or deduplication decision, and depends only
-on published Rafter crates. It still contains no transport, no filesystem
-backend, no shared reference framework, and no new Rafter public API.
+on published Rafter crates. That slice contained no transport, filesystem
+backend, shared reference framework, or new Rafter public API.
 
 The driver still models one thing it does not make real: durable Raft state
 lives in shared in-memory media that outlive one node incarnation. Durable
@@ -875,6 +875,13 @@ unknown outcome. It adds:
 The checker reads only the history. It never inspects replicas, logs, applied
 indexes, or the implementation model, so an external user recording the same
 client-visible events could run the same check.
+
+A later behavior-preserving extraction moved only the neutral `OperationId`,
+complete-interval representation, bounds, real-time predecessor construction,
+bounded backtracking, memoization, and generic frontier counts into the
+unpublished reference harness proven by this checker and the fenced-lock
+checker. This crate still owns its event parser, state key, every oracle
+transition and query, typed mismatch reasons, and replay rendering.
 
 ## Durable Backend Boundary
 

@@ -581,29 +581,45 @@ reject_metadata "internal-test-hooks requested by a dependency" '
 reject_text "internal-test-hooks named in a consumer manifest" \
     grep -rn --include=Cargo.toml 'internal-test-hooks' "$consumer_workspace"
 
-# 6e. Consumer manifests must stay registry-only. cargo metadata reports a path
-# for a path dependency and null otherwise, so this is exact; the text scan
-# below also catches a [patch] table smuggled into a manifest, which resolution
-# alone would silently honour.
-# shellcheck disable=SC2016 # $members and $package bind inside the jq filter
-reject_metadata "consumer manifest declares a path dependency" '
+# 6e. Product consumers stay registry-only. The sole path edge admitted here
+# is from those consumers to the copied, unpublished harness workspace member;
+# it is reference test machinery rather than an artifact under acceptance.
+# cargo metadata reports normalized paths, so the exception is exact. The text
+# scan below also catches a [patch] table smuggled into a manifest, which
+# resolution alone would silently honour.
+# shellcheck disable=SC2016 # jq variables bind inside the filter
+reject_metadata "consumer manifest declares a forbidden path dependency" '
     .workspace_members as $members
     | .packages[]
     | . as $package
     | select($members | index($package.id))
     | $package.dependencies[]
     | select(.path != null)
+    | select(.name != "rafter-reference-harness" or .path != $harness)
     | "\($package.name) -> \(.name) at \(.path)"
-'
+' --arg harness "$consumer_workspace/harness"
 
 # shellcheck disable=SC2016 # $0 is an awk field, not a shell parameter
-reject_text "consumer manifest declares a path dependency" \
-    find "$consumer_workspace" -name Cargo.toml -exec awk '
+reject_text "consumer manifest declares a forbidden path dependency" \
+    find "$consumer_workspace" -name Cargo.toml -exec awk \
+    -v allowed="$consumer_workspace/Cargo.toml" '
         /^[[:space:]]*\[/ { section = $0 }
         /path[[:space:]]*=/ {
+            if (FILENAME == allowed &&
+                section == "[workspace.dependencies]" &&
+                $0 ~ /^rafter-reference-harness = \{ path = "harness" \}$/) {
+                next
+            }
             if (section ~ /dependencies/ || section ~ /^\[patch/) {
                 printf "%s:%d:%s\n", FILENAME, FNR, $0
             }
+        }
+    ' {} +
+
+reject_text "consumer manifest declares a patch table" \
+    find "$consumer_workspace" -name Cargo.toml -exec awk '
+        /^\[patch([."]|\])/ {
+            printf "%s:%d:%s\n", FILENAME, FNR, $0
         }
     ' {} +
 
@@ -614,7 +630,7 @@ if ((violation_count > 0)); then
     fail "the consumer graph violates the package-consumer boundary"
 fi
 
-log "no checkout paths, unpublished crates, internal hooks, or path dependencies"
+log "no checkout paths, forbidden path dependencies, private product crates, or internal hooks"
 
 resolved_archives="$(jq -r --arg unpacked "$unpack_root/" '
     .packages[]

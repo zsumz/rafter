@@ -1269,9 +1269,10 @@ They do not share:
 - scheduling decisions; or
 - fairness accounting.
 
-No code is shared with any other reference consumer either. No common harness
-exists, and none will be extracted before a second consumer proves the same
-shape is needed.
+No code from this consumer is shared with another reference consumer. The
+neutral harness now used by the ledger and fenced-lock checkers was extracted
+only after those two consumers proved the same search shape; this crate has no
+dependency on it or on anything else.
 
 ### How they differ
 
@@ -1423,8 +1424,8 @@ what the red-team schedulers are for, and it is why invariant 24 exists — and
 invariant 24 in turn proves that each rule fires, not that the rules cover. Both
 limits are named where each claim is made.
 
-It intentionally contains no Rafter dependency, no adapter, no transport, no
-disk backend, no shared reference framework, and no new Rafter public API. The
+It intentionally contained no Rafter dependency, adapter, transport, disk
+backend, shared reference framework, or new Rafter public API. The
 stopping point is the same one the ledger and the lock used: it gives the
 adapter an application contract to meet instead of letting integration
 convenience define the application.
