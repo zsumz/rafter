@@ -26,7 +26,7 @@ use super::{
 
 #[cfg(test)]
 pub(crate) use test_support::{
-    await_next_internal_completion_exit, bounded_internal_output,
+    await_next_internal_completion_after_deadline, bounded_internal_output,
     bounded_internal_output_with_reaper, inject_next_internal_drain_error,
 };
 
@@ -176,7 +176,11 @@ fn collect_internal_output(
         overflowed |= stdout_bytes.len() > INTERNAL_OUTPUT_MAX_BYTES
             || stderr_bytes.len() > INTERNAL_OUTPUT_MAX_BYTES;
         #[cfg(test)]
-        test_support::await_child_exit_if_requested(process, request.lifecycle_deadline)?;
+        test_support::await_completion_boundary_if_requested(
+            process,
+            request.execution_deadline,
+            request.lifecycle_deadline,
+        )?;
         let exited = process.exit_observed()?;
         let lineage_released = process.lifetime_state()? == ProcessLeaseState::Released;
         let mut complete = exited && lineage_released && stdout_eof && stderr_eof;

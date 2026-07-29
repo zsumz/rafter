@@ -90,6 +90,16 @@ const FLOOD_CONNECTIONS: usize = 4;
 /// every one of these admitted and would still fail.
 const QUEUED_BEHIND: usize = 8;
 
+/// Returns the main-loop admission ticket exposed by the injected-fault seam.
+fn harness_ticket(response: &str) -> u64 {
+    response
+        .rsplit_once(" HARNESS_TICKET ")
+        .unwrap_or_else(|| panic!("fault-seam response has no admission ticket: {response:?}"))
+        .1
+        .parse()
+        .unwrap_or_else(|error| panic!("fault-seam response has an invalid ticket: {error}"))
+}
+
 /// Asserts an operation committed with an exact result.
 #[track_caller]
 fn assert_operation(outcome: &SubmitOutcome, expected: OperationResult) {
@@ -369,13 +379,13 @@ fn an_unpersistable_control_plane_stops_the_process_under_a_client_flood() {
 /// only `submit` and `query` do — so the `QUERY` below is deterministically the
 /// operation that trips the seam however many local reads precede it.
 ///
-/// The sequencing is the fixture's one real assumption and it is stated rather
-/// than hidden: the `QUERY` line is written first, on its own connection, and
-/// the local reads are written immediately after on connections already
-/// established. The `QUERY` runs a read barrier through the durable runtime, so
-/// the replica is still inside that job when the local reads reach its queue.
-/// The baseline assertion before the fault is what keeps a fixture that stopped
-/// reaching the replica at all from passing silently.
+/// Socket write order is deliberately not mistaken for admission order. Every
+/// connection has its own reader thread, so a later-written local read can reach
+/// the main loop first under load. The injected-fault seam suffixes replies with
+/// that loop's ticket: a served local read is legal only when its ticket precedes
+/// the query's, while every later ticket must be refused. The baseline assertion
+/// before the fault keeps a fixture that stopped reaching the replica at all from
+/// passing silently.
 #[test]
 #[ignore = "spawns real processes; run with --ignored (see the module docs)"]
 fn a_stored_control_plane_failure_refuses_the_requests_queued_behind_it() {
@@ -418,26 +428,39 @@ fn a_stored_control_plane_failure_refuses_the_requests_queued_behind_it() {
         request.send("LOCAL LOCK vault");
     }
 
+    let breaking_answer = breaking
+        .recv()
+        .expect("the replica answers the request that breaks it");
     assert!(
-        breaking
-            .recv()
-            .expect("the replica answers the request that breaks it")
-            .starts_with("ABANDONED"),
+        breaking_answer.starts_with("ABANDONED"),
         "the operation that made the control plane undurable is refused rather \
-         than served"
+         than served: {breaking_answer}"
     );
+    let breaking_ticket = harness_ticket(&breaking_answer);
+    let mut observed_behind = false;
     for (index, request) in queued.iter_mut().enumerate() {
         // A connection the replica closed as it exits is not a served read, and
         // is the ordinary ending for a request that arrived after the loop.
         let Ok(answer) = request.recv() else {
+            observed_behind = true;
             continue;
         };
-        assert!(
-            !answer.starts_with("OK LOCK"),
-            "request {index} was served by a replica that already knew its \
-             control plane was not durable: {answer}"
-        );
+        if answer.starts_with("OK LOCK") {
+            let ticket = harness_ticket(&answer);
+            assert!(
+                ticket < breaking_ticket,
+                "request {index} was served after the replica knew its control \
+                 plane was not durable: query ticket {breaking_ticket}, local \
+                 ticket {ticket}, answer {answer}"
+            );
+        } else {
+            observed_behind = true;
+        }
     }
+    assert!(
+        observed_behind,
+        "the fixture did not place any request behind the breaking query"
+    );
 
     let refused = faulted.wait_refused();
     assert!(

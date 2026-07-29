@@ -453,7 +453,24 @@ impl Config {
 #[derive(Debug)]
 struct Job {
     request: Request,
-    reply: Sender<String>,
+    reply: ClientReply,
+}
+
+/// The client thread that owns a request's socket and its flush acknowledgement.
+#[derive(Debug)]
+struct ClientReply {
+    response: Sender<String>,
+    flushed: Receiver<()>,
+}
+
+impl ClientReply {
+    /// Hands the answer to the socket owner, optionally waiting until it has
+    /// attempted the write before the process is allowed to exit.
+    fn send(self, response: String, wait_for_flush: bool) {
+        if self.response.send(response).is_ok() && wait_for_flush {
+            let _ = self.flushed.recv();
+        }
+    }
 }
 
 /// Whether the replica exists yet, and whether it will serve again.
@@ -586,7 +603,7 @@ fn serve(
         next_attempt: Instant::now(),
         announced: false,
     };
-    let mut responders: BTreeMap<u64, Sender<String>> = BTreeMap::new();
+    let mut responders: BTreeMap<u64, ClientReply> = BTreeMap::new();
     let mut next_ticket = 1_u64;
     let mut next_tick = Instant::now() + config.tick_interval;
     let mut announced_ready = false;
@@ -615,12 +632,17 @@ fn serve(
             let ticket = next_ticket;
             next_ticket += 1;
             match handle_job(&mut state, config, &job, ticket) {
-                Disposition::Answered(response) => drop(job.reply.send(response)),
+                Disposition::Answered(response) => {
+                    let terminal = pass_is_terminal(&state);
+                    job.reply
+                        .send(harness_response(config, ticket, response), terminal);
+                }
                 Disposition::Pending => {
                     responders.insert(ticket, job.reply);
                 }
                 Disposition::Stop(response) => {
-                    drop(job.reply.send(response));
+                    job.reply
+                        .send(harness_response(config, ticket, response), true);
                     stopping = true;
                 }
             }
@@ -735,7 +757,7 @@ fn serve(
                     for answer in replica.take_answers() {
                         let (ticket, response) = render_answer(answer);
                         if let Some(reply) = responders.remove(&ticket) {
-                            drop(reply.send(response));
+                            reply.send(harness_response(config, ticket, response), true);
                         }
                     }
                     let State::Serving(replica) = std::mem::replace(
@@ -767,7 +789,7 @@ fn serve(
                 for answer in replica.take_answers() {
                     let (ticket, response) = render_answer(answer);
                     if let Some(reply) = responders.remove(&ticket) {
-                        drop(reply.send(response));
+                        reply.send(harness_response(config, ticket, response), false);
                     }
                 }
                 if !announced_ready && replica.is_ready() {
@@ -795,7 +817,7 @@ fn serve(
             for answer in replica.take_answers() {
                 let (ticket, response) = render_answer(answer);
                 if let Some(reply) = responders.remove(&ticket) {
-                    drop(reply.send(response));
+                    reply.send(harness_response(config, ticket, response), true);
                 }
             }
             // The shutdown flush has no later entry point to raise it, so the
@@ -829,6 +851,22 @@ fn serve(
     stop_outcome(terminal)?;
     emit(&format!("STOPPED {}", config.node_id.0));
     Ok(())
+}
+
+/// Adds main-loop ordering evidence only when the deterministic fault seam is
+/// active.
+///
+/// Connections have independent reader threads, so socket write order is not
+/// main-loop admission order. The fault harness needs the latter to distinguish
+/// a request legitimately served before the injected failure from one served
+/// after it. Ordinary clients never see this suffix because an operator-started
+/// replica does not carry the seam.
+fn harness_response(config: &Config, ticket: u64, response: String) -> String {
+    if config.control_plane_fault_after.is_some() {
+        format!("{response} HARNESS_TICKET {ticket}")
+    } else {
+        response
+    }
 }
 
 /// The terminal control-plane failure this replica has reached, if it has.
@@ -1104,29 +1142,37 @@ fn serve_client(stream: TcpStream, jobs: &Sender<Job>) {
         if line.trim().is_empty() {
             continue;
         }
-        let response = match parse_request(&line) {
+        let (response, flushed) = match parse_request(&line) {
             Ok(request) => {
                 let (reply_tx, reply_rx) = mpsc::channel();
+                let (flushed_tx, flushed_rx) = mpsc::channel();
                 if jobs
                     .send(Job {
                         request,
-                        reply: reply_tx,
+                        reply: ClientReply {
+                            response: reply_tx,
+                            flushed: flushed_rx,
+                        },
                     })
                     .is_err()
                 {
                     return;
                 }
                 match reply_rx.recv() {
-                    Ok(response) => response,
+                    Ok(response) => (response, Some(flushed_tx)),
                     // The loop that owed this answer is gone. Saying nothing is
                     // correct: the client observes a dropped connection, which
                     // is the unknown outcome it already has to handle.
                     Err(_) => return,
                 }
             }
-            Err(error) => format!("ERR {error}"),
+            Err(error) => (format!("ERR {error}"), None),
         };
-        if writeln!(write_half, "{response}").is_err() || write_half.flush().is_err() {
+        let written = writeln!(write_half, "{response}").and_then(|()| write_half.flush());
+        if let Some(flushed) = flushed {
+            let _ = flushed.send(());
+        }
+        if written.is_err() {
             return;
         }
     }

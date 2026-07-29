@@ -11,7 +11,7 @@ use rustix::io::Errno;
 #[cfg(unix)]
 use super::super::super::model::DEFAULT_KILL_CONFIRMATION_TIMEOUT;
 use super::super::super::{
-    await_next_internal_completion_exit, bounded_internal_output,
+    await_next_internal_completion_after_deadline, bounded_internal_output,
     bounded_internal_output_with_reaper, confirm_process_group_absent_with,
     inject_next_internal_drain_error, parse_peak_rss, parse_process_group_observation,
     process_observer_path, NoSignalReaper, ProcessAnchorState, ProcessGroupObservation,
@@ -104,11 +104,10 @@ fn internal_observer_bounds_a_continuously_readable_pipe() {
 fn internal_observer_rejects_a_clean_exit_classified_after_its_deadline() {
     clear_signal_attempts();
     // The scenario needs the child to have finished before the completion check
-    // runs, so that a clean exit is what gets classified late. Holding the check
-    // until the exit is observed states that; sleeping past a guess at how long
-    // `/bin/sh` needs left a loaded machine killing the child mid-write and
-    // asserting on output it never produced.
-    await_next_internal_completion_exit();
+    // runs, and the check to run after the execution deadline, so that a clean
+    // exit is what gets classified late. Holding for both states avoids guessing
+    // how long `/bin/sh` needs or accepting a fast child before the boundary.
+    await_next_internal_completion_after_deadline();
     let error =
         bounded_internal_output("/bin/sh", &["-c", "printf late"], Duration::from_millis(10))
             .expect_err("late clean completion must retain output but classify as timed out");

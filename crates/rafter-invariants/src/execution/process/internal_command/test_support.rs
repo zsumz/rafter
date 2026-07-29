@@ -20,7 +20,7 @@ thread_local! {
     static INJECT_NEXT_DRAIN_ERROR: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
-    static AWAIT_NEXT_COMPLETION_EXIT: std::cell::Cell<bool> = const {
+    static AWAIT_NEXT_COMPLETION_AFTER_DEADLINE: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
 }
@@ -29,14 +29,15 @@ pub(crate) fn inject_next_internal_drain_error() {
     INJECT_NEXT_DRAIN_ERROR.with(|inject| inject.set(true));
 }
 
-/// Hold the next completion check until the child has actually exited.
+/// Hold the next completion check until the child has exited and its execution
+/// deadline has arrived.
 ///
 /// Callers use this to reach the "clean exit classified after its deadline"
-/// ordering. Waiting for the observed exit rather than sleeping for a fixed
-/// duration keeps that ordering on a machine where the child needs longer than
-/// some constant to run.
-pub(crate) fn await_next_internal_completion_exit() {
-    AWAIT_NEXT_COMPLETION_EXIT.with(|await_exit| await_exit.set(true));
+/// ordering. Waiting for both facts avoids guessing whether a fixed delay is
+/// long enough for the child or accidentally classifying a fast child before
+/// the deadline.
+pub(crate) fn await_next_internal_completion_after_deadline() {
+    AWAIT_NEXT_COMPLETION_AFTER_DEADLINE.with(|await_completion| await_completion.set(true));
 }
 
 pub(crate) fn bounded_internal_output(
@@ -87,18 +88,27 @@ pub(crate) fn bounded_internal_output_with_reaper(
     )
 }
 
-pub(super) fn await_child_exit_if_requested(
+pub(super) fn await_completion_boundary_if_requested(
     process: &mut ManagedInternalProcess,
-    deadline: Instant,
+    execution_deadline: Instant,
+    lifecycle_deadline: Instant,
 ) -> Result<(), Box<dyn Error>> {
-    if !AWAIT_NEXT_COMPLETION_EXIT.with(|await_exit| await_exit.replace(false)) {
+    if !AWAIT_NEXT_COMPLETION_AFTER_DEADLINE
+        .with(|await_completion| await_completion.replace(false))
+    {
         return Ok(());
     }
     while !process.exit_observed()? {
-        if Instant::now() >= deadline {
+        if Instant::now() >= lifecycle_deadline {
             return Err("internal command did not exit before its absolute deadline".into());
         }
         std::thread::sleep(Duration::from_millis(1));
+    }
+    while Instant::now() < execution_deadline {
+        std::thread::sleep(
+            Duration::from_millis(1)
+                .min(execution_deadline.saturating_duration_since(Instant::now())),
+        );
     }
     Ok(())
 }

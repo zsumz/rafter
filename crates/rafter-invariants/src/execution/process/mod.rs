@@ -55,7 +55,7 @@ pub(crate) use finalization::PendingProcessOutput;
 pub(crate) use identity::run_identity_command_in;
 #[cfg(test)]
 use internal_command::{
-    await_next_internal_completion_exit, bounded_internal_output,
+    await_next_internal_completion_after_deadline, bounded_internal_output,
     bounded_internal_output_with_reaper, inject_next_internal_drain_error,
 };
 use internal_process::ManagedInternalProcess;
