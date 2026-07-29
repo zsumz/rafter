@@ -209,8 +209,9 @@ pub(super) struct CompletedQueryRead<G> {
 
 /// Inputs accepted by the synchronous group driver.
 ///
-/// This enum is exhaustive for the public input kinds currently accepted by
-/// `RaftGroup`; new driver operations may add variants before 1.0.
+/// This enum is exhaustive because it is the closed set a group driver must
+/// dispatch. A new operation must break drivers that would otherwise ignore it
+/// through a wildcard.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum GroupInput<G, C> {
@@ -431,9 +432,11 @@ pub struct ReadReport<G, Q, R> {
 
 /// Leadership-transfer lifecycle events surfaced by the app layer.
 ///
-/// This enum is exhaustive for the leadership-transfer outcomes emitted by
-/// the current app layer.
+/// This lifecycle stream is `#[non_exhaustive]`: the app layer may gain another
+/// observable transfer state, and report routers can preserve unknown events
+/// without treating them as a rejection.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum LeadershipTransferEvent {
     Started {
         target: NodeId,

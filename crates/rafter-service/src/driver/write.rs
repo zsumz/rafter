@@ -181,7 +181,14 @@ where
         error: GroupError<A::Error, R::Error>,
     ) -> Vec<Result<WriteReceipt<A::CommandResult>, WriteError>> {
         let poisoned = self.poisoned_write_errors_from_primary_batch(&states);
-        if !poisoned.is_empty() {
+        if poisoned.is_empty() {
+            // One failure, one error, but a fate per entry: `saw_local_append`
+            // is the observation, and it can differ across a batch.
+            let write_error = write_error_from_group(error, WriteFate::NotAppended);
+            complete_unresolved_writes(&mut states, |state| {
+                with_observed_fate(&write_error, state.saw_local_append)
+            });
+        } else {
             complete_unresolved_writes(&mut states, |state| {
                 poisoned
                     .get(&state.local_proposal_id)
@@ -193,21 +200,6 @@ where
                             UnknownOutcomeReason::GroupPoisoned,
                         )
                     })
-            });
-        } else if matches!(error, GroupError::ProposalDidNotStart { .. }) {
-            complete_unresolved_writes(&mut states, |state| {
-                write_unknown_outcome(
-                    state.local_proposal_id,
-                    state.options,
-                    UnknownOutcomeReason::RuntimeDroppedProposal,
-                )
-            });
-        } else {
-            // One failure, one error, but a fate per entry: `saw_local_append`
-            // is the observation, and it can differ across a batch.
-            let write_error = write_error_from_group(error, WriteFate::NotAppended);
-            complete_unresolved_writes(&mut states, |state| {
-                with_observed_fate(&write_error, state.saw_local_append)
             });
         }
         self.publish_primary_metrics();

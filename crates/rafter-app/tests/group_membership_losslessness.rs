@@ -460,26 +460,23 @@ fn construction_owes_no_event_for_the_configuration_it_opened_over() {
     );
 }
 
-/// A discarded report leaves its membership delta owed.
+/// Runtime silence about a proposal does not split membership from its report.
 ///
-/// `GroupError::ProposalDidNotStart` throws away a report the group had already
-/// built, which is a known hole in its own right. Its membership half is closed
-/// here by construction: the mark advances when a report is *returned*, so a
-/// report the caller never sees advances nothing and the next drain still owes
-/// the move.
+/// A missing proposal lifecycle is represented as an unknown outcome in the
+/// report itself, so the membership transition it traveled beside is handed
+/// back exactly once rather than restored for a later drain.
 #[test]
-fn a_report_discarded_by_a_proposal_verdict_still_owes_its_membership_delta() {
+fn a_runtime_silent_proposal_reports_its_membership_delta_in_the_same_step() {
     let mut group = losslessness_group(
         RecordingStateMachine::default(),
         &[1, 2],
         &[1, 2],
         [(vec![1, 2, 3], vec![1, 2]), unchanged(&[1, 2, 3], &[1, 2])],
-        // No lifecycle output for the proposal, which is what makes the group
-        // discard the report it built.
+        // No lifecycle output for the proposal.
         [vec![]],
     );
 
-    let error = group
+    let report = group
         .step(GroupInput::Proposal {
             proposal: Proposal {
                 local_proposal_id: LocalProposalId(1),
@@ -487,20 +484,29 @@ fn a_report_discarded_by_a_proposal_verdict_still_owes_its_membership_delta() {
                 command: b"command".to_vec(),
             },
         })
-        .expect_err("the runtime released no lifecycle event for the proposal");
-    assert!(matches!(error, GroupError::ProposalDidNotStart { .. }));
-
-    // Through a later step rather than a drain, because the discard has to
-    // survive the *mark* rather than merely the moment: a group that advanced
-    // the mark into the report it threw away has nothing left to report here.
-    let reported = report_after_an_unrelated_step(&mut group);
+        .expect("runtime silence becomes an unknown lifecycle event");
 
     assert_eq!(
-        reported.len(),
+        report.membership_events.len(),
         1,
-        "the discarded report's membership delta is still owed: {reported:?}"
+        "the report carries the membership delta beside the unknown proposal: {:?}",
+        report.membership_events
     );
-    assert_eq!(voters(&reported[0]), vec![NodeId(1), NodeId(2), NodeId(3)]);
+    assert_eq!(
+        voters(&report.membership_events[0]),
+        vec![NodeId(1), NodeId(2), NodeId(3)]
+    );
+    assert!(matches!(
+        &report.proposal_events[..],
+        [ProposalEvent::UnknownOutcome {
+            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            ..
+        }]
+    ));
+    assert!(
+        group.drain_membership_events().is_empty(),
+        "the returned report consumed the delta"
+    );
 }
 
 /// Decomposition carries the owed delta, and the rebuild still owes it.

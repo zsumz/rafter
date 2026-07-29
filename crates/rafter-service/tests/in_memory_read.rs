@@ -113,7 +113,11 @@ fn in_memory_driver_cancels_freshness_unavailable_linearizable_reads() {
             "got {error:?}"
         );
         assert_eq!(
-            handle.metrics().expect("metrics").current().pending_reads,
+            handle
+                .metrics()
+                .expect("metrics")
+                .current()
+                .pending_read_barriers,
             0,
             "abandoned freshness-unavailable read must not leak pending app state"
         );
@@ -221,7 +225,7 @@ fn an_abandoned_read_leaves_no_reserved_read() {
     let metrics = handle.metrics().expect("metrics").current();
     assert_eq!(metrics.reserved_reads, reserved_before);
     assert_eq!(
-        metrics.pending_reads, 0,
+        metrics.pending_read_barriers, 0,
         "abandoned stalled read must not leak pending app state"
     );
 }

@@ -629,10 +629,10 @@ fn held_ids_do_not_regress_across_release_and_re_adoption() {
 }
 
 /// A runtime that emits no proposal lifecycle event told the app layer nothing
-/// about whether the entry was appended, and `GroupError::ProposalDidNotStart`
-/// is the app layer saying exactly that. The driver used to call it
-/// `WriteFate::NotAppended` — "it cannot commit, now or later" — which is a
-/// claim nobody made.
+/// about whether the entry was appended. The app layer turns that silence into
+/// `ProposalUnknownOutcomeReason::ProposalDidNotStart`, and the driver must not
+/// strengthen it into `WriteFate::NotAppended` — "it cannot commit, now or
+/// later" — because nobody made that claim.
 #[test]
 fn a_write_with_no_lifecycle_event_is_unresolved_rather_than_refused() {
     let driver = refusing_driver();

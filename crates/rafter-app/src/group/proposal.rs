@@ -32,9 +32,9 @@ where
     ///
     /// Returns a group error when the group is poisoned, the state machine is
     /// below the runtime's snapshot boundary, command encoding fails, the
-    /// runtime rejects the proposal input, applying a synchronously committed
-    /// entry fails, or the runtime produces no proposal lifecycle event for the
-    /// supplied local proposal ID.
+    /// runtime rejects the proposal input, or applying a synchronously committed
+    /// entry fails. A runtime that accepts the input but emits no lifecycle event
+    /// is returned as [`ProposalUnknownOutcomeReason::ProposalDidNotStart`].
     #[allow(clippy::needless_pass_by_value)]
     pub fn begin_proposal_outcome(
         &mut self,
@@ -59,9 +59,9 @@ where
     ///
     /// Returns a group error when the group is poisoned, the state machine is
     /// below the runtime's snapshot boundary, command encoding fails, the
-    /// runtime rejects the proposal input, applying a synchronously committed
-    /// entry fails, or the runtime produces no proposal lifecycle event for the
-    /// supplied local proposal ID.
+    /// runtime rejects the proposal input, or applying a synchronously committed
+    /// entry fails. A runtime that accepts the input but emits no lifecycle event
+    /// is returned as [`ProposalUnknownOutcomeReason::ProposalDidNotStart`].
     #[allow(clippy::needless_pass_by_value)]
     pub fn begin_proposal(
         &mut self,
@@ -73,17 +73,10 @@ where
         self.reject_if_below_snapshot_boundary()?;
         let local_proposal_id = proposal.local_proposal_id;
         let outputs = self.step_proposal(&proposal)?;
-        // Taken before the report is built: the verdict below can throw it
-        // away, and a report the caller never receives reported nothing.
-        let mark = self.membership_report_mark();
-        let report = self.apply_stepped_outputs(outputs, false, StepReportOptions::default())?;
-        let begin = match self.proposal_begin_from_report(local_proposal_id, &report) {
-            Ok(begin) => begin,
-            Err(error) => {
-                self.restore_membership_report_mark(mark, &report);
-                return Err(error);
-            }
-        };
+        let mut report =
+            self.apply_stepped_outputs(outputs, false, StepReportOptions::default())?;
+        self.record_missing_proposal_lifecycles(&[local_proposal_id], &mut report);
+        let begin = self.proposal_begin_from_report(local_proposal_id, &report);
         Ok(ProposalBeginReport { begin, report })
     }
 
@@ -100,8 +93,9 @@ where
     /// Returns a group error when the group is poisoned, the state machine is
     /// below the runtime's snapshot boundary, the batch violates local proposal
     /// ID monotonicity, command encoding fails, the runtime rejects the batched
-    /// step, applying synchronously committed entries fails, or the runtime
-    /// produces no proposal lifecycle event for any supplied local proposal ID.
+    /// step, or applying synchronously committed entries fails. A proposal for
+    /// which the runtime emits no lifecycle event is returned as an unknown
+    /// outcome without discarding the other proposals' report content.
     pub fn begin_proposal_batch(
         &mut self,
         proposals: Vec<Proposal<A::Command>>,
@@ -115,32 +109,21 @@ where
             .map(|proposal| proposal.local_proposal_id)
             .collect::<Vec<_>>();
         let outputs = self.step_proposals(proposals)?;
-        // As [`RaftGroup::begin_proposal`]: two verdicts below can discard this
-        // report, and neither may consume the membership delta it carried.
-        let mark = self.membership_report_mark();
-        let report = self.apply_stepped_outputs(outputs, false, StepReportOptions::default())?;
-        if let Err(error) = self.ensure_proposal_batch_lifecycles(&local_proposal_ids, &report) {
-            self.restore_membership_report_mark(mark, &report);
-            return Err(error);
-        }
-        let mut begins = Vec::with_capacity(local_proposal_ids.len());
-        for local_proposal_id in local_proposal_ids {
-            match self.proposal_begin_from_report(local_proposal_id, &report) {
-                Ok(begin) => begins.push(begin),
-                Err(error) => {
-                    self.restore_membership_report_mark(mark, &report);
-                    return Err(error);
-                }
-            }
-        }
+        let mut report =
+            self.apply_stepped_outputs(outputs, false, StepReportOptions::default())?;
+        self.record_missing_proposal_lifecycles(&local_proposal_ids, &mut report);
+        let begins = local_proposal_ids
+            .into_iter()
+            .map(|local_proposal_id| self.proposal_begin_from_report(local_proposal_id, &report))
+            .collect();
         Ok(ProposalBatchBeginReport { begins, report })
     }
 
     pub(super) fn proposal_begin_from_report(
-        &mut self,
+        &self,
         local_proposal_id: LocalProposalId,
         report: &GroupStepReport<G, A::CommandResult>,
-    ) -> ProposalBeginResult<G, A, R> {
+    ) -> ProposalBegin<G, A::CommandResult> {
         if let Some(event) = report.proposal_events.iter().find_map(|event| match event {
             ProposalEvent::Applied {
                 local_proposal_id: id,
@@ -151,14 +134,14 @@ where
             _ => None,
         }) {
             let (index, term, result) = event;
-            return Ok(ProposalBegin::Completed {
+            return ProposalBegin::Completed {
                 group_id: self.group_id.clone(),
                 local_proposal_id,
                 index,
                 term,
                 result,
                 peer_messages: report.peer_messages.clone(),
-            });
+            };
         }
 
         let unknown_outcome = report.proposal_events.iter().find_map(|event| match event {
@@ -170,13 +153,13 @@ where
             _ => None,
         });
         if let Some((client_request_id, reason)) = unknown_outcome {
-            return Ok(ProposalBegin::UnknownOutcome {
+            return ProposalBegin::UnknownOutcome {
                 group_id: self.group_id.clone(),
                 local_proposal_id,
                 client_request_id,
                 reason,
                 peer_messages: report.peer_messages.clone(),
-            });
+            };
         }
 
         if let Some(event) = report.proposal_events.iter().find_map(|event| match event {
@@ -188,13 +171,13 @@ where
             _ => None,
         }) {
             let (index, term) = event;
-            return Ok(ProposalBegin::Appended {
+            return ProposalBegin::Appended {
                 group_id: self.group_id.clone(),
                 local_proposal_id,
                 index,
                 term,
                 peer_messages: report.peer_messages.clone(),
-            });
+            };
         }
 
         // The hint comes from the event rather than a post-step re-read, so the
@@ -209,37 +192,39 @@ where
                 _ => None,
             })
         {
-            return Ok(ProposalBegin::Rejected {
+            return ProposalBegin::Rejected {
                 group_id: self.group_id.clone(),
                 local_proposal_id,
                 reason,
                 leader_hint,
-            });
+            };
         }
 
-        if !report_has_proposal_lifecycle(local_proposal_id, report) {
-            self.pending_proposals.remove(&local_proposal_id);
-        }
-        Err(GroupError::ProposalDidNotStart { local_proposal_id })
+        unreachable!("proposal lifecycle normalization must cover every submitted proposal")
     }
 
-    pub(super) fn ensure_proposal_batch_lifecycles(
+    /// Turns runtime silence into an explicit unknown outcome.
+    ///
+    /// The runtime has accepted each ID, so no lifecycle output is not proof
+    /// that the proposal failed. Recording the uncertainty inside the report
+    /// preserves every co-emitted event and gives every caller one ordinary
+    /// lifecycle stream to route.
+    pub(super) fn record_missing_proposal_lifecycles(
         &mut self,
         local_proposal_ids: &[LocalProposalId],
-        report: &GroupStepReport<G, A::CommandResult>,
-    ) -> GroupResult<A, R, ()> {
-        let Some(local_proposal_id) = local_proposal_ids
-            .iter()
-            .copied()
-            .find(|id| !report_has_proposal_lifecycle(*id, report))
-        else {
-            return Ok(());
-        };
-
-        for pending_id in local_proposal_ids {
-            self.pending_proposals.remove(pending_id);
+        report: &mut GroupStepReport<G, A::CommandResult>,
+    ) {
+        for local_proposal_id in local_proposal_ids {
+            if report_has_proposal_lifecycle(*local_proposal_id, report) {
+                continue;
+            }
+            let client_request_id = self.pending_proposals.remove(local_proposal_id).flatten();
+            report.proposal_events.push(ProposalEvent::UnknownOutcome {
+                local_proposal_id: *local_proposal_id,
+                client_request_id,
+                reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            });
         }
-        Err(GroupError::ProposalDidNotStart { local_proposal_id })
     }
 
     pub(super) fn step_proposal(

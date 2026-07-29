@@ -109,14 +109,11 @@ fn derived_state_is_valid_after_truncate() {
 #[test]
 fn derived_state_is_valid_after_replace_log() {
     let mut follower = node(2, &[1, 3]);
-    let _ = follower.replace_log(
-        vec![
-            LogEntry::application(Term(3), b"one".to_vec()),
-            LogEntry::configuration(Term(3), stable_configuration(40)),
-            LogEntry::application(Term(3), b"three".to_vec()),
-        ],
-        LocalProposalDropReason::LeadershipLost,
-    );
+    let _ = follower.replace_log(vec![
+        LogEntry::application(Term(3), b"one".to_vec()),
+        LogEntry::configuration(Term(3), stable_configuration(40)),
+        LogEntry::application(Term(3), b"three".to_vec()),
+    ]);
 
     follower
         .validate_derived_state()

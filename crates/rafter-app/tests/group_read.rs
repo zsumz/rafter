@@ -38,7 +38,7 @@ fn read_barrier_returns_proof_when_local_apply_is_fresh() {
             }
         }
     ));
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn local_read_helper_returns_state_machine_result_without_raft_step() {
         }
     );
     assert!(group.runtime().step_inputs.is_empty());
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
     assert_eq!(group.read_id_watermark(), None);
 }
 
@@ -258,7 +258,7 @@ fn linearizable_read_helper_returns_result_when_barrier_grants() {
             }),
         } if result == b"query"
     ));
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]
@@ -287,7 +287,7 @@ fn pending_linearizable_read_helper_completes_after_normal_progress() {
             peer_messages: Vec::new(),
         }
     );
-    assert_eq!(group.metrics().pending_reads, 1);
+    assert_eq!(group.metrics().pending_read_barriers, 1);
     assert_eq!(group.runtime().step_inputs.len(), 1);
 
     let retry = group
@@ -324,7 +324,7 @@ fn pending_linearizable_read_helper_completes_after_normal_progress() {
             ..
         } if *event_read_id == read_id
     )));
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 
     let completed = group
         .read(read_helper_request(
@@ -482,7 +482,7 @@ fn runtime_step_error_consumes_read_id() {
 
     assert!(matches!(error, GroupError::Runtime(_)));
     assert_eq!(group.read_id_watermark(), Some(read_id));
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
     assert_eq!(group.runtime().step_inputs.len(), 1);
 
     let reuse = group
@@ -510,7 +510,7 @@ fn read_index_rejected_consumes_read_id() {
         .expect("read rejection is reported");
     assert!(matches!(outcome, ReadProofOutcome::Rejected { .. }));
     assert_eq!(group.read_id_watermark(), Some(read_id));
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 
     let reuse = group
         .begin_read_barrier_outcome(read_request(read_id, None))
@@ -534,7 +534,7 @@ fn read_index_canceled_consumes_read_id() {
         .expect("read cancellation is reported");
     assert!(matches!(outcome, ReadProofOutcome::Canceled { .. }));
     assert_eq!(group.read_id_watermark(), Some(read_id));
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 
     let reuse = group
         .begin_read_barrier_outcome(read_request(read_id, None))
@@ -628,7 +628,7 @@ fn read_report_carries_another_barriers_granted_event() {
             proof,
         } if *granted_id == stalled_id && proof.read_index == LogIndex(4)
     )));
-    assert_eq!(group.metrics().pending_reads, 1);
+    assert_eq!(group.metrics().pending_read_barriers, 1);
 }
 
 /// The documented footgun, pinned: the outcome-only form destroys the other
@@ -667,7 +667,7 @@ fn read_outcome_discards_co_emitted_read_events() {
 
     assert!(matches!(outcome, ReadOutcome::Pending { .. }));
     // A is gone from the pending table and its proof was never handed out.
-    assert_eq!(group.metrics().pending_reads, 1);
+    assert_eq!(group.metrics().pending_read_barriers, 1);
     let later = group
         .step(GroupInput::Tick)
         .expect("driving the group further cannot recover the proof");
@@ -878,7 +878,7 @@ fn read_barrier_grants_when_the_read_index_is_a_non_application_entry() {
         "a barrier granted at a non-application entry must require only the \
          application floor below it, got {outcome:?}"
     );
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 /// The extreme case: a cluster whose only entry is its first leader's `Noop`.

@@ -1,9 +1,9 @@
 use super::{
-    report_has_proposal_lifecycle, ApplyEntry, Debug, GrantedReadIndex, GroupError, GroupInput,
-    GroupResult, GroupStepReport, LeadershipTransferEvent, LocalProposalId, LogIndex,
-    MembershipEvent, Message, NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalEvent,
-    RaftGroup, RaftGroupMetrics, RaftInput, RaftOutput, ReadId, ReplicatedStateMachine,
-    SnapshotEvent, StepReportOptions, StepReportResult, Term,
+    ApplyEntry, Debug, GrantedReadIndex, GroupError, GroupInput, GroupResult, GroupStepReport,
+    LeadershipTransferEvent, LocalProposalId, LogIndex, MembershipEvent, Message, NodeId,
+    PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalEvent, RaftGroup, RaftGroupMetrics,
+    RaftInput, RaftOutput, ReadId, ReplicatedStateMachine, SnapshotEvent, StepReportOptions,
+    StepReportResult, Term,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -31,7 +31,6 @@ where
             membership: self.raft.membership(),
             replication: self.raft.replication(),
             pending_proposals: self.pending_proposals.len(),
-            pending_reads: pending_read_barriers,
             pending_read_barriers,
             pending_query_reads: self.pending_query_reads.len(),
             completed_query_reads: self.completed_query_reads.len(),
@@ -186,15 +185,8 @@ where
     ) -> StepReportResult<G, A, R> {
         let local_proposal_id = proposal.local_proposal_id;
         let outputs = self.step_proposal(proposal)?;
-        // Taken before the report is built, because the verdict below can throw
-        // that report away and a discarded report reported nothing.
-        let mark = self.membership_report_mark();
-        let report = self.apply_stepped_outputs(outputs, false, options)?;
-        if !report_has_proposal_lifecycle(local_proposal_id, &report) {
-            self.pending_proposals.remove(&local_proposal_id);
-            self.restore_membership_report_mark(mark, &report);
-            return Err(GroupError::ProposalDidNotStart { local_proposal_id });
-        }
+        let mut report = self.apply_stepped_outputs(outputs, false, options)?;
+        self.record_missing_proposal_lifecycles(&[local_proposal_id], &mut report);
         Ok(report)
     }
 
@@ -208,12 +200,8 @@ where
             .map(|proposal| proposal.local_proposal_id)
             .collect::<Vec<_>>();
         let outputs = self.step_proposals(proposals)?;
-        let mark = self.membership_report_mark();
-        let report = self.apply_stepped_outputs(outputs, false, options)?;
-        if let Err(error) = self.ensure_proposal_batch_lifecycles(&local_proposal_ids, &report) {
-            self.restore_membership_report_mark(mark, &report);
-            return Err(error);
-        }
+        let mut report = self.apply_stepped_outputs(outputs, false, options)?;
+        self.record_missing_proposal_lifecycles(&local_proposal_ids, &mut report);
         Ok(report)
     }
 
@@ -268,12 +256,7 @@ where
     ///
     /// A driver that routes this after *every* step outcome, `Err` included,
     /// has a zero-width loss window at its own boundary and needs no later
-    /// successful step to rescue the fact. That also closes the membership half
-    /// of [`crate::error::GroupError::ProposalDidNotStart`], which discards a
-    /// report the group had already built: the discarded report advanced no
-    /// mark, so the delta is still owed and arrives here. The rest of that
-    /// report's content — peer messages, applies, other waiters' events — is
-    /// still lost on that path and is tracked separately.
+    /// successful step to rescue the fact.
     ///
     /// Not gated on poison, deliberately. Poison is exactly the state in which a
     /// caller most needs to know which replicas the cluster last authorized, the

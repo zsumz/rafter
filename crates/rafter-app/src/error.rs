@@ -95,9 +95,11 @@ impl fmt::Display for ErrorCause {
 
 /// State-machine operation that surfaced an application error.
 ///
-/// This enum is exhaustive for the operations currently issued by
-/// `rafter-app`; new state-machine callbacks may add variants before 1.0.
+/// This diagnostic vocabulary is `#[non_exhaustive]`: new state-machine
+/// callbacks may add operations, and a caller that does not recognize one can
+/// still preserve and report the underlying error without reclassifying it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum StateMachineOperation {
     AppliedIndex,
     EncodeCommand,
@@ -231,9 +233,6 @@ pub enum GroupError<E, R> {
         read_id: ReadId,
         last_seen_read_id: ReadId,
     },
-    ProposalDidNotStart {
-        local_proposal_id: LocalProposalId,
-    },
     UnsupportedReadConsistency {
         consistency: ReadConsistency,
     },
@@ -319,10 +318,6 @@ where
                 formatter,
                 "read id {read_id} is not greater than last seen id {last_seen_read_id}"
             ),
-            Self::ProposalDidNotStart { local_proposal_id } => write!(
-                formatter,
-                "proposal {local_proposal_id} did not emit a start event"
-            ),
             Self::UnsupportedReadConsistency { consistency } => {
                 write!(formatter, "unsupported read consistency {consistency:?}")
             }
@@ -361,7 +356,6 @@ where
             | Self::NonMonotonicLocalProposalId { .. }
             | Self::DuplicateReadId { .. }
             | Self::NonMonotonicReadId { .. }
-            | Self::ProposalDidNotStart { .. }
             | Self::UnsupportedReadConsistency { .. }
             | Self::UnsupportedOutput { .. } => None,
         }

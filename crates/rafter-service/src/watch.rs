@@ -268,7 +268,6 @@ mod tests {
             ),
             replication: Vec::new(),
             pending_proposals: 0,
-            pending_reads: 0,
             pending_read_barriers: 0,
             pending_query_reads: 0,
             completed_query_reads: 0,

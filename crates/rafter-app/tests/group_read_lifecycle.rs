@@ -602,7 +602,7 @@ fn read_barrier_waits_until_apply_catches_up() {
             local_applied_index: LogIndex(2),
         }
     );
-    assert_eq!(group.metrics().pending_reads, 1);
+    assert_eq!(group.metrics().pending_read_barriers, 1);
 
     let report = group
         .apply_raft_outputs(vec![apply_output(4, b"catch-up", None)])
@@ -620,7 +620,7 @@ fn read_barrier_waits_until_apply_catches_up() {
                 },
         } if *event_read_id == read_id
     )));
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]
@@ -650,7 +650,7 @@ fn follower_read_barrier_rejection_includes_leader_hint() {
             leader_hint: Some(NodeId(2)),
         }
     );
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]
@@ -677,7 +677,7 @@ fn canceled_read_barrier_clears_pending_read() {
             leader_hint: Some(NodeId(1)),
         }]
     );
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]
@@ -701,7 +701,7 @@ fn begin_read_barrier_reports_canceled_outcome() {
             leader_hint: Some(NodeId(2)),
         }
     );
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]

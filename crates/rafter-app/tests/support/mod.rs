@@ -728,7 +728,6 @@ pub(crate) fn assert_read_metrics(
     reserved_reads: usize,
 ) {
     let metrics = group.metrics();
-    assert_eq!(metrics.pending_reads, pending_read_barriers);
     assert_eq!(metrics.pending_read_barriers, pending_read_barriers);
     assert_eq!(metrics.pending_query_reads, pending_query_reads);
     assert_eq!(metrics.completed_query_reads, completed_query_reads);

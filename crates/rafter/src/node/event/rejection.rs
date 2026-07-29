@@ -12,12 +12,13 @@ use super::Role;
 
 /// Why a tracked local proposal was dropped before local apply.
 ///
-/// This enum is exhaustive because proposal tracking has a closed set of
-/// local loss boundaries.
+/// This enum is exhaustive because a tracked proposal leaves the kernel without
+/// apply at exactly two boundaries: its log entry is overwritten, or its leader
+/// state is torn down. A new boundary must break every caller that classifies
+/// write fate rather than falling through a wildcard.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalProposalDropReason {
     LogOverwritten,
-    SnapshotCovered,
     LeadershipLost,
 }
 

@@ -375,7 +375,7 @@ where
             // keeps its `GroupPoisoned` answer and never reaches the mapping
             // below. That ordering is the whole mechanism, and it is the one
             // `InMemoryRaftDriver::finish_failed_write_batch` uses.
-            self.resolve_write(local_proposal_id, Err(write_failure(failure, options)));
+            self.resolve_write(local_proposal_id, Err(write_failure(failure)));
         }
         Ok(local_proposal_id)
     }
@@ -600,14 +600,13 @@ where
 
 /// Maps one failed proposing step onto the fate the driver can prove.
 ///
-/// The arms are `InMemoryRaftDriver::finish_failed_write_batch`'s, in its order
-/// and for its reasons, with one change: the driver no longer infers
-/// `NotAppended` from the absence of an observed append. A step that failed
-/// after the group was asked to propose is unresolved, because the entry may be
-/// on disk and a node reopened over the same durable log can still replicate and
-/// commit it. `NotAppended` survives only where the refusal is itself the whole
-/// event, and [`pre_proposal_fate`] is the list of group errors that are.
-fn write_failure<E, RE>(failure: StepFailure<E, RE>, options: WriteOptions) -> WriteError
+/// The driver never infers `NotAppended` from the absence of an observed append.
+/// A step that failed after the group was asked to propose is unresolved,
+/// because the entry may be on disk and a node reopened over the same durable
+/// log can still replicate and commit it. `NotAppended` survives only where the
+/// refusal is itself the whole event, and [`pre_proposal_fate`] is the list of
+/// group errors that are.
+fn write_failure<E, RE>(failure: StepFailure<E, RE>) -> WriteError
 where
     E: Error + Send + Sync + 'static,
     RE: Error + Send + Sync + 'static,
@@ -616,16 +615,6 @@ where
         StepFailure::NoGroup => WriteError::Unavailable {
             reason: DriverUnavailableReason::Released,
         },
-        // The app layer's own name for "the runtime said nothing": it states
-        // that the layer below does not know what happened to the proposal,
-        // which is exactly what an unknown outcome reports.
-        StepFailure::Group(GroupError::ProposalDidNotStart { local_proposal_id }) => {
-            WriteError::UnknownOutcome {
-                local_proposal_id,
-                client_request_id: options.client_request_id,
-                reason: UnknownOutcomeReason::RuntimeDroppedProposal,
-            }
-        }
         StepFailure::Group(error) => {
             let fate = pre_proposal_fate(&error);
             write_error_from_group(error, fate)

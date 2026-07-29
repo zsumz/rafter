@@ -121,7 +121,7 @@ fn follower_metrics_cover_protocol_and_app_fields() {
     assert_eq!(metrics.membership, membership(&[1, 2, 3], &[]));
     assert!(metrics.replication.is_empty());
     assert_eq!(metrics.pending_proposals, 0);
-    assert_eq!(metrics.pending_reads, 0);
+    assert_eq!(metrics.pending_read_barriers, 0);
     assert_eq!(metrics.fatal_state, GroupFatalState::Healthy);
 }
 

@@ -44,8 +44,9 @@ pub struct Proposal<C> {
 /// `Appended` means the local node appended the proposal while acting as
 /// leader; it is not client-facing write success. A managed write must wait
 /// for a later committed apply result. `UnknownOutcome` means the runtime can
-/// no longer prove whether the proposal will commit and apply; it is distinct
-/// from rejection or failing to start.
+/// no longer prove whether the proposal will commit and apply. It is distinct
+/// from a provable rejection; `ProposalDidNotStart` means the runtime emitted
+/// no lifecycle evidence, not that the proposal definitely failed to start.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ProposalBegin<G, R> {
@@ -96,8 +97,10 @@ pub enum ProposalUnknownOutcomeReason {
     /// Reserved diagnostic for proposals abandoned because the group entered a
     /// poison state before the app layer could observe a terminal result.
     GroupPoisoned,
-    /// Reserved diagnostic for malformed/custom runtimes that accept a
-    /// proposal input but return no proposal lifecycle output.
+    /// The runtime accepted a proposal input but returned no lifecycle output.
+    ///
+    /// Silence is not proof that the proposal stayed out of durable state, so
+    /// callers must treat its fate as unresolved.
     ProposalDidNotStart,
 }
 

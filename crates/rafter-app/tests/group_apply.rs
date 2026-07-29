@@ -39,7 +39,7 @@ fn apply_failure_poisons_group_and_rejects_writes() {
         GroupFatalState::Poisoned { .. }
     ));
     assert_eq!(group.metrics().pending_proposals, 0);
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
     assert_eq!(
         group.poisoned_waiters(),
         &PoisonedWaiters {
@@ -100,7 +100,7 @@ fn poisoned_group_rejects_direct_apply_outputs_before_handling_them() {
         .expect_err("poisoned group rejects direct output handling");
 
     assert!(matches!(error, GroupError::Poisoned { .. }));
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn apply_result_count_mismatch_poisons_group() {
         GroupFatalState::Poisoned { .. }
     ));
     assert_eq!(group.metrics().pending_proposals, 0);
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn apply_snapshot_failure_poisons_group_and_clears_waiters() {
         GroupFatalState::Poisoned { .. }
     ));
     assert_eq!(group.metrics().pending_proposals, 0);
-    assert_eq!(group.metrics().pending_reads, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]

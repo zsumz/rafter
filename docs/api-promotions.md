@@ -7078,6 +7078,22 @@ crossings were already drained into the report, and the round-5 restore rebuilds
 the queue *from that report* — so they survive the discard exactly as the
 comparison-derived delta does.
 
+#### Follow-up resolution (2026-07-29): proposal silence keeps one whole report
+
+The paragraph above records the round-10 behavior, not the final one.
+`GroupError::ProposalDidNotStart` is removed. When a runtime accepts a proposal
+but emits no lifecycle output, `rafter-app` now appends
+`ProposalEvent::UnknownOutcome { reason: ProposalDidNotStart }` to the
+`GroupStepReport` it already built and returns that report normally. Proposal,
+read, apply, snapshot, transfer, peer-message, and membership content therefore
+cross the boundary together; no stream needs error-path reconstruction.
+
+Batch submission normalizes each proposal independently. A proposal with a real
+lifecycle keeps it and remains pending when appropriate; only an ID with no
+lifecycle receives the synthetic unknown outcome. The service drivers route
+that event through their ordinary report path, preserving the same unresolved
+write fate they previously constructed from the discarded-report error.
+
 #### 3. Validation accepted a fence above the mark
 
 `validate` checked the group binding, that a live set has a mark, that live
@@ -11623,6 +11639,19 @@ become a silent `LeadershipLost`, and the argument for removing it is that a
 promise nothing can deliver is exactly what this section of the document exists
 to strike. `local_snapshot_covering_tracked_proposal_emits_dropped_event` is
 retired with the shape it pinned; the new module asserts the refusal instead.
+
+#### Resolution (2026-07-29): `SnapshotCovered` is removed
+
+The separate decision now lands. A valid local install cannot cover a tracked
+proposal, and the leader-sent path tears down leader tracking before replacing
+the log. `LocalProposalDropReason::SnapshotCovered` therefore named no reachable
+kernel outcome and is deleted.
+
+Whole-log replacement retains a tracked proposal only when the same term
+survives at the same index. Any divergence is an overwrite and is reported as
+`LogOverwritten`; the helper no longer accepts an arbitrary reason from its
+caller. That leaves the exhaustive public vocabulary aligned with its two real
+boundaries: log overwrite and leader-state teardown.
 
 **Blast radius.** Breaking, pre-1.0. `install_local_snapshot` refuses four cases
 it used to accept and accepts the installed boundary as a re-record; the two

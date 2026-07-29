@@ -47,12 +47,6 @@ pub struct RaftGroupMetrics<G> {
     pub replication: Vec<ReplicationProgress>,
     /// Locally submitted proposals awaiting a terminal outcome.
     pub pending_proposals: usize,
-    /// Alias carrying the same value as
-    /// [`RaftGroupMetrics::pending_read_barriers`].
-    ///
-    /// Prefer the specific read metrics below; this field exists only because
-    /// it predates them and is slated for removal before 1.0.
-    pub pending_reads: usize,
     /// Low-level read-index barriers currently waiting for a core read result
     /// or local apply freshness.
     pub pending_read_barriers: usize,

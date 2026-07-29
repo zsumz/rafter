@@ -423,7 +423,6 @@ fn metrics(group_id: u64) -> RaftGroupMetrics<u64> {
         ),
         replication: Vec::<ReplicationProgress>::new(),
         pending_proposals: 0,
-        pending_reads: 0,
         pending_read_barriers: 0,
         pending_query_reads: 0,
         completed_query_reads: 0,

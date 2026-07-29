@@ -496,7 +496,7 @@ impl Node {
 
         self.persistent.snapshot = Some(snapshot);
         self.persistent.committed_configuration = committed_configuration;
-        let outputs = self.replace_log(retained_suffix, LocalProposalDropReason::SnapshotCovered);
+        let outputs = self.replace_log(retained_suffix);
         if self.volatile.commit_index < boundary_index {
             self.volatile.commit_index = boundary_index;
         }
@@ -524,27 +524,23 @@ impl Node {
 
     /// Replaces the whole log (bootstrap restores, splice rollbacks,
     /// snapshot installs) and rebuilds the offset index from it.
-    pub(super) fn replace_log(
-        &mut self,
-        log: Vec<crate::LogEntry>,
-        reason: LocalProposalDropReason,
-    ) -> Vec<Output> {
+    ///
+    /// A tracked proposal survives only when the replacement keeps its term at
+    /// the same index; every divergence is a log overwrite.
+    pub(super) fn replace_log(&mut self, log: Vec<crate::LogEntry>) -> Vec<Output> {
         self.derived = super::state::DerivedState::from_log(&log);
         self.persistent.log = log;
         let mut retained = LocalProposalTracker::default();
         let mut outputs = Vec::new();
-        let snapshot_index = self.snapshot_index();
         for (index, proposal) in std::mem::take(&mut self.volatile.local_proposals) {
-            let covered_by_snapshot =
-                reason == LocalProposalDropReason::SnapshotCovered && index <= snapshot_index;
-            if !covered_by_snapshot && self.term_at(index) == Some(proposal.term) {
+            if self.term_at(index) == Some(proposal.term) {
                 retained.insert(index, proposal);
             } else {
                 outputs.push(Output::LocalProposalDropped {
                     proposal_id: proposal.id,
                     index,
                     term: proposal.term,
-                    reason,
+                    reason: LocalProposalDropReason::LogOverwritten,
                 });
             }
         }

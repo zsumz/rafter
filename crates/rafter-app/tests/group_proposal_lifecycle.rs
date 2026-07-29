@@ -179,13 +179,20 @@ fn command_encode_failure_does_not_consume_local_proposal_id() {
     assert!(group.runtime().step_inputs.is_empty());
 
     group.state_machine_mut().fail_encode = false;
-    group
+    let retry = group
         .begin_proposal_outcome(Proposal {
             local_proposal_id: proposal_id,
             client_request_id: None,
             command: b"retry after encode fixed".to_vec(),
         })
-        .expect_err("runtime returns no lifecycle event, but ID was reusable after encode failure");
+        .expect("the ID was reusable after encode failure");
+    assert!(matches!(
+        retry,
+        ProposalBegin::UnknownOutcome {
+            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            ..
+        }
+    ));
     assert_eq!(group.local_proposal_id_watermark(), Some(proposal_id));
     assert_eq!(group.runtime().step_inputs.len(), 1);
 }
@@ -493,7 +500,7 @@ fn runtime_batch_error_consumes_local_proposal_ids_and_clears_pending() {
 }
 
 #[test]
-fn begin_proposal_batch_clears_batch_pending_when_any_proposal_does_not_start() {
+fn begin_proposal_batch_reports_runtime_silence_without_losing_the_other_proposal() {
     let first_id = LocalProposalId(104);
     let second_id = LocalProposalId(105);
     let mut group = scripted_group_with_runtime(
@@ -501,7 +508,7 @@ fn begin_proposal_batch_clears_batch_pending_when_any_proposal_does_not_start() 
         ScriptedRuntime::with_step_outputs([vec![append_output(first_id, 2)]]),
     );
 
-    let error = group
+    let started = group
         .begin_proposal_batch(vec![
             Proposal {
                 local_proposal_id: first_id,
@@ -514,40 +521,59 @@ fn begin_proposal_batch_clears_batch_pending_when_any_proposal_does_not_start() 
                 command: b"missing lifecycle".to_vec(),
             },
         ])
-        .expect_err("missing one lifecycle output rejects the whole begin batch");
+        .expect("runtime silence is an unknown lifecycle outcome");
 
     assert!(matches!(
-        error,
-        GroupError::ProposalDidNotStart {
-            local_proposal_id
-        } if local_proposal_id == second_id
+        &started.begins[0],
+        ProposalBegin::Appended {
+            local_proposal_id,
+            ..
+        } if *local_proposal_id == first_id
     ));
+    assert!(matches!(
+        &started.begins[1],
+        ProposalBegin::UnknownOutcome {
+            local_proposal_id,
+            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            ..
+        } if *local_proposal_id == second_id
+    ));
+    assert_eq!(started.report.proposal_events.len(), 2);
     assert_eq!(group.local_proposal_id_watermark(), Some(second_id));
-    assert_eq!(group.metrics().pending_proposals, 0);
+    assert_eq!(
+        group.metrics().pending_proposals,
+        1,
+        "the proposal observed appended remains live"
+    );
     assert_eq!(group.runtime().proposal_batches.len(), 1);
 }
 
 #[test]
-fn begin_proposal_clears_pending_when_proposal_does_not_start() {
+fn begin_proposal_reports_runtime_silence_as_unknown_and_consumes_the_id() {
     let proposal_id = LocalProposalId(82);
+    let client_request_id = Some(ClientRequestId {
+        client_id: 8,
+        sequence: 20,
+    });
     let mut group = scripted_group(RecordingStateMachine::default());
 
-    let error = group
+    let begin = group
         .begin_proposal_outcome(Proposal {
             local_proposal_id: proposal_id,
-            client_request_id: Some(ClientRequestId {
-                client_id: 8,
-                sequence: 20,
-            }),
+            client_request_id,
             command: b"no event".to_vec(),
         })
-        .expect_err("no lifecycle event is rejected");
+        .expect("no lifecycle event becomes an unknown outcome");
 
     assert!(matches!(
-        error,
-        GroupError::ProposalDidNotStart {
-            local_proposal_id
+        begin,
+        ProposalBegin::UnknownOutcome {
+            local_proposal_id,
+            client_request_id: returned_client_request_id,
+            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            ..
         } if local_proposal_id == proposal_id
+            && returned_client_request_id == client_request_id
     ));
     assert_eq!(group.metrics().pending_proposals, 0);
     assert_eq!(group.local_proposal_id_watermark(), Some(proposal_id));
@@ -571,31 +597,104 @@ fn begin_proposal_clears_pending_when_proposal_does_not_start() {
 }
 
 #[test]
-fn group_step_proposal_clears_pending_when_proposal_does_not_start() {
+fn group_step_reports_runtime_silence_as_an_unknown_lifecycle_event() {
     let proposal_id = LocalProposalId(83);
+    let client_request_id = Some(ClientRequestId {
+        client_id: 8,
+        sequence: 21,
+    });
     let mut group = scripted_group(RecordingStateMachine::default());
 
-    let error = group
+    let report = group
         .step(GroupInput::Proposal {
             proposal: Proposal {
                 local_proposal_id: proposal_id,
-                client_request_id: Some(ClientRequestId {
-                    client_id: 8,
-                    sequence: 21,
-                }),
+                client_request_id,
                 command: b"no event".to_vec(),
             },
         })
-        .expect_err("no lifecycle event is rejected");
+        .expect("no lifecycle event becomes an unknown outcome");
 
-    assert!(matches!(
-        error,
-        GroupError::ProposalDidNotStart {
-            local_proposal_id
-        } if local_proposal_id == proposal_id
-    ));
+    assert_eq!(
+        report.proposal_events,
+        vec![ProposalEvent::UnknownOutcome {
+            local_proposal_id: proposal_id,
+            client_request_id,
+            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+        }]
+    );
     assert_eq!(group.metrics().pending_proposals, 0);
     assert_eq!(group.runtime().step_inputs.len(), 1);
+}
+
+#[test]
+fn runtime_silence_keeps_other_proposal_and_read_events_in_the_report() {
+    let pending_proposal_id = LocalProposalId(84);
+    let missing_proposal_id = LocalProposalId(85);
+    let read_id = ReadId(84);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([
+            vec![append_output(pending_proposal_id, 2)],
+            Vec::new(),
+            vec![
+                RaftOutput::LocalProposalDropped {
+                    proposal_id: pending_proposal_id,
+                    index: LogIndex(2),
+                    term: Term(1),
+                    reason: rafter::LocalProposalDropReason::LeadershipLost,
+                },
+                RaftOutput::ReadIndexRejected {
+                    read_id,
+                    reason: ReadIndexRejection::NotLeader {
+                        role: Role::Follower,
+                        term: Term(2),
+                    },
+                },
+            ],
+        ]),
+    );
+    begin_pending_proposal(&mut group, pending_proposal_id, None, 2);
+    let pending_read = group
+        .begin_read_barrier_outcome(read_request(read_id, None))
+        .expect("the read barrier starts");
+    assert!(matches!(pending_read, ReadProofOutcome::Pending { .. }));
+
+    let report = group
+        .step(GroupInput::Proposal {
+            proposal: Proposal {
+                local_proposal_id: missing_proposal_id,
+                client_request_id: None,
+                command: b"runtime says nothing about this proposal".to_vec(),
+            },
+        })
+        .expect("runtime silence is represented inside the report");
+
+    assert!(matches!(
+        &report.proposal_events[0],
+        ProposalEvent::UnknownOutcome {
+            local_proposal_id,
+            reason: ProposalUnknownOutcomeReason::LocalProposalDropped { .. },
+            ..
+        } if *local_proposal_id == pending_proposal_id
+    ));
+    assert!(matches!(
+        &report.proposal_events[1],
+        ProposalEvent::UnknownOutcome {
+            local_proposal_id,
+            reason: ProposalUnknownOutcomeReason::ProposalDidNotStart,
+            ..
+        } if *local_proposal_id == missing_proposal_id
+    ));
+    assert!(matches!(
+        &report.read_events[..],
+        [ReadEvent::Rejected {
+            read_id: rejected_id,
+            ..
+        }] if *rejected_id == read_id
+    ));
+    assert_eq!(group.metrics().pending_proposals, 0);
+    assert_eq!(group.metrics().pending_read_barriers, 0);
 }
 
 #[test]

@@ -20,8 +20,9 @@ pub struct NodeInfo {
 
 /// A requested membership change at the app layer.
 ///
-/// This enum is exhaustive for the membership operations planned by
-/// `rafter-app` today.
+/// This enum is exhaustive because it is the closed command vocabulary the app
+/// layer translates into Raft membership inputs. A new operation must make
+/// planners and executors choose its safety flow explicitly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MembershipChange {
     AddLearner {
@@ -47,8 +48,9 @@ pub enum MembershipChange {
 
 /// One explicit step in a safe membership flow.
 ///
-/// This enum is exhaustive for the flow steps currently emitted by
-/// `MembershipPlan`.
+/// This enum is exhaustive because every emitted step is an obligation for a
+/// membership executor. A new step must break executors that would otherwise
+/// skip it through a wildcard.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MembershipStep {
     AddLearner(NodeId),
@@ -69,7 +71,7 @@ pub struct MembershipPlan<G> {
 
 /// Status for one membership step report.
 ///
-/// This enum is exhaustive for the step states reported by `rafter-app`.
+/// This enum is exhaustive because a step is pending, completed, or failed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MembershipStepStatus {
     Pending,
