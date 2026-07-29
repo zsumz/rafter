@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Run reviewed process suites and the published-shape MSRV check against exact archives.
+#
+# Usage:
+#   scripts/reference-package-process-check                 # process plus MSRV
+#   scripts/reference-package-process-check --process-only  # reviewed process suites
+#   scripts/reference-package-process-check --msrv-only     # Rust 1.88 published shape
+#   scripts/reference-package-process-check [runner options]
+#
+# Archive creation, inspection, patching, and boundary rejection live in the
+# same fail-closed runner as scripts/reference-package-check. This wrapper only
+# chooses which post-materialization evidence to execute; it owns no crate list
+# and cannot construct a fallback patch table.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+mode=process-msrv
+mode_selected=false
+runner_args=()
+
+usage() {
+    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --process-only)
+            if [[ "$mode_selected" == true ]]; then
+                echo "error: choose only one of --process-only and --msrv-only" >&2
+                exit 2
+            fi
+            mode=process
+            mode_selected=true
+            ;;
+        --msrv-only)
+            if [[ "$mode_selected" == true ]]; then
+                echo "error: choose only one of --process-only and --msrv-only" >&2
+                exit 2
+            fi
+            mode=msrv
+            mode_selected=true
+            ;;
+        --mode)
+            echo "error: --mode is internal; use --process-only or --msrv-only" >&2
+            exit 2
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            runner_args+=("$1")
+            ;;
+    esac
+    shift
+done
+
+exec "$repo_root/scripts/reference-package-check" \
+    --mode "$mode" "${runner_args[@]}"

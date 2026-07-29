@@ -143,8 +143,10 @@ The acceptance job:
    crates; and
 8. verifies required package contents, including README and format documents.
 
-`scripts/reference-package-check` runs that job and reports every boundary it
-finds violated.
+`scripts/reference-package-check` runs that deterministic job and reports every
+boundary it finds violated. `scripts/reference-package-process-check` uses the
+same materialization and rejection phases; it does not carry a second publish
+list or construct its own patch table.
 
 Step 7 is the only check anywhere that builds `rafter` in its published feature
 shape. `rafter-sim` depends on `rafter` with the hidden `internal-test-hooks`
@@ -152,13 +154,36 @@ feature, and resolver 2 unifies features across every package one invocation
 selects, so every `--workspace` command over the root workspace compiles
 `rafter` with that hook on. Only this lane resolves a graph in which it is off.
 
-The lane packages with Cargo's per-archive verification disabled, then performs
-the stronger portfolio check itself. Once a Rafter version exists on crates.io,
-Cargo can verify a dependent archive against that older published sibling
-instead of the sibling archive produced by the current checkout. The lane
-therefore unpacks every newly produced archive, patches the copied consumer
-workspace to those exact directories, and builds and tests that graph. Fast
-source mode is what holds the consumers to the 1.88 compatibility floor.
+The lanes package with Cargo's per-archive verification disabled, then perform
+the stronger portfolio checks themselves. Once a Rafter version exists on
+crates.io, Cargo can verify a dependent archive against that older published
+sibling instead of the sibling archive produced by the current checkout. The
+shared runner therefore unpacks every newly produced archive, patches the copied
+consumer workspace to those exact directories, and builds and tests that graph.
+
+There are four distinct evidence boundaries:
+
+- **Source deterministic** runs ordinary tests, clippy, and rustdoc against
+  checkout-patched crates.
+- **Source process** runs the reviewed ignored process inventories against those
+  checkout-patched crates.
+- **Exact-package deterministic/process** builds ordinary targets or executes
+  all 32 reviewed process tests against one set of unpacked `.crate` archives.
+- **Published-shape MSRV** creates archives with the current packaging Cargo,
+  then regenerates the copied consumer lockfile, builds every target, runs the
+  deterministic suites, and runs a ledger process smoke with Rust/Cargo 1.88.
+
+The exact-package process and MSRV phases can be run separately in CI, or
+together with the default `scripts/reference-package-process-check`; the
+combined command uses the same archive set for both. None of these lanes proves
+mixed-version compatibility.
+
+The `reference-package-process` and `reference-package-msrv` jobs pass an
+explicit artifact directory. Each upload contains archive SHA-256 values, the
+generated patch table and lockfile, Cargo metadata, the boundary verdict,
+toolchain versions, inventory counts and copies, and per-suite logs. A failed
+runner retains its temporary workdir and preserves the original exit status;
+the artifact directory contains every diagnostic produced before the failure.
 
 This mode tests the artifact users receive, not merely the source tree that
 produced it.
@@ -529,10 +554,10 @@ reach it; its process composition owns the equivalent decisions itself.
 
 | Lane | Required work | Executed by |
 | --- | --- | --- |
-| Every PR | Package build, pure implementation and reference-model tests, codec vectors, short deterministic simulations, the counter-fast profile, small history checks, and the durable process suite's membership | `reference-source`, `reference-package`, and `counter-reference-fast` in `ci.yml` |
-| Main/nightly | Durable process tests executed plus the 1,024-group counter profile | `reference-process` in `ci.yml`, and `reference-process-nightly` plus `counter-reference-nightly` in `nightly.yml` |
+| Every PR | Source and exact-package deterministic tests, published-shape Rust 1.88 build/test plus process smoke, the counter-fast profile, small history checks, and durable process inventory membership | `reference-source`, `reference-package`, `reference-package-msrv`, and `counter-reference-fast` in `ci.yml` |
+| Main/nightly | All reviewed process tests in source mode and against exact archives, plus the 1,024-group counter profile | `reference-process` and `reference-package-process` in `ci.yml`, and `reference-process-nightly` plus `counter-reference-nightly` in `nightly.yml` |
 | Weekly | The 4,096-group randomized counter profile with slow groups, snapshot/bulk pressure, poison, and lifecycle churn | `counter-reference-weekly` in `weekly.yml` |
-| Release | Exact package archives, full process suite, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md`'s pre-publish block runs both lanes by hand; there is no release workflow, no mixed-version coverage, and no pinned downstream canary |
+| Release | Exact package archives, full same-version process suite, published-shape MSRV, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md`'s pre-publish block runs the source, exact-package, process, and MSRV lanes by hand; there is no release workflow, no mixed-version coverage, and no pinned downstream canary |
 
 The third column is the whole point of the table. Until the two lanes were
 wired, the "required work" column described work that nothing performed:
@@ -543,16 +568,16 @@ jobs do not exist yet.
 
 The release row remains intentionally incomplete. Mixed-version package
 coverage, a pinned downstream canary, and a tag-gating release workflow are
-separate release-integration slices and are not inferred from the now-complete
-counter profile jobs.
+separate release-integration slices and are not inferred from the same-version
+exact-package lanes.
 
-Both process rows run the same `#[ignore]`d suites through
-`scripts/reference-process-check`, which drives `scripts/cargo-test-exact`
-against one reviewed inventory per consumer. The sharded-counter inventory is
-`verification/reference-process-test-inventory.sharded-counter.txt`. Each
-expected count is read from its inventory, so the count and names cannot
-disagree. Neither is decoration: `--ignored` alone reports success over zero
-tests when attributes drift, and a count alone accepts a right number of
+Both process dependency modes read
+`verification/reference-process-suites.txt` and run each `#[ignore]`d selection
+through `scripts/cargo-test-exact` against one reviewed inventory per suite.
+The shared registry prevents source and package modes from drifting, while each
+expected count is derived from its inventory so count and names cannot
+disagree. Neither check is decoration: `--ignored` alone reports success over
+zero tests when attributes drift, and a count alone accepts a right number of
 different tests. The inventories reject both.
 
 The membership check and the execution sit on different tiers on purpose.

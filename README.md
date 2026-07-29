@@ -114,12 +114,14 @@ cargo run --locked -p rafter-invariants -- run-all --profile pr
 scripts/maelstrom-lin-kv
 scripts/reference-source-check
 scripts/reference-package-check
+scripts/reference-package-process-check
 ```
 
 The reference consumers live in their own Cargo workspace, which the root
 `Cargo.toml` excludes, so `cargo test --workspace` above does not reach them.
-The two `reference-*` commands are the only way to build or run them; CI runs
-both on every pull request.
+The three reference commands cover checkout-patched source, exact package
+archives, and exact-package process/MSRV evidence. CI checks the deterministic
+and MSRV lanes on pull requests and runs the full process lanes on main.
 
 The repository also carries fuzz seeds, TLA+ specs, Maelstrom workloads, and a
 simulation harness that can replay and explore bounded failure schedules.

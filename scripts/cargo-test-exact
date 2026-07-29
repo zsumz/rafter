@@ -16,6 +16,15 @@
 # a listing rather than a run.
 set -euo pipefail
 
+cargo_command=(cargo)
+if [[ -n "${CARGO_TEST_EXACT_TOOLCHAIN:-}" ]]; then
+    if [[ ! "$CARGO_TEST_EXACT_TOOLCHAIN" =~ ^\+[A-Za-z0-9._-]+$ ]]; then
+        echo "error: CARGO_TEST_EXACT_TOOLCHAIN must be a rustup +toolchain argument" >&2
+        exit 2
+    fi
+    cargo_command+=("$CARGO_TEST_EXACT_TOOLCHAIN")
+fi
+
 usage() {
     sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
 }
@@ -80,7 +89,7 @@ observed_names="$(mktemp "${TMPDIR:-/tmp}/rafter-cargo-test-names.XXXXXX")"
 canonical_names="$(mktemp "${TMPDIR:-/tmp}/rafter-cargo-test-reviewed.XXXXXX")"
 trap 'rm -f "$inventory_file" "$observed_names" "$canonical_names"' EXIT
 
-inventory_command=(cargo test "${cargo_args[@]}")
+inventory_command=("${cargo_command[@]}" test "${cargo_args[@]}")
 if [[ "$filter" != "-" ]]; then
     inventory_command+=("$filter")
 fi
@@ -125,7 +134,7 @@ if [[ "$list_only" == true ]]; then
     exit 0
 fi
 
-test_command=(cargo test "${cargo_args[@]}")
+test_command=("${cargo_command[@]}" test "${cargo_args[@]}")
 if [[ "$filter" != "-" ]]; then
     test_command+=("$filter")
 fi

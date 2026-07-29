@@ -115,6 +115,7 @@ cargo run --release -p rafter-sim --bin rafter-model-check-fast -- --profile fas
 scripts/tla-model-check
 scripts/reference-source-check
 scripts/reference-package-check
+scripts/reference-package-process-check
 ```
 
 `scripts/rustdoc-check` is the gate on the HTML that reaches docs.rs. It builds
@@ -124,13 +125,16 @@ and resolver 2 unifies that feature into every `--workspace` invocation: a
 workspace-only doc build documents `rafter` in a shape no published consumer
 can produce.
 
-`scripts/reference-package-check` disables Cargo's per-archive verification.
+`scripts/reference-package-check` and
+`scripts/reference-package-process-check` disable Cargo's per-archive
+verification.
 Once a Rafter version is already published, Cargo can verify a dependent
 archive against that older registry sibling rather than the sibling archive
 produced by the checkout. The lane instead unpacks the complete newly packaged
-set and builds and tests consumers against those exact archives. CI runs this
-lane on 1.96.1; fast source mode holds the consumer sources to the workspace's
-1.88 compatibility floor.
+set and builds and tests consumers against those exact archives. The process
+command also runs every reviewed ignored process suite from the unpacked set,
+then rebuilds and tests that same set in public-feature shape on Rust 1.88 with
+a process smoke. Archive creation remains on the newer packaging toolchain.
 
 These commands leave three things unchecked, none of which is implied away
 elsewhere in this file:

@@ -36,21 +36,35 @@ done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# One entry per consumer that has a durable process suite, as
-# `<package>:<test target>:<reviewed inventory>`. Each pair is checked and run
-# independently, because `cargo-test-exact` compares one selection against one
-# inventory; a shared list could not say which suite a missing name belonged to.
+# The registry has one entry per durable process suite, as
+# `<package>:<test target>:<reviewed inventory>`. Source and exact-package
+# process lanes read the same registry, so adding a suite cannot silently update
+# only one dependency mode. Each pair is checked and run independently because
+# `cargo-test-exact` compares one selection against one inventory.
 #
 # A consumer without a process suite is absent rather than listed with an empty
 # inventory: an empty inventory is refused below, and it should be, since a
 # selection over zero tests is what this script exists to catch.
-suites=(
-    "rafter-reference-ledger:process_cluster:reference-process-test-inventory.txt"
-    "rafter-reference-fenced-lock:process_cluster:reference-process-test-inventory.fenced-lock.txt"
-    "rafter-reference-fenced-lock:process_control_plane:reference-process-test-inventory.fenced-lock-control-plane.txt"
-    "rafter-reference-fenced-lock:process_production:reference-process-test-inventory.fenced-lock-production.txt"
-    "rafter-reference-sharded-counter:process_cluster:reference-process-test-inventory.sharded-counter.txt"
-)
+suites_file="${repo_root}/verification/reference-process-suites.txt"
+if [[ ! -s "$suites_file" ]]; then
+    echo "error: process-suite registry is missing or empty: $suites_file" >&2
+    exit 1
+fi
+
+suites=()
+while IFS= read -r suite; do
+    [[ -n "$suite" ]] || continue
+    if [[ ! "$suite" =~ ^[a-z0-9-]+:[a-z0-9_]+:[A-Za-z0-9._-]+$ ]]; then
+        echo "error: malformed process-suite registry entry: $suite" >&2
+        exit 1
+    fi
+    suites+=("$suite")
+done < "$suites_file"
+
+if (( ${#suites[@]} == 0 )); then
+    echo "error: process-suite registry selected zero suites" >&2
+    exit 1
+fi
 
 # A process substitution's exit status is not the command's, so the previous
 # `while read < <(... --print-args)` form discarded a failing patch table and

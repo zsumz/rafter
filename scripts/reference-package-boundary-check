@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Reject dependency or manifest leakage from an exact-package consumer workspace.
+set -euo pipefail
+
+metadata_file=""
+checkout_root=""
+unpack_root=""
+consumer_workspace=""
+harness_path=""
+never_publish_file=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --metadata) metadata_file="${2:-}"; shift ;;
+        --checkout-root) checkout_root="${2:-}"; shift ;;
+        --unpack-root) unpack_root="${2:-}"; shift ;;
+        --consumer-workspace) consumer_workspace="${2:-}"; shift ;;
+        --harness-path) harness_path="${2:-}"; shift ;;
+        --never-publish-file) never_publish_file="${2:-}"; shift ;;
+        *)
+            echo "error: unknown boundary-check option: $1" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+for required in \
+    "$metadata_file" "$checkout_root" "$unpack_root" \
+    "$consumer_workspace" "$harness_path" "$never_publish_file"; do
+    if [[ -z "$required" ]]; then
+        echo "error: every boundary-check path argument is required" >&2
+        exit 2
+    fi
+done
+if [[ ! -s "$metadata_file" || ! -s "$never_publish_file" ]]; then
+    echo "error: metadata and never-publish inputs must be non-empty files" >&2
+    exit 1
+fi
+if [[ ! -d "$consumer_workspace" ]]; then
+    echo "error: consumer workspace does not exist: $consumer_workspace" >&2
+    exit 1
+fi
+
+violation_count=0
+violations=()
+
+add_violation() {
+    violations[violation_count]="$1"
+    violation_count=$((violation_count + 1))
+}
+
+reject_metadata() {
+    local label="$1"
+    local filter="$2"
+    shift 2
+    local output entry
+    if ! output="$(jq -r "$@" "$filter" "$metadata_file")"; then
+        echo "error: consumer metadata query failed: $label" >&2
+        exit 1
+    fi
+    while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        add_violation "$label: $entry"
+    done <<< "$output"
+}
+
+reject_scan() {
+    local label="$1"
+    shift
+    local output entry
+    if ! output="$("$@")"; then
+        echo "error: consumer manifest scan failed: $label" >&2
+        exit 1
+    fi
+    while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        add_violation "$label: $entry"
+    done <<< "$output"
+}
+
+# shellcheck disable=SC2016
+reject_metadata "package resolves inside the checkout" '
+    .packages[]
+    | select(.manifest_path | startswith($root))
+    | "\(.name) -> \(.manifest_path)"
+' --arg root "$checkout_root/"
+
+# shellcheck disable=SC2016
+reject_metadata "Rafter crate is not an unpacked archive" '
+    .workspace_members as $members
+    | .packages[]
+    | . as $package
+    | select($package.name == "rafter" or ($package.name | startswith("rafter-")))
+    | select(($members | index($package.id)) == null)
+    | select(($package.manifest_path | startswith($unpacked)) | not)
+    | "\($package.name) -> \($package.manifest_path)"
+' --arg unpacked "$unpack_root/"
+
+while IFS= read -r crate; do
+    [[ -n "$crate" ]] || continue
+    # shellcheck disable=SC2016
+    reject_metadata "unpublished crate in the consumer graph" '
+        .packages[]
+        | select(.name == $name)
+        | "\(.name) -> \(.manifest_path)"
+    ' --arg name "$crate"
+done < "$never_publish_file"
+
+reject_metadata "internal-test-hooks resolved" '
+    .resolve.nodes[]
+    | select(.features | index("internal-test-hooks"))
+    | .id
+'
+
+# shellcheck disable=SC2016
+reject_metadata "internal-test-hooks requested by a dependency" '
+    .packages[] as $package
+    | $package.dependencies[]
+    | select(.features | index("internal-test-hooks"))
+    | "\($package.name) -> \(.name)"
+'
+
+# shellcheck disable=SC2016
+reject_metadata "consumer manifest declares a forbidden path dependency" '
+    .workspace_members as $members
+    | .packages[]
+    | . as $package
+    | select($members | index($package.id))
+    | $package.dependencies[]
+    | select(.path != null)
+    | select(.name != "rafter-reference-harness" or .path != $harness)
+    | "\($package.name) -> \(.name) at \(.path)"
+' --arg harness "$harness_path"
+
+# One fail-closed awk walk covers textual declarations that metadata can omit
+# or normalize. It always exits successfully when there are no findings; an
+# unreadable manifest or failed find/awk invocation fails reject_scan itself.
+# shellcheck disable=SC2016
+reject_scan "forbidden consumer manifest declaration" \
+    find "$consumer_workspace" -name Cargo.toml -exec awk \
+    -v allowed="$consumer_workspace/Cargo.toml" '
+        /^[[:space:]]*\[/ { section = $0 }
+        /internal-test-hooks/ {
+            printf "%s:%d:internal-test-hooks:%s\n", FILENAME, FNR, $0
+        }
+        /path[[:space:]]*=/ {
+            if (FILENAME == allowed &&
+                section == "[workspace.dependencies]" &&
+                $0 ~ /^rafter-reference-harness = \{ path = "harness" \}$/) {
+                next
+            }
+            if (section ~ /dependencies/ || section ~ /^\[patch/) {
+                printf "%s:%d:path:%s\n", FILENAME, FNR, $0
+            }
+        }
+        /^\[patch([."]|\])/ {
+            printf "%s:%d:patch:%s\n", FILENAME, FNR, $0
+        }
+    ' {} +
+
+if ((violation_count > 0)); then
+    for ((index = 0; index < violation_count; index++)); do
+        printf 'error: %s\n' "${violations[$index]}" >&2
+    done
+    exit 1
+fi
+
+echo "no checkout paths, forbidden path dependencies, private product crates, or internal hooks"

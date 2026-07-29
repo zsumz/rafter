@@ -6,6 +6,7 @@
 #   scripts/reference-package-check --keep       # keep the temporary workdir
 #   scripts/reference-package-check --offline    # pass --offline to every cargo call
 #   scripts/reference-package-check --no-verify  # compatibility alias; now the default
+#   scripts/reference-package-check --mode MODE  # shared exact-package runner
 #
 # docs/reference-consumers.md defines two dependency modes over one set of
 # consumer sources. This script is package-consumer mode: it packages every
@@ -40,6 +41,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 keep_workdir=false
 offline=false
 workdir=""
+mode=deterministic
+artifact_dir=""
+msrv_toolchain=1.88
+cargo_toolchain=""
 
 usage() {
     sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
@@ -57,6 +62,30 @@ while [[ $# -gt 0 ]]; do
             # Archive verification is intentionally disabled for every run.
             # Keep accepting the old explicit flag so existing callers do not break.
             ;;
+        --mode)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --mode requires deterministic, process, msrv, or process-msrv" >&2
+                exit 2
+            fi
+            mode="$2"
+            shift
+            ;;
+        --artifacts)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --artifacts requires a directory" >&2
+                exit 2
+            fi
+            artifact_dir="$2"
+            shift
+            ;;
+        --msrv-toolchain)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --msrv-toolchain requires a rustup toolchain name" >&2
+                exit 2
+            fi
+            msrv_toolchain="$2"
+            shift
+            ;;
         -h | --help)
             usage
             exit 0
@@ -70,12 +99,30 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-for tool in cargo jq tar; do
+case "$mode" in
+    deterministic | process | msrv | process-msrv) ;;
+    *)
+        echo "error: unsupported package-check mode: $mode" >&2
+        exit 2
+        ;;
+esac
+
+for tool in cargo jq openssl tar; do
     if ! command -v "$tool" > /dev/null 2>&1; then
         echo "error: $tool is required by scripts/reference-package-check" >&2
         exit 1
     fi
 done
+if [[ "$mode" == msrv || "$mode" == process-msrv ]]; then
+    if ! command -v rustup > /dev/null 2>&1; then
+        echo "error: rustup is required for the published-shape MSRV phase" >&2
+        exit 1
+    fi
+    if ! rustup run "$msrv_toolchain" rustc --version > /dev/null 2>&1; then
+        echo "error: Rust toolchain $msrv_toolchain is not installed" >&2
+        exit 1
+    fi
+fi
 
 # RELEASE.md's publish list is the complete set of Rafter crates a consumer
 # graph can reach, rafter-crc32 included: every crate that a publishable crate
@@ -92,9 +139,20 @@ phase_name=(
     "unpack exact archives"
     "verify required archive contents"
     "patch consumer workspace to archives"
-    "build and test the consumers"
+    "build and test exact-package consumers"
     "reject checkout paths, private crates, and hooks"
 )
+case "$mode" in
+    process)
+        phase_name[4]="build and run exact-package process suites"
+        ;;
+    msrv)
+        phase_name[4]="build and test published shape on Rust $msrv_toolchain"
+        ;;
+    process-msrv)
+        phase_name[4]="run exact-package process and Rust $msrv_toolchain phases"
+        ;;
+esac
 phase_status=(pending pending pending pending pending pending)
 current_phase=-1
 
@@ -112,10 +170,14 @@ run() {
 }
 
 cargo_run() {
+    local cargo=(cargo)
+    if [[ -n "$cargo_toolchain" ]]; then
+        cargo+=("$cargo_toolchain")
+    fi
     if [[ "$offline" == true ]]; then
-        run cargo "$1" --offline "${@:2}"
+        run "${cargo[@]}" "$1" --offline "${@:2}"
     else
-        run cargo "$@"
+        run "${cargo[@]}" "$@"
     fi
 }
 
@@ -162,9 +224,10 @@ print_summary() {
 
     printf '\n'
     if ((status == 0)); then
-        printf 'reference package-consumer check passed\n'
+        printf 'reference package-consumer check passed (mode=%s)\n' "$mode"
     else
-        printf 'reference package-consumer check failed with status %s\n' "$status" >&2
+        printf 'reference package-consumer check failed with status %s (mode=%s)\n' \
+            "$status" "$mode" >&2
     fi
 }
 
@@ -283,6 +346,28 @@ if ((${#never_publish_crates[@]} == 0)); then
     fail "RELEASE.md lists no unpublishable crates"
 fi
 
+suites=()
+if [[ "$mode" == process || "$mode" == process-msrv ]]; then
+    suites_file="$repo_root/verification/reference-process-suites.txt"
+    if [[ ! -s "$suites_file" ]]; then
+        fail "process-suite registry is missing or empty: $suites_file"
+    fi
+    while IFS= read -r suite; do
+        [[ -n "$suite" ]] || continue
+        if [[ ! "$suite" =~ ^[a-z0-9-]+:[a-z0-9_]+:[A-Za-z0-9._-]+$ ]]; then
+            fail "malformed process-suite registry entry: $suite"
+        fi
+        IFS=: read -r _package _target inventory_name <<< "$suite"
+        if [[ ! -s "$repo_root/verification/$inventory_name" ]]; then
+            fail "reviewed process inventory is missing or empty: $inventory_name"
+        fi
+        suites+=("$suite")
+    done < "$suites_file"
+    if ((${#suites[@]} == 0)); then
+        fail "process-suite registry selected zero suites"
+    fi
+fi
+
 packaged_crates=("${publish_crates[@]}")
 for crate in "${packaged_crates[@]}"; do
     if [[ ! -f "$repo_root/crates/$crate/Cargo.toml" ]]; then
@@ -292,6 +377,42 @@ done
 
 log "publishable crates: ${publish_crates[*]}"
 log "never-publish crates: ${never_publish_crates[*]}"
+
+if [[ -n "$artifact_dir" ]]; then
+    artifact_parent="$(dirname "$artifact_dir")"
+    artifact_name="$(basename "$artifact_dir")"
+    mkdir -p "$artifact_parent"
+    artifact_parent="$(cd "$artifact_parent" && pwd -P)"
+    artifact_dir="$artifact_parent/$artifact_name"
+    if [[ -d "$artifact_dir" ]] &&
+        [[ -n "$(find "$artifact_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        fail "artifact directory is not empty: $artifact_dir"
+    fi
+    if [[ -e "$artifact_dir" && ! -d "$artifact_dir" ]]; then
+        fail "artifact path is not a directory: $artifact_dir"
+    fi
+    mkdir -p "$artifact_dir/suite-logs" "$artifact_dir/inventories"
+    {
+        printf 'package-mode=%s\n' "$mode"
+        printf 'packaging-rustc=%s\n' "$(rustc --version)"
+        printf 'packaging-cargo=%s\n' "$(cargo --version)"
+        if [[ "$mode" == msrv || "$mode" == process-msrv ]]; then
+            printf 'msrv-rustc=%s\n' "$(rustup run "$msrv_toolchain" rustc --version)"
+            printf 'msrv-cargo=%s\n' "$(rustup run "$msrv_toolchain" cargo --version)"
+        fi
+    } > "$artifact_dir/toolchain-versions.txt"
+    if ((${#suites[@]} > 0)); then
+        : > "$artifact_dir/process-suite-counts.txt"
+        for suite in "${suites[@]}"; do
+            IFS=: read -r package target inventory_name <<< "$suite"
+            expected="$(awk 'NF { count += 1 } END { print count + 0 }' \
+                "$repo_root/verification/$inventory_name")"
+            printf '%s:%s %s %s\n' \
+                "$package" "$target" "$expected" "$inventory_name" \
+                >> "$artifact_dir/process-suite-counts.txt"
+        done
+    fi
+fi
 
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/rafter-package-check.XXXXXX")"
 workdir="$(cd "$workdir" && pwd -P)"
@@ -349,6 +470,8 @@ end_phase
 begin_phase 1
 
 mkdir -p "$unpack_root"
+hashes_file="$workdir/package-sha256.txt"
+: > "$hashes_file"
 for crate in "${packaged_crates[@]}"; do
     version="$(awk -v name="$crate" '$1 == name { print $2; exit }' "$versions_file")"
     if [[ -z "$version" ]]; then
@@ -360,18 +483,21 @@ for crate in "${packaged_crates[@]}"; do
         fail "cargo package produced no archive at $archive"
     fi
 
-    digest="unavailable"
-    if command -v openssl > /dev/null 2>&1; then
-        digest="$(openssl dgst -sha256 "$archive" | awk '{ print $NF }')"
-    fi
+    digest="$(openssl dgst -sha256 "$archive" | awk '{ print $NF }')"
     entries="$(tar tzf "$archive" | wc -l | tr -d ' ')"
     log "archive=$crate-$version.crate sha256=$digest entries=$entries"
+    printf '%s  %s\n' "$digest" "$crate-$version.crate" >> "$hashes_file"
 
     tar xzf "$archive" -C "$unpack_root"
     if [[ ! -d "$unpack_root/$crate-$version" ]]; then
         fail "archive $crate-$version.crate did not unpack to $crate-$version/"
     fi
 done
+
+if [[ -n "$artifact_dir" ]]; then
+    cp "$hashes_file" "$artifact_dir/package-sha256.txt"
+    cp "$versions_file" "$artifact_dir/crate-versions.txt"
+fi
 
 end_phase
 
@@ -422,9 +548,16 @@ end_phase
 begin_phase 3
 
 mkdir -p "$consumer_root"
-cp -R "$repo_root/reference" "$consumer_workspace"
-find "$consumer_workspace" -type d -name target -prune -exec rm -rf {} +
-rm -f "$consumer_workspace/Cargo.lock"
+reference_copy="$workdir/reference-source.tar"
+tar -C "$repo_root" \
+    --exclude='reference/target' \
+    --exclude='reference/Cargo.lock' \
+    -cf "$reference_copy" reference
+tar -C "$consumer_root" -xf "$reference_copy"
+rm -f "$reference_copy"
+if [[ -n "$(find "$consumer_workspace" -type l -print -quit)" ]]; then
+    fail "copied reference workspace contains a symlink"
+fi
 
 # The ledger's dependency_boundary test reads the root workspace manifest three
 # directories above itself to assert that the root still excludes reference/.
@@ -448,8 +581,47 @@ config_file="$consumer_workspace/.cargo/config.toml"
 log "generated $config_file"
 cat "$config_file"
 
+tools_root="$workdir/process-tools"
+mkdir -p "$tools_root/inventories"
+cp "$repo_root/scripts/cargo-test-exact" "$tools_root/cargo-test-exact"
+cp "$repo_root/scripts/reference-package-boundary-check" \
+    "$tools_root/reference-package-boundary-check"
+printf '%s\n' "${never_publish_crates[@]}" > "$tools_root/never-publish-crates.txt"
+chmod +x \
+    "$tools_root/cargo-test-exact" \
+    "$tools_root/reference-package-boundary-check"
+if [[ "$mode" == process || "$mode" == process-msrv ]]; then
+    cp "$repo_root/verification/reference-process-suites.txt" "$tools_root/reference-process-suites.txt"
+    for suite in "${suites[@]}"; do
+        IFS=: read -r _package _target inventory_name <<< "$suite"
+        cp "$repo_root/verification/$inventory_name" "$tools_root/inventories/$inventory_name"
+        if [[ -n "$artifact_dir" ]]; then
+            cp "$repo_root/verification/$inventory_name" "$artifact_dir/inventories/$inventory_name"
+        fi
+    done
+fi
+if [[ "$mode" == msrv || "$mode" == process-msrv ]]; then
+    smoke_inventory_name="reference-package-msrv-process-smoke-inventory.txt"
+    smoke_inventory="$repo_root/verification/$smoke_inventory_name"
+    if [[ ! -s "$smoke_inventory" ]]; then
+        fail "published-shape process smoke inventory is missing or empty"
+    fi
+    cp "$smoke_inventory" "$tools_root/inventories/$smoke_inventory_name"
+    if [[ -n "$artifact_dir" ]]; then
+        cp "$smoke_inventory" "$artifact_dir/inventories/$smoke_inventory_name"
+    fi
+fi
+
+if [[ -n "$artifact_dir" ]]; then
+    cp "$config_file" "$artifact_dir/patch-table.toml"
+fi
+
 cd "$consumer_workspace"
 export CARGO_TARGET_DIR="$consumer_target"
+
+if [[ "$mode" == msrv ]]; then
+    cargo_toolchain="+$msrv_toolchain"
+fi
 
 # Cargo warns about patch entries a consumer does not reach yet. That is the
 # expected shape while the portfolio is one consumer wide, and phase 6 is what
@@ -469,6 +641,9 @@ awk -F'"' '
     in_package && /^name = / { name = $2 }
     in_package && /^version = / { printf "  %s %s\n", name, $2 }
 ' "$consumer_workspace/Cargo.lock"
+if [[ -n "$artifact_dir" ]]; then
+    cp "$consumer_workspace/Cargo.lock" "$artifact_dir/Cargo.lock"
+fi
 
 end_phase
 
@@ -477,11 +652,106 @@ end_phase
 # ---------------------------------------------------------------------------
 begin_phase 4
 
-cargo_run build --workspace --all-targets --locked
-cargo_run test --workspace --locked
-cargo_run run --locked -p rafter-reference-sharded-counter --bin counter-profile -- \
-    --profile counter-fast \
-    --artifacts "$workdir/counter-fast-package-artifacts"
+process_log_root="$workdir/suite-logs"
+if [[ -n "$artifact_dir" ]]; then
+    process_log_root="$artifact_dir/suite-logs"
+fi
+mkdir -p "$process_log_root"
+
+run_reviewed_process_suites() {
+    local suite package target inventory_name inventory expected log_file
+    local exact_cargo_args=(--locked)
+    if [[ "$offline" == true ]]; then
+        exact_cargo_args+=(--offline)
+    fi
+
+    cargo_run build --workspace --all-targets --locked
+    for suite in "${suites[@]}"; do
+        IFS=: read -r package target inventory_name <<< "$suite"
+        inventory="$tools_root/inventories/$inventory_name"
+        expected="$(awk 'NF { count += 1 } END { print count + 0 }' "$inventory")"
+        if ((expected == 0)); then
+            fail "reviewed process inventory selected zero tests: $inventory_name"
+        fi
+        log_file="$process_log_root/${package}-${target}.log"
+        log "exact-package process suite: $package --test $target ($expected reviewed tests)"
+        CARGO_TEST_EXACT_TOOLCHAIN="$cargo_toolchain" \
+            "$tools_root/cargo-test-exact" "$expected" - \
+            --inventory "$inventory" \
+            "${exact_cargo_args[@]}" -p "$package" \
+            --test "$target" -- --ignored --test-threads=1 \
+            2>&1 | tee "$log_file"
+    done
+}
+
+run_msrv_shape() {
+    local previous_target="$CARGO_TARGET_DIR"
+    local smoke_inventory="$tools_root/inventories/$smoke_inventory_name"
+    local smoke_expected
+    local exact_cargo_args=(--locked)
+    if [[ "$offline" == true ]]; then
+        exact_cargo_args+=(--offline)
+    fi
+
+    cargo_toolchain="+$msrv_toolchain"
+    export CARGO_TARGET_DIR="$workdir/msrv-target"
+    rm -f "$consumer_workspace/Cargo.lock"
+    cargo_run generate-lockfile
+    if [[ -n "$artifact_dir" ]]; then
+        cp "$consumer_workspace/Cargo.lock" "$artifact_dir/Cargo.msrv.lock"
+    fi
+
+    cargo_run build --workspace --all-targets --locked
+    cargo_run test --workspace --locked
+
+    smoke_expected="$(awk 'NF { count += 1 } END { print count + 0 }' "$smoke_inventory")"
+    if ((smoke_expected == 0)); then
+        fail "published-shape process smoke inventory selected zero tests"
+    fi
+    CARGO_TEST_EXACT_TOOLCHAIN="$cargo_toolchain" \
+        "$tools_root/cargo-test-exact" "$smoke_expected" \
+        "three_processes_elect_a_leader_and_serve_the_ledger" \
+        --inventory "$smoke_inventory" \
+        "${exact_cargo_args[@]}" -p rafter-reference-ledger \
+        --test process_cluster -- --ignored --test-threads=1 \
+        2>&1 | tee "$process_log_root/msrv-process-smoke.log"
+    export CARGO_TARGET_DIR="$previous_target"
+}
+
+case "$mode" in
+    deterministic)
+        cargo_run build --workspace --all-targets --locked
+        cargo_run test --workspace --locked
+        cargo_run run --locked -p rafter-reference-sharded-counter --bin counter-profile -- \
+            --profile counter-fast \
+            --artifacts "$workdir/counter-fast-package-artifacts"
+        ;;
+    process)
+        run_reviewed_process_suites
+        ;;
+    msrv)
+        # Phase 4 already switched lockfile generation to the MSRV toolchain.
+        cargo_run build --workspace --all-targets --locked
+        cargo_run test --workspace --locked
+        smoke_expected="$(awk 'NF { count += 1 } END { print count + 0 }' \
+            "$tools_root/inventories/$smoke_inventory_name")"
+        exact_cargo_args=(--locked)
+        if [[ "$offline" == true ]]; then
+            exact_cargo_args+=(--offline)
+        fi
+        CARGO_TEST_EXACT_TOOLCHAIN="$cargo_toolchain" \
+            "$tools_root/cargo-test-exact" "$smoke_expected" \
+            "three_processes_elect_a_leader_and_serve_the_ledger" \
+            --inventory "$tools_root/inventories/$smoke_inventory_name" \
+            "${exact_cargo_args[@]}" -p rafter-reference-ledger \
+            --test process_cluster -- --ignored --test-threads=1 \
+            2>&1 | tee "$process_log_root/msrv-process-smoke.log"
+        ;;
+    process-msrv)
+        run_reviewed_process_suites
+        run_msrv_shape
+        ;;
+esac
 
 end_phase
 
@@ -492,144 +762,28 @@ begin_phase 5
 
 metadata_file="$workdir/consumer-metadata.json"
 cargo_run metadata --format-version 1 --locked > "$metadata_file"
-
-violation_count=0
-violations=()
-add_violation() {
-    violations[violation_count]="$1"
-    violation_count=$((violation_count + 1))
-}
-
-# Every rejection reads the resolved graph through jq. A filter that errors must
-# fail the lane rather than report an empty, reassuring result.
-reject_metadata() {
-    local label="$1"
-    local filter="$2"
-    shift 2
-    local output entry
-    if ! output="$(jq -r "$@" "$filter" "$metadata_file")"; then
-        fail "consumer metadata query failed: $label"
-    fi
-    while IFS= read -r entry; do
-        [[ -n "$entry" ]] || continue
-        add_violation "$label: $entry"
-    done <<< "$output"
-}
-
-reject_text() {
-    local label="$1"
-    local output entry
-    shift
-    output="$("$@" || true)"
-    while IFS= read -r entry; do
-        [[ -n "$entry" ]] || continue
-        add_violation "$label: $entry"
-    done <<< "$output"
-}
-
-# 6a. Nothing in the resolved graph may come from the checkout. This is the
-# strongest form of "reject path dependencies that resolve back into the
-# checkout": the consumer copy lives in the workdir, so a checkout path can
-# only appear through a dependency edge that escaped the patch table.
-# shellcheck disable=SC2016 # $root binds inside the jq filter, not in the shell
-reject_metadata "package resolves inside the checkout" '
-    .packages[]
-    | select(.manifest_path | startswith($root))
-    | "\(.name) -> \(.manifest_path)"
-' --arg root "$repo_root/"
-
-# 6b. Every Rafter crate that is not a consumer of our own must come from an
-# unpacked archive. A registry copy or a stray path override fails here.
-# shellcheck disable=SC2016 # $members and $unpacked bind inside the jq filter
-reject_metadata "Rafter crate is not an unpacked archive" '
-    .workspace_members as $members
-    | .packages[]
-    | . as $package
-    | select($package.name == "rafter" or ($package.name | startswith("rafter-")))
-    | select(($members | index($package.id)) == null)
-    | select(($package.manifest_path | startswith($unpacked)) | not)
-    | "\($package.name) -> \($package.manifest_path)"
-' --arg unpacked "$unpack_root/"
-
-# 6c. RELEASE.md's do-not-publish crates may never reach a consumer graph.
-for crate in "${never_publish_crates[@]}"; do
-    # shellcheck disable=SC2016 # $name binds inside the jq filter
-    reject_metadata "unpublished crate in the consumer graph" '
-        .packages[]
-        | select(.name == $name)
-        | "\(.name) -> \(.manifest_path)"
-    ' --arg name "$crate"
-done
-
-# 6d. The hidden internal-test-hooks feature may be declared by rafter but never
-# turned on: a package-mode consumer must reach Rafter through published API.
-reject_metadata "internal-test-hooks resolved" '
-    .resolve.nodes[]
-    | select(.features | index("internal-test-hooks"))
-    | .id
-'
-
-# shellcheck disable=SC2016 # $package binds inside the jq filter
-reject_metadata "internal-test-hooks requested by a dependency" '
-    .packages[] as $package
-    | $package.dependencies[]
-    | select(.features | index("internal-test-hooks"))
-    | "\($package.name) -> \(.name)"
-'
-
-reject_text "internal-test-hooks named in a consumer manifest" \
-    grep -rn --include=Cargo.toml 'internal-test-hooks' "$consumer_workspace"
-
-# 6e. Product consumers stay registry-only. The sole path edge admitted here
-# is from those consumers to the copied, unpublished harness workspace member;
-# it is reference test machinery rather than an artifact under acceptance.
-# cargo metadata reports normalized paths, so the exception is exact. The text
-# scan below also catches a [patch] table smuggled into a manifest, which
-# resolution alone would silently honour.
-# shellcheck disable=SC2016 # jq variables bind inside the filter
-reject_metadata "consumer manifest declares a forbidden path dependency" '
-    .workspace_members as $members
-    | .packages[]
-    | . as $package
-    | select($members | index($package.id))
-    | $package.dependencies[]
-    | select(.path != null)
-    | select(.name != "rafter-reference-harness" or .path != $harness)
-    | "\($package.name) -> \(.name) at \(.path)"
-' --arg harness "$consumer_workspace/harness"
-
-# shellcheck disable=SC2016 # $0 is an awk field, not a shell parameter
-reject_text "consumer manifest declares a forbidden path dependency" \
-    find "$consumer_workspace" -name Cargo.toml -exec awk \
-    -v allowed="$consumer_workspace/Cargo.toml" '
-        /^[[:space:]]*\[/ { section = $0 }
-        /path[[:space:]]*=/ {
-            if (FILENAME == allowed &&
-                section == "[workspace.dependencies]" &&
-                $0 ~ /^rafter-reference-harness = \{ path = "harness" \}$/) {
-                next
-            }
-            if (section ~ /dependencies/ || section ~ /^\[patch/) {
-                printf "%s:%d:%s\n", FILENAME, FNR, $0
-            }
-        }
-    ' {} +
-
-reject_text "consumer manifest declares a patch table" \
-    find "$consumer_workspace" -name Cargo.toml -exec awk '
-        /^\[patch([."]|\])/ {
-            printf "%s:%d:%s\n", FILENAME, FNR, $0
-        }
-    ' {} +
-
-if ((violation_count > 0)); then
-    for ((index = 0; index < violation_count; index++)); do
-        printf 'error: %s\n' "${violations[$index]}" >&2
-    done
-    fail "the consumer graph violates the package-consumer boundary"
+if [[ -n "$artifact_dir" ]]; then
+    cp "$metadata_file" "$artifact_dir/consumer-metadata.json"
 fi
 
-log "no checkout paths, forbidden path dependencies, private product crates, or internal hooks"
+if ! "$tools_root/reference-package-boundary-check" \
+    --metadata "$metadata_file" \
+    --checkout-root "$repo_root" \
+    --unpack-root "$unpack_root" \
+    --consumer-workspace "$consumer_workspace" \
+    --harness-path "$consumer_workspace/harness" \
+    --never-publish-file "$tools_root/never-publish-crates.txt"; then
+    fail "the consumer graph violates the package-consumer boundary"
+fi
+if [[ -n "$artifact_dir" ]]; then
+    {
+        printf 'checkout-paths=none\n'
+        printf 'forbidden-path-dependencies=none\n'
+        printf 'unpublished-crates=none\n'
+        printf 'internal-test-hooks=none\n'
+        printf 'rafter-source-root=%s\n' "$unpack_root"
+    } > "$artifact_dir/metadata-boundary.txt"
+fi
 
 resolved_archives="$(jq -r --arg unpacked "$unpack_root/" '
     .packages[]

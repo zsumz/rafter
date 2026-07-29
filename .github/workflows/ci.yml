@@ -6,7 +6,8 @@
 # repository settings, not in this file. Branch protection on `main` must
 # list these required status checks:
 #
-#   lint, test, reference-source, reference-package, fuzz-smoke, invariants-pr
+#   lint, test, reference-source, reference-package, reference-package-msrv,
+#   fuzz-smoke, invariants-pr
 #
 # `reference-process` is deliberately absent from that list: it only runs on
 # pushes to main, so it never reports on a pull request and a required check
@@ -807,15 +808,17 @@ jobs:
         with:
           persist-credentials: false
       # Deliberately not the workspace 1.88 pin. This lane validates packaging
-      # mechanics as well as the exact unpacked archive graph, while
-      # reference-source above holds the same consumer sources to 1.88. 1.96.1
-      # is the toolchain benchmarks.yml already pins.
+      # mechanics as well as the exact unpacked archive graph. The adjacent
+      # reference-package-msrv job proves those archives on 1.88. 1.96.1 is
+      # the packaging toolchain benchmarks.yml already pins.
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: 1.96.1
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
+      - name: Exact-package boundary adversarial checks
+        run: scripts/tests/reference_package_boundary_test.sh
       - name: Reference consumers against exact package archives
         # This is also the only lane that builds `rafter` in its published
         # shape. Every cargo invocation over the root workspace resolves
@@ -829,6 +832,80 @@ jobs:
           # sibling of the workspace, never a child.
           TMPDIR: ${{ runner.temp }}
         run: scripts/reference-package-check
+
+  reference-package-msrv:
+    name: reference-package-msrv
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # Archive creation uses the current packaging Cargo. The runner then
+      # switches the copied, archive-patched workspace to the declared MSRV.
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: 1.88
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Exact package set in the Rust 1.88 published shape
+        env:
+          TMPDIR: ${{ runner.temp }}
+          RUSTUP_TOOLCHAIN: 1.96.1
+        run: |
+          mkdir -p artifacts
+          scripts/reference-package-process-check --msrv-only \
+            --artifacts artifacts/reference-package-msrv \
+            2>&1 | tee artifacts/reference-package-msrv.log
+      - name: Upload exact-package MSRV evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reference-package-msrv-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/reference-package-msrv/
+            artifacts/reference-package-msrv.log
+          if-no-files-found: error
+
+  reference-package-process:
+    name: reference-package-process
+    # The reviewed inventory is checked on every PR. Full process execution
+    # against exact archives runs after merge, alongside source process mode.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Reviewed process suites against exact package archives
+        env:
+          TMPDIR: ${{ runner.temp }}
+          RUSTUP_TOOLCHAIN: 1.96.1
+        run: |
+          mkdir -p artifacts
+          scripts/reference-package-process-check --process-only \
+            --artifacts artifacts/reference-package-process \
+            2>&1 | tee artifacts/reference-package-process.log
+      - name: Upload exact-package process evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reference-package-process-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/reference-package-process/
+            artifacts/reference-package-process.log
+          if-no-files-found: error
 
   reference-process:
     name: reference-process
