@@ -1,13 +1,14 @@
 # Reference Consumers
 
-Status: active API-discovery and acceptance program for Rafter 1.0. Two of the
-three systems are built: the ledger through all eight of its slices, and the
-fenced lock through deterministic, durable, package, and real-process
-composition. The sharded counter has started and is the furthest from Rafter:
-its contract, implementation model, independent oracle, and deterministic
-suites are the design input for the managed scheduler it needs. The ledger and
-lock now share only a neutral bounded history-search engine. Eleven APIs have
-been promoted under the rule below and are recorded in
+Status: active API-discovery and acceptance program for Rafter 1.0. The ledger
+is complete through all eight of its slices, and the fenced lock is complete
+through deterministic, durable, package, and real-process composition. The
+sharded counter has completed deterministic adoption of the public managed
+scheduler: its dependency-free model, independent oracle, real Rafter adapter,
+thousands-of-groups profiles, and red-team audit now agree. Durable process
+composition and long profiles remain next. The ledger and lock share only a
+neutral bounded history-search engine. Eleven APIs have been promoted under the
+rule below and are recorded in
 [`docs/api-promotions.md`](./api-promotions.md).
 
 Sequencing: the reference consumers are built before the 1.0 public surface is
@@ -372,15 +373,17 @@ deterministic and process scenarios run both checks and reject an empty proof.
 
 ### Purpose
 
-The sharded counter is an acceptance workload for the managed multi-Raft
-scheduler intended for the 1.0 stack. Repeated calls to the current manual
-`tick_all` host are useful examples, but they are not evidence of production
-scheduling, bounded fairness, or isolation.
+The sharded counter is the acceptance workload for the public managed
+multi-Raft scheduler. Its deterministic adapter drives real three-replica
+`RaftGroup`s through the managed host and audits public admission, pass,
+dispatch, and metrics records independently. The manual `tick_all` host remains
+a useful lower-level API, but none of the scheduler claims below rely on it.
 
 ### Workload
 
-The deterministic workload will model thousands of independent groups. The
-process suite will use a smaller production-shaped group count.
+The independent deterministic workload models 3,000 groups, and the real
+Rafter-backed acceptance profile drives 1,024 groups. The process suite will
+use a smaller production-shaped group count.
 
 It must include:
 
@@ -645,18 +648,19 @@ inventoried and extracted separately.
 5. Add bounded process composition and package-mode tests.
 6. Add long nightly, weekly, and release scheduling profiles.
 
-Slices 1 and 2 are complete: `CONTRACT.md` states the lifecycle, queue, quota,
-and fairness rules, and `ManagedScheduler` and `ReferenceScheduler` are
-structurally separate implementations of them, checked against each other by
-deterministic suites that both CI reference lanes now run. Slices 3 and 4 are
-under way in those suites rather than finished; read the tests for what is
-covered, not this paragraph.
+Slices 1 through 4 are complete. `ManagedScheduler`,
+`ReferenceScheduler`, and the real Rafter-backed managed counter remain three
+structurally independent shapes. The real matrix covers all workload classes,
+queue pressure and lossless retries, full lifecycle/reopen/tombstone behavior,
+slow and poisoned isolation, actual application and descriptor-based snapshot
+install paths, late-incarnation fencing, and a 1,024-group fairness profile.
+The canonical manifest names only versioned public Rafter crates, so both
+source and exact-package lanes exercise the scheduler through an external
+consumer shape.
 
-Slices 5 and 6 are not reached, and slice 5 cannot be reached yet. The crate
-declares no dependency at all — not even a Rafter one — because the managed
-scheduler it specifies is not a public Rafter surface. Package mode therefore
-compiles and tests this consumer without proving anything about Rafter through
-it, and that stays true until the scheduler exists.
+Slices 5 and 6 remain: bounded durable process composition and the long
+nightly/weekly scheduling profiles. Until those land, deterministic success is
+not described as process-restart or production-composition evidence.
 
 ### Release integration
 

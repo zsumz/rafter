@@ -1,6 +1,34 @@
 const ROOT_WORKSPACE: &str = include_str!("../../../Cargo.toml");
 const REFERENCE_WORKSPACE: &str = include_str!("../../Cargo.toml");
 const SHARDED_COUNTER_MANIFEST: &str = include_str!("../Cargo.toml");
+const REAL_ADAPTER_SOURCES: &[(&str, &str)] = &[
+    ("adapter/mod.rs", include_str!("../src/adapter/mod.rs")),
+    ("adapter/audit.rs", include_str!("../src/adapter/audit.rs")),
+    (
+        "adapter/cluster.rs",
+        include_str!("../src/adapter/cluster.rs"),
+    ),
+    (
+        "adapter/cluster/admission.rs",
+        include_str!("../src/adapter/cluster/admission.rs"),
+    ),
+    (
+        "adapter/cluster/checkpoint.rs",
+        include_str!("../src/adapter/cluster/checkpoint.rs"),
+    ),
+    (
+        "adapter/cluster/drive.rs",
+        include_str!("../src/adapter/cluster/drive.rs"),
+    ),
+    (
+        "adapter/cluster/lifecycle.rs",
+        include_str!("../src/adapter/cluster/lifecycle.rs"),
+    ),
+    (
+        "adapter/state_machine.rs",
+        include_str!("../src/adapter/state_machine.rs"),
+    ),
+];
 
 #[test]
 fn reference_workspace_is_explicitly_isolated_from_the_root() {
@@ -67,5 +95,24 @@ fn no_reference_consumer_depends_on_another() {
             !SHARDED_COUNTER_MANIFEST.contains(sibling),
             "reference consumers must not share code with one another"
         );
+    }
+}
+
+#[test]
+fn the_real_adapter_cannot_borrow_model_or_oracle_answers() {
+    for (path, source) in REAL_ADAPTER_SOURCES {
+        for forbidden in [
+            "crate::model",
+            "crate::oracle",
+            "ManagedScheduler",
+            "ReferenceScheduler",
+            "SchedulerState",
+            "OracleState",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} borrows the independent answer through {forbidden}"
+            );
+        }
     }
 }

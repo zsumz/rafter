@@ -4,16 +4,24 @@
 //! deterministic test network. The public `rafter-multiraft` layer sees only
 //! neutral group inputs and scheduling classes.
 
+mod audit;
 mod cluster;
 mod codec;
 mod state_machine;
 
+pub use audit::{
+    audit_acceptance, AcceptanceAuditReport, AcceptanceExpectation, AcceptanceViolation,
+    ExpectedWork,
+};
 pub use cluster::{
-    AdapterError, CounterAdmissionRejected, CounterAdmissionRejection, DriveReport,
-    ManagedCounterCluster, NetworkConfig, ProposalReceipt,
+    AdapterError, CheckpointError, CheckpointOutstanding, CheckpointSession,
+    CounterAdmissionRejected, CounterAdmissionRejection, CounterGroupCheckpoint,
+    CounterSubmitOutcome, DriveReport, DriveTurn, DrivenDisposition, DrivenItem,
+    ManagedCounterCluster, NetworkConfig, PeerTrafficRefusal, ProposalFailure, ProposalReceipt,
+    RestoredCounterGroup, RoutedPeerEnvelope, SessionSubmitOutcome,
 };
 pub use codec::{MAX_COMMAND_BYTES, MAX_SNAPSHOT_BYTES};
 pub use state_machine::{
-    CounterApplyRejection, CounterApplyResult, CounterStateMachine, ReplicatedCounterCommand,
-    SessionApplyResult,
+    CounterApplyRejection, CounterApplyResult, CounterCompletedView, CounterSessionView,
+    CounterStateMachine, CounterStateView, ReplicatedCounterCommand, SessionApplyResult,
 };

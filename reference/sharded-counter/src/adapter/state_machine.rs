@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, error::Error, fmt};
 
-use rafter::LogIndex;
+use rafter::{InMemorySnapshotChunkSource, LogIndex, RaftSnapshot};
 use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
     ReplicatedStateMachine, SnapshotSupport,
@@ -92,6 +92,39 @@ pub(super) struct Session {
     pub(super) completed: Option<Completed>,
 }
 
+/// Read-only application state reconstructed from live state or a snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CounterStateView {
+    /// Highest applied Raft log index.
+    pub applied_index: LogIndex,
+    /// Current counter value.
+    pub value: i64,
+    /// Replicated session slots in client order.
+    pub sessions: Vec<CounterSessionView>,
+}
+
+/// One replicated session in an application-state view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CounterSessionView {
+    /// Client slot.
+    pub client_id: ClientId,
+    /// Active session generation.
+    pub epoch: SessionEpoch,
+    /// Highest cached completion, when one exists.
+    pub completed: Option<CounterCompletedView>,
+}
+
+/// One cached request completion in an application-state view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CounterCompletedView {
+    /// Completed request sequence.
+    pub sequence: Sequence,
+    /// Exact command bound to the request identity.
+    pub command: CounterCommand,
+    /// Cached deterministic result.
+    pub result: CounterResult,
+}
+
 /// Small replicated counter with bounded session state and snapshot support.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CounterStateMachine {
@@ -99,6 +132,7 @@ pub struct CounterStateMachine {
     value: i64,
     max_sessions: usize,
     sessions: BTreeMap<ClientId, Session>,
+    promoted_payloads: InMemorySnapshotChunkSource,
 }
 
 impl CounterStateMachine {
@@ -120,7 +154,70 @@ impl CounterStateMachine {
             value: 0,
             max_sessions,
             sessions: BTreeMap::new(),
+            promoted_payloads: InMemorySnapshotChunkSource::new(),
         }
+    }
+
+    /// Restores a fresh state machine from one bounded application snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the snapshot codec, identity, or capacity failure.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `max_sessions` is zero or exceeds the bounded snapshot
+    /// representation.
+    pub fn from_snapshot(
+        max_sessions: usize,
+        snapshot: ApplicationSnapshot,
+    ) -> Result<Self, ApplicationSnapshotError<CounterStateMachineError>> {
+        let mut state = Self::new(max_sessions);
+        state.install_snapshot(snapshot)?;
+        Ok(state)
+    }
+
+    /// Returns a complete read-only view of snapshot-relevant state.
+    #[must_use]
+    pub fn view(&self) -> CounterStateView {
+        CounterStateView {
+            applied_index: self.applied_index,
+            value: self.value,
+            sessions: self
+                .sessions
+                .iter()
+                .map(|(client_id, session)| CounterSessionView {
+                    client_id: *client_id,
+                    epoch: session.epoch,
+                    completed: session.completed.map(|completed| CounterCompletedView {
+                        sequence: completed.sequence,
+                        command: completed.command,
+                        result: completed.result,
+                    }),
+                })
+                .collect(),
+        }
+    }
+
+    /// Registers bytes already promoted by the caller's Rafter snapshot store.
+    ///
+    /// A Raft-driven install carries only a descriptor into the application
+    /// callback. The embedding resolves that descriptor from its durable
+    /// snapshot store and registers the exact bounded payload here before the
+    /// group applies the snapshot output.
+    ///
+    /// # Errors
+    ///
+    /// Returns a length mismatch when the supplied bytes contradict the
+    /// snapshot descriptor.
+    pub fn register_promoted_snapshot(
+        &mut self,
+        snapshot: &RaftSnapshot,
+        payload: Vec<u8>,
+    ) -> Result<(), CounterStateMachineError> {
+        self.promoted_payloads
+            .insert(snapshot, payload)
+            .map_err(|_| CounterStateMachineError::SnapshotPayloadLengthMismatch)
     }
 
     fn apply_open_session(
@@ -301,11 +398,19 @@ impl ReplicatedStateMachine for CounterStateMachine {
         &mut self,
         snapshot: ApplicationSnapshot,
     ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
-        if snapshot.payload.is_empty() && snapshot.raft_snapshot.is_some() {
-            return Err(CounterStateMachineError::PromotedSnapshotUnsupported.into());
-        }
-        let (applied_index, value, sessions) =
-            codec::decode_snapshot(&snapshot.payload, self.max_sessions)?;
+        let payload = if snapshot.payload.is_empty() {
+            let descriptor = snapshot
+                .raft_snapshot
+                .as_ref()
+                .ok_or(CounterStateMachineError::PromotedSnapshotMissing)?;
+            self.promoted_payloads
+                .payload(descriptor.transfer_id())
+                .ok_or(CounterStateMachineError::PromotedSnapshotMissing)?
+                .to_vec()
+        } else {
+            snapshot.payload
+        };
+        let (applied_index, value, sessions) = codec::decode_snapshot(&payload, self.max_sessions)?;
         if applied_index != snapshot.applied_index {
             return Err(CounterStateMachineError::SnapshotIndexMismatch.into());
         }
@@ -326,7 +431,8 @@ pub enum CounterStateMachineError {
     SessionCapacity,
     SnapshotTooLarge,
     SnapshotIndexMismatch,
-    PromotedSnapshotUnsupported,
+    SnapshotPayloadLengthMismatch,
+    PromotedSnapshotMissing,
     ReadBarrierNotReached,
     InjectedFault,
 }
@@ -341,9 +447,10 @@ impl fmt::Display for CounterStateMachineError {
             Self::SessionCapacity => "replicated session capacity is exhausted",
             Self::SnapshotTooLarge => "counter snapshot exceeds its bound",
             Self::SnapshotIndexMismatch => "counter snapshot index does not match its payload",
-            Self::PromotedSnapshotUnsupported => {
-                "counter adapter cannot load a promoted snapshot payload"
+            Self::SnapshotPayloadLengthMismatch => {
+                "promoted counter snapshot payload length contradicts its descriptor"
             }
+            Self::PromotedSnapshotMissing => "promoted counter snapshot payload is missing",
             Self::ReadBarrierNotReached => "counter read barrier has not been reached",
             Self::InjectedFault => "consumer fault poisoned the counter group",
         })

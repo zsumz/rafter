@@ -1,9 +1,10 @@
 # Sharded Counter Service Contract
 
 Status: third reference consumer for Rafter 1.0 API discovery. The independent
-contract, model, and oracle now sit beside the first real adoption of Rafter's
-managed many-group scheduler: three-node counter groups, replicated sessions,
-bounded codecs and snapshots, and deterministic peer routing.
+contract, model, and oracle now sit beside complete deterministic adoption of
+Rafter's managed many-group scheduler: thousands of real managed groups,
+three-node counter groups, replicated sessions, bounded codecs and snapshots,
+full lifecycle and incarnation policy, and deterministic peer routing.
 
 This crate ran the program's sequencing backwards from its siblings, on
 purpose. The ledger and fenced lock began against existing Rafter surfaces;
@@ -1266,9 +1267,10 @@ They do not share:
 - fairness accounting.
 
 No code from this consumer is shared with another reference consumer. The
-neutral harness now used by the ledger and fenced-lock checkers was extracted
-only after those two consumers proved the same search shape; this crate has no
-dependency on it or on anything else.
+dependency-free model and oracle use no Rafter code; the structurally separate
+real adapter depends only on versioned public Rafter crates. The neutral harness
+used by the ledger and fenced-lock checkers remains outside all three counter
+shapes.
 
 ### How they differ
 
@@ -1380,7 +1382,7 @@ until then the vocabulary slot exists so a future transport has somewhere
 honest to put the distinction. Recording a provable refusal as `Unknown` would
 let an implementation that serviced it be explained away.
 
-## What This Milestone Does Not Close
+## Deterministic Adoption Evidence and Boundary
 
 The foundation contains the contract, bounded command and result types, a
 deterministic ready-set model with a per-group counter machine, a structurally
@@ -1420,22 +1422,52 @@ what the red-team schedulers are for, and it is why invariant 24 exists — and
 invariant 24 in turn proves that each rule fires, not that the rules cover. Both
 limits are named where each claim is made.
 
-The first adapter slice now adds versioned public Rafter dependencies and
-drives a managed local host containing three independent groups. Every group
-has three real `RaftGroup` replicas on a bounded deterministic network. Session
-establishment and request deduplication are replicated; counter commands use a
-bounded versioned codec; state snapshots round-trip the value, applied index,
-and bounded session cache. Queue overflow returns the untouched proposal, pass
-plans prove one opportunity per ready group, and a consumer apply fault poisons
-only its group while later groups keep committing.
+The real adapter now uses versioned public Rafter dependencies to drive a
+managed local host at the same time as the independent model and oracle remain
+unchanged. Every group has three real `RaftGroup` replicas on a bounded
+deterministic network. The deterministic acceptance profile drives 1,024 real
+managed groups and 1,024 caller workload admissions in one run. Including
+recovery/control work, the managed history records 3 passes, 1,024 audited
+first-pass opportunities, 8,192 admissions, 8,192 services, no failures, and a
+zero-width opportunity gap. The independent model/oracle profile remains
+larger: 3,000 groups and 241,356 events under each of two fixed seeds.
+
+The real matrix exercises all six lifecycle states and every transition-table
+cell, removal with queued work, removed-slot reopening, terminal tombstones,
+stale/future/client and peer incarnation fencing, and fail-closed incarnation
+exhaustion restored from an inactive checkpoint. It schedules real Rafter
+inputs in `Control`, `Command`, `Snapshot`, and `Bulk`; pins class order and
+within-class FIFO inside quota; proves class priority never changes pass order;
+shows quotas change per-turn throughput but not opportunity share; and records
+slow-worker occupancy without hiding healthy groups.
+
+Admission evidence reaches both per-group and global queue bounds. Exact
+outstanding and completed retries are answered before those bounds, conflicts
+and sequence gaps stay typed, and every run checks
+`admitted = serviced + failed + queued + in_flight`. Poison enters through an
+ordinary replicated command: one group fails and visibly retires its accepted
+backlog while another continues. Snapshot evidence includes the counter's exact
+application bytes, value, applied index, replicated completion cache,
+consumer-owned outstanding state, lifecycle, quota, and incarnation. A
+descriptor-based `RaftGroup` apply restores the promoted payload, and 32
+scheduled snapshot-class inputs do not remove a cold group from their shared
+pass.
+
+The real-history audit consumes admission receipts, immutable pass plans,
+dispatch reports, and public managed metrics rather than scheduler internals.
+Its red-team fixture mutates plan order and membership, opportunity count,
+quota, work identity, terminal disposition, class order, route/class,
+occupancy, conservation, and ready-set span; each mutation is rejected. The
+older independent oracle retains its more detailed release/stall controls,
+including early, late, fabricated, and expired occupancy histories.
 
 Named consequences, so they are not discovered later:
 
-- **The complete acceptance matrix is still separate work.** The first real
-  slice proves three groups, bounded admission, sessions, reads, fairness, and
-  poison isolation. Hot/cold and slow groups, snapshot pressure, lifecycle
-  churn, removal/tombstone/reopening, late traffic, and scale profiles remain
-  the next deterministic acceptance slice.
+- **The deterministic matrix is complete; process composition is not.** This
+  adapter proves the scheduler with real in-memory Rafter groups. Durable
+  application/Raft stores, sockets, process restart, process-visible histories,
+  and nightly/weekly profiles belong to the process milestone and are not
+  inferred from deterministic success.
 - **The deterministic network is not production transport.** It is bounded,
   routes every peer envelope, and uses real Raft groups, but has no sockets,
   authentication, disk backend, or wall-clock behavior. Process composition

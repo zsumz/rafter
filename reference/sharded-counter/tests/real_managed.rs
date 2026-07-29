@@ -4,8 +4,8 @@ use rafter_app::group::GroupInput;
 use rafter_multiraft::managed::{AdmissionRejection as ManagedRejection, ManagedConfig};
 use rafter_reference_sharded_counter::{
     adapter::{
-        AdapterError, CounterAdmissionRejection, CounterApplyResult, ManagedCounterCluster,
-        NetworkConfig, ProposalReceipt, ReplicatedCounterCommand,
+        AdapterError, CounterAdmissionRejection, CounterApplyResult, CounterSubmitOutcome,
+        ManagedCounterCluster, NetworkConfig, ProposalReceipt, ReplicatedCounterCommand,
     },
     AdmissionOutcome, ClientId, CounterCommand, CounterResult, Delta, GroupId, GroupIncarnation,
     RequestFingerprint, RequestIdentity, Sequence, SessionEpoch, SystemClass,
@@ -39,6 +39,13 @@ fn result(cluster: &ManagedCounterCluster, receipt: ProposalReceipt) -> CounterR
         panic!("counter proposal returns a counter result");
     };
     result
+}
+
+fn queued(outcome: CounterSubmitOutcome) -> ProposalReceipt {
+    let CounterSubmitOutcome::Queued(receipt) = outcome else {
+        panic!("new test request takes one queue slot");
+    };
+    receipt
 }
 
 struct Scenario {
@@ -108,22 +115,30 @@ impl Scenario {
             delta: Delta::new(value).expect("delta is nonzero"),
         });
         let accepted = [
-            self.cluster
-                .submit(self.groups[0], request(0, 1, adds[0]), adds[0])
-                .expect("first group command queues"),
-            self.cluster
-                .submit(
-                    self.groups[0],
-                    request(1, 1, CounterCommand::Read),
-                    CounterCommand::Read,
-                )
-                .expect("second group-zero slot queues"),
-            self.cluster
-                .submit(self.groups[1], request(0, 1, adds[1]), adds[1])
-                .expect("group-one command queues"),
-            self.cluster
-                .submit(self.groups[2], request(0, 1, adds[2]), adds[2])
-                .expect("group-two command queues"),
+            queued(
+                self.cluster
+                    .submit(self.groups[0], request(0, 1, adds[0]), adds[0])
+                    .expect("first group command queues"),
+            ),
+            queued(
+                self.cluster
+                    .submit(
+                        self.groups[0],
+                        request(1, 1, CounterCommand::Read),
+                        CounterCommand::Read,
+                    )
+                    .expect("second group-zero slot queues"),
+            ),
+            queued(
+                self.cluster
+                    .submit(self.groups[1], request(0, 1, adds[1]), adds[1])
+                    .expect("group-one command queues"),
+            ),
+            queued(
+                self.cluster
+                    .submit(self.groups[2], request(0, 1, adds[2]), adds[2])
+                    .expect("group-two command queues"),
+            ),
         ];
         for (group, work) in [
             (self.groups[0], add(0, 1, 1, 5, 1)),
@@ -206,26 +221,28 @@ impl Scenario {
     }
 
     fn isolate_poison(&mut self) {
-        let read_zero = self
-            .cluster
-            .submit(
-                self.groups[0],
-                request(0, 2, CounterCommand::Read),
-                CounterCommand::Read,
-            )
-            .expect("healthy group-zero read queues");
+        let read_zero = queued(
+            self.cluster
+                .submit(
+                    self.groups[0],
+                    request(0, 2, CounterCommand::Read),
+                    CounterCommand::Read,
+                )
+                .expect("healthy group-zero read queues"),
+        );
         let fault = self
             .cluster
             .submit_fault(self.groups[1], SystemClass::Control)
             .expect("fault injection is ordinary accepted consumer work");
-        let read_two = self
-            .cluster
-            .submit(
-                self.groups[2],
-                request(0, 2, CounterCommand::Read),
-                CounterCommand::Read,
-            )
-            .expect("healthy group-two read queues");
+        let read_two = queued(
+            self.cluster
+                .submit(
+                    self.groups[2],
+                    request(0, 2, CounterCommand::Read),
+                    CounterCommand::Read,
+                )
+                .expect("healthy group-two read queues"),
+        );
         for (group, work) in [
             (self.groups[0], read(0, 1, 2, 1)),
             (self.groups[1], faulty(SystemClass::Control, 1)),
@@ -300,9 +317,12 @@ fn adapter_policy_keeps_commands_out_of_recovery() {
         .expect_err("recovery refuses application work");
     assert!(matches!(
         rejected.reason,
-        CounterAdmissionRejection::Lifecycle {
-            state: Some(rafter_reference_sharded_counter::GroupLifecycle::Recovering)
-        }
+        CounterAdmissionRejection::Policy(
+            rafter_reference_sharded_counter::AdmissionRejection::GroupNotAcceptingWork {
+                state: rafter_reference_sharded_counter::GroupLifecycle::Recovering,
+                class: rafter_reference_sharded_counter::WorkClass::Command,
+            }
+        )
     ));
 }
 
@@ -333,5 +353,5 @@ fn network_overflow_returns_every_unqueued_envelope() {
     };
     assert_eq!(bound, 1);
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].group_id, group_id);
+    assert_eq!(pending[0].envelope.group_id, group_id);
 }

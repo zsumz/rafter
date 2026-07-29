@@ -5,30 +5,135 @@ use std::{
     num::NonZeroUsize,
 };
 
-use rafter::{LocalProposalId, NodeId};
+use rafter::{LocalProposalId, LogIndex, NodeId};
 use rafter_app::{
     error::ErrorCause,
-    group::{GroupFatalState, GroupInput, GroupStepReport, RaftGroup},
-    proposal::ProposalEvent,
+    group::{GroupInput, RaftGroup},
     transport::PeerEnvelope,
 };
 use rafter_multiraft::{
     managed::{
-        AdmissionReceipt, AdmissionRejection, ArmPass, BeginDispatch, ManagedConfig,
-        ManagedTypedMultiRaftHost, WorkClass,
+        AdmissionReceipt, AdmissionRejection, Dispatch, DispatchId, ManagedConfig,
+        ManagedTypedMultiRaftHost, PassId, WorkClass, WorkId,
     },
     MultiRaftErrorKind,
 };
 use rafter_runtime::DurableRaftNode;
 
-use crate::{GroupId, GroupLifecycle};
+use crate::{
+    AdmissionRejection as PolicyRejection, ClientId, CounterCommand, CounterResult, GroupId,
+    GroupIncarnation, GroupLifecycle, RequestIdentity, Sequence, SessionEpoch, WorkQuota,
+};
 
 use super::state_machine::{CounterApplyResult, CounterStateMachine, ReplicatedCounterCommand};
 
 mod admission;
+mod checkpoint;
+mod drive;
+mod lifecycle;
+
+pub use checkpoint::{
+    CheckpointError, CheckpointOutstanding, CheckpointSession, CounterGroupCheckpoint,
+    RestoredCounterGroup,
+};
 
 type CounterGroup = RaftGroup<GroupId, CounterStateMachine, DurableRaftNode>;
-type CounterReport = GroupStepReport<GroupId, CounterApplyResult>;
+type CounterDispatch = Dispatch<GroupId, GroupInput<GroupId, ReplicatedCounterCommand>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CompletedRequest {
+    sequence: Sequence,
+    command: CounterCommand,
+    result: CounterResult,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OutstandingRequest {
+    sequence: Sequence,
+    command: CounterCommand,
+    receipt: ProposalReceipt,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AdapterSession {
+    epoch: SessionEpoch,
+    outstanding: Option<OutstandingRequest>,
+    completed: Option<CompletedRequest>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GroupSlot {
+    incarnation: GroupIncarnation,
+    lifecycle: GroupLifecycle,
+    quota: WorkQuota,
+    applied_index: LogIndex,
+    value: i64,
+    sessions: BTreeMap<ClientId, AdapterSession>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingProposal {
+    OpenSession {
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+        client_id: ClientId,
+        epoch: SessionEpoch,
+        receipt: ProposalReceipt,
+    },
+    Counter {
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+        request: RequestIdentity,
+        command: CounterCommand,
+        receipt: ProposalReceipt,
+    },
+    Fault {
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+        receipt: ProposalReceipt,
+    },
+}
+
+impl PendingProposal {
+    const fn group_id(self) -> GroupId {
+        match self {
+            Self::OpenSession { group_id, .. }
+            | Self::Counter { group_id, .. }
+            | Self::Fault { group_id, .. } => group_id,
+        }
+    }
+
+    const fn receipt(self) -> ProposalReceipt {
+        match self {
+            Self::OpenSession { receipt, .. }
+            | Self::Counter { receipt, .. }
+            | Self::Fault { receipt, .. } => receipt,
+        }
+    }
+
+    const fn incarnation(self) -> GroupIncarnation {
+        match self {
+            Self::OpenSession { incarnation, .. }
+            | Self::Counter { incarnation, .. }
+            | Self::Fault { incarnation, .. } => incarnation,
+        }
+    }
+}
+
+/// Peer envelope paired with the consumer incarnation that emitted it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoutedPeerEnvelope {
+    /// Group incarnation whose Raft driver emitted the envelope.
+    pub incarnation: GroupIncarnation,
+    /// Exact Rafter peer envelope.
+    pub envelope: PeerEnvelope<GroupId>,
+}
+
+#[derive(Debug)]
+struct DelayedDispatch {
+    remaining_rounds: usize,
+    dispatch: CounterDispatch,
+}
 
 /// Bounds owned by the deterministic consumer network and state machines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,18 +153,33 @@ pub struct ProposalReceipt {
     pub proposal_id: LocalProposalId,
 }
 
+/// Stable outcome of real-adapter counter admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CounterSubmitOutcome {
+    /// New work took one managed queue slot.
+    Queued(ProposalReceipt),
+    /// An exact retry names the already queued work and took no second slot.
+    AlreadyQueued(ProposalReceipt),
+    /// An exact retry was answered from the completed session cache.
+    Replayed(CounterResult),
+}
+
+/// Stable outcome of replicated session establishment admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionSubmitOutcome {
+    /// New session work took one managed queue slot.
+    Queued(ProposalReceipt),
+    /// An exact retry names the already queued session proposal.
+    AlreadyQueued(ProposalReceipt),
+    /// The requested epoch is already active.
+    AlreadyOpen,
+}
+
 /// Why consumer policy or the managed mechanism refused a proposal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CounterAdmissionRejection {
-    /// The group has not been registered in this consumer.
-    UnknownGroup,
-    /// The consumer lifecycle does not admit this proposal shape.
-    Lifecycle {
-        /// State observed at the gate, when the group exists.
-        state: Option<GroupLifecycle>,
-    },
-    /// The real group has permanently poisoned.
-    GroupPoisoned,
+    /// Consumer-owned identity, lifecycle, session, or request gate refused.
+    Policy(PolicyRejection),
     /// The public scheduler refused the queue admission.
     Managed(AdmissionRejection<GroupId>),
 }
@@ -86,6 +206,10 @@ pub struct DriveReport {
     pub failed: u64,
     /// Remote-replica steps that failed after consuming an envelope.
     pub remote_failures: u64,
+    /// Exact dispatches in scheduler order.
+    pub turns: Vec<DriveTurn>,
+    /// Peer traffic refused by consumer identity/lifecycle policy.
+    pub refused_peer_traffic: Vec<PeerTrafficRefusal>,
 }
 
 impl DriveReport {
@@ -95,7 +219,66 @@ impl DriveReport {
         self.serviced += other.serviced;
         self.failed += other.failed;
         self.remote_failures += other.remote_failures;
+        self.turns.extend(other.turns);
+        self.refused_peer_traffic.extend(other.refused_peer_traffic);
     }
+}
+
+/// One managed dispatch and every terminal item disposition it produced.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DriveTurn {
+    /// Immutable ready-set pass.
+    pub pass_id: PassId,
+    /// Exact dispatch occupancy.
+    pub dispatch_id: DispatchId,
+    /// Group receiving the opportunity.
+    pub group_id: GroupId,
+    /// Items selected within the group's quota, in service order.
+    pub items: Vec<DrivenItem>,
+}
+
+/// One accepted managed item's terminal disposition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DrivenItem {
+    /// Stable managed work identity.
+    pub work_id: WorkId,
+    /// Class that selected the item.
+    pub class: WorkClass,
+    /// Whether the real group step succeeded or failed.
+    pub disposition: DrivenDisposition,
+}
+
+/// Terminal real-group result for a managed item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DrivenDisposition {
+    /// The group returned its complete step report.
+    Serviced,
+    /// The real group refused the step after dispatch.
+    Failed { kind: MultiRaftErrorKind },
+}
+
+/// Explicit refusal of late or otherwise invalid peer traffic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeerTrafficRefusal {
+    /// Addressed group.
+    pub group_id: GroupId,
+    /// Incarnation carried beside the envelope.
+    pub incarnation: GroupIncarnation,
+    /// Exact consumer policy refusal.
+    pub reason: PolicyRejection,
+}
+
+/// Terminal failure of an accepted proposal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProposalFailure {
+    /// Local proposal identity whose managed item failed.
+    pub proposal_id: LocalProposalId,
+    /// Group that owned the proposal.
+    pub group_id: GroupId,
+    /// Incarnation that admitted it.
+    pub incarnation: GroupIncarnation,
+    /// Permanent or transient managed driver classification.
+    pub kind: MultiRaftErrorKind,
 }
 
 /// Deterministic adapter/network failure.
@@ -109,6 +292,8 @@ pub enum AdapterError {
     },
     /// A group slot was registered twice.
     GroupAlreadyRegistered(GroupId),
+    /// A consumer quota could not be represented by the public scheduler.
+    QuotaOutOfRange(usize),
     /// A fresh in-memory driver could not be opened.
     OpenGroup {
         group_id: GroupId,
@@ -126,7 +311,7 @@ pub enum AdapterError {
         bound: usize,
         /// Every envelope that did not enter the bounded queue, in emission
         /// order.
-        pending: Box<[PeerEnvelope<GroupId>]>,
+        pending: Box<[RoutedPeerEnvelope]>,
     },
     /// A remote real-Raft replica failed while consuming a routed envelope.
     RemoteStep {
@@ -151,6 +336,12 @@ impl fmt::Display for AdapterError {
             ),
             Self::GroupAlreadyRegistered(group_id) => {
                 write!(formatter, "group {group_id:?} is already registered")
+            }
+            Self::QuotaOutOfRange(quota) => {
+                write!(
+                    formatter,
+                    "group quota {quota} is outside the supported range"
+                )
             }
             Self::OpenGroup { group_id, kind } => {
                 write!(formatter, "group {group_id:?} could not open: {kind:?}")
@@ -196,10 +387,15 @@ pub struct ManagedCounterCluster {
     host: ManagedTypedMultiRaftHost<GroupId, ReplicatedCounterCommand, CounterApplyResult>,
     network_config: NetworkConfig,
     peers: BTreeMap<(GroupId, NodeId), CounterGroup>,
-    lifecycles: BTreeMap<GroupId, GroupLifecycle>,
+    groups: BTreeMap<GroupId, GroupSlot>,
     poisoned: BTreeSet<GroupId>,
-    network: VecDeque<PeerEnvelope<GroupId>>,
+    network: VecDeque<RoutedPeerEnvelope>,
     completed: BTreeMap<LocalProposalId, CounterApplyResult>,
+    failures: BTreeMap<LocalProposalId, ProposalFailure>,
+    pending: BTreeMap<LocalProposalId, PendingProposal>,
+    work_proposals: BTreeMap<WorkId, LocalProposalId>,
+    delayed: Vec<DelayedDispatch>,
+    service_delays: BTreeMap<GroupId, usize>,
     next_proposal_id: u64,
 }
 
@@ -211,10 +407,15 @@ impl ManagedCounterCluster {
             host: ManagedTypedMultiRaftHost::new(managed),
             network_config: network,
             peers: BTreeMap::new(),
-            lifecycles: BTreeMap::new(),
+            groups: BTreeMap::new(),
             poisoned: BTreeSet::new(),
             network: VecDeque::new(),
             completed: BTreeMap::new(),
+            failures: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            work_proposals: BTreeMap::new(),
+            delayed: Vec::new(),
+            service_delays: BTreeMap::new(),
             next_proposal_id: 1,
         }
     }
@@ -233,6 +434,56 @@ impl ManagedCounterCluster {
         self.completed.iter().map(|(id, result)| (*id, *result))
     }
 
+    /// Returns an explicit terminal failure for an accepted proposal.
+    #[must_use]
+    pub fn proposal_failure(&self, proposal_id: LocalProposalId) -> Option<ProposalFailure> {
+        self.failures.get(&proposal_id).copied()
+    }
+
+    /// Returns one slot's current consumer-owned incarnation and lifecycle.
+    #[must_use]
+    pub fn group_identity(&self, group_id: GroupId) -> Option<(GroupIncarnation, GroupLifecycle)> {
+        self.groups
+            .get(&group_id)
+            .map(|slot| (slot.incarnation, slot.lifecycle))
+    }
+
+    /// Configures explicit deterministic service occupancy for future turns.
+    ///
+    /// A value of zero restores immediate execution. A nonzero value holds a
+    /// real dispatch—and therefore one public scheduler worker—for that many
+    /// drive rounds before stepping it.
+    pub fn set_service_delay(&mut self, group_id: GroupId, rounds: usize) {
+        if rounds == 0 {
+            self.service_delays.remove(&group_id);
+        } else {
+            self.service_delays.insert(group_id, rounds);
+        }
+    }
+
+    /// Removes the oldest deterministic peer envelope for caller-controlled
+    /// delay, duplication, or late-delivery tests.
+    #[must_use]
+    pub fn take_pending_peer(&mut self) -> Option<RoutedPeerEnvelope> {
+        self.network.pop_front()
+    }
+
+    /// Requeues one exact peer envelope without changing its incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the envelope unchanged when the bounded network is full.
+    pub fn enqueue_peer(
+        &mut self,
+        envelope: RoutedPeerEnvelope,
+    ) -> Result<(), Box<RoutedPeerEnvelope>> {
+        if self.network.len() >= self.network_config.max_pending_messages.get() {
+            return Err(Box::new(envelope));
+        }
+        self.network.push_back(envelope);
+        Ok(())
+    }
+
     /// Managed queue/pass/occupancy metrics.
     #[must_use]
     pub fn metrics(&self) -> rafter_multiraft::managed::ManagedMetrics {
@@ -245,158 +496,124 @@ impl ManagedCounterCluster {
         self.poisoned.contains(&group_id)
     }
 
-    /// Runs deterministic managed passes and peer delivery until quiescence.
-    ///
-    /// # Errors
-    ///
-    /// Returns the exact transport/remote failure or progress-budget boundary.
-    pub fn drive_until_idle(&mut self, max_rounds: usize) -> Result<DriveReport, AdapterError> {
-        let mut total = DriveReport::default();
-        for _ in 0..max_rounds {
-            self.restore_poisoned_for_explicit_drain();
-            let mut round = DriveReport::default();
-            self.route_network(&mut round)?;
-            let progressed = self.run_one_pass(&mut round)?;
-            let network_pending = !self.network.is_empty();
-            total.merge(round);
-            if !progressed && !network_pending && self.host.managed_metrics().queued == 0 {
-                return Ok(total);
-            }
-        }
-        Err(AdapterError::ProgressBudgetExhausted { rounds: max_rounds })
-    }
-
-    fn restore_poisoned_for_explicit_drain(&mut self) {
-        for group_id in &self.poisoned {
-            let _ = self.host.set_available(group_id, true);
-        }
-    }
-
-    fn run_one_pass(&mut self, report: &mut DriveReport) -> Result<bool, AdapterError> {
-        match self
-            .host
-            .arm_pass()
-            .map_err(|_| AdapterError::IdentityExhausted)?
-        {
-            ArmPass::Armed(plan) => report.plans.push(plan.groups),
-            ArmPass::AlreadyArmed(_) => {}
-            ArmPass::Idle => return Ok(false),
-        }
-        loop {
-            match self
-                .host
-                .begin_dispatch()
-                .map_err(|_| AdapterError::IdentityExhausted)?
+    fn record_failed_work(&mut self, work_id: WorkId, group_id: GroupId, kind: MultiRaftErrorKind) {
+        let Some(proposal_id) = self.work_proposals.remove(&work_id) else {
+            return;
+        };
+        let Some(pending) = self.pending.remove(&proposal_id) else {
+            return;
+        };
+        self.failures.insert(
+            proposal_id,
+            ProposalFailure {
+                proposal_id,
+                group_id,
+                incarnation: pending.incarnation(),
+                kind,
+            },
+        );
+        if let PendingProposal::Counter { request, .. } = pending {
+            if let Some(session) = self
+                .groups
+                .get_mut(&group_id)
+                .and_then(|slot| slot.sessions.get_mut(&request.client_id))
             {
-                BeginDispatch::Dispatched(dispatch) => {
-                    report.opportunities += 1;
-                    let managed = self
-                        .host
-                        .execute_dispatch(dispatch)
-                        .expect("the adapter executes only its own live dispatches");
-                    for item in managed.items {
-                        match item.result {
-                            Ok(group_report) => {
-                                report.serviced += 1;
-                                self.collect_report(group_report)?;
-                            }
-                            Err(error) => {
-                                report.failed += 1;
-                                if error.kind() == MultiRaftErrorKind::DriverPoisoned {
-                                    self.poisoned.insert(managed.group_id);
-                                }
-                            }
-                        }
-                    }
+                if session
+                    .outstanding
+                    .is_some_and(|outstanding| outstanding.receipt.proposal_id == proposal_id)
+                {
+                    session.outstanding = None;
                 }
-                BeginDispatch::Skipped(_) => {}
-                BeginDispatch::WorkersOccupied | BeginDispatch::PassComplete(_) => return Ok(true),
-                BeginDispatch::NoPass => return Ok(false),
             }
         }
     }
 
-    fn collect_report(&mut self, report: CounterReport) -> Result<(), AdapterError> {
-        for event in report.proposal_events {
-            if let ProposalEvent::Applied {
-                local_proposal_id,
-                result,
-                ..
-            } = event
-            {
-                self.completed.insert(local_proposal_id, result);
-            }
+    fn complete_pending(&mut self, proposal_id: LocalProposalId, result: CounterApplyResult) {
+        let Some(pending) = self.pending.remove(&proposal_id) else {
+            return;
+        };
+        self.work_proposals
+            .retain(|_, pending_id| *pending_id != proposal_id);
+        let group_id = pending.group_id();
+        let Some(slot) = self.groups.get_mut(&group_id) else {
+            return;
+        };
+        if slot.incarnation != pending.incarnation() {
+            return;
         }
-        for applied in report.applied {
-            if let Some(proposal_id) = applied.local_proposal_id {
-                self.completed.insert(proposal_id, applied.result);
-            }
-        }
-        let mut envelopes = report.peer_messages.into_iter();
-        while let Some(envelope) = envelopes.next() {
-            let bound = self.network_config.max_pending_messages.get();
-            if self.network.len() >= bound {
-                let pending = std::iter::once(envelope)
-                    .chain(envelopes)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice();
-                return Err(AdapterError::NetworkFull { bound, pending });
-            }
-            self.network.push_back(envelope);
-        }
-        Ok(())
-    }
-
-    fn route_network(&mut self, report: &mut DriveReport) -> Result<(), AdapterError> {
-        let mut remaining = self.network.len();
-        while remaining != 0 {
-            remaining -= 1;
-            let envelope = self
-                .network
-                .pop_front()
-                .expect("remaining counts queued envelopes");
-            if envelope.to == NodeId(1) {
-                let group_id = envelope.group_id;
-                match self.host.admit(
-                    &group_id,
-                    WorkClass::Control,
-                    GroupInput::PeerMessage { envelope },
+        match pending {
+            PendingProposal::OpenSession {
+                client_id, epoch, ..
+            } => {
+                if matches!(
+                    result,
+                    CounterApplyResult::Session(
+                        super::state_machine::SessionApplyResult::Opened
+                            | super::state_machine::SessionApplyResult::AlreadyOpen
+                            | super::state_machine::SessionApplyResult::Replaced
+                    )
                 ) {
-                    Ok(_) => {}
-                    Err(rejected) => {
-                        let GroupInput::PeerMessage { envelope } = rejected.payload else {
-                            unreachable!("the network admitted a peer envelope");
-                        };
-                        self.network.push_back(envelope);
-                        break;
-                    }
-                }
-                continue;
-            }
-            let group_id = envelope.group_id;
-            let node_id = envelope.to;
-            let Some(peer) = self.peers.get_mut(&(group_id, node_id)) else {
-                return Err(AdapterError::Lifecycle {
-                    group_id,
-                    expected: GroupLifecycle::Recovering,
-                    actual: self.lifecycles.get(&group_id).copied(),
-                });
-            };
-            match peer.step(GroupInput::PeerMessage { envelope }) {
-                Ok(peer_report) => self.collect_report(peer_report)?,
-                Err(error) => {
-                    if matches!(peer.fatal_state(), GroupFatalState::Poisoned { .. }) {
-                        report.remote_failures += 1;
-                        self.poisoned.insert(group_id);
-                    } else {
-                        return Err(AdapterError::RemoteStep {
-                            group_id,
-                            node_id,
-                            cause: ErrorCause::new(error),
-                        });
-                    }
+                    slot.sessions.insert(
+                        client_id,
+                        AdapterSession {
+                            epoch,
+                            outstanding: None,
+                            completed: None,
+                        },
+                    );
                 }
             }
+            PendingProposal::Counter {
+                request, command, ..
+            } => {
+                let Some(session) = slot.sessions.get_mut(&request.client_id) else {
+                    return;
+                };
+                if session
+                    .outstanding
+                    .is_some_and(|outstanding| outstanding.receipt.proposal_id == proposal_id)
+                {
+                    session.outstanding = None;
+                }
+                if let CounterApplyResult::Counter(counter_result) = result {
+                    session.completed = Some(CompletedRequest {
+                        sequence: request.sequence,
+                        command,
+                        result: counter_result,
+                    });
+                }
+            }
+            PendingProposal::Fault { .. } => {}
+        }
+    }
+
+    fn admit_group(
+        &self,
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+        class: crate::WorkClass,
+    ) -> Result<(), PolicyRejection> {
+        let Some(slot) = self.groups.get(&group_id) else {
+            return Err(PolicyRejection::GroupUnknown);
+        };
+        if slot.lifecycle == GroupLifecycle::Tombstoned {
+            return Err(PolicyRejection::GroupTombstoned);
+        }
+        if incarnation < slot.incarnation {
+            return Err(PolicyRejection::StaleIncarnation {
+                current: slot.incarnation,
+            });
+        }
+        if incarnation > slot.incarnation {
+            return Err(PolicyRejection::FutureIncarnation {
+                current: slot.incarnation,
+            });
+        }
+        if matches!(slot.lifecycle, GroupLifecycle::Removed) {
+            return Err(PolicyRejection::GroupNotAcceptingWork {
+                state: slot.lifecycle,
+                class,
+            });
         }
         Ok(())
     }
