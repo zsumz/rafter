@@ -40,6 +40,8 @@
 //! - Killing every replica: each one dies wherever it was, and the test asserts
 //!   that nothing acknowledged before the kill executed a second time after it.
 
+use std::path::Path;
+
 mod support;
 
 #[path = "support/process.rs"]
@@ -64,6 +66,23 @@ use support::{amount, config, execute, open_session};
 /// bound would make every transaction larger without testing anything more.
 fn process_config() -> LedgerConfig {
     config(4, 8)
+}
+
+/// Damages the last committed journal image without changing its framing.
+///
+/// Recovery therefore reaches a complete frame whose checksum it cannot verify,
+/// which deterministically requires the explicit repair path. Both refusal and
+/// escalation tests use this exact residue so they cannot drift into proving
+/// different failures.
+fn corrupt_journal_into_needs_repair(cluster_root: &Path, node_id: NodeId) {
+    let app_dir = NodeProcess::node_dir(cluster_root, node_id).join("app");
+    let mut bytes = raw_journal::read(&app_dir).expect("the killed replica's journal reads back");
+    let target = bytes
+        .len()
+        .checked_sub(COMMIT_LEN + 3)
+        .expect("the journal contains a committed image to corrupt");
+    bytes[target] ^= 0xFF;
+    raw_journal::write(&app_dir, &bytes).expect("the journal rewrites");
 }
 
 fn account(id: u64) -> AccountId {
@@ -465,11 +484,7 @@ fn readiness_refuses_a_journal_that_needs_an_operator_decision() {
     // Corrupt the image of a frame the replica had already committed. Only the
     // checksum changes; the framing is untouched, so recovery reaches the frame
     // and cannot verify it.
-    let app_dir = NodeProcess::node_dir(cluster.root(), victim).join("app");
-    let mut bytes = raw_journal::read(&app_dir).expect("the killed replica's journal reads back");
-    let target = bytes.len() - COMMIT_LEN - 3;
-    bytes[target] ^= 0xFF;
-    raw_journal::write(&app_dir, &bytes).expect("the journal rewrites");
+    corrupt_journal_into_needs_repair(cluster.root(), victim);
 
     // Restarting does not clear it, and the replica says so rather than sitting
     // silently at NOTREADY forever.
@@ -517,6 +532,52 @@ fn readiness_refuses_a_journal_that_needs_an_operator_decision() {
         summary.total_balance, 70,
         "the quorum's history is intact after one replica repaired its own journal"
     );
+
+    assert_linearizable(&cluster);
+    cluster.shutdown();
+}
+
+/// The cluster harness reaches repair only after a plain restart refuses.
+///
+/// The cluster-wide kill test permits this branch because its crash point is
+/// real-time dependent. This test makes the same branch an executable contract:
+/// deterministic damage produces `NEEDS_REPAIR`, `restart` records that refusal,
+/// repairs once under the named mode, and the replica rejoins.
+#[test]
+#[ignore = "spawns real processes; run with --ignored (see the module docs)"]
+fn restart_escalates_only_after_a_journal_requests_repair() {
+    let mut cluster = ProcessCluster::start("restart-escalation", process_config());
+    cluster.submit_to_leader(&open_session(0, 1));
+    cluster.submit_to_leader(&execute(0, 1, 1, open_account(7)));
+    cluster.submit_to_leader(&execute(0, 1, 2, deposit(7, 60)));
+
+    let victim = NodeId(3);
+    cluster.wait_applied_through(victim, LogIndex(1));
+    cluster.kill(victim);
+    corrupt_journal_into_needs_repair(cluster.root(), victim);
+
+    let recovered_floor = cluster.restart(victim);
+    assert!(
+        recovered_floor >= LogIndex(1),
+        "repair retains the last intact committed application image"
+    );
+    assert_eq!(
+        cluster.escalations().len(),
+        1,
+        "the deterministic refusal must exercise exactly one escalation"
+    );
+    let escalation = &cluster.escalations()[0];
+    assert_eq!(escalation.node_id, victim);
+    assert_eq!(escalation.mode, "repair");
+    assert!(
+        escalation.refusal.contains("--repair-app-store"),
+        "repair must follow the process's explicit refusal, observed {escalation:?}"
+    );
+    assert!(
+        cluster.node_mut(victim).has_announced("REPAIRED"),
+        "the escalated process must announce the repair it performed"
+    );
+    cluster.wait_applied_through(victim, LogIndex(1));
 
     assert_linearizable(&cluster);
     cluster.shutdown();
