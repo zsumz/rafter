@@ -433,18 +433,34 @@ are labeled integration evidence only.
 
 ### Production composition
 
-The 1.0 acceptance composition requires:
+The unpublished fenced-lock `lock-production-node` fixture closes this
+composition criterion with one bounded implementation:
 
-- persisted replica identity, allocated so a node ID is used once per group;
-- a transactional application backend;
-- the selected production Raft storage implementation;
-- bounded frames and queues;
-- authenticated transport;
-- readiness gating after complete recovery; and
-- structured metrics and failure diagnostics.
+- durable per-group monotonic identity allocation and per-replica identity
+  records, with committed removal permanently spending an ID;
+- the transactional fenced-lock application backend and
+  `FileRaftNodeStores` correctness-oriented Raft storage;
+- Rustls mutually authenticated peer channels whose leaf certificate maps to
+  exactly one node and must agree with both envelope identities;
+- a durable 64-frame per-peer replay window and monotonic connection sessions;
+- a 2,163,089-byte receive-frame ceiling, 256-frame outbound per-peer queues,
+  128-frame inbound per-peer queues, a 512-frame global inbound queue, 16 peer
+  connections, 16 client connections, and 64 pending client requests;
+- readiness after identity, TLS, replay metadata, Raft, application,
+  checkpoint, committed application floor, and workers are ready; and
+- JSON Lines lifecycle/transport diagnostics plus an `OBSERVE` object covering
+  role, term, leader, indexes, membership phase, queue depth/overflow,
+  authentication/refusal/replay counts, checkpoint epoch, and readiness.
 
-No test using intentionally insecure demo plumbing closes this release
-criterion.
+`tests/process_production.rs` exercises authenticated service, unknown and
+mismatched credentials, replay and removed-peer refusal, checkpoint
+loss/corruption, readiness under incomplete recovery, connection overflow,
+monotonic replacement, and both independent lock/guarded-resource checkers.
+`scripts/reference-process-check` selects it through a reviewed five-test
+inventory. The fixture proves that the public Rafter crates can be composed this
+way; it is not a generic server, certificate platform, deployment controller,
+or high-throughput WAL claim. The separate insecure `lock-node` remains
+integration evidence only.
 
 The allocation clause is the deployment's half of a contract Rafter states and
 cannot enforce for it. A `NodeId` is single-use within its group: a committed

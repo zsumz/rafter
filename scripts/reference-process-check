@@ -48,6 +48,7 @@ suites=(
     "rafter-reference-ledger:process_cluster:reference-process-test-inventory.txt"
     "rafter-reference-fenced-lock:process_cluster:reference-process-test-inventory.fenced-lock.txt"
     "rafter-reference-fenced-lock:process_control_plane:reference-process-test-inventory.fenced-lock-control-plane.txt"
+    "rafter-reference-fenced-lock:process_production:reference-process-test-inventory.fenced-lock-production.txt"
     "rafter-reference-sharded-counter:process_cluster:reference-process-test-inventory.sharded-counter.txt"
 )
 

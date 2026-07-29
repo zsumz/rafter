@@ -1,13 +1,10 @@
 //! What the membership event stream does to this driver, through its own front
 //! door.
 //!
-//! Every scenario here drives `deliver` or `tick` and nothing else. That is
-//! deliberate and it is the lesson of the round that added the file: the
-//! effective-membership branch of the router was pinned only by in-crate tests
-//! that handed it an event directly, because the app layer emitted that event
-//! only for a step carrying a local membership *request* — an input this driver
-//! has no method to produce. The branch passed its tests and no follower could
-//! reach it.
+//! Most scenarios here drive replicated changes through `deliver` or `tick`.
+//! One drives a caller-planned change through `change_membership`, because a
+//! transport-backed production embedder must be able to execute the plan as
+//! well as observe its replicated effects.
 //!
 //! The two facts are tracked separately and each is *assigned* from its own
 //! stream rather than merged into one set. A union that only ever grew could not
@@ -19,6 +16,7 @@
 
 mod support;
 
+use rafter_app::membership::{MembershipChange, NodeInfo};
 use rafter_service::{
     AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError, InboundEnvelopeError,
     TransportDriverOptions,
@@ -47,6 +45,35 @@ fn principals(node_ids: &[u64]) -> Vec<Principal> {
         .iter()
         .map(|node_id| Principal::for_node(NodeId(*node_id)))
         .collect()
+}
+
+#[test]
+fn a_caller_planned_change_runs_through_the_transport_driver_front_door() {
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2], &[1, 2]);
+    let handle = runtime.handle();
+    let (driver, transport) = scripted_driver(runtime, Nameable::all());
+    let epoch_before = driver.control_plane_checkpoint_epoch();
+
+    change_on_step(&handle, &[1, 2, 3], &[1, 2, 3]);
+    driver
+        .change_membership(MembershipChange::AddLearner {
+            node_id: NodeId(3),
+            info: NodeInfo::default(),
+        })
+        .expect("the local group accepts the caller-planned input");
+
+    assert_eq!(
+        transport
+            .peer_sets()
+            .last()
+            .expect("a peer set was published"),
+        &principals(&[2, 3]),
+        "the immediate effective membership is routed before the call returns"
+    );
+    assert!(
+        driver.control_plane_checkpoint_epoch() > epoch_before,
+        "the control-plane publication path is the same one restart persists"
+    );
 }
 
 /// A follower that learns a configuration by replication widens its peer set.

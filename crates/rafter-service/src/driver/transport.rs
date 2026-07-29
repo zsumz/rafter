@@ -559,6 +559,34 @@ where
         state.step(GroupInput::Tick)
     }
 
+    /// Starts one caller-planned membership change and routes every immediate
+    /// side effect.
+    ///
+    /// This is the execution counterpart to
+    /// [`crate::MembershipController`]'s plans. The driver does not choose a
+    /// target membership, decide when a learner is caught up, or turn an
+    /// accepted step into a completion claim; those remain deployment policy.
+    /// `Ok(())` means the local group accepted and processed this input. The
+    /// caller must observe committed membership before retiring an identity or
+    /// advancing its durable allocation record.
+    ///
+    /// The control-plane checkpoint is reconciled before this returns, just as
+    /// it is after ticks and peer deliveries. An embedder that persists on
+    /// [`TransportRaftDriver::control_plane_checkpoint_epoch`] therefore sees a
+    /// membership change through the same fail-closed path as every other
+    /// protocol input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManagedDriverError`] when the driver has released its group,
+    /// is shutting down, or the local group refuses the membership input.
+    pub fn change_membership(&self, change: MembershipChange) -> Result<(), ManagedDriverError> {
+        let mut state = self.inner.lock();
+        state.reject_if_shutting_down()?;
+        state.flush_peer_policy();
+        state.step(GroupInput::Membership { change })
+    }
+
     /// Validates one inbound authenticated envelope and steps the group with
     /// it.
     ///

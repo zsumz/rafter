@@ -91,7 +91,7 @@ use rafter_reference_harness::process::{
 use crate::scratch::ScratchDir;
 
 #[path = "process_history.rs"]
-mod process_history;
+pub(crate) mod process_history;
 
 /// Node identifiers of the three-replica process cluster.
 pub const NODE_IDS: [NodeId; 3] = [NodeId(1), NodeId(2), NodeId(3)];
@@ -1149,7 +1149,7 @@ impl Drop for ProcessCluster {
 /// The fingerprint inside a [`Command::Submit`] is deliberately not rendered:
 /// the protocol derives it from the operation on the same line, and
 /// `CONTRACT.md` records what that costs.
-fn render_command(command: Command) -> String {
+pub(crate) fn render_command(command: Command) -> String {
     match command {
         Command::OpenSession {
             client_id,
@@ -1187,7 +1187,7 @@ fn render_command(command: Command) -> String {
     }
 }
 
-fn parse_status(response: &str) -> Option<NodeStatus> {
+pub(crate) fn parse_status(response: &str) -> Option<NodeStatus> {
     let tokens: Vec<&str> = response.split_whitespace().collect();
     if tokens.len() != 7 || tokens[0] != "STATUS" {
         return None;
@@ -1206,7 +1206,7 @@ fn parse_status(response: &str) -> Option<NodeStatus> {
 }
 
 #[track_caller]
-fn parse_submit_response(response: &str) -> SubmitOutcome {
+pub(crate) fn parse_submit_response(response: &str) -> SubmitOutcome {
     let tokens: Vec<&str> = response.split_whitespace().collect();
     match tokens.first().copied() {
         Some("OK") => {
@@ -1247,7 +1247,7 @@ fn parse_submit_response(response: &str) -> SubmitOutcome {
 }
 
 #[track_caller]
-fn parse_query_response(response: &str) -> QueryOutcome {
+pub(crate) fn parse_query_response(response: &str) -> QueryOutcome {
     let tokens: Vec<&str> = response.split_whitespace().collect();
     match (tokens.first().copied(), tokens.get(1).copied()) {
         (Some("OK"), Some("LOCK")) => {

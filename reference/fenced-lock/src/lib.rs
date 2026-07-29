@@ -27,6 +27,7 @@ mod guarded_history;
 mod history;
 mod model;
 mod oracle;
+pub mod production;
 pub mod store;
 mod types;
 

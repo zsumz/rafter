@@ -5,7 +5,7 @@ use rafter_reference_fenced_lock::{
 
 use super::{LockView, QueryOutcome, SubmitOutcome};
 
-pub(super) const fn query_invocation(
+pub(crate) const fn query_invocation(
     operation_id: OperationId,
     resource: ResourceName,
 ) -> HistoryEvent {
@@ -39,7 +39,7 @@ fn query_result(view: &LockView) -> LockQueryResult {
     })
 }
 
-pub(super) fn query_terminal(operation_id: OperationId, outcome: &QueryOutcome) -> HistoryEvent {
+pub(crate) fn query_terminal(operation_id: OperationId, outcome: &QueryOutcome) -> HistoryEvent {
     match outcome {
         QueryOutcome::Ready(view) => HistoryEvent::QueryCompleted {
             operation_id,
@@ -51,7 +51,7 @@ pub(super) fn query_terminal(operation_id: OperationId, outcome: &QueryOutcome) 
     }
 }
 
-pub(super) fn submit_terminal(operation_id: OperationId, outcome: &SubmitOutcome) -> HistoryEvent {
+pub(crate) fn submit_terminal(operation_id: OperationId, outcome: &SubmitOutcome) -> HistoryEvent {
     match outcome {
         SubmitOutcome::Applied {
             disposition,

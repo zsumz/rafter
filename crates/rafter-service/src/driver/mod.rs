@@ -23,7 +23,7 @@ use rafter_app::{
         GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, RaftGroup,
         StepReportOptions,
     },
-    membership::MembershipEvent,
+    membership::{MembershipChange, MembershipEvent},
     proposal::{ClientRequestId, Proposal, ProposalEvent, ProposalUnknownOutcomeReason},
     read::{ReadConsistency, ReadEvent, ReadOutcome, ReadRequest},
     snapshot::SnapshotEvent,

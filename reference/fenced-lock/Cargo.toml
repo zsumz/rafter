@@ -12,11 +12,16 @@ publish = false
 [dependencies]
 rafter = "0.0.1"
 rafter-app = "0.0.1"
+rafter-codec = "0.0.1"
+rafter-crc32 = "0.0.1"
 rafter-reference-harness.workspace = true
 rafter-runtime = "0.0.1"
+rafter-runtime-api = "0.0.1"
 rafter-service = "0.0.1"
 rafter-storage = "0.0.1"
 rafter-transport-tcp-insecure = "0.0.1"
+rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2.2.0"
 
 [lints]
 workspace = true

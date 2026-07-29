@@ -83,6 +83,7 @@ use std::{
 };
 
 use rafter::{LocalProposalId, LogIndex, NodeConfig, NodeId, ReadId, Role};
+use rafter_app::membership::MembershipChange;
 use rafter_app::state_machine::ReplicatedStateMachine;
 use rafter_reference_fenced_lock::{
     store::{LockStore, LockStoreError, RecoveryReport, SlotIndex},
@@ -497,15 +498,18 @@ impl Replica {
             detail: error.to_string(),
         })?;
 
-        let peers: Vec<NodeId> = members
-            .iter()
-            .copied()
-            .filter(|member| *member != node_id)
-            .collect();
-        let config = NodeConfig::new(node_id, peers, election_timeout_ticks).map_err(|error| {
-            OpenError::Config {
-                detail: format!("{error:?}"),
-            }
+        let config = if members.contains(&node_id) {
+            let peers = members
+                .iter()
+                .copied()
+                .filter(|member| *member != node_id)
+                .collect();
+            NodeConfig::new(node_id, peers, election_timeout_ticks)
+        } else {
+            NodeConfig::new_non_voter(node_id, members.to_vec(), election_timeout_ticks)
+        }
+        .map_err(|error| OpenError::Config {
+            detail: format!("{error:?}"),
         })?;
         let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
             config,
@@ -593,11 +597,11 @@ impl Replica {
     /// published as a floor re-derived from the mark, so what a link layer has
     /// accepted is not a fact this file has to carry.
     ///
-    /// **This cluster never reconfigures**, so after the first write the epoch
-    /// stands still for the life of the process. The wiring is here anyway: the
-    /// consumer that does reconfigure writes exactly this, and a plumbing path
-    /// that only exists in the consumer that needs it is a plumbing path nobody
-    /// has run.
+    /// The insecure integration process keeps a static membership, so its epoch
+    /// ordinarily stands still after the first write. The production fixture
+    /// reconfigures through this same replica and makes the dynamic path real:
+    /// each committed configuration advances and persists the checkpoint before
+    /// later work is served.
     ///
     /// # Errors
     ///
@@ -794,6 +798,64 @@ impl Replica {
         let finished = self.finish(outcome);
         self.refresh_readiness();
         finished
+    }
+
+    /// Starts one deployment-planned membership change.
+    ///
+    /// Acceptance here is not commitment. The production fixture observes the
+    /// committed membership before it retires a replica identity or allocates a
+    /// replacement, keeping deployment metadata behind Raft rather than ahead
+    /// of it.
+    #[allow(
+        dead_code,
+        reason = "the shared replica module's production binary executes membership changes"
+    )]
+    pub fn change_membership(&mut self, change: MembershipChange) -> Result<(), String> {
+        let outcome = self
+            .driver
+            .change_membership(change)
+            .map_err(|error| error.to_string());
+        let finished = self.finish(outcome);
+        self.refresh_readiness();
+        finished
+    }
+
+    /// Returns the complete driver metrics snapshot for structured operations
+    /// output in the production fixture.
+    #[allow(
+        dead_code,
+        reason = "the shared replica module's production binary exposes this snapshot"
+    )]
+    pub fn metrics_snapshot(&self) -> rafter_app::metrics::RaftGroupMetrics<LockGroupId> {
+        self.metrics.current()
+    }
+
+    /// Returns the committed configuration separately from the effective one.
+    #[allow(
+        dead_code,
+        reason = "the shared replica module's production binary exposes this snapshot"
+    )]
+    pub fn committed_membership_snapshot(&self) -> Result<rafter::MembershipConfig, String> {
+        self.driver
+            .with_group(|group| {
+                rafter_runtime_api::PersistedRaftRuntime::committed_membership(group.runtime())
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    /// Returns the durable peer-control-plane state and this instance's persist
+    /// trigger epoch for production diagnostics and membership orchestration.
+    #[allow(
+        dead_code,
+        reason = "the shared replica module's production binary exposes this snapshot"
+    )]
+    pub fn control_plane_snapshot(
+        &self,
+    ) -> (rafter_service::PeerControlPlaneCheckpoint<LockGroupId>, u64) {
+        (
+            self.driver.control_plane_checkpoint(),
+            self.driver.control_plane_checkpoint_epoch(),
+        )
     }
 
     /// Delivers one peer envelope.

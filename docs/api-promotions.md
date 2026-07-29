@@ -13276,3 +13276,14 @@ any one of the three lands alone.
     differential suite, source mode, and exact-package mode. This step is
     additive; lifecycle, session, deduplication, snapshot, and operator policy
     stay in the consumer.
+26. **Caller-planned membership execution on the transport driver.**
+    `TransportRaftDriver::change_membership` is the neutral execution seam the
+    production-composition consumer requires. `MembershipController` already
+    plans safe changes and the driver already routes their replicated
+    membership effects, but no public entry point could submit the planned
+    input to a transport-backed group. The method accepts one
+    `MembershipChange`, routes every immediate report before returning, and
+    deliberately does not choose targets, catch-up barriers, identity
+    allocation, certificates, or retirement timing. The fenced-lock fixture
+    owns all of that deployment policy. This step is additive and directly
+    pinned by `rafter-service/tests/transport_membership.rs`.

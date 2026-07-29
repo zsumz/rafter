@@ -1305,3 +1305,51 @@ Four limits stay, and none of them is an oversight:
 4. The lock store's slot files still have no lock of their own. One process per
    replica directory is enforced by the Raft store's lock and by opening it
    first.
+
+## Production Composition Boundary
+
+`lock-production-node` is one unpublished, production-shaped acceptance
+composition beside the insecure integration process. It is deliberately not a
+generic Rafter server.
+
+The fixture adds caller-owned durable replica identity and a monotonic
+per-group allocation mark; Rustls mutual peer authentication against a
+dedicated principal map; envelope/channel identity agreement; durable
+connection sessions and a 64-frame replay window; bounded peer frames, queues,
+connections, client lines, and pending work; and JSON operations diagnostics.
+It uses `FileRaftNodeStores` for publication/recovery correctness and the
+transactional lock backend for application state. This does not relabel the
+file store as a segmented high-throughput WAL.
+
+Membership orchestration is explicit. A replacement receives a fresh identity,
+joins as a learner, catches up through the leader's observed match index, and is
+promoted through joint consensus. `LEAVE_JOINT` is a separate required step;
+acceptance of the first step is never described as completion. Only after a
+removal is observed committed does the caller retire the old identity.
+
+Readiness opens only after identity and replay metadata verify, TLS is
+configured, both durable stores recover, the control-plane checkpoint is
+restored and reconciled, the application reaches its committed application
+floor, and bounded workers are live. A listener that exists earlier returns a
+typed not-ready refusal. Missing, corrupt, foreign, or contradictory metadata
+fails closed.
+
+The reviewed production process suite independently proves:
+
+- authenticated three-process election and lock service;
+- unauthenticated, unknown-certificate, and certificate/envelope mismatch
+  refusal before Raft;
+- duplicate, old-session, outside-window, restart, and removed-peer replay
+  refusal with bounded durable state;
+- clean checkpoint restart and refusal of missing or corrupt checkpoints;
+- monotonic allocation, learner catch-up, committed removal, permanent
+  retirement, and fresh-ID promotion;
+- bounded client connection overflow with every admitted request receiving a
+  terminal response; and
+- stale-owner rejection by the guarded resource alongside the independent lock
+  history checker.
+
+The committed certificates are test-only and protect no external secret; the
+CA signing key is not present. Client authentication, certificate issuance and
+rotation, deployment control, general discovery, and signal management remain
+embedding concerns.
