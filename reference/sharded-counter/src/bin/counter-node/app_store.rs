@@ -154,6 +154,12 @@ enum PublicationCertainty {
     PublicationUncertain,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationScope {
+    Policy,
+    ApplicationCommit,
+}
+
 #[derive(Debug)]
 struct PublicationError {
     certainty: PublicationCertainty,
@@ -177,6 +183,16 @@ impl PublicationError {
 
     fn into_source(self) -> StoreError {
         self.source
+    }
+
+    fn into_application_commit_error(self) -> StoreError {
+        if self.certainty == PublicationCertainty::PublicationUncertain
+            || matches!(self.source, StoreError::Io { .. })
+        {
+            StoreError::ApplicationDurabilityFailure(Box::new(self.source))
+        } else {
+            self.source
+        }
     }
 }
 
@@ -205,6 +221,7 @@ pub enum StoreError {
     OutstandingRemain {
         count: usize,
     },
+    ApplicationDurabilityFailure(Box<StoreError>),
     Counter(CounterStateMachineError),
     SnapshotUnavailable,
     Missing {
@@ -243,6 +260,9 @@ impl fmt::Display for StoreError {
             Self::OutstandingRemain { count } => {
                 write!(formatter, "{count} durable operations remain outstanding")
             }
+            Self::ApplicationDurabilityFailure(error) => {
+                write!(formatter, "application durability failed: {error}")
+            }
             Self::Counter(error) => write!(formatter, "counter state machine failed: {error}"),
             Self::SnapshotUnavailable => {
                 formatter.write_str("promoted Raft snapshot payload is unavailable")
@@ -263,6 +283,7 @@ impl Error for StoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
+            Self::ApplicationDurabilityFailure(error) => Some(error),
             Self::Counter(error) => Some(error),
             _ => None,
         }
@@ -272,6 +293,12 @@ impl Error for StoreError {
 impl From<CounterStateMachineError> for StoreError {
     fn from(error: CounterStateMachineError) -> Self {
         Self::Counter(error)
+    }
+}
+
+impl StoreError {
+    pub const fn is_application_durability_failure(&self) -> bool {
+        matches!(self, Self::ApplicationDurabilityFailure(_))
     }
 }
 
@@ -324,7 +351,7 @@ impl ApplicationRecord {
             },
             application,
         };
-        persist(&path, &record).map_err(PublicationError::into_source)?;
+        persist(&path, &record, PublicationScope::Policy).map_err(PublicationError::into_source)?;
         Self::from_record(app_dir, path, max_sessions, record)
     }
 
@@ -526,6 +553,24 @@ impl ApplicationRecord {
         Ok(())
     }
 
+    pub fn reconcile_authoritative_completion(
+        &self,
+        operation: AcceptedOperation,
+    ) -> Result<(), StoreError> {
+        let client_id = operation.client_id();
+        let mut staged = self.lock().clone();
+        if staged
+            .policy
+            .outstanding
+            .get(&client_id)
+            .is_some_and(|outstanding| outstanding.operation == operation)
+        {
+            staged.policy.outstanding.remove(&client_id);
+            self.publish(staged)?;
+        }
+        Ok(())
+    }
+
     pub fn retire(&self, lifecycle: GroupLifecycle) -> Result<(), StoreError> {
         debug_assert!(matches!(
             lifecycle,
@@ -603,18 +648,39 @@ impl ApplicationRecord {
                 staged.policy.outstanding.remove(&client_id);
             }
         }
-        self.publish(staged)
+        self.publish_application_commit(staged)
     }
 
     fn publish_classified(&self, staged: Record) -> Result<(), PublicationError> {
-        persist(&self.path, &staged)?;
-        *self.lock() = staged;
-        Ok(())
+        self.publish_classified_in_scope(staged, PublicationScope::Policy)
+    }
+
+    fn publish_classified_in_scope(
+        &self,
+        staged: Record,
+        scope: PublicationScope,
+    ) -> Result<(), PublicationError> {
+        match persist(&self.path, &staged, scope) {
+            Ok(()) => {
+                *self.lock() = staged;
+                Ok(())
+            }
+            Err(error) if error.certainty == PublicationCertainty::PublicationUncertain => {
+                *self.lock() = staged;
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn publish(&self, staged: Record) -> Result<(), StoreError> {
         self.publish_classified(staged)
             .map_err(PublicationError::into_source)
+    }
+
+    fn publish_application_commit(&self, staged: Record) -> Result<(), StoreError> {
+        self.publish_classified_in_scope(staged, PublicationScope::ApplicationCommit)
+            .map_err(PublicationError::into_application_commit_error)
     }
 
     fn lock(&self) -> MutexGuard<'_, Record> {
@@ -772,27 +838,62 @@ impl ReplicatedStateMachine for DurableCounterStateMachine {
     }
 }
 
-fn persist(path: &Path, record: &Record) -> Result<(), PublicationError> {
+fn persist(path: &Path, record: &Record, scope: PublicationScope) -> Result<(), PublicationError> {
     let bytes = encode(record).map_err(PublicationError::definitely_not_published)?;
     let temp = path.with_extension(format!("tmp.{}", std::process::id()));
+    if scope == PublicationScope::ApplicationCommit {
+        crate::directed_io_failure("application_commit_temp_create_failure").map_err(|source| {
+            PublicationError::definitely_not_published(io_error("create", &temp, source))
+        })?;
+    }
     let mut file = fs::File::create(&temp).map_err(|source| {
         PublicationError::definitely_not_published(io_error("create", &temp, source))
     })?;
+    if scope == PublicationScope::ApplicationCommit {
+        crate::directed_io_failure("application_commit_temp_write_failure").map_err(|source| {
+            PublicationError::definitely_not_published(io_error("write", &temp, source))
+        })?;
+    }
     file.write_all(&bytes).map_err(|source| {
         PublicationError::definitely_not_published(io_error("write", &temp, source))
     })?;
+    if scope == PublicationScope::ApplicationCommit {
+        crate::directed_io_failure("application_commit_temp_sync_failure").map_err(|source| {
+            PublicationError::definitely_not_published(io_error("sync", &temp, source))
+        })?;
+    }
     file.sync_all().map_err(|source| {
         PublicationError::definitely_not_published(io_error("sync", &temp, source))
     })?;
+    if scope == PublicationScope::ApplicationCommit {
+        crate::directed_failpoint("before_application_commit_state_rcap_rename");
+    }
     crate::directed_failpoint("before_state_rcap_rename");
     fs::rename(&temp, path).map_err(|source| {
         PublicationError::definitely_not_published(io_error("publish", path, source))
     })?;
+    if scope == PublicationScope::ApplicationCommit {
+        crate::directed_failpoint("after_application_commit_state_rcap_rename");
+    }
     crate::directed_failpoint("after_state_rcap_rename");
     let parent = path.parent().ok_or_else(|| {
         PublicationError::publication_uncertain(StoreError::Corrupt("record path has no parent"))
     })?;
+    if scope == PublicationScope::ApplicationCommit {
+        crate::directed_failpoint("before_application_commit_state_rcap_parent_sync");
+    }
     crate::directed_failpoint("before_state_rcap_parent_sync");
+    if scope == PublicationScope::ApplicationCommit {
+        crate::directed_io_failure("application_commit_state_rcap_parent_sync_failure").map_err(
+            |source| {
+                PublicationError::publication_uncertain(io_error(
+                    "sync parent directory",
+                    parent,
+                    source,
+                ))
+            },
+        )?;
+    }
     crate::directed_io_failure("state_rcap_parent_sync_failure").map_err(|source| {
         PublicationError::publication_uncertain(io_error("sync parent directory", parent, source))
     })?;

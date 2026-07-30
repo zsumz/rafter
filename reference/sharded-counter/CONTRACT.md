@@ -108,9 +108,11 @@ Faulty  { class, cost }                 work whose application poisons its group
 The replicated adapter also reserves command tag 4 for `CapacityFault`. It is a
 fixture-only persisted command used to exercise the ordinary
 `SessionCapacity` invariant/quarantine path, including restart from a log that
-already contains it. It is deliberately absent from the client protocol and
-the independent scheduler vocabulary: no production request can create it.
-Removing or reassigning the tag would be an on-disk schema change.
+already contains it. It is absent from the product command protocol and the
+independent scheduler vocabulary. The unpublished process fixture exposes it
+only through its `FAULT_CAPACITY group incarnation` fault-control surface; no
+production request can create it. Removing or reassigning the tag would be an
+on-disk schema change.
 
 Counter commands are:
 
@@ -1650,10 +1652,14 @@ exact queue-conservation equation remain supplemental rather than standing in
 for a complete pass.
 
 The process-only `PAUSE_PEERS` and `RESUME_PEERS` controls partition one host's
-Raft transport without changing its durable state. Like `SLOW`, `PRESSURE`, and
-the fault controls, they exist only to make a required black-box failure shape
-deterministic. The reviewed stale-replica test uses them to prove that a local
-completion cache cannot bypass the authoritative read barrier.
+Raft transport without changing its durable state. `PAUSE_RECOVERY` and
+`RESUME_RECOVERY` suspend and resume background re-admission of durable
+outstanding work without changing that work. `TRANSFER` requests an ordinary
+Raft leadership transfer to a named caught-up voter. Like `SLOW`, `PRESSURE`,
+and the fault controls, these fixture surfaces exist only to make a required
+black-box failure shape deterministic. The reviewed stale-replica test uses the
+partition controls to prove that a local completion cache cannot bypass the
+authoritative read barrier.
 
 The shared reconnecting client distinguishes connect, send, and receive stages.
 It may report a pre-send connection failure as unattempted, but never replays a

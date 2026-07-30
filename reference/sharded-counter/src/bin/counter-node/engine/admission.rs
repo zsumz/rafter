@@ -16,9 +16,9 @@ use rafter_reference_sharded_counter::{
 };
 
 use super::{
-    render_apply_rejection, render_counter_result, render_terminal_failure, ClientAdmissionRefusal,
-    Engine, PendingAdmission, PendingAdmissionCandidate, PendingClient, WorkKind,
-    MAX_PEERS_PER_LOOP, RECOVERY_RETRY_DELAY,
+    driver_application_durability_failed, render_apply_rejection, render_counter_result,
+    render_terminal_failure, ClientAdmissionRefusal, Engine, PendingAdmission,
+    PendingAdmissionCandidate, PendingClient, WorkKind, MAX_PEERS_PER_LOOP, RECOVERY_RETRY_DELAY,
 };
 use crate::{
     app_store::{
@@ -176,6 +176,12 @@ impl Engine {
         match driver.step_direct(input) {
             Ok(report) => self.collect_report(group_id, report),
             Err(error) => {
+                if driver_application_durability_failed(&error) {
+                    return Err(format!(
+                        "group {} application durability failed during admission: {error}",
+                        group_id.get()
+                    ));
+                }
                 self.finish_failed_admission_read(
                     read_id,
                     &format!("read barrier failed: {error}"),
@@ -305,15 +311,43 @@ impl Engine {
                 return Ok(());
             }
         };
+        let record = self
+            .groups
+            .get(&pending.group_id)
+            .expect("serving group remains installed")
+            .record
+            .clone();
         let mut proceeding = Vec::new();
         for candidate in pending.candidates {
             match driver.admission_decision(candidate.operation.replicated_command()) {
                 CounterAdmissionDecision::SessionAlreadyOpen => {
+                    if candidate.durable_outstanding {
+                        record
+                            .reconcile_authoritative_completion(candidate.operation)
+                            .map_err(|error| {
+                                format!(
+                                    "authoritative session completion could not be published for group {} client {}: {error}",
+                                    pending.group_id.get(),
+                                    candidate.operation.client_id().get()
+                                )
+                            })?;
+                    }
                     for reply in candidate.replies {
                         reply.send("OK SESSION already_open".to_string(), false);
                     }
                 }
                 CounterAdmissionDecision::CounterReplay(result) => {
+                    if candidate.durable_outstanding {
+                        record
+                            .reconcile_authoritative_completion(candidate.operation)
+                            .map_err(|error| {
+                                format!(
+                                    "authoritative replay completion could not be published for group {} client {}: {error}",
+                                    pending.group_id.get(),
+                                    candidate.operation.client_id().get()
+                                )
+                            })?;
+                    }
                     let response = format!("OK REPLAY {}", render_counter_result(result));
                     for reply in candidate.replies {
                         reply.send(response.clone(), false);
@@ -329,19 +363,17 @@ impl Engine {
             }
         }
 
-        let mut claimed = false;
         for candidate in proceeding {
             let Some(candidate) = self.attach_exact_pending_candidate(pending.group_id, candidate)
             else {
                 continue;
             };
-            if claimed || self.has_conflicting_outstanding(pending.group_id, candidate.operation) {
+            if self.has_conflicting_outstanding(pending.group_id, candidate.operation) {
                 for reply in candidate.replies {
                     reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
                 }
                 continue;
             }
-            claimed = true;
             self.finish_proceeding_admission(pending.group_id, candidate)?;
         }
         Ok(())
@@ -809,6 +841,12 @@ impl Engine {
                     .clone();
                 match driver.step_direct(input) {
                     Ok(report) => self.collect_report(frame.group_id, report)?,
+                    Err(error) if driver_application_durability_failed(&error) => {
+                        return Err(format!(
+                            "group {} application durability failed while handling peer input: {error}",
+                            frame.group_id.get()
+                        ));
+                    }
                     Err(error) if error.kind() == DriverErrorKind::Poisoned => {
                         self.persist_runtime_poison(frame.group_id)?;
                     }
@@ -861,6 +899,12 @@ impl Engine {
                     .clone();
                 match driver.step_direct(GroupInput::Tick) {
                     Ok(report) => self.collect_report(group_id, report)?,
+                    Err(error) if driver_application_durability_failed(&error) => {
+                        return Err(format!(
+                            "group {} application durability failed while ticking: {error}",
+                            group_id.get()
+                        ));
+                    }
                     Err(error) if error.kind() == DriverErrorKind::Poisoned => {
                         self.persist_runtime_poison(group_id)?;
                     }

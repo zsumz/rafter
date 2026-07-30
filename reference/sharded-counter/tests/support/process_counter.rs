@@ -367,6 +367,23 @@ impl ProcessCluster {
         self.leader_for_group_excluding(group_id, None)
     }
 
+    pub fn wait_for_group_leader(&mut self, node_id: u64, group_id: u32) {
+        PROCESS_WAIT
+            .until(format!("node {node_id} to lead group {group_id}"), || {
+                let status = self
+                    .nodes
+                    .get_mut(&node_id)
+                    .expect("node is live")
+                    .request("STATUS")
+                    .ok()?;
+                field(&status, "leader_groups")?
+                    .split(',')
+                    .any(|group| group.parse::<u32>() == Ok(group_id))
+                    .then_some(())
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
     pub fn leader_for_group_excluding(&mut self, group_id: u32, excluded: Option<u64>) -> u64 {
         PROCESS_WAIT
             .until(

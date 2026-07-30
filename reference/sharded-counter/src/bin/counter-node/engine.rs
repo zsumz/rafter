@@ -3,6 +3,8 @@
 mod admission;
 mod audit;
 mod durability;
+mod failure;
+mod report;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -36,6 +38,8 @@ use self::{
     durability::{
         activate_staged_raft, archive_raft_with_failpoints, prepare_staged_raft, slot_from_policy,
     },
+    failure::{driver_application_durability_failed, managed_application_durability_failed},
+    report::{take_ordered_consumer_events, ConsumerReportEvent},
 };
 use super::{
     app_store::{AcceptedOperation, ApplicationRecord, TerminalFailure},
@@ -52,7 +56,7 @@ const MAX_JOBS_PER_LOOP: usize = 64;
 const MAX_PEERS_PER_LOOP: usize = 512;
 const MAX_DISPATCHES_PER_LOOP: usize = 512;
 const LOOP_POLL: Duration = Duration::from_millis(2);
-const MAX_SLOW_DELAY_MS: u64 = 5_000;
+const MAX_SLOW_DELAY_MS: u64 = 30_000;
 const RECOVERY_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 type Host = ManagedTypedMultiRaftHost<GroupId, ReplicatedCounterCommand, CounterApplyResult>;
@@ -112,6 +116,12 @@ struct DelayedDispatch {
     dispatch: CounterDispatch,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryMode {
+    Running,
+    Paused,
+}
+
 #[derive(Debug)]
 struct Engine {
     node_id: NodeId,
@@ -145,6 +155,7 @@ struct Engine {
     ready_announced: bool,
     refused_peer: u64,
     peers_paused: bool,
+    recovery_mode: RecoveryMode,
     stopping: bool,
 }
 
@@ -213,6 +224,7 @@ pub fn run(config: &Config) -> Result<(), String> {
         ready_announced: false,
         refused_peer: 0,
         peers_paused: false,
+        recovery_mode: RecoveryMode::Running,
         stopping: false,
     };
     engine.open_groups(&config.host_dir())?;
@@ -361,7 +373,9 @@ impl Engine {
     ) -> Result<(), String> {
         let mut next_tick = Instant::now();
         while !self.stopping {
-            self.recover_outstanding()?;
+            if self.recovery_mode == RecoveryMode::Running {
+                self.recover_outstanding()?;
+            }
             self.receive_jobs(jobs)?;
             if self.stopping {
                 break;
@@ -504,6 +518,49 @@ impl Engine {
             Request::ResumePeers => {
                 self.peers_paused = false;
                 reply.send("OK PEERS resumed".to_string(), false);
+            }
+            Request::PauseRecovery => {
+                self.recovery_mode = RecoveryMode::Paused;
+                reply.send("OK RECOVERY paused".to_string(), false);
+            }
+            Request::ResumeRecovery => {
+                self.recovery_mode = RecoveryMode::Running;
+                let now = Instant::now();
+                for retry_at in self.deferred_recovery.values_mut() {
+                    *retry_at = now;
+                }
+                reply.send("OK RECOVERY resumed".to_string(), false);
+            }
+            Request::TransferLeadership {
+                group_id,
+                incarnation,
+                target,
+            } => {
+                let driver = match self.serving_driver(group_id, incarnation) {
+                    Ok(driver) => driver.clone(),
+                    Err(response) => {
+                        reply.send(response, false);
+                        return Ok(());
+                    }
+                };
+                match driver.step_direct(GroupInput::TransferLeadership { target }) {
+                    Ok(report) => {
+                        self.collect_report(group_id, report)?;
+                        reply.send(format!("OK TRANSFER target={}", target.0), false);
+                    }
+                    Err(error) if driver_application_durability_failed(&error) => {
+                        return Err(format!(
+                            "group {} application durability failed during leadership transfer: {error}",
+                            group_id.get()
+                        ));
+                    }
+                    Err(error) => {
+                        if error.kind() == rafter_multiraft::DriverErrorKind::Poisoned {
+                            self.persist_runtime_poison(group_id)?;
+                        }
+                        reply.send(format!("ERR TRANSFER {error}"), false);
+                    }
+                }
             }
             Request::Pressure {
                 group_id,
@@ -716,6 +773,12 @@ impl Engine {
                     }
                 }
                 Err(error) => {
+                    if managed_application_durability_failed(&error) {
+                        return Err(format!(
+                            "group {} application durability failed during committed dispatch: {error}",
+                            group_id.get()
+                        ));
+                    }
                     let kind = error.kind();
                     if kind == MultiRaftErrorKind::DriverPoisoned {
                         self.persist_runtime_poison(group_id)?;
@@ -767,7 +830,7 @@ impl Engine {
         Ok(())
     }
 
-    fn collect_report(&mut self, group_id: GroupId, report: Report) -> Result<(), String> {
+    fn collect_report(&mut self, group_id: GroupId, mut report: Report) -> Result<(), String> {
         let incarnation = self
             .groups
             .get(&group_id)
@@ -775,7 +838,7 @@ impl Engine {
             .record
             .policy()
             .incarnation;
-        for envelope in report.peer_messages {
+        for envelope in std::mem::take(&mut report.peer_messages) {
             if !self.peers_paused {
                 let _ = self.link.send(PeerFrame {
                     group_id,
@@ -786,35 +849,37 @@ impl Engine {
                 });
             }
         }
-        for event in &report.read_events {
-            self.finish_admission_read_event(event)?;
-        }
-        for event in report.proposal_events {
+        for event in take_ordered_consumer_events(&mut report) {
             match event {
-                ProposalEvent::Applied {
-                    local_proposal_id,
-                    result,
-                    ..
-                } => self.complete_applied(local_proposal_id, result),
-                ProposalEvent::Rejected {
-                    local_proposal_id,
-                    reason,
-                    leader_hint,
-                } => self.complete_rejected(
-                    local_proposal_id,
-                    &format!("reason={reason:?} leader={leader_hint:?}"),
-                )?,
-                ProposalEvent::UnknownOutcome {
-                    local_proposal_id,
-                    reason,
-                    ..
-                } => self.complete_unknown(local_proposal_id, &format!("{reason:?}")),
-                _ => {}
-            }
-        }
-        for applied in report.applied {
-            if let Some(proposal_id) = applied.local_proposal_id {
-                self.complete_applied(proposal_id, applied.result);
+                ConsumerReportEvent::Proposal(event) => match event {
+                    ProposalEvent::Applied {
+                        local_proposal_id,
+                        result,
+                        ..
+                    } => self.complete_applied(local_proposal_id, result),
+                    ProposalEvent::Rejected {
+                        local_proposal_id,
+                        reason,
+                        leader_hint,
+                    } => self.complete_rejected(
+                        local_proposal_id,
+                        &format!("reason={reason:?} leader={leader_hint:?}"),
+                    )?,
+                    ProposalEvent::UnknownOutcome {
+                        local_proposal_id,
+                        reason,
+                        ..
+                    } => self.complete_unknown(local_proposal_id, &format!("{reason:?}")),
+                    _ => {}
+                },
+                ConsumerReportEvent::Applied(applied) => {
+                    if let Some(proposal_id) = applied.local_proposal_id {
+                        self.complete_applied(proposal_id, applied.result);
+                    }
+                }
+                ConsumerReportEvent::Read(event) => {
+                    self.finish_admission_read_event(&event)?;
+                }
             }
         }
         Ok(())

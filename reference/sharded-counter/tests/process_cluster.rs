@@ -16,15 +16,26 @@ use process_counter::{
     ProcessHistory, CONNECTION_TIMEOUTS, GROUP_COUNT, NODE_IDS,
 };
 
+include!("process_cluster/review_regressions.rs");
+
 fn occupy_all_workers(cluster: &mut ProcessCluster, host: u64, excluded_group: u32) -> Vec<u32> {
+    occupy_all_workers_for(cluster, host, excluded_group, 5_000)
+}
+
+fn occupy_all_workers_for(
+    cluster: &mut ProcessCluster,
+    host: u64,
+    excluded_group: u32,
+    milliseconds: u64,
+) -> Vec<u32> {
     let blockers = (1..=GROUP_COUNT)
         .filter(|candidate| *candidate != excluded_group)
         .take(4)
         .collect::<Vec<_>>();
     for blocker in &blockers {
         assert_eq!(
-            cluster.request_on(host, &format!("SLOW {blocker} 5000")),
-            format!("OK SLOW group={blocker} milliseconds=5000")
+            cluster.request_on(host, &format!("SLOW {blocker} {milliseconds}")),
+            format!("OK SLOW group={blocker} milliseconds={milliseconds}")
         );
         assert_eq!(
             cluster.request_on(host, &format!("PRESSURE {blocker} 1 bulk 1")),
@@ -625,6 +636,168 @@ fn durable_outstanding_barrier_failure_remains_unknown_under_queue_pressure() {
 
     cluster.wait_response(leader, &request, "OK ADDED value=5");
     cluster.wait_value(leader, group, 1, 5);
+}
+
+#[test]
+#[ignore = "snapshot replay must reconcile exact durable outstanding work"]
+fn snapshot_replay_clears_exact_outstanding_before_the_next_admission() {
+    let mut cluster = ProcessCluster::start("snapshot-replay-ledger-cleanup");
+    let old_leader = 1;
+    let group = cluster.leader_group_on(old_leader);
+    let client = 58;
+    assert_eq!(
+        cluster.request_on(old_leader, &format!("OPEN {group} 1 {client} 1")),
+        "OK SESSION opened"
+    );
+    let request = format!("ADD {group} 1 {client} 1 1 5");
+    cluster.arm_failpoint(
+        old_leader,
+        "after_reservation_publication_before_managed_admission",
+    );
+    cluster.trigger_failpoint(
+        old_leader,
+        &request,
+        "after_reservation_publication_before_managed_admission",
+    );
+
+    let leader = cluster.leader_for_group_excluding(group, Some(old_leader));
+    cluster.wait_response(leader, &request, "OK ADDED value=5");
+    let snapshot = cluster.request_on(leader, &format!("SNAPSHOT {group} 1"));
+    assert!(snapshot.starts_with("OK SNAPSHOT applied="), "{snapshot}");
+
+    cluster.restart(old_leader);
+    cluster.wait_ready();
+    cluster.wait_value(old_leader, group, 1, 5);
+    let snapshot_dir = cluster
+        .scratch_path()
+        .join(format!("host-{old_leader}/groups/{group}/raft/snapshots"));
+    assert!(
+        fs::read_dir(&snapshot_dir)
+            .unwrap_or_else(|error| panic!("could not inspect {}: {error}", snapshot_dir.display()))
+            .next()
+            .is_some(),
+        "the lagging replica must catch up through the compacted snapshot"
+    );
+    let before = cluster.request_on(old_leader, "STATUS");
+    assert_eq!(
+        number_field(&before, "durable_outstanding"),
+        1,
+        "snapshot installation deliberately leaves the consumer ledger for authoritative reconciliation: {before}"
+    );
+
+    cluster.wait_status_at_least(old_leader, "recovery_deferred", 1);
+    let deferred = cluster.request_on(old_leader, "STATUS");
+    assert_eq!(
+        number_field(&deferred, "pending_proposals"),
+        0,
+        "leadership transfer starts from a deferred, not locally queued, recovery: {deferred}"
+    );
+    assert_eq!(
+        cluster.request_on(old_leader, "PAUSE_RECOVERY"),
+        "OK RECOVERY paused"
+    );
+    assert_eq!(
+        cluster.request_on(leader, &format!("TRANSFER {group} 1 {old_leader}"),),
+        format!("OK TRANSFER target={old_leader}")
+    );
+    cluster.wait_for_group_leader(old_leader, group);
+    cluster.wait_response(
+        old_leader,
+        &format!("ADD {group} 1 59 1 1 1"),
+        "ERR SESSION_NOT_OPEN",
+    );
+    let _blockers = occupy_all_workers_for(&mut cluster, old_leader, group, 15_000);
+    fill_group_queue(&mut cluster, old_leader, group);
+    let refused = number_field(
+        &cluster.request_on(old_leader, "STATUS"),
+        "recovery_refused",
+    );
+    assert_eq!(
+        cluster.request_on(old_leader, "RESUME_RECOVERY"),
+        "OK RECOVERY resumed"
+    );
+    cluster.wait_status_above(old_leader, "recovery_refused", refused);
+    assert_eq!(
+        cluster.request_on(old_leader, "PAUSE_RECOVERY"),
+        "OK RECOVERY paused"
+    );
+    let before_replay = cluster.request_on(old_leader, "STATUS");
+    assert_eq!(
+        number_field(&before_replay, "pending_proposals"),
+        0,
+        "queue-blocked recovery must leave no local proposal: {before_replay}"
+    );
+    let replay = cluster.request_on(old_leader, &request);
+    assert_eq!(
+        replay, "OK REPLAY ADDED value=5",
+        "exact retry did not reach authoritative replay; status={before_replay}"
+    );
+    let reconciled = cluster.request_on(old_leader, "STATUS");
+    assert_eq!(
+        number_field(&reconciled, "durable_outstanding"),
+        0,
+        "the replay response must follow durable ledger cleanup: {reconciled}"
+    );
+    let next = cluster.request_on(old_leader, &format!("ADD {group} 1 {client} 1 2 1"));
+    assert!(
+        next.starts_with("ERR BACKPRESSURE ") || next == "OK ADDED value=6",
+        "the next sequence must reach the real queue decision, not stale conflict: {next}"
+    );
+}
+
+#[test]
+#[ignore = "authoritative replay cleanup must publish before its response"]
+fn authoritative_replay_cleanup_crash_severs_the_response() {
+    let mut cluster = ProcessCluster::start("replay-cleanup-publication");
+    let old_leader = 1;
+    let group = cluster.leader_group_on(old_leader);
+    let client = 61;
+    assert!(cluster
+        .request_on(old_leader, &format!("OPEN {group} 1 {client} 1"))
+        .starts_with("OK SESSION "));
+    let request = format!("ADD {group} 1 {client} 1 1 5");
+    cluster.arm_failpoint(
+        old_leader,
+        "after_reservation_publication_before_managed_admission",
+    );
+    cluster.trigger_failpoint(
+        old_leader,
+        &request,
+        "after_reservation_publication_before_managed_admission",
+    );
+
+    let leader = cluster.leader_for_group_excluding(group, Some(old_leader));
+    cluster.wait_response(leader, &request, "OK ADDED value=5");
+    let snapshot = cluster.request_on(leader, &format!("SNAPSHOT {group} 1"));
+    assert!(snapshot.starts_with("OK SNAPSHOT applied="), "{snapshot}");
+    cluster.restart(old_leader);
+    cluster.wait_ready();
+    cluster.wait_value(old_leader, group, 1, 5);
+    cluster.wait_status_at_least(old_leader, "recovery_deferred", 1);
+    assert_eq!(
+        cluster.request_on(old_leader, "PAUSE_RECOVERY"),
+        "OK RECOVERY paused"
+    );
+    assert_eq!(
+        cluster.request_on(leader, &format!("TRANSFER {group} 1 {old_leader}"),),
+        format!("OK TRANSFER target={old_leader}")
+    );
+    cluster.wait_for_group_leader(old_leader, group);
+    cluster.wait_response(
+        old_leader,
+        &format!("ADD {group} 1 59 1 1 1"),
+        "ERR SESSION_NOT_OPEN",
+    );
+
+    cluster.arm_failpoint(old_leader, "after_state_rcap_rename");
+    cluster.trigger_failpoint(old_leader, &request, "after_state_rcap_rename");
+    cluster.restart(old_leader);
+    cluster.wait_ready();
+    let status = cluster.request_on(old_leader, "STATUS");
+    assert_eq!(number_field(&status, "durable_outstanding"), 0, "{status}");
+    assert_eq!(number_field(&status, "poisoned"), 0, "{status}");
+    let leader = cluster.leader_for_group(group);
+    cluster.wait_response(leader, &request, "OK REPLAY ADDED value=5");
 }
 
 #[test]

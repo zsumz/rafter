@@ -152,6 +152,9 @@ impl SharedGroup {
                     group.fatal_state(),
                     rafter_app::group::GroupFatalState::Poisoned { .. }
                 ) {
+                    if application_durability_failed(&group) {
+                        return Err(OpenError::Recovery(error.to_string()));
+                    }
                     record.mark_poisoned().map_err(OpenError::Application)?;
                     crate::directed_failpoint("after_poison_publication_before_driver_error");
                     return Err(OpenError::PoisonedRecovery(error.to_string()));
@@ -208,6 +211,13 @@ impl SharedGroup {
             Err(error) => {
                 let kind = match group.fatal_state() {
                     rafter_app::group::GroupFatalState::Poisoned { .. } => {
+                        if application_durability_failed(group) {
+                            let cause = group
+                                .poison_cause()
+                                .cloned()
+                                .expect("classified durability failure retains its cause");
+                            return Err(DriverError::new(DriverErrorKind::Transient, cause));
+                        }
                         if !self.record.policy().poisoned {
                             if let Err(poison_error) = self.record.mark_poisoned() {
                                 return Err(DriverError::new(
@@ -305,6 +315,13 @@ impl SharedGroup {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+fn application_durability_failed(group: &Group) -> bool {
+    group
+        .poison_cause()
+        .and_then(|cause| cause.downcast_ref::<StoreError>())
+        .is_some_and(StoreError::is_application_durability_failure)
 }
 
 impl TypedGroupDriver<GroupId> for SharedGroup {

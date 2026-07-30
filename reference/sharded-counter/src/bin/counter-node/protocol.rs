@@ -11,6 +11,7 @@ use std::{
     thread,
 };
 
+use rafter::NodeId;
 use rafter_reference_sharded_counter::{
     ClientId, CounterCommand, Delta, GroupId, GroupIncarnation, Sequence, SessionEpoch,
 };
@@ -51,6 +52,13 @@ pub enum Request {
     },
     PausePeers,
     ResumePeers,
+    PauseRecovery,
+    ResumeRecovery,
+    TransferLeadership {
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+        target: NodeId,
+    },
     Pressure {
         group_id: GroupId,
         incarnation: GroupIncarnation,
@@ -249,6 +257,13 @@ fn parse(line: &str) -> Result<Request, String> {
         }),
         "PAUSE_PEERS" if fields.len() == 1 => Ok(Request::PausePeers),
         "RESUME_PEERS" if fields.len() == 1 => Ok(Request::ResumePeers),
+        "PAUSE_RECOVERY" if fields.len() == 1 => Ok(Request::PauseRecovery),
+        "RESUME_RECOVERY" if fields.len() == 1 => Ok(Request::ResumeRecovery),
+        "TRANSFER" if fields.len() == 4 => Ok(Request::TransferLeadership {
+            group_id: group(fields[1])?,
+            incarnation: incarnation(fields[2])?,
+            target: NodeId(u64::from(number(fields[3], "target node id")?)),
+        }),
         "PRESSURE" if fields.len() == 5 => Ok(Request::Pressure {
             group_id: group(fields[1])?,
             incarnation: incarnation(fields[2])?,
