@@ -6,6 +6,7 @@
 mod app_store;
 mod engine;
 mod group;
+mod host_registry;
 mod peer_link;
 mod protocol;
 

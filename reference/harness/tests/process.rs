@@ -1,5 +1,5 @@
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader},
     net::TcpListener,
     process::{Command, Stdio},
     thread,
@@ -124,47 +124,27 @@ fn connection_loss_is_returned_as_eof() {
 }
 
 #[test]
-fn a_failed_exchange_reconnects_once() {
+fn a_post_send_disconnect_is_unknown_and_never_replayed() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
     let addr = listener.local_addr().expect("listener has an address");
     let server = thread::spawn(move || {
-        let (first, _) = listener.accept().expect("first connection arrives");
-        let mut first = BufReader::new(first);
+        let (stream, _) = listener.accept().expect("connection arrives");
+        let mut stream = BufReader::new(stream);
         let mut line = String::new();
-        first.read_line(&mut line).expect("first request arrives");
-        first
-            .get_mut()
-            .write_all(b"one\n")
-            .expect("first response is written");
-        first.get_mut().flush().expect("first response is flushed");
-        drop(first);
-
-        let (second, _) = listener.accept().expect("replacement connection arrives");
-        let mut second = BufReader::new(second);
-        line.clear();
-        second
-            .read_line(&mut line)
-            .expect("retried request arrives");
-        second
-            .get_mut()
-            .write_all(b"two\n")
-            .expect("second response is written");
-        second
-            .get_mut()
-            .flush()
-            .expect("second response is flushed");
+        stream.read_line(&mut line).expect("request arrives");
+        line
     });
 
     let mut client = ReconnectingClient::new(addr, CONNECTION_TIMEOUTS);
+    assert!(matches!(
+        client.request("EFFECT once"),
+        Err(RequestError::ReceiveOutcomeUnknown(_))
+    ));
     assert_eq!(
-        client.request("first").expect("first exchange works"),
-        "one"
+        server.join().expect("server thread exits"),
+        "EFFECT once\n",
+        "the effecting server observed the opaque request exactly once"
     );
-    assert_eq!(
-        client.request("second").expect("one reconnect works"),
-        "two"
-    );
-    server.join().expect("server thread exits");
 }
 
 #[test]

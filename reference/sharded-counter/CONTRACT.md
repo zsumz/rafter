@@ -982,6 +982,15 @@ A poisoned group:
 - admits nothing new, reported as `GroupPoisoned`; and
 - keeps its accepted work until a drain retires it explicitly.
 
+Ordinary driving never makes a poisoned group available again. The managed
+scheduler's explicit `fail_queued(group_id)` operation is the only queue
+retirement path: it returns each accepted work identity, class, and payload in
+class/FIFO order, increments the failure side of conservation, and leaves any
+in-flight dispatch under its existing exact-completion permit. `Drain` owns that
+operation and translates proposal payloads into terminal `ProposalFailure`
+records. Repeating `Drain` returns no item twice. `Remove` remains fenced until
+both the explicit queue retirement and every in-flight completion have finished.
+
 The required property is not that a poisoned group stops. It is:
 
 > A group that its own work destroyed takes nothing else down with it. Unrelated
@@ -1447,8 +1456,9 @@ Admission evidence reaches both per-group and global queue bounds. Exact
 outstanding and completed retries are answered before those bounds, conflicts
 and sequence gaps stay typed, and every run checks
 `admitted = serviced + failed + queued + in_flight`. Poison enters through an
-ordinary replicated command: one group fails and visibly retires its accepted
-backlog while another continues. Snapshot evidence includes the counter's exact
+ordinary replicated command: one group fails, stays unavailable during ordinary
+driving, and visibly retires its accepted backlog only through explicit
+`Drain`, while another continues. Snapshot evidence includes the counter's exact
 application bytes, value, applied index, replicated completion cache,
 consumer-owned outstanding state, lifecycle, quota, and incarnation. A
 descriptor-based `RaftGroup` apply restores the promoted payload, and 32
@@ -1482,12 +1492,43 @@ that recovery/catch-up boundary. Snapshot requests build the application
 payload, compact the real Raft log, and preserve the same value and completion
 cache across `SIGKILL` and restart.
 
+A checksummed host slot registry is the separate authority for group existence,
+incarnation, lifecycle, and quota. Only a freshly created empty registry grants
+the explicit incarnation-one bootstrap path. Once a slot is known, a missing
+application record is corruption even when its active Raft directory has
+already been archived or its lifecycle is Removed/Tombstoned; restart refuses
+instead of recreating it. A complete pre-registry host may migrate only when
+every configured application record and Raft-directory shape is present.
+
+Removal is a replayable filesystem transaction:
+
+```text
+Draining -> durable retirement intent -> detach driver -> archive raft
+         -> sync group directory -> publish Removed in app and registry
+         -> clear intent -> sync group directory
+```
+
+Startup completes an intent from either the active or archived side, or refuses
+an impossible combination. Directed process failpoints cover before/after each
+publication, detach, rename, directory sync, Removed publication, and intent
+cleanup.
+
 The client and peer paths are bounded. Client lines, connections, the global
 job queue, group queues, peer frames, per-peer outbound queues, and the global
-inbound queue all have explicit limits. Scheduler evidence is bounded too:
-stdout carries lifecycle lines, while `AUDIT` returns plan and turn digests,
-coverage, opportunity spread, class-order failures, and the exact queue
-conservation equation rather than retaining every tick forever.
+inbound queue all have explicit limits. Scheduler evidence is bounded too. The
+process audit retains one `PassArmed(pass_id, ready_set)`, records exactly one
+dispatched-or-skipped `Opportunity` for each planned group, and accepts
+`PassCompleted` only after the sets and public dispatch/skip counts agree.
+`AUDIT` reports completed and certified pass counts plus invalid-plan/turn
+counts. Plan/turn digests, cumulative coverage, opportunity spread, and the
+exact queue-conservation equation remain supplemental rather than standing in
+for a complete pass.
+
+The shared reconnecting client distinguishes connect, send, and receive stages.
+It may report a pre-send connection failure as unattempted, but never replays a
+request after a send may have begun. A send or post-send receive failure is an
+explicit unknown outcome for the caller to resolve with the request's own
+idempotency contract.
 
 The reviewed process inventory exercises:
 
@@ -1499,6 +1540,12 @@ The reviewed process inventory exercises:
 - `SIGKILL`, exact retry after an unknown outcome, clean restart, snapshot,
   compaction, and durable catch-up;
 - drain, remove, reopen under a greater incarnation, and terminal tombstone;
+- a full restart after tombstone, retaining both the terminal state and stale
+  old-incarnation fence;
+- fail-closed missing application records in active, Removed, and Tombstoned
+  slots;
+- all nine directed retirement-intent crash points and deterministic restart
+  reconciliation;
 - stale client requests and an independently encoded stale peer frame; and
 - nonempty process histories checked against a harness-owned per-group counter
   model after each substantive phase.

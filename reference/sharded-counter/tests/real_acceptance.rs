@@ -596,35 +596,44 @@ fn poison_failure_is_isolated_and_conserved() {
     cluster
         .submit_fault(groups[1], SystemClass::Control)
         .expect("fault is ordinary admitted work");
+    let behind_faults = (0..7)
+        .map(|_| {
+            cluster
+                .submit_fault(groups[1], SystemClass::Bulk)
+                .expect("proposals queue behind the poisoning dispatch")
+        })
+        .collect::<Vec<_>>();
     cluster
         .drive_round()
         .expect("the injected fault reaches the real group");
-    cluster
-        .submit_system(groups[1], GroupIncarnation::first(), SystemClass::Bulk)
-        .expect("one item may race poison propagation");
-    let behind_fault = cluster
-        .submit_system(groups[1], GroupIncarnation::first(), SystemClass::Bulk)
-        .expect("work behind the fault is accepted");
+    for _ in 0..16 {
+        if cluster.is_poisoned(groups[1]) {
+            break;
+        }
+        cluster
+            .drive_round()
+            .expect("replication advances toward the injected fault");
+    }
+    assert!(cluster.is_poisoned(groups[1]));
+    let queued_at_poison = cluster.metrics().queued;
+    assert_ne!(queued_at_poison, 0, "the regression needs poisoned backlog");
+
     let healthy = cluster
         .submit_system(groups[2], GroupIncarnation::first(), SystemClass::Control)
         .expect("healthy work queues beside poison");
-    let poisoned = cluster
-        .drive_until_idle(256)
-        .expect("poison backlog receives explicit failures");
+    let ordinary = cluster
+        .drive_round()
+        .expect("ordinary driving keeps healthy groups moving");
     assert!(cluster.is_poisoned(groups[1]));
     assert!(
-        poisoned
+        ordinary
             .turns
             .iter()
             .flat_map(|turn| &turn.items)
-            .any(|item| item.work_id == behind_fault.work_id
-                && matches!(
-                    item.disposition,
-                    rafter_reference_sharded_counter::adapter::DrivenDisposition::Failed { .. }
-                )),
-        "{poisoned:#?}"
+            .all(|item| item.work_id != behind_faults[0].admission.work_id),
+        "ordinary driving must not auto-retire a poisoned queue: {ordinary:#?}"
     );
-    assert!(poisoned
+    assert!(ordinary
         .turns
         .iter()
         .flat_map(|turn| &turn.items)
@@ -633,6 +642,37 @@ fn poison_failure_is_isolated_and_conserved() {
                 item.disposition,
                 rafter_reference_sharded_counter::adapter::DrivenDisposition::Serviced
             )));
+    assert_eq!(
+        cluster.metrics().queued,
+        queued_at_poison,
+        "ordinary driving neither dispatches nor fails poisoned backlog"
+    );
+
+    let drained = cluster
+        .lifecycle(groups[1], LifecycleRequest::Drain)
+        .expect("explicit drain owns poisoned retirement");
+    assert_eq!(drained.failed.len(), queued_at_poison);
+    let explicitly_failed = behind_faults
+        .iter()
+        .filter(|receipt| {
+            drained
+                .failed
+                .iter()
+                .any(|failure| failure.work.get() == receipt.admission.work_id.get())
+        })
+        .collect::<Vec<_>>();
+    assert!(!explicitly_failed.is_empty());
+    assert!(explicitly_failed
+        .iter()
+        .all(|receipt| cluster.proposal_failure(receipt.proposal_id).is_some()));
+    assert!(
+        cluster
+            .lifecycle(groups[1], LifecycleRequest::Drain)
+            .expect("repeated drain is lossless")
+            .failed
+            .is_empty(),
+        "every queued failure is returned exactly once"
+    );
     let metrics = cluster.metrics();
     assert_eq!(metrics.admitted, metrics.serviced + metrics.failed);
 }

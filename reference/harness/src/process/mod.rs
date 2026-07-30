@@ -11,6 +11,8 @@ mod scratch;
 mod wait;
 
 pub use child::{ChildProcess, ChildWaitError};
-pub use connection::{ConnectionTimeouts, LineConnection, ReconnectingClient, RequestError};
+pub use connection::{
+    ConnectionTimeouts, ExchangeError, LineConnection, ReconnectingClient, RequestError,
+};
 pub use scratch::ScratchSpace;
 pub use wait::{Wait, WaitError};

@@ -8,7 +8,7 @@ use rafter_reference_sharded_counter::{
         ManagedCounterCluster, NetworkConfig, ProposalReceipt, ReplicatedCounterCommand,
     },
     AdmissionOutcome, ClientId, CounterCommand, CounterResult, Delta, GroupId, GroupIncarnation,
-    RequestFingerprint, RequestIdentity, Sequence, SessionEpoch, SystemClass,
+    LifecycleRequest, RequestFingerprint, RequestIdentity, Sequence, SessionEpoch, SystemClass,
 };
 
 mod support;
@@ -268,6 +268,24 @@ impl Scenario {
         self.oracle.run(16);
         self.oracle
             .assert_agreement(&"failure-isolation comparison");
+        let queued_at_poison = self.cluster.metrics().queued;
+        assert_ne!(
+            queued_at_poison, 0,
+            "ordinary driving preserves the poisoned queue"
+        );
+        let drained = self
+            .cluster
+            .lifecycle(self.groups[1], LifecycleRequest::Drain)
+            .expect("explicit drain owns poisoned retirement");
+        assert_eq!(drained.failed.len(), queued_at_poison);
+        assert!(
+            self.cluster
+                .lifecycle(self.groups[1], LifecycleRequest::Drain)
+                .expect("repeated drain is lossless")
+                .failed
+                .is_empty(),
+            "every queued failure is returned exactly once"
+        );
         let metrics = self.cluster.metrics();
         assert_eq!(metrics.queued + metrics.in_flight_work, 0);
         assert_eq!(metrics.admitted, metrics.serviced + metrics.failed);

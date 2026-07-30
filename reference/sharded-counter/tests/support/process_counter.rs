@@ -43,6 +43,10 @@ pub struct NodeProcess {
 
 impl NodeProcess {
     fn spawn(scratch: &ScratchSpace, node_id: u64) -> Self {
+        Self::spawn_with_failpoint(scratch, node_id, None)
+    }
+
+    fn spawn_with_failpoint(scratch: &ScratchSpace, node_id: u64, failpoint: Option<&str>) -> Self {
         let election_timeout = ELECTION_TIMEOUTS
             .iter()
             .find_map(|(candidate, timeout)| (*candidate == node_id).then_some(*timeout))
@@ -73,6 +77,9 @@ impl NodeProcess {
             .arg("64")
             .arg("--max-global-queue")
             .arg("1024");
+        if let Some(failpoint) = failpoint {
+            command.env("RAFTER_COUNTER_FAILPOINT", failpoint);
+        }
         let child =
             ChildProcess::spawn_in(format!("counter node {node_id}"), &mut command, scratch)
                 .unwrap_or_else(|error| panic!("could not spawn counter node {node_id}: {error}"));
@@ -192,6 +199,23 @@ impl ProcessCluster {
             .collect()
     }
 
+    pub fn wait_response(&mut self, node_id: u64, line: &str, expected: &str) {
+        PROCESS_WAIT
+            .until(
+                format!("node {node_id} to answer {line:?} with {expected:?}"),
+                || {
+                    self.nodes
+                        .get_mut(&node_id)
+                        .expect("node is live")
+                        .request(line)
+                        .ok()
+                        .filter(|response| response == expected)
+                        .map(drop)
+                },
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
     pub fn wait_ready(&mut self) {
         PROCESS_WAIT
             .until(
@@ -199,6 +223,7 @@ impl ProcessCluster {
                 || {
                     let mut ready = true;
                     let mut leader_groups = BTreeSet::new();
+                    let mut active_groups = 0;
                     for node_id in self.live_node_ids() {
                         match self
                             .nodes
@@ -208,6 +233,10 @@ impl ProcessCluster {
                         {
                             Ok(status) => {
                                 ready &= field(&status, "ready") == Some("true");
+                                active_groups = active_groups.max(
+                                    usize::try_from(number_field(&status, "groups"))
+                                        .expect("configured group count fits usize"),
+                                );
                                 if let Some(groups) = field(&status, "leader_groups") {
                                     leader_groups.extend(
                                         groups.split(',').filter(|group| *group != "-").map(
@@ -226,10 +255,7 @@ impl ProcessCluster {
                             Err(_) => ready = false,
                         }
                     }
-                    (ready
-                        && leader_groups.len() == GROUP_COUNT as usize
-                        && (1..=GROUP_COUNT).all(|group| leader_groups.contains(&group)))
-                    .then_some(())
+                    (ready && leader_groups.len() == active_groups).then_some(())
                 },
             )
             .unwrap_or_else(|error| panic!("{error}"));
@@ -273,12 +299,68 @@ impl ProcessCluster {
     }
 
     pub fn restart(&mut self, node_id: u64) {
+        self.restart_with_failpoint(node_id, None);
+    }
+
+    pub fn restart_with_failpoint(&mut self, node_id: u64, failpoint: Option<&str>) {
         assert!(
             !self.nodes.contains_key(&node_id),
             "node {node_id} is already live"
         );
-        self.nodes
-            .insert(node_id, NodeProcess::spawn(&self.scratch, node_id));
+        self.nodes.insert(
+            node_id,
+            NodeProcess::spawn_with_failpoint(&self.scratch, node_id, failpoint),
+        );
+    }
+
+    pub fn trigger_failpoint(&mut self, node_id: u64, line: &str, failpoint: &str) {
+        let node = self
+            .nodes
+            .get_mut(&node_id)
+            .unwrap_or_else(|| panic!("node {node_id} is not live"));
+        PROCESS_WAIT
+            .until(format!("{failpoint} to sever {line:?}"), || {
+                match node.request(line) {
+                    Err(_) => Some(()),
+                    Ok(response) if response.starts_with("ERR BUSY ") => None,
+                    Ok(response) => {
+                        panic!("{failpoint} returned {response:?} instead of severing the request")
+                    }
+                }
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
+        let observed = node
+            .child
+            .wait_for_stdout_prefix(&format!("FAILPOINT {failpoint}"), PROCESS_WAIT)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(observed, format!("FAILPOINT {failpoint}"));
+        let status = node
+            .child
+            .wait_for_exit(PROCESS_WAIT)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!status.success(), "{failpoint} must stop the process");
+        self.nodes.remove(&node_id);
+    }
+
+    pub fn restart_expect_fatal(&mut self, node_id: u64, expected: &str) {
+        assert!(
+            !self.nodes.contains_key(&node_id),
+            "node {node_id} is already live"
+        );
+        let mut node = NodeProcess::spawn(&self.scratch, node_id);
+        let fatal = node
+            .child
+            .wait_for_stdout_prefix("FATAL ", PROCESS_WAIT)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            fatal.contains(expected),
+            "fatal refusal {fatal:?} did not contain {expected:?}"
+        );
+        let status = node
+            .child
+            .wait_for_exit(PROCESS_WAIT)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!status.success(), "corrupt identity must fail closed");
     }
 
     pub fn wait_value(&mut self, node_id: u64, group: u32, incarnation: u32, expected: i64) {
@@ -312,10 +394,15 @@ impl ProcessCluster {
             assert_eq!(field(&audit, "conserved"), Some("true"), "{audit}");
             assert_eq!(number_field(&audit, "invalid_plans"), 0, "{audit}");
             assert_eq!(number_field(&audit, "invalid_turns"), 0, "{audit}");
-            assert_eq!(
+            assert_ne!(
+                number_field(&audit, "certified_passes"),
+                0,
+                "fairness requires at least one fully closed pass: {audit}"
+            );
+            assert_ne!(
                 number_field(&audit, "coverage"),
-                u64::from(GROUP_COUNT),
-                "{audit}"
+                0,
+                "cumulative coverage is supplemental but must be non-vacuous: {audit}"
             );
             assert_ne!(field(&audit, "plan_digest"), Some("0000000000000000"));
             assert_ne!(field(&audit, "turn_digest"), Some("0000000000000000"));

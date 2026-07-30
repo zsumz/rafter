@@ -4,9 +4,10 @@ use rafter::NodeId;
 use rafter_multiraft::managed::RemoveError;
 
 use crate::{
-    GroupId, GroupIncarnation, GroupLifecycle, LifecycleOutcome, LifecycleRejection,
-    LifecycleRequest, LifecycleTransition,
+    FailureRecord, GroupId, GroupIncarnation, GroupLifecycle, LifecycleOutcome, LifecycleRejection,
+    LifecycleRequest, LifecycleTransition, WorkFailure,
 };
+use rafter_multiraft::MultiRaftErrorKind;
 
 use super::{AdapterError, GroupSlot, ManagedCounterCluster};
 
@@ -26,18 +27,15 @@ impl ManagedCounterCluster {
         group_id: GroupId,
         request: LifecycleRequest,
     ) -> Result<LifecycleTransition, AdapterError> {
-        let outcome = match request {
-            LifecycleRequest::Create { quota } => self.create(group_id, quota)?,
-            LifecycleRequest::Recover => self.recover(group_id)?,
-            LifecycleRequest::Serve => self.serve(group_id)?,
+        let (outcome, failed) = match request {
+            LifecycleRequest::Create { quota } => (self.create(group_id, quota)?, Vec::new()),
+            LifecycleRequest::Recover => (self.recover(group_id)?, Vec::new()),
+            LifecycleRequest::Serve => (self.serve(group_id)?, Vec::new()),
             LifecycleRequest::Drain => self.drain(group_id),
-            LifecycleRequest::Remove => self.remove(group_id),
-            LifecycleRequest::Tombstone => self.tombstone(group_id),
+            LifecycleRequest::Remove => (self.remove(group_id), Vec::new()),
+            LifecycleRequest::Tombstone => (self.tombstone(group_id), Vec::new()),
         };
-        Ok(LifecycleTransition {
-            outcome,
-            failed: Vec::new(),
-        })
+        Ok(LifecycleTransition { outcome, failed })
     }
 
     fn create(
@@ -161,11 +159,14 @@ impl ManagedCounterCluster {
         }
     }
 
-    fn drain(&mut self, group_id: GroupId) -> LifecycleOutcome {
+    fn drain(&mut self, group_id: GroupId) -> (LifecycleOutcome, Vec<FailureRecord>) {
         let Some(slot) = self.groups.get_mut(&group_id) else {
-            return LifecycleOutcome::Rejected(LifecycleRejection::GroupUnknown);
+            return (
+                LifecycleOutcome::Rejected(LifecycleRejection::GroupUnknown),
+                Vec::new(),
+            );
         };
-        match slot.lifecycle {
+        let outcome = match slot.lifecycle {
             GroupLifecycle::Draining => LifecycleOutcome::Idempotent {
                 state: GroupLifecycle::Draining,
                 incarnation: slot.incarnation,
@@ -187,7 +188,29 @@ impl ManagedCounterCluster {
                 current,
                 requested: GroupLifecycle::Draining,
             }),
+        };
+        if !self.poisoned.contains(&group_id) || matches!(outcome, LifecycleOutcome::Rejected(_)) {
+            return (outcome, Vec::new());
         }
+        let retired = self
+            .host
+            .fail_queued(&group_id)
+            .expect("a poisoned lifecycle slot remains registered");
+        let failed = retired
+            .into_iter()
+            .map(|item| {
+                self.record_failed_work(item.work_id, group_id, MultiRaftErrorKind::DriverPoisoned);
+                let work = crate::WorkId::new(item.work_id.get())
+                    .expect("managed work identities are nonzero");
+                drop(item.payload);
+                FailureRecord {
+                    work,
+                    group: group_id,
+                    reason: WorkFailure::GroupPoisoned,
+                }
+            })
+            .collect();
+        (outcome, failed)
     }
 
     fn remove(&mut self, group_id: GroupId) -> LifecycleOutcome {
@@ -222,6 +245,7 @@ impl ManagedCounterCluster {
                 self.peers.remove(&(group_id, NodeId(2)));
                 self.peers.remove(&(group_id, NodeId(3)));
                 self.service_delays.remove(&group_id);
+                self.poisoned.remove(&group_id);
                 if let Some(slot) = self.groups.get_mut(&group_id) {
                     slot.lifecycle = GroupLifecycle::Removed;
                     slot.sessions.clear();

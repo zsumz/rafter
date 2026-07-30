@@ -1,5 +1,8 @@
 //! Bounded process loop that composes durable groups through the managed host.
 
+mod audit;
+mod durability;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -31,9 +34,14 @@ use rafter_reference_sharded_counter::{
     GroupLifecycle, RequestFingerprint, RequestIdentity, WorkQuota,
 };
 
+use self::{
+    audit::Audit,
+    durability::{archive_raft_with_failpoints, directed_failpoint, slot_from_policy},
+};
 use super::{
     app_store::{ApplicationRecord, ReserveOutcome},
     group::{OpenedGroup, Report, SharedGroup},
+    host_registry::{sync_directory, HostRegistry, RetirementIntent},
     peer_link::{PeerFrame, PeerLink},
     protocol::{self, ClientReply, Job, PressureClass, Request},
     Config,
@@ -79,80 +87,6 @@ struct DelayedDispatch {
     dispatch: CounterDispatch,
 }
 
-#[derive(Debug, Default)]
-struct Audit {
-    plans: u64,
-    opportunities: u64,
-    invalid_plans: u64,
-    invalid_turns: u64,
-    plan_digest: u64,
-    turn_digest: u64,
-    per_group: BTreeMap<GroupId, u64>,
-}
-
-impl Audit {
-    fn observe_plan(&mut self, pass_id: u64, groups: &[GroupId]) {
-        self.plans += 1;
-        if groups.windows(2).any(|pair| pair[0] >= pair[1]) {
-            self.invalid_plans += 1;
-        }
-        Self::mix(&mut self.plan_digest, pass_id);
-        for group in groups {
-            Self::mix(&mut self.plan_digest, u64::from(group.get()));
-            self.per_group.entry(*group).or_default();
-        }
-    }
-
-    fn observe_turn(&mut self, dispatch: &CounterDispatch) {
-        self.opportunities += 1;
-        if dispatch
-            .items
-            .windows(2)
-            .any(|pair| pair[0].class > pair[1].class)
-        {
-            self.invalid_turns += 1;
-        }
-        Self::mix(&mut self.turn_digest, dispatch.pass_id.get());
-        Self::mix(&mut self.turn_digest, dispatch.dispatch_id.get());
-        Self::mix(&mut self.turn_digest, u64::from(dispatch.group_id.get()));
-        for item in &dispatch.items {
-            Self::mix(&mut self.turn_digest, item.work_id.get());
-            Self::mix(
-                &mut self.turn_digest,
-                match item.class {
-                    WorkClass::Control => 1,
-                    WorkClass::Command => 2,
-                    WorkClass::Snapshot => 3,
-                    WorkClass::Bulk => 4,
-                },
-            );
-        }
-        *self.per_group.entry(dispatch.group_id).or_default() += 1;
-    }
-
-    fn fairness(&self) -> (usize, u64) {
-        let observed = self
-            .per_group
-            .values()
-            .copied()
-            .filter(|count| *count != 0)
-            .collect::<Vec<_>>();
-        let coverage = observed.len();
-        let widest_gap = observed
-            .iter()
-            .max()
-            .zip(observed.iter().min())
-            .map_or(0, |(max, min)| max - min);
-        (coverage, widest_gap)
-    }
-
-    fn mix(digest: &mut u64, value: u64) {
-        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-        *digest ^= value;
-        *digest = digest.wrapping_mul(FNV_PRIME);
-    }
-}
-
 #[derive(Debug)]
 struct Engine {
     node_id: NodeId,
@@ -164,6 +98,7 @@ struct Engine {
     request_timeout: Duration,
     tick_interval: Duration,
     max_pressure: usize,
+    registry: Option<HostRegistry>,
     host: Host,
     groups: BTreeMap<GroupId, GroupEntry>,
     link: PeerLink,
@@ -224,6 +159,7 @@ pub fn run(config: &Config) -> Result<(), String> {
         request_timeout: config.request_timeout,
         tick_interval: config.tick_interval,
         max_pressure: config.max_group_queue.get(),
+        registry: None,
         host: ManagedTypedMultiRaftHost::new(managed),
         groups: BTreeMap::new(),
         link,
@@ -249,36 +185,40 @@ impl Engine {
         let groups_dir = host_dir.join("groups");
         fs::create_dir_all(&groups_dir)
             .map_err(|error| format!("could not create {}: {error}", groups_dir.display()))?;
+        let registry = self.open_or_initialize_registry(&groups_dir)?;
+        self.registry = Some(registry);
         let mut recoveries = Vec::new();
         for raw in 1..=self.group_count {
             let group_id = GroupId::new(raw);
             let directory = groups_dir.join(raw.to_string());
-            let record_path = directory.join("app/state.rcap");
-            if record_path.exists() {
-                let (record, state_machine) = ApplicationRecord::open(
-                    &directory.join("app"),
-                    self.max_sessions,
-                    self.default_quota,
-                )
-                .map_err(|error| format!("group {raw} application open failed: {error}"))?;
-                drop(state_machine);
-                let policy = record.policy();
-                if matches!(
-                    policy.lifecycle,
-                    GroupLifecycle::Removed | GroupLifecycle::Tombstoned
-                ) {
-                    self.groups.insert(
-                        group_id,
-                        GroupEntry {
-                            directory,
-                            record,
-                            driver: None,
-                        },
-                    );
-                    continue;
-                }
+            let (record, state_machine) =
+                ApplicationRecord::open_existing(&directory.join("app"), self.max_sessions)
+                    .map_err(|error| {
+                        format!(
+                            "group {raw} application open refused; the host registry proves this \
+                             slot already exists: {error}"
+                        )
+                    })?;
+            drop(state_machine);
+            self.reconcile_retirement(&directory, group_id, &record)?;
+            let policy = record.policy();
+            self.reconcile_registry(group_id, &policy)?;
+            Self::validate_group_shape(&directory, group_id, policy.incarnation, policy.lifecycle)?;
+            if matches!(
+                policy.lifecycle,
+                GroupLifecycle::Removed | GroupLifecycle::Tombstoned
+            ) {
+                self.groups.insert(
+                    group_id,
+                    GroupEntry {
+                        directory,
+                        record,
+                        driver: None,
+                    },
+                );
+                continue;
             }
-            let opened = self.open_physical(&directory, group_id, self.default_quota)?;
+            let opened = self.open_physical(&directory, group_id)?;
             recoveries.push((group_id, opened.recovery.clone()));
             self.install_opened(group_id, directory, opened)?;
         }
@@ -292,7 +232,6 @@ impl Engine {
         &self,
         directory: &std::path::Path,
         group_id: GroupId,
-        quota: WorkQuota,
     ) -> Result<OpenedGroup, String> {
         SharedGroup::open(
             directory,
@@ -301,7 +240,6 @@ impl Engine {
             &self.members,
             self.election_timeout_ticks,
             self.max_sessions,
-            quota,
         )
         .map_err(|error| format!("group {} open failed: {error}", group_id.get()))
     }
@@ -776,9 +714,6 @@ impl Engine {
 
     fn drive(&mut self, now: Instant) -> Result<(), String> {
         self.release_delayed(now)?;
-        for group_id in &self.poisoned {
-            let _ = self.host.set_available(group_id, true);
-        }
         match self
             .host
             .arm_pass()
@@ -796,7 +731,7 @@ impl Engine {
                 .map_err(|error| format!("dispatch identity failed: {error:?}"))?
             {
                 BeginDispatch::Dispatched(dispatch) => {
-                    self.audit.observe_turn(&dispatch);
+                    self.audit.observe_dispatch(&dispatch);
                     if let Some(delay) = self.slow.get(&dispatch.group_id).copied() {
                         self.delayed.push(DelayedDispatch {
                             ready_at: now + delay,
@@ -806,10 +741,12 @@ impl Engine {
                         self.execute(dispatch)?;
                     }
                 }
-                BeginDispatch::Skipped(_) => {}
-                BeginDispatch::WorkersOccupied
-                | BeginDispatch::PassComplete(_)
-                | BeginDispatch::NoPass => break,
+                BeginDispatch::Skipped(skipped) => self.audit.observe_skip(&skipped),
+                BeginDispatch::PassComplete(completion) => {
+                    self.audit.observe_completion(completion);
+                    break;
+                }
+                BeginDispatch::WorkersOccupied | BeginDispatch::NoPass => break,
             }
         }
         Ok(())
@@ -1009,13 +946,41 @@ impl Engine {
                 policy.incarnation.get()
             ));
         }
-        if policy.lifecycle != GroupLifecycle::Serving {
+        if !matches!(
+            policy.lifecycle,
+            GroupLifecycle::Serving | GroupLifecycle::Draining
+        ) {
             return Ok(format!("ERR LIFECYCLE {:?}", policy.lifecycle));
         }
-        entry
-            .record
-            .set_lifecycle(GroupLifecycle::Draining)
-            .map_err(|error| error.to_string())?;
+        if policy.lifecycle == GroupLifecycle::Serving {
+            entry
+                .record
+                .set_lifecycle(GroupLifecycle::Draining)
+                .map_err(|error| error.to_string())?;
+            self.publish_group_policy(group_id)?;
+        }
+        if self.poisoned.contains(&group_id) {
+            let retired = self
+                .host
+                .fail_queued(&group_id)
+                .map_err(|error| format!("poisoned queue drain failed: {error:?}"))?;
+            for item in retired {
+                let work_kind = self.work.remove(&item.work_id);
+                match work_kind {
+                    Some(WorkKind::Tick) => {
+                        self.tick_pending.remove(&group_id);
+                    }
+                    Some(WorkKind::Proposal(proposal_id)) => {
+                        self.complete_unknown(proposal_id, "managed group is poisoned");
+                    }
+                    Some(WorkKind::Snapshot(reply)) => {
+                        reply.send("ERR SNAPSHOT DriverPoisoned".to_string(), false);
+                    }
+                    Some(WorkKind::Peer | WorkKind::Pressure) | None => {}
+                }
+                drop(item.payload);
+            }
+        }
         Ok(format!("OK DRAIN group={}", group_id.get()))
     }
 
@@ -1037,34 +1002,51 @@ impl Engine {
         if policy.lifecycle != GroupLifecycle::Draining {
             return Ok(format!("ERR LIFECYCLE {:?}", policy.lifecycle));
         }
+        match self.host.can_remove_group(&group_id) {
+            Ok(true) => {}
+            Ok(false) => return Ok("ERR GROUP_NOT_OPEN".to_string()),
+            Err(error) => return Ok(format!("ERR BUSY {error:?}")),
+        }
+        directed_failpoint("before_intent_publish");
+        RetirementIntent {
+            group_id,
+            incarnation,
+        }
+        .publish(&entry.directory)?;
+        directed_failpoint("after_intent_publish");
         let removed = match self.host.remove_group(&group_id) {
             Ok(Some(driver)) => driver,
-            Ok(None) => return Ok("ERR GROUP_NOT_OPEN".to_string()),
-            Err(error) => return Ok(format!("ERR BUSY {error:?}")),
+            Ok(None) => {
+                return Err(format!(
+                    "group {} disappeared after its retirement intent became durable",
+                    group_id.get()
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "group {} became non-removable after its retirement intent became durable: \
+                     {error:?}",
+                    group_id.get()
+                ));
+            }
         };
         drop(removed);
+        directed_failpoint("after_driver_detach");
         let entry = self
             .groups
             .get_mut(&group_id)
             .expect("group entry survives managed removal");
         drop(entry.driver.take());
+        archive_raft_with_failpoints(&entry.directory, incarnation)?;
+        directed_failpoint("before_removed_publish");
         entry
             .record
             .retire(GroupLifecycle::Removed)
             .map_err(|error| error.to_string())?;
-        let raft = entry.directory.join("raft");
-        let retired = entry
-            .directory
-            .join(format!("raft.retired-{}", incarnation.get()));
-        if raft.exists() {
-            fs::rename(&raft, &retired).map_err(|error| {
-                format!(
-                    "could not archive {} as {}: {error}",
-                    raft.display(),
-                    retired.display()
-                )
-            })?;
-        }
+        self.publish_group_policy(group_id)?;
+        directed_failpoint("after_removed_publish");
+        directed_failpoint("before_intent_cleanup");
+        RetirementIntent::clear(&self.groups[&group_id].directory)?;
         self.tick_pending.remove(&group_id);
         self.poisoned.remove(&group_id);
         self.slow.remove(&group_id);
@@ -1105,7 +1087,12 @@ impl Engine {
             .reopen(quota, self.max_sessions)
             .map_err(|error| error.to_string())?;
         let new_incarnation = entry.record.policy().incarnation;
-        let opened = self.open_physical(&directory, group_id, quota)?;
+        self.publish_group_policy(group_id)?;
+        let raft_dir = directory.join("raft");
+        fs::create_dir_all(&raft_dir)
+            .map_err(|error| format!("could not create {}: {error}", raft_dir.display()))?;
+        sync_directory(&directory)?;
+        let opened = self.open_physical(&directory, group_id)?;
         let recovery = opened.recovery.clone();
         self.install_opened(group_id, directory, opened)?;
         self.collect_report(group_id, recovery)?;
@@ -1138,7 +1125,21 @@ impl Engine {
             .record
             .retire(GroupLifecycle::Tombstoned)
             .map_err(|error| error.to_string())?;
+        self.publish_group_policy(group_id)?;
         Ok(format!("OK TOMBSTONE group={}", group_id.get()))
+    }
+
+    fn publish_group_policy(&mut self, group_id: GroupId) -> Result<(), String> {
+        let policy = self
+            .groups
+            .get(&group_id)
+            .ok_or_else(|| format!("group {} disappeared", group_id.get()))?
+            .record
+            .policy();
+        self.registry
+            .as_mut()
+            .expect("registry is installed before lifecycle commands")
+            .publish(slot_from_policy(group_id, &policy))
     }
 
     fn all_active_ready(&self) -> bool {
@@ -1227,10 +1228,13 @@ impl Engine {
                 + metrics.queued as u64
                 + metrics.in_flight_work as u64;
         format!(
-            "OK AUDIT plans={} opportunities={} coverage={} widest_gap={} invalid_plans={} \
-             invalid_turns={} plan_digest={:016x} turn_digest={:016x} admitted={} serviced={} \
-             failed={} queued={} in_flight={} conserved={conserved}",
+            "OK AUDIT plans={} passes_completed={} certified_passes={} opportunities={} \
+             coverage={} widest_gap={} invalid_plans={} invalid_turns={} plan_digest={:016x} \
+             turn_digest={:016x} admitted={} serviced={} failed={} queued={} in_flight={} \
+             conserved={conserved}",
             self.audit.plans,
+            self.audit.passes_completed,
+            self.audit.certified_passes,
             self.audit.opportunities,
             coverage,
             widest_gap,

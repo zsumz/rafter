@@ -88,6 +88,12 @@ pub enum StoreError {
     },
     Counter(CounterStateMachineError),
     SnapshotUnavailable,
+    Missing {
+        path: PathBuf,
+    },
+    AlreadyExists {
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for StoreError {
@@ -119,6 +125,14 @@ impl fmt::Display for StoreError {
             Self::SnapshotUnavailable => {
                 formatter.write_str("promoted Raft snapshot payload is unavailable")
             }
+            Self::Missing { path } => write!(
+                formatter,
+                "counter application record is missing at {}; first boot requires host-registry authority",
+                path.display()
+            ),
+            Self::AlreadyExists { path } => {
+                write!(formatter, "counter application record already exists at {}", path.display())
+            }
         }
     }
 }
@@ -148,33 +162,54 @@ pub struct ApplicationRecord {
 }
 
 impl ApplicationRecord {
-    /// Opens an existing record or durably creates the first incarnation.
-    pub fn open(
+    /// Opens an existing record. Absence is never interpreted as first boot.
+    pub fn open_existing(
+        app_dir: &Path,
+        max_sessions: usize,
+    ) -> Result<(Self, DurableCounterStateMachine), StoreError> {
+        let path = app_dir.join("state.rcap");
+        if !path.exists() {
+            return Err(StoreError::Missing { path });
+        }
+        let record = decode(&fs::read(&path).map_err(|source| io_error("read", &path, source))?)?;
+        Self::from_record(app_dir, path, max_sessions, record)
+    }
+
+    /// Creates incarnation one only after the host registry has proved this is
+    /// a never-before-used slot in the current first-bootstrap operation.
+    pub fn bootstrap(
         app_dir: &Path,
         max_sessions: usize,
         quota: WorkQuota,
     ) -> Result<(Self, DurableCounterStateMachine), StoreError> {
         fs::create_dir_all(app_dir).map_err(|source| io_error("create", app_dir, source))?;
         let path = app_dir.join("state.rcap");
-        let record = if path.exists() {
-            decode(&fs::read(&path).map_err(|source| io_error("read", &path, source))?)?
-        } else {
-            let mut state_machine = CounterStateMachine::new(max_sessions);
-            let application = state_machine
-                .build_snapshot(LogIndex::ZERO)
-                .map_err(|error| snapshot_error(&error))?;
-            let record = Record {
-                policy: StoredPolicy {
-                    incarnation: GroupIncarnation::first(),
-                    lifecycle: GroupLifecycle::Serving,
-                    quota,
-                    outstanding: BTreeMap::new(),
-                },
-                application,
-            };
-            persist(&path, &record)?;
-            record
+        if path.exists() {
+            return Err(StoreError::AlreadyExists { path });
+        }
+        let mut state_machine = CounterStateMachine::new(max_sessions);
+        let application = state_machine
+            .build_snapshot(LogIndex::ZERO)
+            .map_err(|error| snapshot_error(&error))?;
+        let record = Record {
+            policy: StoredPolicy {
+                incarnation: GroupIncarnation::first(),
+                lifecycle: GroupLifecycle::Serving,
+                quota,
+                outstanding: BTreeMap::new(),
+            },
+            application,
         };
+        persist(&path, &record)?;
+        Self::from_record(app_dir, path, max_sessions, record)
+    }
+
+    fn from_record(
+        app_dir: &Path,
+        path: PathBuf,
+        max_sessions: usize,
+        record: Record,
+    ) -> Result<(Self, DurableCounterStateMachine), StoreError> {
         if record.policy.outstanding.len() > max_sessions {
             return Err(StoreError::OutstandingCapacity {
                 bound: max_sessions,

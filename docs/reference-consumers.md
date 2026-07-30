@@ -170,7 +170,7 @@ There are four distinct evidence boundaries:
 - **Source process** runs the reviewed ignored process inventories against those
   checkout-patched crates.
 - **Exact-package deterministic/process** builds ordinary targets or executes
-  all 32 reviewed process tests against one set of unpacked `.crate` archives.
+  all 34 reviewed process tests against one set of unpacked `.crate` archives.
 - **Published-shape MSRV** creates archives with the current packaging Cargo,
   then regenerates the copied consumer lockfile, builds every target, runs the
   deterministic suites, and runs a ledger process smoke with Rust/Cargo 1.88.
@@ -701,8 +701,11 @@ install paths, late-incarnation fencing, and a 1,024-group fairness profile.
 The canonical manifest names only versioned public Rafter crates, so both
 source and exact-package lanes exercise the scheduler through an external
 consumer shape. The process fixture adds three durable hosts, bounded sockets,
-transactional application records, `SIGKILL`/clean restart, real compaction,
-exact retry, late-client/peer fencing, and lifecycle removal/reopen/tombstone.
+transactional application records, a checksummed host slot registry,
+fail-closed missing-record recovery, `SIGKILL`/clean restart, real compaction,
+stage-aware unknown outcomes without implicit replay, late-client/peer fencing,
+pass-complete fairness evidence, and replayable lifecycle
+removal/reopen/tombstone across every directed retirement crash point.
 The 64/1,024/4,096-group profiles retain replay inputs and quantitative
 fairness, conservation, failure, and lifecycle artifacts.
 

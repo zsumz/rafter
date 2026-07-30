@@ -25,7 +25,6 @@ impl ManagedCounterCluster {
     ///
     /// Returns the exact transport or group failure.
     pub fn drive_round(&mut self) -> Result<DriveReport, AdapterError> {
-        self.restore_poisoned_for_explicit_drain();
         let mut report = DriveReport::default();
         self.progress_delayed(&mut report)?;
         self.route_network(&mut report)?;
@@ -41,29 +40,17 @@ impl ManagedCounterCluster {
     pub fn drive_until_idle(&mut self, max_rounds: usize) -> Result<DriveReport, AdapterError> {
         let mut total = DriveReport::default();
         for _ in 0..max_rounds {
-            self.restore_poisoned_for_explicit_drain();
             let mut round = DriveReport::default();
             let delayed_progress = self.progress_delayed(&mut round)?;
             self.route_network(&mut round)?;
             let progressed = self.run_one_pass(&mut round)?;
             let network_pending = !self.network.is_empty();
             total.merge(round);
-            if !progressed
-                && !delayed_progress
-                && !network_pending
-                && self.delayed.is_empty()
-                && self.host.managed_metrics().queued == 0
-            {
+            if !progressed && !delayed_progress && !network_pending && self.delayed.is_empty() {
                 return Ok(total);
             }
         }
         Err(AdapterError::ProgressBudgetExhausted { rounds: max_rounds })
-    }
-
-    fn restore_poisoned_for_explicit_drain(&mut self) {
-        for group_id in &self.poisoned {
-            let _ = self.host.set_available(group_id, true);
-        }
     }
 
     fn run_one_pass(&mut self, report: &mut DriveReport) -> Result<bool, AdapterError> {
@@ -235,9 +222,16 @@ impl ManagedCounterCluster {
                 .expect("remaining counts queued envelopes");
             let incarnation = routed.incarnation;
             let envelope = routed.envelope;
-            if let Err(reason) =
-                self.admit_group(envelope.group_id, incarnation, crate::WorkClass::Control)
-            {
+            let policy = self
+                .admit_group(envelope.group_id, incarnation, crate::WorkClass::Control)
+                .and_then(|()| {
+                    if self.poisoned.contains(&envelope.group_id) {
+                        Err(crate::AdmissionRejection::GroupPoisoned)
+                    } else {
+                        Ok(())
+                    }
+                });
+            if let Err(reason) = policy {
                 report.refused_peer_traffic.push(PeerTrafficRefusal {
                     group_id: envelope.group_id,
                     incarnation,

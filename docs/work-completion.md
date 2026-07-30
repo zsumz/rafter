@@ -20,7 +20,7 @@ release, a version change, a tag, a publication, or a mixed-version guarantee.
 | Fenced lock | Exact archive deterministic and process execution | `scripts/reference-package-check`; `scripts/reference-package-process-check`; CI `reference-package` and `reference-package-process` |
 | Sharded counter | Public managed-scheduler adoption with independent scheduler/oracle/fairness auditing | `scripts/reference-source-check`; CI `counter-reference-fast` |
 | Sharded counter | Deterministic 64, 1,024, and 4,096-group profiles with retained seeds and histories | `scripts/counter-profile counter-fast`; Nightly `counter-reference-nightly`; Weekly `counter-reference-weekly` |
-| Sharded counter | Durable process composition and exact-archive process execution | `scripts/reference-process-check`; `scripts/reference-package-process-check`; CI/main `reference-process` and `reference-package-process` |
+| Sharded counter | Durable process composition with host slot identity, replayable removal, pass-aware fairness evidence, and exact-archive process execution | `scripts/reference-process-check`; `scripts/reference-package-process-check`; CI/main `reference-process` and `reference-package-process` |
 
 The ledger repair acceptance test is intentionally `#[ignore]` because it
 starts and kills operating-system processes. It is selected by
@@ -29,6 +29,12 @@ starts and kills operating-system processes. It is selected by
 job runs the replicated-KV process test; the separate `reference-process` job
 runs the ledger, lock, production-lock, and counter process inventories. Looking
 only at the ordinary process step therefore does not establish ledger coverage.
+
+The sharded-counter process inventory also fails closed on missing application
+records for active, Removed, and Tombstoned slots; sweeps every directed
+retirement-intent crash point; restarts a terminal tombstone; and requires at
+least one fully certified immutable scheduler pass. The shared process client
+does not replay opaque requests after a send- or receive-stage failure.
 
 ## Public-surface and architecture completion
 

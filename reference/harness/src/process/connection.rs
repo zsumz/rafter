@@ -79,14 +79,44 @@ impl LineConnection {
     ///
     /// # Errors
     ///
-    /// Returns any error from sending the request or receiving the response.
-    pub fn request(&mut self, line: &str) -> io::Result<String> {
-        self.send_line(line)?;
-        self.receive_line()
+    /// Returns the exact failed stage. A send failure may follow a partial
+    /// write, and every receive failure follows a completed send, so neither
+    /// stage is safe for an implicit replay.
+    pub fn request(&mut self, line: &str) -> Result<String, ExchangeError> {
+        self.send_line(line).map_err(ExchangeError::Send)?;
+        self.receive_line().map_err(ExchangeError::Receive)
     }
 }
 
-/// A reusable client that retries one failed exchange on a new connection.
+/// One failed stage of a line exchange.
+#[derive(Debug)]
+pub enum ExchangeError {
+    /// The request write or flush failed and may have been partial.
+    Send(io::Error),
+    /// The request was sent, but no complete response was received.
+    Receive(io::Error),
+}
+
+impl fmt::Display for ExchangeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Send(error) => write!(formatter, "send failed with unknown outcome: {error}"),
+            Self::Receive(error) => {
+                write!(formatter, "receive failed with unknown outcome: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ExchangeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Send(error) | Self::Receive(error) => Some(error),
+        }
+    }
+}
+
+/// A reusable client that reconnects between calls without replaying a call.
 #[derive(Debug)]
 pub struct ReconnectingClient {
     addr: SocketAddr,
@@ -116,16 +146,16 @@ impl ReconnectingClient {
         self.connection = None;
     }
 
-    /// Exchanges one line, reopening once only after an exchange fails.
+    /// Exchanges one line without ever replaying it implicitly.
     ///
-    /// Failure to open the first connection returns immediately. Once an
-    /// exchange has begun, one fresh connection is allowed because a retained
-    /// socket may have been closed between calls.
+    /// A connection failure occurs before the send and is safe to report as
+    /// unattempted. Send and receive failures have unknown outcomes, discard
+    /// the socket, and require the caller to make any retry decision.
     ///
     /// # Errors
     ///
     /// Returns the failed stage and its I/O error when the initial connection,
-    /// replacement connection, or single retry fails.
+    /// send, or receive stage fails.
     pub fn request(&mut self, line: &str) -> Result<String, RequestError> {
         if self.connection.is_none() {
             self.connection = Some(
@@ -138,28 +168,16 @@ impl ReconnectingClient {
                 "connection state was not retained",
             )));
         };
-        let first = connection.request(line);
-        match first {
+        let exchange = connection.request(line);
+        match exchange {
             Ok(response) => Ok(response),
-            Err(first_error) => {
+            Err(ExchangeError::Send(source)) => {
                 self.connection = None;
-                let mut connection = match LineConnection::connect(self.addr, self.timeouts) {
-                    Ok(connection) => connection,
-                    Err(reconnect) => {
-                        return Err(RequestError::Reconnect {
-                            first: first_error,
-                            reconnect,
-                        });
-                    }
-                };
-                let response = connection
-                    .request(line)
-                    .map_err(|retry| RequestError::Retry {
-                        first: first_error,
-                        retry,
-                    })?;
-                self.connection = Some(connection);
-                Ok(response)
+                Err(RequestError::SendOutcomeUnknown(source))
+            }
+            Err(ExchangeError::Receive(source)) => {
+                self.connection = None;
+                Err(RequestError::ReceiveOutcomeUnknown(source))
             }
         }
     }
@@ -170,32 +188,27 @@ impl ReconnectingClient {
 pub enum RequestError {
     /// The initial connection could not be opened.
     Connect(io::Error),
-    /// The first exchange failed and the replacement connection did not open.
-    Reconnect {
-        /// Failure from the first exchange.
-        first: io::Error,
-        /// Failure while opening the replacement.
-        reconnect: io::Error,
-    },
-    /// Both the first exchange and the single retry failed.
-    Retry {
-        /// Failure from the first exchange.
-        first: io::Error,
-        /// Failure from the retry.
-        retry: io::Error,
-    },
+    /// The write or flush failed after the request may have partially left.
+    SendOutcomeUnknown(io::Error),
+    /// The send completed but no complete response arrived.
+    ReceiveOutcomeUnknown(io::Error),
 }
 
 impl fmt::Display for RequestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Connect(error) => write!(formatter, "connect failed: {error}"),
-            Self::Reconnect { first, reconnect } => write!(
-                formatter,
-                "request failed ({first}); reconnect failed: {reconnect}"
-            ),
-            Self::Retry { first, retry } => {
-                write!(formatter, "request failed ({first}); retry failed: {retry}")
+            Self::SendOutcomeUnknown(error) => {
+                write!(
+                    formatter,
+                    "send failed; request outcome is unknown: {error}"
+                )
+            }
+            Self::ReceiveOutcomeUnknown(error) => {
+                write!(
+                    formatter,
+                    "receive failed; request outcome is unknown: {error}"
+                )
             }
         }
     }
@@ -204,9 +217,9 @@ impl fmt::Display for RequestError {
 impl std::error::Error for RequestError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Connect(error) => Some(error),
-            Self::Reconnect { reconnect, .. } => Some(reconnect),
-            Self::Retry { retry, .. } => Some(retry),
+            Self::Connect(error)
+            | Self::SendOutcomeUnknown(error)
+            | Self::ReceiveOutcomeUnknown(error) => Some(error),
         }
     }
 }

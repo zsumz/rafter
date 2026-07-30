@@ -108,7 +108,6 @@ impl SharedGroup {
         members: &[NodeId],
         election_timeout_ticks: u64,
         max_sessions: usize,
-        quota: rafter_reference_sharded_counter::WorkQuota,
     ) -> Result<OpenedGroup, OpenError> {
         let raft_dir = group_dir.join("raft");
         let app_dir = group_dir.join("app");
@@ -122,7 +121,7 @@ impl SharedGroup {
         let stores = FileRaftNodeStores::open(&raft_dir)
             .map_err(|error| OpenError::RaftStore(error.to_string()))?;
         let (hard_state, log, snapshots) = stores.into_parts();
-        let (record, state_machine) = ApplicationRecord::open(&app_dir, max_sessions, quota)
+        let (record, state_machine) = ApplicationRecord::open_existing(&app_dir, max_sessions)
             .map_err(OpenError::Application)?;
         let applied = state_machine
             .applied_index()
