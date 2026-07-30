@@ -56,4 +56,4 @@ while [[ $# -gt 0 ]]; do
 done
 
 exec "$repo_root/scripts/reference-package-check" \
-    --mode "$mode" "${runner_args[@]}"
+    --mode "$mode" ${runner_args[@]+"${runner_args[@]}"}
