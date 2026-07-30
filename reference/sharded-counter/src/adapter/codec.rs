@@ -47,6 +47,7 @@ pub(super) fn encode_command(
             encode_counter_command(&mut bytes, *command);
         }
         ReplicatedCounterCommand::Faulty => bytes.push(3),
+        ReplicatedCounterCommand::CapacityFault => bytes.push(4),
     }
     if bytes.len() > MAX_COMMAND_BYTES {
         return Err(CounterStateMachineError::CommandTooLarge);
@@ -82,6 +83,7 @@ pub(super) fn decode_command(
             command: decode_counter_command(&mut decoder)?,
         },
         3 => ReplicatedCounterCommand::Faulty,
+        4 => ReplicatedCounterCommand::CapacityFault,
         _ => return Err(CounterStateMachineError::MalformedCommand),
     };
     decoder.finish()?;
@@ -133,6 +135,9 @@ pub(super) fn decode_snapshot(
     let mut sessions = BTreeMap::new();
     for _ in 0..count {
         let client_id = ClientId::new(decoder.u32()?);
+        if usize::try_from(client_id.get()).map_or(true, |id| id >= max_sessions) {
+            return Err(CounterStateMachineError::MalformedSnapshot);
+        }
         let epoch =
             SessionEpoch::new(decoder.u64()?).ok_or(CounterStateMachineError::MalformedSnapshot)?;
         let completed = decode_completed(&mut decoder)?;

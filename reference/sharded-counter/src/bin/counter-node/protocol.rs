@@ -45,6 +45,12 @@ pub enum Request {
         group_id: GroupId,
         incarnation: GroupIncarnation,
     },
+    CapacityFault {
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+    },
+    PausePeers,
+    ResumePeers,
     Pressure {
         group_id: GroupId,
         incarnation: GroupIncarnation,
@@ -237,6 +243,12 @@ fn parse(line: &str) -> Result<Request, String> {
             group_id: group(fields[1])?,
             incarnation: incarnation(fields[2])?,
         }),
+        "FAULT_CAPACITY" if fields.len() == 3 => Ok(Request::CapacityFault {
+            group_id: group(fields[1])?,
+            incarnation: incarnation(fields[2])?,
+        }),
+        "PAUSE_PEERS" if fields.len() == 1 => Ok(Request::PausePeers),
+        "RESUME_PEERS" if fields.len() == 1 => Ok(Request::ResumePeers),
         "PRESSURE" if fields.len() == 5 => Ok(Request::Pressure {
             group_id: group(fields[1])?,
             incarnation: incarnation(fields[2])?,

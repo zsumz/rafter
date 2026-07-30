@@ -2,8 +2,8 @@ use rafter::{LocalProposalId, LogIndex, Term};
 use rafter_app::state_machine::{ApplyBatch, ApplyEntry, ReadBarrier, ReplicatedStateMachine};
 use rafter_reference_sharded_counter::{
     adapter::{
-        CounterApplyResult, CounterStateMachine, ReplicatedCounterCommand, SessionApplyResult,
-        MAX_COMMAND_BYTES, MAX_SNAPSHOT_BYTES,
+        CounterAdmissionDecision, CounterApplyRejection, CounterApplyResult, CounterStateMachine,
+        ReplicatedCounterCommand, SessionApplyResult, MAX_COMMAND_BYTES, MAX_SNAPSHOT_BYTES,
     },
     ClientId, CounterCommand, CounterResult, Delta, RequestFingerprint, RequestIdentity, Sequence,
     SessionEpoch,
@@ -47,7 +47,12 @@ fn entry(
 #[test]
 fn command_codec_is_versioned_bounded_and_exact() {
     let machine = CounterStateMachine::new(8);
-    for command in [session(), add(), ReplicatedCounterCommand::Faulty] {
+    for command in [
+        session(),
+        add(),
+        ReplicatedCounterCommand::Faulty,
+        ReplicatedCounterCommand::CapacityFault,
+    ] {
         let encoded = machine
             .encode_command(&command)
             .expect("bounded command encodes");
@@ -70,6 +75,50 @@ fn command_codec_is_versioned_bounded_and_exact() {
         machine.decode_command(&[0; MAX_COMMAND_BYTES + 1]).is_err(),
         "oversized frames fail before parsing"
     );
+}
+
+#[test]
+fn client_range_is_the_session_capacity_and_replication_rejects_its_boundary() {
+    let mut machine = CounterStateMachine::new(2);
+    let epoch = SessionEpoch::new(1).expect("session epoch is nonzero");
+    for (index, client) in [(1, 0), (2, 1)] {
+        let command = ReplicatedCounterCommand::OpenSession {
+            client_id: ClientId::new(client),
+            epoch,
+        };
+        assert_eq!(
+            machine.admission_decision(command),
+            CounterAdmissionDecision::Proceed
+        );
+        let applied = machine
+            .apply_batch(ApplyBatch {
+                entries: vec![entry(index, index, command)],
+            })
+            .expect("every in-range slot applies");
+        assert_eq!(
+            applied[0].result,
+            CounterApplyResult::Session(SessionApplyResult::Opened)
+        );
+    }
+
+    let out_of_range = ReplicatedCounterCommand::OpenSession {
+        client_id: ClientId::new(2),
+        epoch,
+    };
+    assert_eq!(
+        machine.admission_decision(out_of_range),
+        CounterAdmissionDecision::Rejected(CounterApplyRejection::ClientOutOfRange)
+    );
+    let applied = machine
+        .apply_batch(ApplyBatch {
+            entries: vec![entry(3, 3, out_of_range)],
+        })
+        .expect("out-of-range replicated input is a typed result, not a fatal error");
+    assert_eq!(
+        applied[0].result,
+        CounterApplyResult::Rejected(CounterApplyRejection::ClientOutOfRange)
+    );
+    assert_eq!(machine.view().sessions.len(), 2);
 }
 
 #[test]

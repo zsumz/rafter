@@ -266,6 +266,21 @@ cache answers before any bound is reached.
 Session, sequence, fingerprint, and conflicting-retry rejections consume
 nothing: no sequence, no queue slot, no work identifier.
 
+In the process composition, "before" also means before a durable proposal
+reservation. A host first obtains a quorum-confirmed read barrier from the
+target group. Only after the barrier's proof has been applied does it evaluate
+the session table, completion cache, and sequence rules against that group's
+state machine. A successful cached replay is therefore evidence from current
+Raft authority, never an answer from a replica's local durable image alone.
+Only `Proceed` crosses into durable reservation and managed admission.
+
+The barrier and the Raft protocol traffic needed to finish it use a bounded
+continuation path rather than the managed application queue. That path is
+indexed by one pending admission per client and group, consumes neither a
+`WorkId` nor an application admission, and expires with an explicit read
+cancellation. This is what lets an exact replay or typed policy refusal outrank
+a saturated application queue without creating a second unbounded queue.
+
 ### Request fingerprints
 
 The fingerprint is a deterministic 64-bit digest of the command's canonical
@@ -290,8 +305,10 @@ process admission.
 `OpenSession` is immediate in the independent scheduler model because that
 model owns no replicated session log. The real adapter and process admit it as
 bounded control work and replicate it through the group's Raft log before
-counter commands can use it. The process durably records the exact client and
-epoch before managed admission, with the same queued/entered-driver phases and
+counter commands can use it. The process first linearizes its session decision
+through the same quorum-confirmed barrier as a counter command. If the
+authoritative state says `Proceed`, it durably records the exact client and epoch
+before managed admission, with the same queued/entered-driver phases and
 terminal recovery rules as a counter command. This difference keeps the model
 an independent scheduler oracle without making a real accepted session proposal
 disappear at restart.
@@ -995,11 +1012,15 @@ A poisoned group:
 - keeps its accepted work until a drain retires it explicitly.
 
 The process application wrapper publishes the poison health fact in the same
-durable record before returning the injected application failure. Restart reads
-that marker before opening the physical Raft group, quarantines the poisoned
-group without replaying its failing command, and continues opening unrelated
-groups. Poison does not change the stored lifecycle: an explicit `Drain` still
-owns the administrative transition and the ordinary removal path.
+durable record before returning any fatal application failure, regardless of
+its concrete error variant. The group boundary applies the same durable fallback
+to other fatal driver errors and to a fatal error found while recovery replays.
+Startup reads that marker before opening the physical Raft group; if replay is
+what discovers the failure, startup publishes it then. In either case the host
+quarantines the poisoned group without replaying its failing command again and
+continues opening unrelated groups. Poison does not change the stored
+lifecycle: an explicit `Drain` still owns the administrative transition and the
+ordinary removal path.
 
 Ordinary driving never makes a poisoned group available again. The managed
 scheduler's explicit `fail_queued(group_id)` operation is the only queue
@@ -1151,7 +1172,8 @@ The implementation and oracle must establish:
 10. `admitted = serviced + failed + queued` over any history.
 11. Both queue bounds refuse admission without touching accepted work.
 12. An acknowledged request is replayable from the session cache while the
-    queue is full.
+    queue is full, but a process replica serves that cache only after current
+    quorum authority has been established.
 13. Every accepted request identity changes one counter at most once.
 14. An exact retry returns the original result, whether the original is queued
     or completed.
@@ -1406,12 +1428,20 @@ The three lost-outcome forms differ only in what the caller can prove:
 
 `NotAdmitted` is the counterpart of the siblings' `NotCommitted`. The process
 protocol now earns the distinction at its boundary: malformed requests, stale
-incarnations, lifecycle refusals, session conflicts, and queue refusals return
-only after any provisional durable reservation has been cancelled, while a
-proposal whose terminal result cannot be proved returns `ERR UNKNOWN`. The
-bounded process history keeps the exact operation identity across that second
-branch. Recording a provable refusal as `Unknown` would let an implementation
-that serviced it be explained away.
+incarnations, lifecycle refusals, and out-of-range clients are refused before
+any reservation; quorum-linearized session, sequence, fingerprint, conflict,
+and replay decisions are completed next; and only a `Proceed` decision may
+reserve durable work and consult the managed queue. A queue refusal returns only
+after that provisional durable reservation has been cancelled. A proposal whose
+terminal result cannot be proved returns `ERR UNKNOWN`. The bounded process
+history keeps the exact operation identity across that second branch. Recording
+a provable refusal as `Unknown` would let an implementation that serviced it be
+explained away.
+
+A typed terminal failure for an operation accepted earlier is a durable
+obligation, not a fresh admission decision. After the group identity and client
+range are checked, that failure replays before the group's current lifecycle or
+poison state can mask it.
 
 ## Deterministic Adoption Evidence and Boundary
 
@@ -1513,6 +1543,15 @@ readiness only after that recovery/catch-up boundary. Snapshot requests build
 the application payload, compact the real Raft log, and preserve the same value
 and completion cache across `SIGKILL` and restart.
 
+That recovered image is durable application state, not permission to answer a
+client. Before serving an `OpenSession`, mutation, read, or cached replay, the
+process completes a Raft read-index barrier and applies its proof. It then asks
+the state machine for the complete admission decision. Thus a replica isolated
+after sequence one cannot replay sequence one from its local cache after the
+quorum has completed sequence two. Range, session epoch, sequence, fingerprint,
+conflict, gap, and replay outcomes all settle before durable reservation or the
+managed queue; admission counters therefore move only for `Proceed`.
+
 A checksummed host slot registry is the separate authority for group existence,
 incarnation, lifecycle, and quota. Only a durable first-bootstrap intent grants
 the explicit incarnation-one bootstrap path. It stages and syncs every Raft
@@ -1564,6 +1603,12 @@ counts. Plan/turn digests, cumulative coverage, opportunity spread, and the
 exact queue-conservation equation remain supplemental rather than standing in
 for a complete pass.
 
+The process-only `PAUSE_PEERS` and `RESUME_PEERS` controls partition one host's
+Raft transport without changing its durable state. Like `SLOW`, `PRESSURE`, and
+the fault controls, they exist only to make a required black-box failure shape
+deterministic. The reviewed stale-replica test uses them to prove that a local
+completion cache cannot bypass the authoritative read barrier.
+
 The shared reconnecting client distinguishes connect, send, and receive stages.
 It may report a pre-send connection failure as unattempted, but never replays a
 request after a send may have begun. A send or post-send receive failure is an
@@ -1576,7 +1621,15 @@ The reviewed process inventory exercises:
 - slow-group occupancy beside snapshot and bulk pressure, while another group
   still completes control and command work;
 - one poisoned group beside a healthy group;
+- a fatal application invariant error other than `InjectedFault` durably
+  quarantined across restart;
 - per-group and global backpressure;
+- all configured client slots, the first out-of-range client, and the same
+  boundary after restart;
+- authoritative session, sequence, conflict, gap, and replay decisions while
+  every managed application queue is saturated;
+- a stale isolated replica refusing to replay its local completion cache after
+  another quorum advances the session;
 - `SIGKILL`, exact retry after an unknown outcome, clean restart, snapshot,
   compaction, and durable catch-up;
 - drain, remove, reopen under a greater incarnation, and terminal tombstone;

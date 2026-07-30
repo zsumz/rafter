@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rafter::{LocalProposalId, NodeId, Role};
+use rafter::{LocalProposalId, NodeId, ReadId, Role};
 use rafter_app::{group::GroupInput, proposal::ProposalEvent};
 use rafter_multiraft::{
     managed::{
@@ -38,8 +38,8 @@ use self::{
     },
 };
 use super::{
-    app_store::{AcceptedOperation, ApplicationRecord, ReserveOutcome, TerminalFailure},
-    group::{OpenedGroup, Report, SharedGroup},
+    app_store::{AcceptedOperation, ApplicationRecord, TerminalFailure},
+    group::{OpenError, OpenedGroup, Report, SharedGroup},
     host_registry::{ActivationIntent, HostRegistry, RetirementIntent},
     peer_link::{PeerFrame, PeerLink},
     protocol::{self, ClientReply, Job, PressureClass, Request},
@@ -84,9 +84,18 @@ struct PendingClient {
 
 #[derive(Debug)]
 struct ClientAdmissionRefusal {
-    reply: ClientReply,
+    replies: Vec<ClientReply>,
     response: String,
     managed: bool,
+}
+
+#[derive(Debug)]
+struct PendingAdmission {
+    group_id: GroupId,
+    incarnation: GroupIncarnation,
+    operation: AcceptedOperation,
+    replies: Vec<ClientReply>,
+    deadline: Instant,
 }
 
 #[derive(Debug)]
@@ -113,14 +122,19 @@ struct Engine {
     work: BTreeMap<WorkId, WorkKind>,
     pending: BTreeMap<LocalProposalId, PendingClient>,
     pending_operations: BTreeMap<(GroupId, ClientId), LocalProposalId>,
+    pending_admissions: BTreeMap<ReadId, PendingAdmission>,
+    pending_admission_operations: BTreeMap<(GroupId, ClientId), ReadId>,
     tick_pending: BTreeSet<GroupId>,
     poisoned: BTreeSet<GroupId>,
     slow: BTreeMap<GroupId, Duration>,
     delayed: Vec<DelayedDispatch>,
     audit: Audit,
     next_proposal_id: u64,
+    next_read_id: u64,
+    client_admitted: u64,
     ready_announced: bool,
     refused_peer: u64,
+    peers_paused: bool,
     stopping: bool,
 }
 
@@ -174,14 +188,19 @@ pub fn run(config: &Config) -> Result<(), String> {
         work: BTreeMap::new(),
         pending: BTreeMap::new(),
         pending_operations: BTreeMap::new(),
+        pending_admissions: BTreeMap::new(),
+        pending_admission_operations: BTreeMap::new(),
         tick_pending: BTreeSet::new(),
         poisoned: BTreeSet::new(),
         slow: BTreeMap::new(),
         delayed: Vec::new(),
         audit: Audit::default(),
         next_proposal_id: 1,
+        next_read_id: 1,
+        client_admitted: 0,
         ready_announced: false,
         refused_peer: 0,
+        peers_paused: false,
         stopping: false,
     };
     engine.open_groups(&config.host_dir())?;
@@ -214,18 +233,7 @@ impl Engine {
             self.reconcile_registry(group_id, &policy)?;
             Self::validate_group_shape(&directory, group_id, policy.incarnation, policy.lifecycle)?;
             if policy.poisoned {
-                record
-                    .fail_poisoned_outstanding()
-                    .map_err(|error| error.to_string())?;
-                self.poisoned.insert(group_id);
-                self.groups.insert(
-                    group_id,
-                    GroupEntry {
-                        directory,
-                        record,
-                        driver: None,
-                    },
-                );
+                self.install_quarantined(group_id, directory, record)?;
                 continue;
             }
             if matches!(
@@ -242,7 +250,20 @@ impl Engine {
                 );
                 continue;
             }
-            let opened = self.open_physical(&directory, group_id)?;
+            let opened = match self.open_physical(&directory, group_id) {
+                Ok(opened) => opened,
+                Err(OpenError::PoisonedRecovery(_)) => {
+                    let (record, state_machine) =
+                        ApplicationRecord::open_existing(&directory.join("app"), self.max_sessions)
+                            .map_err(|error| error.to_string())?;
+                    drop(state_machine);
+                    self.install_quarantined(group_id, directory, record)?;
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!("group {} open failed: {error}", group_id.get()));
+                }
+            };
             recoveries.push((group_id, opened.recovery.clone()));
             self.install_opened(group_id, directory, opened)?;
         }
@@ -256,7 +277,7 @@ impl Engine {
         &self,
         directory: &std::path::Path,
         group_id: GroupId,
-    ) -> Result<OpenedGroup, String> {
+    ) -> Result<OpenedGroup, OpenError> {
         SharedGroup::open(
             directory,
             group_id,
@@ -265,7 +286,27 @@ impl Engine {
             self.election_timeout_ticks,
             self.max_sessions,
         )
-        .map_err(|error| format!("group {} open failed: {error}", group_id.get()))
+    }
+
+    fn install_quarantined(
+        &mut self,
+        group_id: GroupId,
+        directory: PathBuf,
+        record: ApplicationRecord,
+    ) -> Result<(), String> {
+        record
+            .fail_poisoned_outstanding()
+            .map_err(|error| error.to_string())?;
+        self.poisoned.insert(group_id);
+        self.groups.insert(
+            group_id,
+            GroupEntry {
+                directory,
+                record,
+                driver: None,
+            },
+        );
+        Ok(())
     }
 
     fn install_opened(
@@ -313,10 +354,10 @@ impl Engine {
             if self.stopping {
                 break;
             }
-            self.admit_peer_frames();
+            self.admit_peer_frames()?;
             let now = Instant::now();
             if now >= next_tick {
-                self.admit_ticks();
+                self.admit_ticks()?;
                 next_tick = now + self.tick_interval;
             }
             self.expire_clients(now);
@@ -370,80 +411,7 @@ impl Engine {
                 epoch,
             } => {
                 let operation = AcceptedOperation::OpenSession { client_id, epoch };
-                let Some(entry) = self.groups.get(&group_id) else {
-                    reply.send("ERR GROUP_UNKNOWN".to_string(), false);
-                    return Ok(());
-                };
-                let policy = entry.record.policy();
-                if incarnation < policy.incarnation {
-                    reply.send(
-                        format!("ERR STALE_INCARNATION current={}", policy.incarnation.get()),
-                        false,
-                    );
-                    return Ok(());
-                }
-                if incarnation > policy.incarnation {
-                    reply.send(
-                        format!(
-                            "ERR FUTURE_INCARNATION current={}",
-                            policy.incarnation.get()
-                        ),
-                        false,
-                    );
-                    return Ok(());
-                }
-                let Some(reply) = self.attach_exact_pending(group_id, operation, reply) else {
-                    return Ok(());
-                };
-                let entry = self
-                    .groups
-                    .get(&group_id)
-                    .expect("the checked group remains installed");
-                match entry.record.replay_terminal_failure(operation) {
-                    Ok(Some(failure)) => {
-                        reply.send(render_terminal_failure(failure).to_string(), false);
-                        return Ok(());
-                    }
-                    Ok(None) => {}
-                    Err(_) => {
-                        reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
-                        return Ok(());
-                    }
-                }
-                if entry
-                    .record
-                    .session_is_open(client_id, epoch)
-                    .map_err(|error| error.to_string())?
-                {
-                    reply.send("OK SESSION already_open".to_string(), false);
-                    return Ok(());
-                }
-                if let Err(response) = self.serving_driver(group_id, incarnation) {
-                    reply.send(response, false);
-                    return Ok(());
-                }
-                let record = self
-                    .groups
-                    .get(&group_id)
-                    .expect("serving group has an entry")
-                    .record
-                    .clone();
-                let reservation = match record.reserve(operation) {
-                    Ok(reservation) => reservation,
-                    Err(error) => {
-                        reply.send(format!("ERR ADMISSION {error}"), false);
-                        return Ok(());
-                    }
-                };
-                if let Err(refusal) = self.admit_client_proposal(
-                    group_id,
-                    WorkClass::Control,
-                    operation.replicated_command(),
-                    Some(operation),
-                    reply,
-                ) {
-                    Self::finish_reserved_admission(&record, operation, reservation, refusal)?;
-                }
+                self.begin_authoritative_admission(group_id, incarnation, operation, reply)?;
             }
             Request::Counter {
                 group_id,
@@ -460,83 +428,7 @@ impl Engine {
                     fingerprint: RequestFingerprint::of(&command),
                 };
                 let operation = AcceptedOperation::Counter { request, command };
-                let Some(entry) = self.groups.get(&group_id) else {
-                    reply.send("ERR GROUP_UNKNOWN".to_string(), false);
-                    return Ok(());
-                };
-                let policy = entry.record.policy();
-                if incarnation < policy.incarnation {
-                    reply.send(
-                        format!("ERR STALE_INCARNATION current={}", policy.incarnation.get()),
-                        false,
-                    );
-                    return Ok(());
-                }
-                if incarnation > policy.incarnation {
-                    reply.send(
-                        format!(
-                            "ERR FUTURE_INCARNATION current={}",
-                            policy.incarnation.get()
-                        ),
-                        false,
-                    );
-                    return Ok(());
-                }
-                let Some(reply) = self.attach_exact_pending(group_id, operation, reply) else {
-                    return Ok(());
-                };
-                let entry = self
-                    .groups
-                    .get(&group_id)
-                    .expect("the checked group remains installed");
-                match entry.record.replay_terminal_failure(operation) {
-                    Ok(Some(failure)) => {
-                        reply.send(render_terminal_failure(failure).to_string(), false);
-                        return Ok(());
-                    }
-                    Ok(None) => {}
-                    Err(_) => {
-                        reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
-                        return Ok(());
-                    }
-                }
-                if let Some(result) = entry
-                    .record
-                    .cached_counter_result(request, command)
-                    .map_err(|error| error.to_string())?
-                {
-                    reply.send(
-                        format!("OK REPLAY {}", render_counter_result(result)),
-                        false,
-                    );
-                    return Ok(());
-                }
-                if let Err(response) = self.serving_driver(group_id, incarnation) {
-                    reply.send(response, false);
-                    return Ok(());
-                }
-                let record = self
-                    .groups
-                    .get(&group_id)
-                    .expect("serving group has an entry")
-                    .record
-                    .clone();
-                let reservation = match record.reserve(operation) {
-                    Ok(reservation) => reservation,
-                    Err(error) => {
-                        reply.send(format!("ERR ADMISSION {error}"), false);
-                        return Ok(());
-                    }
-                };
-                if let Err(refusal) = self.admit_client_proposal(
-                    group_id,
-                    WorkClass::Command,
-                    operation.replicated_command(),
-                    Some(operation),
-                    reply,
-                ) {
-                    Self::finish_reserved_admission(&record, operation, reservation, refusal)?;
-                }
+                self.begin_authoritative_admission(group_id, incarnation, operation, reply)?;
             }
             Request::Value {
                 group_id,
@@ -568,10 +460,38 @@ impl Engine {
                     WorkClass::Command,
                     ReplicatedCounterCommand::Faulty,
                     None,
-                    reply,
+                    vec![reply],
                 ) {
-                    refusal.reply.send(refusal.response, false);
+                    for reply in refusal.replies {
+                        reply.send(refusal.response.clone(), false);
+                    }
                 }
+            }
+            Request::CapacityFault {
+                group_id,
+                incarnation,
+            } => {
+                if let Err(response) = self.serving_driver(group_id, incarnation) {
+                    reply.send(response, false);
+                } else if let Err(refusal) = self.admit_client_proposal(
+                    group_id,
+                    WorkClass::Command,
+                    ReplicatedCounterCommand::CapacityFault,
+                    None,
+                    vec![reply],
+                ) {
+                    for reply in refusal.replies {
+                        reply.send(refusal.response.clone(), false);
+                    }
+                }
+            }
+            Request::PausePeers => {
+                self.peers_paused = true;
+                reply.send("OK PEERS paused".to_string(), false);
+            }
+            Request::ResumePeers => {
+                self.peers_paused = false;
+                reply.send("OK PEERS resumed".to_string(), false);
             }
             Request::Pressure {
                 group_id,
@@ -685,58 +605,6 @@ impl Engine {
         Ok(())
     }
 
-    fn attach_exact_pending(
-        &mut self,
-        group_id: GroupId,
-        operation: AcceptedOperation,
-        reply: ClientReply,
-    ) -> Option<ClientReply> {
-        let Some(proposal_id) = self
-            .pending_operations
-            .get(&(group_id, operation.client_id()))
-            .copied()
-        else {
-            return Some(reply);
-        };
-        let pending = self
-            .pending
-            .get_mut(&proposal_id)
-            .expect("pending operation index names a pending proposal");
-        if pending.operation == Some(operation) {
-            pending.replies.push(reply);
-            pending.deadline = Some(Instant::now() + self.request_timeout);
-        } else {
-            reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
-        }
-        None
-    }
-
-    fn finish_reserved_admission(
-        record: &ApplicationRecord,
-        operation: AcceptedOperation,
-        reservation: ReserveOutcome,
-        refusal: ClientAdmissionRefusal,
-    ) -> Result<(), String> {
-        if reservation == ReserveOutcome::ExactRetry {
-            refusal.reply.send(
-                "ERR UNKNOWN accepted operation remains durable".to_string(),
-                false,
-            );
-            return Ok(());
-        }
-        if refusal.managed {
-            directed_failpoint("after_managed_refusal_before_durable_cancellation");
-        }
-        record
-            .cancel_reservation(operation)
-            .map_err(|error| error.to_string())?;
-        if refusal.managed {
-            directed_failpoint("after_durable_cancellation_before_backpressure_response");
-        }
-        refusal.reply.send(refusal.response, false);
-        Ok(())
-    }
-
     fn drive(&mut self, now: Instant) -> Result<(), String> {
         self.release_delayed(now)?;
         match self
@@ -838,7 +706,7 @@ impl Engine {
                 Err(error) => {
                     let kind = error.kind();
                     if kind == MultiRaftErrorKind::DriverPoisoned {
-                        self.poisoned.insert(group_id);
+                        self.persist_runtime_poison(group_id)?;
                         poisoned = true;
                     }
                     match work_kind {
@@ -896,13 +764,18 @@ impl Engine {
             .policy()
             .incarnation;
         for envelope in report.peer_messages {
-            let _ = self.link.send(PeerFrame {
-                group_id,
-                incarnation,
-                from: envelope.from,
-                to: envelope.to,
-                message: envelope.message,
-            });
+            if !self.peers_paused {
+                let _ = self.link.send(PeerFrame {
+                    group_id,
+                    incarnation,
+                    from: envelope.from,
+                    to: envelope.to,
+                    message: envelope.message,
+                });
+            }
+        }
+        for event in &report.read_events {
+            self.finish_admission_read_event(event)?;
         }
         for event in report.proposal_events {
             match event {
@@ -1033,6 +906,7 @@ impl Engine {
     }
 
     fn expire_clients(&mut self, now: Instant) {
+        self.expire_admission_reads(now);
         let expired = self
             .pending
             .iter()
@@ -1079,6 +953,7 @@ impl Engine {
         ) {
             return Ok(format!("ERR LIFECYCLE {:?}", policy.lifecycle));
         }
+        self.cancel_admission_reads_for_group(group_id, "ERR LIFECYCLE Draining");
         if policy.lifecycle == GroupLifecycle::Serving {
             record
                 .begin_draining(self.poisoned.contains(&group_id))
@@ -1263,7 +1138,9 @@ impl Engine {
         activate_staged_raft(&directory, new_incarnation, true)?;
         directed_failpoint("before_activation_intent_cleanup");
         ActivationIntent::clear(&directory)?;
-        let opened = self.open_physical(&directory, group_id)?;
+        let opened = self
+            .open_physical(&directory, group_id)
+            .map_err(|error| format!("group {} open failed: {error}", group_id.get()))?;
         let recovery = opened.recovery.clone();
         self.install_opened(group_id, directory, opened)?;
         self.collect_report(group_id, recovery)?;
@@ -1367,7 +1244,8 @@ impl Engine {
         let link = self.link.counters();
         format!(
             "OK STATUS ready={} groups={} leaders={} leader_groups={} poisoned={} queued={} \
-             in_flight={} workers={} admitted={} serviced={} failed={} passes={} refused_peer={} \
+             in_flight={} workers={} admitted={} client_admitted={} serviced={} failed={} \
+             passes={} refused_peer={} \
              link_outbound_full={} link_inbound_full={} link_malformed={} \
              link_identity_refused={} link_inbound_connection_full={}",
             self.all_active_ready(),
@@ -1379,6 +1257,7 @@ impl Engine {
             metrics.in_flight_work,
             metrics.occupied_workers,
             metrics.admitted,
+            self.client_admitted,
             metrics.serviced,
             metrics.failed,
             metrics.passes_completed,
@@ -1423,6 +1302,19 @@ impl Engine {
     }
 
     fn finish(&mut self) {
+        for (read_id, pending) in std::mem::take(&mut self.pending_admissions) {
+            if let Some(driver) = self
+                .groups
+                .get(&pending.group_id)
+                .and_then(|entry| entry.driver.as_ref())
+            {
+                driver.cancel_read(read_id);
+            }
+            for reply in pending.replies {
+                reply.send("ERR NOT_COMMITTED process shutting down".to_string(), false);
+            }
+        }
+        self.pending_admission_operations.clear();
         for (_, pending) in std::mem::take(&mut self.pending) {
             for reply in pending.replies {
                 reply.send("ERR UNKNOWN process shutting down".to_string(), false);
@@ -1454,23 +1346,28 @@ fn render_apply_result(result: CounterApplyResult) -> String {
             SessionApplyResult::Replaced => "OK SESSION replaced".to_string(),
         },
         CounterApplyResult::Counter(result) => format!("OK {}", render_counter_result(result)),
-        CounterApplyResult::Rejected(rejection) => match rejection {
-            CounterApplyRejection::SessionNotOpen => "ERR SESSION_NOT_OPEN".to_string(),
-            CounterApplyRejection::StaleSession { current } => {
-                format!("ERR STALE_SESSION current={}", current.get())
-            }
-            CounterApplyRejection::FutureSession { current } => {
-                format!("ERR FUTURE_SESSION current={}", current.get())
-            }
-            CounterApplyRejection::FingerprintMismatch => "ERR FINGERPRINT_MISMATCH".to_string(),
-            CounterApplyRejection::StaleSequence { highest } => {
-                format!("ERR STALE_SEQUENCE highest={}", highest.get())
-            }
-            CounterApplyRejection::SequenceGap { expected } => {
-                format!("ERR SEQUENCE_GAP expected={}", expected.get())
-            }
-            CounterApplyRejection::ConflictingRetry => "ERR CONFLICTING_RETRY".to_string(),
-        },
+        CounterApplyResult::Rejected(rejection) => render_apply_rejection(rejection),
+    }
+}
+
+fn render_apply_rejection(rejection: CounterApplyRejection) -> String {
+    match rejection {
+        CounterApplyRejection::ClientOutOfRange => "ERR CLIENT_OUT_OF_RANGE".to_string(),
+        CounterApplyRejection::SessionNotOpen => "ERR SESSION_NOT_OPEN".to_string(),
+        CounterApplyRejection::StaleSession { current } => {
+            format!("ERR STALE_SESSION current={}", current.get())
+        }
+        CounterApplyRejection::FutureSession { current } => {
+            format!("ERR FUTURE_SESSION current={}", current.get())
+        }
+        CounterApplyRejection::FingerprintMismatch => "ERR FINGERPRINT_MISMATCH".to_string(),
+        CounterApplyRejection::StaleSequence { highest } => {
+            format!("ERR STALE_SEQUENCE highest={}", highest.get())
+        }
+        CounterApplyRejection::SequenceGap { expected } => {
+            format!("ERR SEQUENCE_GAP expected={}", expected.get())
+        }
+        CounterApplyRejection::ConflictingRetry => "ERR CONFLICTING_RETRY".to_string(),
     }
 }
 

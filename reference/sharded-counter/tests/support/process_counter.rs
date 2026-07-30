@@ -363,6 +363,38 @@ impl ProcessCluster {
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
+    pub fn leader_for_group(&mut self, group_id: u32) -> u64 {
+        self.leader_for_group_excluding(group_id, None)
+    }
+
+    pub fn leader_for_group_excluding(&mut self, group_id: u32, excluded: Option<u64>) -> u64 {
+        PROCESS_WAIT
+            .until(
+                format!("one live host other than {excluded:?} to lead group {group_id}"),
+                || {
+                    for node_id in self.live_node_ids() {
+                        if excluded == Some(node_id) {
+                            continue;
+                        }
+                        let status = self
+                            .nodes
+                            .get_mut(&node_id)
+                            .expect("live node")
+                            .request("STATUS")
+                            .ok()?;
+                        if field(&status, "leader_groups")?
+                            .split(',')
+                            .any(|group| group.parse::<u32>() == Ok(group_id))
+                        {
+                            return Some(node_id);
+                        }
+                    }
+                    None
+                },
+            )
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
     pub fn kill(&mut self, node_id: u64) {
         let mut node = self
             .nodes

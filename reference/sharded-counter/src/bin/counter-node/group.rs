@@ -9,7 +9,7 @@ use std::{
 
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, LogIndex,
-    NodeConfig, NodeId, RaftSnapshotMetadata, SnapshotGroupId,
+    NodeConfig, NodeId, RaftSnapshotMetadata, ReadId, SnapshotGroupId,
 };
 use rafter_app::{
     error::ErrorCause,
@@ -21,7 +21,7 @@ use rafter_multiraft::{
     typed::TypedGroupDriver,
 };
 use rafter_reference_sharded_counter::{
-    adapter::{CounterApplyResult, ReplicatedCounterCommand},
+    adapter::{CounterAdmissionDecision, CounterApplyResult, ReplicatedCounterCommand},
     GroupId,
 };
 use rafter_runtime::DurableRaftNode;
@@ -49,6 +49,7 @@ pub enum OpenError {
     Runtime(String),
     Config(String),
     Recovery(String),
+    PoisonedRecovery(String),
 }
 
 impl fmt::Display for OpenError {
@@ -68,6 +69,9 @@ impl fmt::Display for OpenError {
             Self::Runtime(detail) => write!(formatter, "Raft runtime failed: {detail}"),
             Self::Config(detail) => write!(formatter, "Raft configuration failed: {detail}"),
             Self::Recovery(detail) => write!(formatter, "Raft recovery failed: {detail}"),
+            Self::PoisonedRecovery(detail) => {
+                write!(formatter, "Raft recovery poisoned the group: {detail}")
+            }
         }
     }
 }
@@ -98,6 +102,7 @@ struct GroupSlot {
 #[derive(Clone, Debug)]
 pub struct SharedGroup {
     inner: Arc<Mutex<GroupSlot>>,
+    record: ApplicationRecord,
 }
 
 impl SharedGroup {
@@ -140,12 +145,24 @@ impl SharedGroup {
         let (runtime, outputs) = recovered.into_parts();
         let mut group =
             RaftGroup::with_applied_index(group_id, node_id, runtime, state_machine, applied);
-        let recovery = group
-            .apply_raft_outputs(outputs)
-            .map_err(|error| OpenError::Recovery(error.to_string()))?;
+        let recovery = match group.apply_raft_outputs(outputs) {
+            Ok(recovery) => recovery,
+            Err(error) => {
+                if matches!(
+                    group.fatal_state(),
+                    rafter_app::group::GroupFatalState::Poisoned { .. }
+                ) {
+                    record.mark_poisoned().map_err(OpenError::Application)?;
+                    crate::directed_failpoint("after_poison_publication_before_driver_error");
+                    return Err(OpenError::PoisonedRecovery(error.to_string()));
+                }
+                return Err(OpenError::Recovery(error.to_string()));
+            }
+        };
         Ok(OpenedGroup {
             driver: Self {
                 inner: Arc::new(Mutex::new(GroupSlot { group: Some(group) })),
+                record: record.clone(),
             },
             record,
             recovery,
@@ -168,6 +185,54 @@ impl SharedGroup {
 
     pub fn view(&self) -> rafter_reference_sharded_counter::adapter::CounterStateView {
         self.with_group(|group| group.state_machine().view())
+    }
+
+    pub fn admission_decision(
+        &self,
+        command: ReplicatedCounterCommand,
+    ) -> CounterAdmissionDecision {
+        self.with_group(|group| group.state_machine().admission_decision(command))
+    }
+
+    pub fn step_direct(
+        &self,
+        input: GroupInput<GroupId, ReplicatedCounterCommand>,
+    ) -> Result<Report, DriverError> {
+        let mut slot = self.lock();
+        let group = slot
+            .group
+            .as_mut()
+            .expect("managed group is present outside maintenance");
+        match group.step(input) {
+            Ok(report) => Ok(report),
+            Err(error) => {
+                let kind = match group.fatal_state() {
+                    rafter_app::group::GroupFatalState::Poisoned { .. } => {
+                        if !self.record.policy().poisoned {
+                            if let Err(poison_error) = self.record.mark_poisoned() {
+                                return Err(DriverError::new(
+                                    DriverErrorKind::Poisoned,
+                                    ErrorCause::new(poison_error),
+                                ));
+                            }
+                            crate::directed_failpoint(
+                                "after_poison_publication_before_driver_error",
+                            );
+                        }
+                        DriverErrorKind::Poisoned
+                    }
+                    rafter_app::group::GroupFatalState::Healthy => DriverErrorKind::Transient,
+                };
+                Err(DriverError::new(kind, ErrorCause::new(error)))
+            }
+        }
+    }
+
+    pub fn cancel_read(&self, read_id: ReadId) {
+        let mut slot = self.lock();
+        if let Some(group) = slot.group.as_mut() {
+            group.cancel_read(read_id);
+        }
     }
 
     pub fn metrics(&self) -> rafter_app::metrics::RaftGroupMetrics<GroupId> {
@@ -247,23 +312,7 @@ impl TypedGroupDriver<GroupId> for SharedGroup {
     type CommandResult = CounterApplyResult;
 
     fn step(&mut self, input: GroupInput<GroupId, Self::Command>) -> Result<Report, DriverError> {
-        let mut slot = self.lock();
-        let group = slot
-            .group
-            .as_mut()
-            .expect("managed group is present outside maintenance");
-        match group.step(input) {
-            Ok(report) => Ok(report),
-            Err(error) => {
-                let kind = match group.fatal_state() {
-                    rafter_app::group::GroupFatalState::Poisoned { .. } => {
-                        DriverErrorKind::Poisoned
-                    }
-                    rafter_app::group::GroupFatalState::Healthy => DriverErrorKind::Transient,
-                };
-                Err(DriverError::new(kind, ErrorCause::new(error)))
-            }
-        }
+        self.step_direct(input)
     }
 
     fn metrics(&self) -> rafter_app::metrics::RaftGroupMetrics<GroupId> {

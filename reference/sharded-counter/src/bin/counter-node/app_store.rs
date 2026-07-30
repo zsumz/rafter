@@ -23,10 +23,11 @@ use rafter_app::state_machine::{
 use rafter_crc32::crc32;
 use rafter_reference_sharded_counter::{
     adapter::{
-        CounterApplyResult, CounterStateMachine, CounterStateMachineError, ReplicatedCounterCommand,
+        CounterAdmissionDecision, CounterApplyResult, CounterStateMachine,
+        CounterStateMachineError, ReplicatedCounterCommand,
     },
-    ClientId, CounterCommand, CounterResult, Delta, GroupIncarnation, GroupLifecycle,
-    RequestFingerprint, RequestIdentity, Sequence, SessionEpoch, WorkQuota,
+    ClientId, CounterCommand, Delta, GroupIncarnation, GroupLifecycle, RequestFingerprint,
+    RequestIdentity, Sequence, SessionEpoch, WorkQuota,
 };
 use rafter_storage::FileRaftSnapshotStore;
 
@@ -311,46 +312,6 @@ impl ApplicationRecord {
         self.lock().policy.clone()
     }
 
-    pub fn session_is_open(
-        &self,
-        client_id: ClientId,
-        epoch: SessionEpoch,
-    ) -> Result<bool, StoreError> {
-        Ok(self
-            .application_view()?
-            .sessions
-            .into_iter()
-            .any(|session| session.client_id == client_id && session.epoch == epoch))
-    }
-
-    pub fn cached_counter_result(
-        &self,
-        request: RequestIdentity,
-        command: CounterCommand,
-    ) -> Result<Option<CounterResult>, StoreError> {
-        Ok(self
-            .application_view()?
-            .sessions
-            .into_iter()
-            .find(|session| {
-                session.client_id == request.client_id && session.epoch == request.session_epoch
-            })
-            .and_then(|session| session.completed)
-            .filter(|completed| {
-                completed.sequence == request.sequence && completed.command == command
-            })
-            .map(|completed| completed.result))
-    }
-
-    fn application_view(
-        &self,
-    ) -> Result<rafter_reference_sharded_counter::adapter::CounterStateView, StoreError> {
-        let application = self.lock().application.clone();
-        let state_machine = CounterStateMachine::from_snapshot(self.max_outstanding, application)
-            .map_err(|error| snapshot_error(&error))?;
-        Ok(state_machine.view())
-    }
-
     pub fn reserve(&self, operation: AcceptedOperation) -> Result<ReserveOutcome, StoreError> {
         let client_id = operation.client_id();
         let mut staged = self.lock().clone();
@@ -555,7 +516,9 @@ impl ApplicationRecord {
                         command: *command,
                     }
                 }
-                ReplicatedCounterCommand::Faulty => continue,
+                ReplicatedCounterCommand::Faulty | ReplicatedCounterCommand::CapacityFault => {
+                    continue;
+                }
             };
             let client_id = operation.client_id();
             if staged
@@ -594,6 +557,13 @@ pub struct DurableCounterStateMachine {
 impl DurableCounterStateMachine {
     pub fn view(&self) -> rafter_reference_sharded_counter::adapter::CounterStateView {
         self.inner.view()
+    }
+
+    pub fn admission_decision(
+        &self,
+        command: ReplicatedCounterCommand,
+    ) -> CounterAdmissionDecision {
+        self.inner.admission_decision(command)
     }
 
     fn register_promoted_payload(
@@ -668,12 +638,11 @@ impl ReplicatedStateMachine for DurableCounterStateMachine {
         let mut staged = self.inner.clone();
         let results = match staged.apply_batch(batch) {
             Ok(results) => results,
-            Err(CounterStateMachineError::InjectedFault) => {
+            Err(error) => {
                 self.record.mark_poisoned()?;
                 crate::directed_failpoint("after_poison_publication_before_driver_error");
-                return Err(StoreError::Counter(CounterStateMachineError::InjectedFault));
+                return Err(StoreError::Counter(error));
             }
-            Err(error) => return Err(StoreError::Counter(error)),
         };
         let at = staged.applied_index()?;
         let application = staged

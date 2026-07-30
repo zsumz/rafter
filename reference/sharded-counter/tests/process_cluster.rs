@@ -42,6 +42,28 @@ fn fill_group_queue(cluster: &mut ProcessCluster, host: u64, group: u32) {
     );
 }
 
+fn fill_global_queue(cluster: &mut ProcessCluster, host: u64) {
+    loop {
+        let status = cluster.request_on(host, "STATUS");
+        if number_field(&status, "queued") >= 1024 {
+            return;
+        }
+        let mut progressed = false;
+        for group in 1..=GROUP_COUNT {
+            let response = cluster.request_on(host, &format!("PRESSURE {group} 1 bulk 64"));
+            assert!(response.starts_with("OK PRESSURE "), "{response}");
+            progressed |= number_field(&response, "accepted") != 0;
+            if number_field(&cluster.request_on(host, "STATUS"), "queued") >= 1024 {
+                return;
+            }
+        }
+        assert!(
+            progressed,
+            "global queue stopped below its configured bound"
+        );
+    }
+}
+
 #[test]
 #[ignore = "real three-host process topology"]
 fn many_groups_preserve_fairness_isolation_and_control_progress() {
@@ -155,8 +177,8 @@ fn sigkill_exact_retry_snapshot_and_clean_restart_preserve_history() {
 fn removal_reopen_and_tombstone_fence_old_clients_and_peers() {
     let mut cluster = ProcessCluster::start("lifecycle");
     let mut history = ProcessHistory::default();
-    open_session(&mut cluster, 7, 1, 77);
-    history.add(&mut cluster, 7, 1, 77, 1, 9);
+    open_session(&mut cluster, 7, 1, 57);
+    history.add(&mut cluster, 7, 1, 57, 1, 9);
     history.assert_complete(&mut cluster);
 
     for response in cluster.request_each("DRAIN 7 1") {
@@ -181,9 +203,9 @@ fn removal_reopen_and_tombstone_fence_old_clients_and_peers() {
     send_stale_vote(cluster.scratch_path(), 1, 7, 1);
     cluster.wait_refused_peer_above(1, baseline);
 
-    open_session(&mut cluster, 7, 2, 78);
+    open_session(&mut cluster, 7, 2, 58);
     history.reset_group(7, 2);
-    history.add(&mut cluster, 7, 2, 78, 1, 4);
+    history.add(&mut cluster, 7, 2, 58, 1, 4);
     cluster.wait_all_values(&std::collections::BTreeMap::from([((7, 2), 4)]));
 
     for response in cluster.request_each("DRAIN 7 2") {
@@ -410,10 +432,10 @@ fn draining_publication_crashes_preserve_durable_outstanding_work() {
             "the selected host must lead the selected group"
         );
         assert_eq!(
-            cluster.request_on(host, &format!("SLOW {group} 1500")),
-            format!("OK SLOW group={group} milliseconds=1500")
+            cluster.request_on(host, &format!("SLOW {group} 5000")),
+            format!("OK SLOW group={group} milliseconds=5000")
         );
-        let baseline = number_field(&cluster.request_on(host, "STATUS"), "admitted");
+        let baseline = number_field(&cluster.request_on(host, "STATUS"), "client_admitted");
         let address = cluster.node_addr(host);
         let request = format!("ADD {group} 1 61 1 1 5");
         let in_flight_request = request.clone();
@@ -422,7 +444,7 @@ fn draining_publication_crashes_preserve_durable_outstanding_work() {
                 .expect("leader connection opens");
             connection.request(&in_flight_request)
         });
-        cluster.wait_status_above(host, "admitted", baseline);
+        cluster.wait_status_above(host, "client_admitted", baseline);
         cluster.trigger_failpoint(host, &format!("DRAIN {group} 1"), failpoint);
         assert!(
             client
@@ -529,13 +551,200 @@ fn backpressure_is_reported_only_after_durable_cancellation() {
 }
 
 #[test]
+#[ignore = "real client-range admission and restart boundary"]
+fn client_range_is_refused_before_admission_and_survives_restart() {
+    let mut cluster = ProcessCluster::start("client-range");
+    let group = 1;
+    for client in 0..64 {
+        let response = cluster.request_leader(&format!("OPEN {group} 1 {client} 1"));
+        assert!(
+            response.starts_with("OK SESSION "),
+            "in-range client {client} must open: {response}"
+        );
+    }
+    let leader = cluster.leader_for_group(group);
+    let before = cluster.request_on(leader, "STATUS");
+    let value_before = cluster.request_on(leader, &format!("VALUE {group} 1"));
+    assert_eq!(
+        cluster.request_on(leader, &format!("OPEN {group} 1 64 1")),
+        "ERR CLIENT_OUT_OF_RANGE"
+    );
+    let after = cluster.request_on(leader, "STATUS");
+    let value_after = cluster.request_on(leader, &format!("VALUE {group} 1"));
+    assert_eq!(
+        number_field(&after, "client_admitted"),
+        number_field(&before, "client_admitted"),
+        "the 65th client cannot enter managed admission"
+    );
+    assert_eq!(
+        number_field(&value_after, "applied"),
+        number_field(&value_before, "applied"),
+        "the 65th client cannot enter the Raft log"
+    );
+
+    cluster.kill(leader);
+    cluster.restart(leader);
+    cluster.wait_ready();
+    let status = cluster.request_on(leader, "STATUS");
+    assert_eq!(number_field(&status, "poisoned"), 0, "{status}");
+}
+
+#[test]
+#[ignore = "linearized policy gate under saturated managed queues"]
+fn linearized_policy_refusals_outrank_saturated_queues() {
+    let mut cluster = ProcessCluster::start("policy-before-queues");
+    let group = 1;
+    assert!(cluster
+        .request_leader(&format!("OPEN {group} 1 1 2"))
+        .starts_with("OK SESSION "));
+    assert_eq!(
+        cluster.request_leader(&format!("ADD {group} 1 1 2 1 1")),
+        "OK ADDED value=1"
+    );
+    assert_eq!(
+        cluster.request_leader(&format!("ADD {group} 1 1 2 2 1")),
+        "OK ADDED value=2"
+    );
+    let host = cluster.leader_for_group(group);
+    let _blockers = occupy_all_workers(&mut cluster, host, group);
+    fill_global_queue(&mut cluster, host);
+    let before = cluster.request_on(host, "STATUS");
+    assert_eq!(number_field(&before, "queued"), 1024, "{before}");
+
+    let cases = [
+        (format!("OPEN {group} 1 64 1"), "ERR CLIENT_OUT_OF_RANGE"),
+        (format!("ADD {group} 1 64 1 1 1"), "ERR CLIENT_OUT_OF_RANGE"),
+        (format!("READ {group} 1 64 1 1"), "ERR CLIENT_OUT_OF_RANGE"),
+        (format!("OPEN {group} 1 1 1"), "ERR STALE_SESSION current=2"),
+        (format!("ADD {group} 1 2 1 1 1"), "ERR SESSION_NOT_OPEN"),
+        (
+            format!("ADD {group} 1 1 1 3 1"),
+            "ERR STALE_SESSION current=2",
+        ),
+        (
+            format!("ADD {group} 1 1 3 3 1"),
+            "ERR FUTURE_SESSION current=2",
+        ),
+        (
+            format!("ADD {group} 1 1 2 1 1"),
+            "ERR STALE_SEQUENCE highest=2",
+        ),
+        (
+            format!("ADD {group} 1 1 2 4 1"),
+            "ERR SEQUENCE_GAP expected=3",
+        ),
+        (format!("ADD {group} 1 1 2 2 2"), "ERR CONFLICTING_RETRY"),
+        (format!("ADD {group} 1 1 2 2 1"), "OK REPLAY ADDED value=2"),
+    ];
+    for (request, expected) in cases {
+        assert_eq!(cluster.request_on(host, &request), expected, "{request}");
+    }
+    let after = cluster.request_on(host, "STATUS");
+    assert_eq!(
+        number_field(&after, "admitted"),
+        number_field(&before, "admitted"),
+        "policy decisions and exact replay consume no scheduler identity"
+    );
+    assert_eq!(
+        number_field(&after, "client_admitted"),
+        number_field(&before, "client_admitted"),
+        "policy decisions and exact replay admit no client proposal"
+    );
+}
+
+#[test]
+#[ignore = "stale replica replay requires quorum-confirmed authority"]
+fn stale_replica_never_replays_from_its_local_cache() {
+    let mut cluster = ProcessCluster::start("stale-replay");
+    let group = 1;
+    assert!(cluster
+        .request_leader(&format!("OPEN {group} 1 7 1"))
+        .starts_with("OK SESSION "));
+    assert_eq!(
+        cluster.request_leader(&format!("ADD {group} 1 7 1 1 1")),
+        "OK ADDED value=1"
+    );
+    for node in NODE_IDS {
+        cluster.wait_value(node, group, 1, 1);
+    }
+
+    let stale = cluster.leader_for_group(group);
+    assert_eq!(cluster.request_on(stale, "PAUSE_PEERS"), "OK PEERS paused");
+    let leader = cluster.leader_for_group_excluding(group, Some(stale));
+    cluster.wait_response(
+        leader,
+        &format!("ADD {group} 1 7 1 2 1"),
+        "OK ADDED value=2",
+    );
+    let stale_retry = cluster.request_on(stale, &format!("ADD {group} 1 7 1 1 1"));
+    assert!(
+        !stale_retry.starts_with("OK "),
+        "a stale local cache cannot authorize replay: {stale_retry}"
+    );
+
+    assert_eq!(
+        cluster.request_on(stale, "RESUME_PEERS"),
+        "OK PEERS resumed"
+    );
+    cluster.wait_value(stale, group, 1, 2);
+    let leader = cluster.leader_for_group(group);
+    cluster.wait_response(
+        leader,
+        &format!("ADD {group} 1 7 1 1 1"),
+        "ERR STALE_SEQUENCE highest=2",
+    );
+}
+
+#[test]
+#[ignore = "non-injected fatal apply errors publish durable quarantine"]
+fn non_synthetic_apply_failure_is_durably_quarantined() {
+    let mut cluster = ProcessCluster::start("capacity-fault-quarantine");
+    let host = cluster.leader();
+    let group = cluster.leader_group_on(host);
+    cluster.arm_failpoint(host, "after_poison_publication_before_driver_error");
+    let address = cluster.node_addr(host);
+    let fault = thread::spawn(move || {
+        let mut connection =
+            LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
+        connection.request(&format!("FAULT_CAPACITY {group} 1"))
+    });
+    cluster.wait_for_failpoint_exit(host, "after_poison_publication_before_driver_error");
+    assert!(
+        fault.join().expect("fault thread does not panic").is_err(),
+        "the durable generic-poison boundary severs the fault request"
+    );
+
+    cluster.restart(host);
+    cluster.wait_ready();
+    let status = cluster.request_on(host, "STATUS");
+    assert_eq!(number_field(&status, "poisoned"), 1, "{status}");
+    assert_eq!(
+        cluster.request_on(host, &format!("VALUE {group} 1")),
+        "ERR GROUP_POISONED"
+    );
+    let healthy = (1..=GROUP_COUNT)
+        .find(|candidate| *candidate != group)
+        .expect("another group exists");
+    cluster.wait_value(host, healthy, 1, 0);
+    assert_eq!(
+        cluster.request_on(host, &format!("DRAIN {group} 1")),
+        format!("OK DRAIN group={group}")
+    );
+    cluster.wait_response(
+        host,
+        &format!("REMOVE {group} 1"),
+        &format!("OK REMOVE group={group}"),
+    );
+}
+
+#[test]
 #[ignore = "accepted session-open recovery across a draining crash"]
 fn session_open_drain_restart_has_a_durable_terminal_outcome() {
     let mut cluster = ProcessCluster::start("session-open-drain");
     let host = cluster.leader();
     let group = cluster.leader_group_on(host);
     let _blockers = occupy_all_workers(&mut cluster, host, group);
-    let baseline = number_field(&cluster.request_on(host, "STATUS"), "admitted");
+    let baseline = number_field(&cluster.request_on(host, "STATUS"), "client_admitted");
     let request = format!("OPEN {group} 1 62 1");
     let address = cluster.node_addr(host);
     let open_request = request.clone();
@@ -544,7 +753,7 @@ fn session_open_drain_restart_has_a_durable_terminal_outcome() {
             LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
         connection.request(&open_request)
     });
-    cluster.wait_status_above(host, "admitted", baseline);
+    cluster.wait_status_above(host, "client_admitted", baseline);
     cluster.arm_failpoint(host, "after_draining_application_publication");
     cluster.trigger_failpoint(
         host,
@@ -578,7 +787,7 @@ fn pre_drain_poison_restart_quarantines_only_the_failed_group() {
     let mut cluster = ProcessCluster::start("pre-drain-poison");
     let host = cluster.leader();
     let group = cluster.leader_group_on(host);
-    for client in [63, 64] {
+    for client in [62, 63] {
         assert!(
             cluster
                 .request_on(host, &format!("OPEN {group} 1 {client} 1"))
@@ -599,7 +808,7 @@ fn pre_drain_poison_restart_quarantines_only_the_failed_group() {
         connection.request(&format!("FAULT {group} 1"))
     });
     cluster.wait_status_at_least(host, "workers", 1);
-    let requests = [63, 64]
+    let requests = [62, 63]
         .into_iter()
         .map(|client| format!("ADD {group} 1 {client} 1 1 1"))
         .collect::<Vec<_>>();
@@ -637,7 +846,6 @@ fn pre_drain_poison_restart_quarantines_only_the_failed_group() {
     }
 
     cluster.restart(host);
-    cluster.wait_ready();
     let status = cluster.request_on(host, "STATUS");
     assert_eq!(number_field(&status, "poisoned"), 1, "{status}");
     assert_eq!(
@@ -710,7 +918,7 @@ fn poisoned_queue_crashes_preserve_typed_terminal_failures() {
         let mut cluster = ProcessCluster::start(&format!("poison-retirement-{failpoint}"));
         let host = cluster.leader();
         let group = cluster.leader_group_on(host);
-        for client in 101..=112 {
+        for client in 40..=51 {
             assert!(
                 cluster
                     .request_on(host, &format!("OPEN {group} 1 {client} 1"))
@@ -748,7 +956,7 @@ fn poisoned_queue_crashes_preserve_typed_terminal_failures() {
         });
         cluster.wait_status_at_least(host, "admitted", baseline + 1);
 
-        let requests = (101..=112)
+        let requests = (40..=51)
             .map(|client| format!("ADD {group} 1 {client} 1 1 1"))
             .collect::<Vec<_>>();
         let clients = requests

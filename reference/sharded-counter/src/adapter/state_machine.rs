@@ -36,6 +36,11 @@ pub enum ReplicatedCounterCommand {
     /// This variant lets the real adapter prove the corresponding Raft-group
     /// poison and isolation path without adding a Rafter test hook.
     Faulty,
+    /// Models the ordinary session-capacity invariant error for quarantine tests.
+    ///
+    /// Unlike [`Self::Faulty`], this returns the invariant error variant that a
+    /// corrupt old snapshot or incompatible historical writer could expose.
+    CapacityFault,
 }
 
 /// Replicated session outcome.
@@ -52,6 +57,8 @@ pub enum SessionApplyResult {
 /// Refusal reached after a command was already replicated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CounterApplyRejection {
+    /// The command names a client slot outside the configured range.
+    ClientOutOfRange,
     /// The request did not name an open client slot.
     SessionNotOpen,
     /// The request named an older session generation.
@@ -76,6 +83,19 @@ pub enum CounterApplyResult {
     /// A counter request completed or replayed.
     Counter(CounterResult),
     /// A replicated request was refused without changing counter state.
+    Rejected(CounterApplyRejection),
+}
+
+/// Authoritative decision made from one quorum-confirmed application view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CounterAdmissionDecision {
+    /// The operation is new and may proceed to durable reservation.
+    Proceed,
+    /// The exact session epoch is already open.
+    SessionAlreadyOpen,
+    /// The exact counter request already completed.
+    CounterReplay(CounterResult),
+    /// The operation is deterministically refused without admission.
     Rejected(CounterApplyRejection),
 }
 
@@ -199,6 +219,116 @@ impl CounterStateMachine {
         }
     }
 
+    /// Decides one client operation from the current replicated session state.
+    ///
+    /// The caller must establish whatever freshness guarantee its API needs.
+    /// The process fixture invokes this only after a granted linearizable read
+    /// barrier; deterministic adapters call it from their already-ordered
+    /// state transition.
+    #[must_use]
+    pub fn admission_decision(
+        &self,
+        command: ReplicatedCounterCommand,
+    ) -> CounterAdmissionDecision {
+        match command {
+            ReplicatedCounterCommand::OpenSession { client_id, epoch } => {
+                if !self.client_in_range(client_id) {
+                    return CounterAdmissionDecision::Rejected(
+                        CounterApplyRejection::ClientOutOfRange,
+                    );
+                }
+                let Some(session) = self.sessions.get(&client_id) else {
+                    return CounterAdmissionDecision::Proceed;
+                };
+                match epoch.cmp(&session.epoch) {
+                    std::cmp::Ordering::Less => {
+                        CounterAdmissionDecision::Rejected(CounterApplyRejection::StaleSession {
+                            current: session.epoch,
+                        })
+                    }
+                    std::cmp::Ordering::Equal => CounterAdmissionDecision::SessionAlreadyOpen,
+                    std::cmp::Ordering::Greater => CounterAdmissionDecision::Proceed,
+                }
+            }
+            ReplicatedCounterCommand::Counter { request, command } => {
+                if !self.client_in_range(request.client_id) {
+                    return CounterAdmissionDecision::Rejected(
+                        CounterApplyRejection::ClientOutOfRange,
+                    );
+                }
+                let Some(session) = self.sessions.get(&request.client_id) else {
+                    return CounterAdmissionDecision::Rejected(
+                        CounterApplyRejection::SessionNotOpen,
+                    );
+                };
+                if request.session_epoch < session.epoch {
+                    return CounterAdmissionDecision::Rejected(
+                        CounterApplyRejection::StaleSession {
+                            current: session.epoch,
+                        },
+                    );
+                }
+                if request.session_epoch > session.epoch {
+                    return CounterAdmissionDecision::Rejected(
+                        CounterApplyRejection::FutureSession {
+                            current: session.epoch,
+                        },
+                    );
+                }
+                if request.fingerprint != RequestFingerprint::of(&command) {
+                    return CounterAdmissionDecision::Rejected(
+                        CounterApplyRejection::FingerprintMismatch,
+                    );
+                }
+                if let Some(completed) = session.completed {
+                    if request.sequence < completed.sequence {
+                        return CounterAdmissionDecision::Rejected(
+                            CounterApplyRejection::StaleSequence {
+                                highest: completed.sequence,
+                            },
+                        );
+                    }
+                    if request.sequence == completed.sequence {
+                        return if command == completed.command {
+                            CounterAdmissionDecision::CounterReplay(completed.result)
+                        } else {
+                            CounterAdmissionDecision::Rejected(
+                                CounterApplyRejection::ConflictingRetry,
+                            )
+                        };
+                    }
+                }
+                let expected = match session.completed {
+                    Some(completed) => {
+                        let Some(expected) = completed.sequence.successor() else {
+                            return CounterAdmissionDecision::Rejected(
+                                CounterApplyRejection::StaleSequence {
+                                    highest: completed.sequence,
+                                },
+                            );
+                        };
+                        expected
+                    }
+                    None => Sequence::first(),
+                };
+                if request.sequence == expected {
+                    CounterAdmissionDecision::Proceed
+                } else {
+                    CounterAdmissionDecision::Rejected(CounterApplyRejection::SequenceGap {
+                        expected,
+                    })
+                }
+            }
+            ReplicatedCounterCommand::Faulty | ReplicatedCounterCommand::CapacityFault => {
+                CounterAdmissionDecision::Proceed
+            }
+        }
+    }
+
+    fn client_in_range(&self, client_id: ClientId) -> bool {
+        usize::try_from(client_id.get()).is_ok_and(|id| id < self.max_sessions)
+    }
+
     /// Registers bytes already promoted by the caller's Rafter snapshot store.
     ///
     /// A Raft-driven install carries only a descriptor into the application
@@ -225,32 +355,35 @@ impl CounterStateMachine {
         client_id: ClientId,
         epoch: SessionEpoch,
     ) -> Result<CounterApplyResult, CounterStateMachineError> {
-        let Some(session) = self.sessions.get_mut(&client_id) else {
-            if self.sessions.len() >= self.max_sessions {
-                return Err(CounterStateMachineError::SessionCapacity);
+        match self.admission_decision(ReplicatedCounterCommand::OpenSession { client_id, epoch }) {
+            CounterAdmissionDecision::Rejected(rejection) => {
+                Ok(CounterApplyResult::Rejected(rejection))
             }
-            self.sessions.insert(
-                client_id,
-                Session {
-                    epoch,
-                    completed: None,
-                },
-            );
-            return Ok(CounterApplyResult::Session(SessionApplyResult::Opened));
-        };
-        if epoch < session.epoch {
-            return Ok(CounterApplyResult::Rejected(
-                CounterApplyRejection::StaleSession {
-                    current: session.epoch,
-                },
-            ));
+            CounterAdmissionDecision::SessionAlreadyOpen => {
+                Ok(CounterApplyResult::Session(SessionApplyResult::AlreadyOpen))
+            }
+            CounterAdmissionDecision::Proceed => {
+                let Some(session) = self.sessions.get_mut(&client_id) else {
+                    if self.sessions.len() >= self.max_sessions {
+                        return Err(CounterStateMachineError::SessionCapacity);
+                    }
+                    self.sessions.insert(
+                        client_id,
+                        Session {
+                            epoch,
+                            completed: None,
+                        },
+                    );
+                    return Ok(CounterApplyResult::Session(SessionApplyResult::Opened));
+                };
+                session.epoch = epoch;
+                session.completed = None;
+                Ok(CounterApplyResult::Session(SessionApplyResult::Replaced))
+            }
+            CounterAdmissionDecision::CounterReplay(_) => {
+                unreachable!("a session preflight cannot replay a counter")
+            }
         }
-        if epoch == session.epoch {
-            return Ok(CounterApplyResult::Session(SessionApplyResult::AlreadyOpen));
-        }
-        session.epoch = epoch;
-        session.completed = None;
-        Ok(CounterApplyResult::Session(SessionApplyResult::Replaced))
     }
 
     fn apply_counter(
@@ -258,51 +391,23 @@ impl CounterStateMachine {
         request: RequestIdentity,
         command: CounterCommand,
     ) -> CounterApplyResult {
-        let Some(session) = self.sessions.get_mut(&request.client_id) else {
-            return CounterApplyResult::Rejected(CounterApplyRejection::SessionNotOpen);
-        };
-        if request.session_epoch < session.epoch {
-            return CounterApplyResult::Rejected(CounterApplyRejection::StaleSession {
-                current: session.epoch,
-            });
-        }
-        if request.session_epoch > session.epoch {
-            return CounterApplyResult::Rejected(CounterApplyRejection::FutureSession {
-                current: session.epoch,
-            });
-        }
-        if request.fingerprint != RequestFingerprint::of(&command) {
-            return CounterApplyResult::Rejected(CounterApplyRejection::FingerprintMismatch);
-        }
-        if let Some(completed) = session.completed {
-            if request.sequence < completed.sequence {
-                return CounterApplyResult::Rejected(CounterApplyRejection::StaleSequence {
-                    highest: completed.sequence,
-                });
+        match self.admission_decision(ReplicatedCounterCommand::Counter { request, command }) {
+            CounterAdmissionDecision::Rejected(rejection) => {
+                return CounterApplyResult::Rejected(rejection);
             }
-            if request.sequence == completed.sequence {
-                return if command == completed.command {
-                    CounterApplyResult::Counter(completed.result)
-                } else {
-                    CounterApplyResult::Rejected(CounterApplyRejection::ConflictingRetry)
-                };
+            CounterAdmissionDecision::CounterReplay(result) => {
+                return CounterApplyResult::Counter(result);
             }
-            let Some(expected) = completed.sequence.successor() else {
-                return CounterApplyResult::Rejected(CounterApplyRejection::StaleSequence {
-                    highest: completed.sequence,
-                });
-            };
-            if request.sequence != expected {
-                return CounterApplyResult::Rejected(CounterApplyRejection::SequenceGap {
-                    expected,
-                });
+            CounterAdmissionDecision::Proceed => {}
+            CounterAdmissionDecision::SessionAlreadyOpen => {
+                unreachable!("a counter preflight cannot replay a session")
             }
-        } else if request.sequence != Sequence::first() {
-            return CounterApplyResult::Rejected(CounterApplyRejection::SequenceGap {
-                expected: Sequence::first(),
-            });
         }
 
+        let session = self
+            .sessions
+            .get_mut(&request.client_id)
+            .expect("preflight proved that the session is open");
         let result = match command {
             CounterCommand::Add { delta } => match self.value.checked_add(delta.get()) {
                 Some(value) => {
@@ -360,6 +465,9 @@ impl ReplicatedStateMachine for CounterStateMachine {
                 }
                 ReplicatedCounterCommand::Faulty => {
                     return Err(CounterStateMachineError::InjectedFault);
+                }
+                ReplicatedCounterCommand::CapacityFault => {
+                    return Err(CounterStateMachineError::SessionCapacity);
                 }
             };
             self.applied_index = entry.index;
