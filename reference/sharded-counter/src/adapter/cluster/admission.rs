@@ -275,7 +275,12 @@ impl ManagedCounterCluster {
         class: SystemClass,
     ) -> Result<rafter_multiraft::managed::AdmissionReceipt, Box<CounterAdmissionRejected>> {
         let input = GroupInput::Tick;
-        self.gate_work(group_id, incarnation, class.class())
+        let policy = if class == SystemClass::Control {
+            self.gate_protocol_continuation(group_id, incarnation)
+        } else {
+            self.gate_work(group_id, incarnation, class.class())
+        };
+        policy
             .map_err(|reason| refusal(CounterAdmissionRejection::Policy(reason), input.clone()))?;
         self.host
             .admit(&group_id, managed_class(class), input)

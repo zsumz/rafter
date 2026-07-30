@@ -10,7 +10,7 @@ mod host_registry;
 mod peer_link;
 mod protocol;
 
-use std::{env, num::NonZeroUsize, path::PathBuf, process::ExitCode, time::Duration};
+use std::{env, fs, num::NonZeroUsize, path::PathBuf, process::ExitCode, time::Duration};
 
 use rafter::NodeId;
 use rafter_reference_sharded_counter::WorkQuota;
@@ -112,4 +112,15 @@ fn nonzero_duration(value: &str, label: &str) -> Result<Duration, String> {
 
 pub fn emit(line: &str) {
     println!("{line}");
+}
+
+pub fn directed_failpoint(name: &str) {
+    let environment_match = env::var("RAFTER_COUNTER_FAILPOINT").as_deref() == Ok(name);
+    let file_match = env::var_os("RAFTER_COUNTER_FAILPOINT_FILE")
+        .and_then(|path| fs::read_to_string(path).ok())
+        .is_some_and(|armed| armed.trim() == name);
+    if environment_match || file_match {
+        emit(&format!("FAILPOINT {name}"));
+        std::process::abort();
+    }
 }

@@ -16,6 +16,32 @@ use process_counter::{
     ProcessHistory, CONNECTION_TIMEOUTS, GROUP_COUNT, NODE_IDS,
 };
 
+fn occupy_all_workers(cluster: &mut ProcessCluster, host: u64, excluded_group: u32) -> Vec<u32> {
+    let blockers = (1..=GROUP_COUNT)
+        .filter(|candidate| *candidate != excluded_group)
+        .take(4)
+        .collect::<Vec<_>>();
+    for blocker in &blockers {
+        assert_eq!(
+            cluster.request_on(host, &format!("SLOW {blocker} 5000")),
+            format!("OK SLOW group={blocker} milliseconds=5000")
+        );
+        assert_eq!(
+            cluster.request_on(host, &format!("PRESSURE {blocker} 1 bulk 1")),
+            "OK PRESSURE accepted=1 refused=0"
+        );
+    }
+    cluster.wait_status_at_least(host, "workers", 4);
+    blockers
+}
+
+fn fill_group_queue(cluster: &mut ProcessCluster, host: u64, group: u32) {
+    assert_eq!(
+        cluster.request_on(host, &format!("PRESSURE {group} 1 bulk 64")),
+        "OK PRESSURE accepted=64 refused=0"
+    );
+}
+
 #[test]
 #[ignore = "real three-host process topology"]
 fn many_groups_preserve_fairness_isolation_and_control_progress() {
@@ -418,6 +444,234 @@ fn draining_publication_crashes_preserve_durable_outstanding_work() {
             &format!("OK REMOVE group={group}"),
         );
     }
+}
+
+#[test]
+#[ignore = "directed crashes around durable backpressure cancellation"]
+fn backpressure_is_reported_only_after_durable_cancellation() {
+    const REQUEST: &str = "ADD {group} 1 51 1 1 5";
+    for failpoint in [
+        "after_managed_refusal_before_durable_cancellation",
+        "after_durable_cancellation_before_backpressure_response",
+    ] {
+        let mut cluster = ProcessCluster::start(&format!("backpressure-{failpoint}"));
+        let host = cluster.leader();
+        let group = cluster.leader_group_on(host);
+        assert!(
+            cluster
+                .request_on(host, &format!("OPEN {group} 1 51 1"))
+                .starts_with("OK SESSION "),
+            "the selected host must lead the selected group"
+        );
+        let _blockers = occupy_all_workers(&mut cluster, host, group);
+        fill_group_queue(&mut cluster, host, group);
+        cluster.arm_failpoint(host, failpoint);
+        let request = REQUEST.replace("{group}", &group.to_string());
+        let address = cluster.node_addr(host);
+        let client = thread::spawn(move || {
+            let mut connection = LineConnection::connect(address, CONNECTION_TIMEOUTS)
+                .expect("leader connection opens");
+            connection.request(&request)
+        });
+        cluster.wait_for_failpoint_exit(host, failpoint);
+        assert!(
+            client
+                .join()
+                .expect("request thread does not panic")
+                .is_err(),
+            "neither crash boundary may expose a backpressure response"
+        );
+
+        cluster.restart(host);
+        cluster.wait_ready();
+        if failpoint == "after_managed_refusal_before_durable_cancellation" {
+            let retry = cluster.request_leader(&REQUEST.replace("{group}", &group.to_string()));
+            assert!(
+                retry == "OK ADDED value=5" || retry == "OK REPLAY ADDED value=5",
+                "{retry}"
+            );
+            cluster.wait_value(host, group, 1, 5);
+        } else {
+            cluster.wait_value(host, group, 1, 0);
+            assert_eq!(
+                cluster.request_on(host, &format!("DRAIN {group} 1")),
+                format!("OK DRAIN group={group}")
+            );
+            cluster.wait_response(
+                host,
+                &format!("REMOVE {group} 1"),
+                &format!("OK REMOVE group={group}"),
+            );
+        }
+    }
+
+    let mut cluster = ProcessCluster::start("backpressure-observed");
+    let host = cluster.leader();
+    let group = cluster.leader_group_on(host);
+    assert!(
+        cluster
+            .request_on(host, &format!("OPEN {group} 1 51 1"))
+            .starts_with("OK SESSION "),
+        "the selected host must lead the selected group"
+    );
+    let _blockers = occupy_all_workers(&mut cluster, host, group);
+    fill_group_queue(&mut cluster, host, group);
+    let request = REQUEST.replace("{group}", &group.to_string());
+    let response = cluster.request_on(host, &request);
+    assert!(
+        response.starts_with("ERR BACKPRESSURE GroupQueueFull"),
+        "{response}"
+    );
+    cluster.kill(host);
+    cluster.restart(host);
+    cluster.wait_ready();
+    cluster.wait_value(host, group, 1, 0);
+}
+
+#[test]
+#[ignore = "accepted session-open recovery across a draining crash"]
+fn session_open_drain_restart_has_a_durable_terminal_outcome() {
+    let mut cluster = ProcessCluster::start("session-open-drain");
+    let host = cluster.leader();
+    let group = cluster.leader_group_on(host);
+    let _blockers = occupy_all_workers(&mut cluster, host, group);
+    let baseline = number_field(&cluster.request_on(host, "STATUS"), "admitted");
+    let request = format!("OPEN {group} 1 62 1");
+    let address = cluster.node_addr(host);
+    let open_request = request.clone();
+    let client = thread::spawn(move || {
+        let mut connection =
+            LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
+        connection.request(&open_request)
+    });
+    cluster.wait_status_above(host, "admitted", baseline);
+    cluster.arm_failpoint(host, "after_draining_application_publication");
+    cluster.trigger_failpoint(
+        host,
+        &format!("DRAIN {group} 1"),
+        "after_draining_application_publication",
+    );
+    assert!(
+        client
+            .join()
+            .expect("request thread does not panic")
+            .is_err(),
+        "the draining crash must sever the accepted session request"
+    );
+
+    cluster.restart(host);
+    cluster.wait_ready();
+    assert_eq!(
+        cluster.request_on(host, &request),
+        "ERR NOT_COMMITTED PROCESS_RESTARTED"
+    );
+    cluster.wait_response(
+        host,
+        &format!("REMOVE {group} 1"),
+        &format!("OK REMOVE group={group}"),
+    );
+}
+
+#[test]
+#[ignore = "durable poison quarantine before an explicit drain"]
+fn pre_drain_poison_restart_quarantines_only_the_failed_group() {
+    let mut cluster = ProcessCluster::start("pre-drain-poison");
+    let host = cluster.leader();
+    let group = cluster.leader_group_on(host);
+    for client in [63, 64] {
+        assert!(
+            cluster
+                .request_on(host, &format!("OPEN {group} 1 {client} 1"))
+                .starts_with("OK SESSION "),
+            "the selected host must lead the selected group"
+        );
+    }
+    assert_eq!(
+        cluster.request_on(host, &format!("SLOW {group} 250")),
+        format!("OK SLOW group={group} milliseconds=250")
+    );
+    cluster.arm_failpoint(host, "after_poison_publication_before_driver_error");
+    let baseline = number_field(&cluster.request_on(host, "STATUS"), "admitted");
+    let address = cluster.node_addr(host);
+    let fault = thread::spawn(move || {
+        let mut connection =
+            LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
+        connection.request(&format!("FAULT {group} 1"))
+    });
+    cluster.wait_status_at_least(host, "workers", 1);
+    let requests = [63, 64]
+        .into_iter()
+        .map(|client| format!("ADD {group} 1 {client} 1 1 1"))
+        .collect::<Vec<_>>();
+    let clients = requests
+        .iter()
+        .cloned()
+        .map(|request| {
+            let address = cluster.node_addr(host);
+            thread::spawn(move || {
+                let mut connection = LineConnection::connect(address, CONNECTION_TIMEOUTS)
+                    .expect("leader connection opens");
+                connection.request(&request)
+            })
+        })
+        .collect::<Vec<_>>();
+    cluster.wait_status_at_least(host, "admitted", baseline + 3);
+    cluster.wait_status_at_least(host, "queued", 2);
+    assert_eq!(
+        cluster.request_on(host, &format!("SLOW {group} 0")),
+        format!("OK SLOW group={group} milliseconds=0")
+    );
+    cluster.wait_for_failpoint_exit(host, "after_poison_publication_before_driver_error");
+    assert!(
+        fault.join().expect("fault thread does not panic").is_err(),
+        "the durable poison boundary severs the fault request"
+    );
+    for client in clients {
+        assert!(
+            client
+                .join()
+                .expect("counter request thread does not panic")
+                .is_err(),
+            "the durable poison boundary severs accepted work"
+        );
+    }
+
+    cluster.restart(host);
+    cluster.wait_ready();
+    let status = cluster.request_on(host, "STATUS");
+    assert_eq!(number_field(&status, "poisoned"), 1, "{status}");
+    assert_eq!(
+        cluster.request_on(host, &format!("VALUE {group} 1")),
+        "ERR GROUP_POISONED",
+        "durable poison must not silently become a drain transition"
+    );
+    let healthy = (1..=GROUP_COUNT)
+        .find(|candidate| *candidate != group)
+        .expect("another group exists");
+    cluster.wait_value(host, healthy, 1, 0);
+    for request in &requests {
+        let outcome = cluster.wait_response_one_of(
+            host,
+            request,
+            &[
+                "ERR NOT_COMMITTED GROUP_POISONED",
+                "ERR UNKNOWN GROUP_POISONED",
+            ],
+        );
+        assert!(
+            outcome.contains("GROUP_POISONED"),
+            "accepted work receives a durable typed poison outcome"
+        );
+    }
+    assert_eq!(
+        cluster.request_on(host, &format!("DRAIN {group} 1")),
+        format!("OK DRAIN group={group}")
+    );
+    cluster.wait_response(
+        host,
+        &format!("REMOVE {group} 1"),
+        &format!("OK REMOVE group={group}"),
+    );
 }
 
 fn wait_for_poison_outcomes(

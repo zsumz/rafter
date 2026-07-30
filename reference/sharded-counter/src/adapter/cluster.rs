@@ -617,4 +617,35 @@ impl ManagedCounterCluster {
         }
         Ok(())
     }
+
+    fn accepted_work_remains(&self, group_id: GroupId) -> bool {
+        self.pending
+            .values()
+            .any(|pending| pending.group_id() == group_id)
+    }
+
+    fn gate_protocol_continuation(
+        &self,
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+    ) -> Result<(), PolicyRejection> {
+        self.admit_group(group_id, incarnation, crate::WorkClass::Control)?;
+        let slot = self
+            .groups
+            .get(&group_id)
+            .ok_or(PolicyRejection::GroupUnknown)?;
+        if !slot
+            .lifecycle
+            .permits_protocol_continuation(self.accepted_work_remains(group_id))
+        {
+            return Err(PolicyRejection::GroupNotAcceptingWork {
+                state: slot.lifecycle,
+                class: crate::WorkClass::Control,
+            });
+        }
+        if self.poisoned.contains(&group_id) {
+            return Err(PolicyRejection::GroupPoisoned);
+        }
+        Ok(())
+    }
 }

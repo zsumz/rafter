@@ -7,6 +7,7 @@ use rafter_reference_sharded_counter::{GroupId, GroupIncarnation, GroupLifecycle
 use super::Engine;
 use crate::{
     app_store::{ApplicationRecord, StoredPolicy},
+    directed_failpoint,
     host_registry::{
         sync_directory, ActivationIntent, BootstrapIntent, HostRegistry, RetirementIntent,
         SlotRecord,
@@ -480,15 +481,4 @@ pub(super) fn activate_staged_raft(
 
 fn staged_raft_path(directory: &Path, incarnation: GroupIncarnation) -> std::path::PathBuf {
     directory.join(format!("raft.activating-{}", incarnation.get()))
-}
-
-pub(super) fn directed_failpoint(name: &str) {
-    let environment_match = std::env::var("RAFTER_COUNTER_FAILPOINT").as_deref() == Ok(name);
-    let file_match = std::env::var_os("RAFTER_COUNTER_FAILPOINT_FILE")
-        .and_then(|path| fs::read_to_string(path).ok())
-        .is_some_and(|armed| armed.trim() == name);
-    if environment_match || file_match {
-        crate::emit(&format!("FAILPOINT {name}"));
-        std::process::abort();
-    }
 }

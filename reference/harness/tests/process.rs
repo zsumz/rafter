@@ -1,6 +1,6 @@
 use std::{
     io::{BufRead, BufReader},
-    net::TcpListener,
+    net::{SocketAddr, TcpListener},
     process::{Command, Stdio},
     thread,
     time::Duration,
@@ -149,10 +149,9 @@ fn a_post_send_disconnect_is_unknown_and_never_replayed() {
 
 #[test]
 fn an_initial_connection_failure_is_not_a_retry() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("listener binds");
-    let addr = listener.local_addr().expect("listener has an address");
-    drop(listener);
-
+    // Port zero cannot name a listening TCP service. Using it directly avoids
+    // racing another parallel test that reclaims a just-released ephemeral port.
+    let addr = SocketAddr::from(([127, 0, 0, 1], 0));
     let mut client = ReconnectingClient::new(addr, CONNECTION_TIMEOUTS);
     assert!(matches!(
         client.request("unused"),

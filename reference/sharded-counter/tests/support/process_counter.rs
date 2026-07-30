@@ -415,6 +415,16 @@ impl ProcessCluster {
         self.clear_armed_failpoint(node_id);
     }
 
+    pub fn wait_for_failpoint_exit(&mut self, node_id: u64, failpoint: &str) {
+        let node = self
+            .nodes
+            .get_mut(&node_id)
+            .unwrap_or_else(|| panic!("node {node_id} is not live"));
+        node.wait_for_failpoint_exit(failpoint);
+        self.nodes.remove(&node_id);
+        self.clear_armed_failpoint(node_id);
+    }
+
     pub fn arm_failpoint(&self, node_id: u64, failpoint: &str) {
         let path = self
             .scratch

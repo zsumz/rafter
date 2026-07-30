@@ -222,15 +222,7 @@ impl ManagedCounterCluster {
                 .expect("remaining counts queued envelopes");
             let incarnation = routed.incarnation;
             let envelope = routed.envelope;
-            let policy = self
-                .admit_group(envelope.group_id, incarnation, crate::WorkClass::Control)
-                .and_then(|()| {
-                    if self.poisoned.contains(&envelope.group_id) {
-                        Err(crate::AdmissionRejection::GroupPoisoned)
-                    } else {
-                        Ok(())
-                    }
-                });
+            let policy = self.gate_protocol_continuation(envelope.group_id, incarnation);
             if let Err(reason) = policy {
                 report.refused_peer_traffic.push(PeerTrafficRefusal {
                     group_id: envelope.group_id,

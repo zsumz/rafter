@@ -27,25 +27,25 @@ use rafter_reference_sharded_counter::{
     adapter::{
         CounterApplyRejection, CounterApplyResult, ReplicatedCounterCommand, SessionApplyResult,
     },
-    ClientId, CounterCommand, CounterRejection, CounterResult, GroupId, GroupIncarnation,
-    GroupLifecycle, RequestFingerprint, RequestIdentity, WorkQuota,
+    ClientId, CounterRejection, CounterResult, GroupId, GroupIncarnation, GroupLifecycle,
+    RequestFingerprint, RequestIdentity, WorkQuota,
 };
 
 use self::{
     audit::Audit,
     durability::{
-        activate_staged_raft, archive_raft_with_failpoints, directed_failpoint,
-        prepare_staged_raft, slot_from_policy,
+        activate_staged_raft, archive_raft_with_failpoints, prepare_staged_raft, slot_from_policy,
     },
 };
 use super::{
-    app_store::{ApplicationRecord, ReserveOutcome, TerminalFailure},
+    app_store::{AcceptedOperation, ApplicationRecord, ReserveOutcome, TerminalFailure},
     group::{OpenedGroup, Report, SharedGroup},
     host_registry::{ActivationIntent, HostRegistry, RetirementIntent},
     peer_link::{PeerFrame, PeerLink},
     protocol::{self, ClientReply, Job, PressureClass, Request},
     Config,
 };
+use crate::directed_failpoint;
 
 const MAX_CLIENT_JOBS: usize = 1024;
 const MAX_JOBS_PER_LOOP: usize = 64;
@@ -76,10 +76,17 @@ enum WorkKind {
 #[derive(Debug)]
 struct PendingClient {
     group_id: GroupId,
-    request: Option<(RequestIdentity, CounterCommand)>,
+    operation: Option<AcceptedOperation>,
     replies: Vec<ClientReply>,
     deadline: Option<Instant>,
     recovered: bool,
+}
+
+#[derive(Debug)]
+struct ClientAdmissionRefusal {
+    reply: ClientReply,
+    response: String,
+    managed: bool,
 }
 
 #[derive(Debug)]
@@ -105,7 +112,7 @@ struct Engine {
     link: PeerLink,
     work: BTreeMap<WorkId, WorkKind>,
     pending: BTreeMap<LocalProposalId, PendingClient>,
-    pending_requests: BTreeMap<(GroupId, ClientId), LocalProposalId>,
+    pending_operations: BTreeMap<(GroupId, ClientId), LocalProposalId>,
     tick_pending: BTreeSet<GroupId>,
     poisoned: BTreeSet<GroupId>,
     slow: BTreeMap<GroupId, Duration>,
@@ -166,7 +173,7 @@ pub fn run(config: &Config) -> Result<(), String> {
         link,
         work: BTreeMap::new(),
         pending: BTreeMap::new(),
-        pending_requests: BTreeMap::new(),
+        pending_operations: BTreeMap::new(),
         tick_pending: BTreeSet::new(),
         poisoned: BTreeSet::new(),
         slow: BTreeMap::new(),
@@ -207,12 +214,6 @@ impl Engine {
             self.reconcile_registry(group_id, &policy)?;
             Self::validate_group_shape(&directory, group_id, policy.incarnation, policy.lifecycle)?;
             if policy.poisoned {
-                if policy.lifecycle != GroupLifecycle::Draining {
-                    return Err(format!(
-                        "group {raw} durable poison marker conflicts with {:?}",
-                        policy.lifecycle
-                    ));
-                }
                 record
                     .fail_poisoned_outstanding()
                     .map_err(|error| error.to_string())?;
@@ -368,44 +369,7 @@ impl Engine {
                 client_id,
                 epoch,
             } => {
-                let driver = match self.serving_driver(group_id, incarnation) {
-                    Ok(driver) => driver,
-                    Err(response) => {
-                        reply.send(response, false);
-                        return Ok(());
-                    }
-                };
-                if driver
-                    .view()
-                    .sessions
-                    .iter()
-                    .any(|session| session.client_id == client_id && session.epoch == epoch)
-                {
-                    reply.send("OK SESSION already_open".to_string(), false);
-                    return Ok(());
-                }
-                self.admit_client_proposal(
-                    group_id,
-                    WorkClass::Control,
-                    ReplicatedCounterCommand::OpenSession { client_id, epoch },
-                    None,
-                    reply,
-                );
-            }
-            Request::Counter {
-                group_id,
-                incarnation,
-                client_id,
-                epoch,
-                sequence,
-                command,
-            } => {
-                let request = RequestIdentity {
-                    client_id,
-                    session_epoch: epoch,
-                    sequence,
-                    fingerprint: RequestFingerprint::of(&command),
-                };
+                let operation = AcceptedOperation::OpenSession { client_id, epoch };
                 let Some(entry) = self.groups.get(&group_id) else {
                     reply.send("ERR GROUP_UNKNOWN".to_string(), false);
                     return Ok(());
@@ -428,32 +392,106 @@ impl Engine {
                     );
                     return Ok(());
                 }
-                if let Some(proposal_id) =
-                    self.pending_requests.get(&(group_id, client_id)).copied()
-                {
-                    let pending = self
-                        .pending
-                        .get_mut(&proposal_id)
-                        .expect("pending request index names a pending proposal");
-                    if pending.request == Some((request, command)) {
-                        pending.replies.push(reply);
-                        pending.deadline = Some(Instant::now() + self.request_timeout);
-                    } else {
-                        reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
+                let Some(reply) = self.attach_exact_pending(group_id, operation, reply) else {
+                    return Ok(());
+                };
+                let entry = self
+                    .groups
+                    .get(&group_id)
+                    .expect("the checked group remains installed");
+                match entry.record.replay_terminal_failure(operation) {
+                    Ok(Some(failure)) => {
+                        reply.send(render_terminal_failure(failure).to_string(), false);
+                        return Ok(());
                     }
+                    Ok(None) => {}
+                    Err(_) => {
+                        reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
+                        return Ok(());
+                    }
+                }
+                if entry
+                    .record
+                    .session_is_open(client_id, epoch)
+                    .map_err(|error| error.to_string())?
+                {
+                    reply.send("OK SESSION already_open".to_string(), false);
                     return Ok(());
                 }
-                match entry.record.replay_terminal_failure(request, command) {
-                    Ok(Some(TerminalFailure::GroupPoisoned)) => {
-                        reply.send("ERR NOT_COMMITTED GROUP_POISONED".to_string(), false);
+                if let Err(response) = self.serving_driver(group_id, incarnation) {
+                    reply.send(response, false);
+                    return Ok(());
+                }
+                let record = self
+                    .groups
+                    .get(&group_id)
+                    .expect("serving group has an entry")
+                    .record
+                    .clone();
+                let reservation = match record.reserve(operation) {
+                    Ok(reservation) => reservation,
+                    Err(error) => {
+                        reply.send(format!("ERR ADMISSION {error}"), false);
                         return Ok(());
                     }
-                    Ok(Some(TerminalFailure::GroupPoisonedUnknown)) => {
-                        reply.send("ERR UNKNOWN GROUP_POISONED".to_string(), false);
-                        return Ok(());
-                    }
-                    Ok(Some(TerminalFailure::ProcessRestarted)) => {
-                        reply.send("ERR NOT_COMMITTED PROCESS_RESTARTED".to_string(), false);
+                };
+                if let Err(refusal) = self.admit_client_proposal(
+                    group_id,
+                    WorkClass::Control,
+                    operation.replicated_command(),
+                    Some(operation),
+                    reply,
+                ) {
+                    Self::finish_reserved_admission(&record, operation, reservation, refusal)?;
+                }
+            }
+            Request::Counter {
+                group_id,
+                incarnation,
+                client_id,
+                epoch,
+                sequence,
+                command,
+            } => {
+                let request = RequestIdentity {
+                    client_id,
+                    session_epoch: epoch,
+                    sequence,
+                    fingerprint: RequestFingerprint::of(&command),
+                };
+                let operation = AcceptedOperation::Counter { request, command };
+                let Some(entry) = self.groups.get(&group_id) else {
+                    reply.send("ERR GROUP_UNKNOWN".to_string(), false);
+                    return Ok(());
+                };
+                let policy = entry.record.policy();
+                if incarnation < policy.incarnation {
+                    reply.send(
+                        format!("ERR STALE_INCARNATION current={}", policy.incarnation.get()),
+                        false,
+                    );
+                    return Ok(());
+                }
+                if incarnation > policy.incarnation {
+                    reply.send(
+                        format!(
+                            "ERR FUTURE_INCARNATION current={}",
+                            policy.incarnation.get()
+                        ),
+                        false,
+                    );
+                    return Ok(());
+                }
+                let Some(reply) = self.attach_exact_pending(group_id, operation, reply) else {
+                    return Ok(());
+                };
+                let entry = self
+                    .groups
+                    .get(&group_id)
+                    .expect("the checked group remains installed");
+                match entry.record.replay_terminal_failure(operation) {
+                    Ok(Some(failure)) => {
+                        reply.send(render_terminal_failure(failure).to_string(), false);
                         return Ok(());
                     }
                     Ok(None) => {}
@@ -463,9 +501,9 @@ impl Engine {
                     }
                 }
                 if let Some(result) = entry
-                    .driver
-                    .as_ref()
-                    .and_then(|driver| cached_result(driver, request, command))
+                    .record
+                    .cached_counter_result(request, command)
+                    .map_err(|error| error.to_string())?
                 {
                     reply.send(
                         format!("OK REPLAY {}", render_counter_result(result)),
@@ -483,24 +521,21 @@ impl Engine {
                     .expect("serving group has an entry")
                     .record
                     .clone();
-                let reservation = match record.reserve(request, command) {
+                let reservation = match record.reserve(operation) {
                     Ok(reservation) => reservation,
                     Err(error) => {
                         reply.send(format!("ERR ADMISSION {error}"), false);
                         return Ok(());
                     }
                 };
-                let admitted = self.admit_client_proposal(
+                if let Err(refusal) = self.admit_client_proposal(
                     group_id,
                     WorkClass::Command,
-                    ReplicatedCounterCommand::Counter { request, command },
-                    Some((request, command)),
+                    operation.replicated_command(),
+                    Some(operation),
                     reply,
-                );
-                if !admitted && reservation == ReserveOutcome::Reserved {
-                    record
-                        .cancel_reservation(request, command)
-                        .map_err(|error| error.to_string())?;
+                ) {
+                    Self::finish_reserved_admission(&record, operation, reservation, refusal)?;
                 }
             }
             Request::Value {
@@ -528,14 +563,14 @@ impl Engine {
             } => {
                 if let Err(response) = self.serving_driver(group_id, incarnation) {
                     reply.send(response, false);
-                } else {
-                    self.admit_client_proposal(
-                        group_id,
-                        WorkClass::Command,
-                        ReplicatedCounterCommand::Faulty,
-                        None,
-                        reply,
-                    );
+                } else if let Err(refusal) = self.admit_client_proposal(
+                    group_id,
+                    WorkClass::Command,
+                    ReplicatedCounterCommand::Faulty,
+                    None,
+                    reply,
+                ) {
+                    refusal.reply.send(refusal.response, false);
                 }
             }
             Request::Pressure {
@@ -647,6 +682,58 @@ impl Engine {
                 reply.send(format!("OK SHUTDOWN {}", self.node_id.0), true);
             }
         }
+        Ok(())
+    }
+
+    fn attach_exact_pending(
+        &mut self,
+        group_id: GroupId,
+        operation: AcceptedOperation,
+        reply: ClientReply,
+    ) -> Option<ClientReply> {
+        let Some(proposal_id) = self
+            .pending_operations
+            .get(&(group_id, operation.client_id()))
+            .copied()
+        else {
+            return Some(reply);
+        };
+        let pending = self
+            .pending
+            .get_mut(&proposal_id)
+            .expect("pending operation index names a pending proposal");
+        if pending.operation == Some(operation) {
+            pending.replies.push(reply);
+            pending.deadline = Some(Instant::now() + self.request_timeout);
+        } else {
+            reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
+        }
+        None
+    }
+
+    fn finish_reserved_admission(
+        record: &ApplicationRecord,
+        operation: AcceptedOperation,
+        reservation: ReserveOutcome,
+        refusal: ClientAdmissionRefusal,
+    ) -> Result<(), String> {
+        if reservation == ReserveOutcome::ExactRetry {
+            refusal.reply.send(
+                "ERR UNKNOWN accepted operation remains durable".to_string(),
+                false,
+            );
+            return Ok(());
+        }
+        if refusal.managed {
+            directed_failpoint("after_managed_refusal_before_durable_cancellation");
+        }
+        record
+            .cancel_reservation(operation)
+            .map_err(|error| error.to_string())?;
+        if refusal.managed {
+            directed_failpoint("after_durable_cancellation_before_backpressure_response");
+        }
+        refusal.reply.send(refusal.response, false);
         Ok(())
     }
 
@@ -789,12 +876,12 @@ impl Engine {
             let Some(pending) = self.pending.get(proposal_id) else {
                 continue;
             };
-            let Some((request, command)) = pending.request else {
+            let Some(operation) = pending.operation else {
                 continue;
             };
             self.groups[&pending.group_id]
                 .record
-                .mark_entered_driver(request, command)
+                .mark_entered_driver(operation)
                 .map_err(|error| error.to_string())?;
         }
         Ok(())
@@ -875,10 +962,10 @@ impl Engine {
             }
             return Ok(());
         }
-        if let Some((request, command)) = pending.request {
+        if let Some(operation) = pending.operation {
             self.groups[&pending.group_id]
                 .record
-                .cancel_reservation(request, command)
+                .cancel_reservation(operation)
                 .map_err(|error| error.to_string())?;
         }
         for reply in pending.replies {
@@ -900,10 +987,10 @@ impl Engine {
         let Some(pending) = self.take_pending(proposal_id) else {
             return Ok(());
         };
-        let disposition = if let Some((request, command)) = pending.request {
+        let disposition = if let Some(operation) = pending.operation {
             self.groups[&pending.group_id]
                 .record
-                .fail_reservation(request, command, TerminalFailure::GroupPoisonedUnknown)
+                .fail_reservation(operation, TerminalFailure::GroupPoisonedUnknown)
                 .map_err(|error| error.to_string())?;
             "UNKNOWN"
         } else {
@@ -924,10 +1011,10 @@ impl Engine {
         let Some(pending) = self.take_pending(proposal_id) else {
             return Ok(());
         };
-        if let Some((request, command)) = pending.request {
+        if let Some(operation) = pending.operation {
             self.groups[&pending.group_id]
                 .record
-                .fail_reservation(request, command, failure)
+                .fail_reservation(operation, failure)
                 .map_err(|error| error.to_string())?;
         }
         for reply in pending.replies {
@@ -938,9 +1025,9 @@ impl Engine {
 
     fn take_pending(&mut self, proposal_id: LocalProposalId) -> Option<PendingClient> {
         let pending = self.pending.remove(&proposal_id)?;
-        if let Some((request, _)) = pending.request {
-            self.pending_requests
-                .remove(&(pending.group_id, request.client_id));
+        if let Some(operation) = pending.operation {
+            self.pending_operations
+                .remove(&(pending.group_id, operation.client_id()));
         }
         Some(pending)
     }
@@ -1228,13 +1315,12 @@ impl Engine {
 
     fn all_active_ready(&self) -> bool {
         self.groups.values().all(|entry| {
-            let lifecycle = entry.record.policy().lifecycle;
+            let policy = entry.record.policy();
+            let lifecycle = policy.lifecycle;
             if matches!(
                 lifecycle,
                 GroupLifecycle::Removed | GroupLifecycle::Tombstoned
-            ) || (lifecycle == GroupLifecycle::Draining
-                && entry.record.policy().poisoned
-                && entry.driver.is_none())
+            ) || policy.poisoned
             {
                 return true;
             }
@@ -1244,8 +1330,12 @@ impl Engine {
 
     fn active_group_count(&self) -> usize {
         self.groups
-            .values()
-            .filter(|entry| entry.driver.is_some())
+            .iter()
+            .filter(|(group_id, entry)| {
+                entry.driver.is_some()
+                    && !entry.record.policy().poisoned
+                    && !self.poisoned.contains(group_id)
+            })
             .count()
     }
 
@@ -1255,12 +1345,16 @@ impl Engine {
         let leaders = raft
             .groups
             .iter()
-            .filter(|metrics| metrics.role == Role::Leader)
+            .filter(|metrics| {
+                metrics.role == Role::Leader && !self.poisoned.contains(&metrics.group_id)
+            })
             .count();
         let leader_groups = raft
             .groups
             .iter()
-            .filter(|metrics| metrics.role == Role::Leader)
+            .filter(|metrics| {
+                metrics.role == Role::Leader && !self.poisoned.contains(&metrics.group_id)
+            })
             .map(|metrics| metrics.group_id.get().to_string())
             .collect::<Vec<_>>()
             .join(",");
@@ -1269,16 +1363,7 @@ impl Engine {
         } else {
             &leader_groups
         };
-        let poisoned = raft
-            .groups
-            .iter()
-            .filter(|metrics| {
-                matches!(
-                    metrics.fatal_state,
-                    rafter_app::group::GroupFatalState::Poisoned { .. }
-                )
-            })
-            .count();
+        let poisoned = self.poisoned.len();
         let link = self.link.counters();
         format!(
             "OK STATUS ready={} groups={} leaders={} leader_groups={} poisoned={} queued={} \
@@ -1286,7 +1371,7 @@ impl Engine {
              link_outbound_full={} link_inbound_full={} link_malformed={} \
              link_identity_refused={} link_inbound_connection_full={}",
             self.all_active_ready(),
-            metrics.groups,
+            self.active_group_count(),
             leaders,
             leader_groups,
             poisoned,
@@ -1343,7 +1428,7 @@ impl Engine {
                 reply.send("ERR UNKNOWN process shutting down".to_string(), false);
             }
         }
-        self.pending_requests.clear();
+        self.pending_operations.clear();
         let audit = self.audit_line();
         let status = self.status_line();
         super::emit(&format!("FINAL {} {status}", self.node_id.0));
@@ -1353,21 +1438,12 @@ impl Engine {
     }
 }
 
-fn cached_result(
-    driver: &SharedGroup,
-    request: RequestIdentity,
-    command: CounterCommand,
-) -> Option<CounterResult> {
-    driver
-        .view()
-        .sessions
-        .into_iter()
-        .find(|session| {
-            session.client_id == request.client_id && session.epoch == request.session_epoch
-        })
-        .and_then(|session| session.completed)
-        .filter(|completed| completed.sequence == request.sequence && completed.command == command)
-        .map(|completed| completed.result)
+const fn render_terminal_failure(failure: TerminalFailure) -> &'static str {
+    match failure {
+        TerminalFailure::GroupPoisoned => "ERR NOT_COMMITTED GROUP_POISONED",
+        TerminalFailure::GroupPoisonedUnknown => "ERR UNKNOWN GROUP_POISONED",
+        TerminalFailure::ProcessRestarted => "ERR NOT_COMMITTED PROCESS_RESTARTED",
+    }
 }
 
 fn render_apply_result(result: CounterApplyResult) -> String {

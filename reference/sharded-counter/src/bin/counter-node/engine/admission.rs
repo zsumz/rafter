@@ -6,13 +6,13 @@ use rafter::LocalProposalId;
 use rafter_app::{group::GroupInput, proposal::Proposal, transport::PeerEnvelope};
 use rafter_multiraft::managed::WorkClass;
 use rafter_reference_sharded_counter::{
-    adapter::ReplicatedCounterCommand, CounterCommand, GroupId, GroupIncarnation, GroupLifecycle,
-    RequestIdentity, WorkClass as PolicyWorkClass,
+    adapter::ReplicatedCounterCommand, GroupId, GroupIncarnation, GroupLifecycle,
+    WorkClass as PolicyWorkClass,
 };
 
-use super::{Engine, PendingClient, WorkKind, MAX_PEERS_PER_LOOP};
+use super::{ClientAdmissionRefusal, Engine, PendingClient, WorkKind, MAX_PEERS_PER_LOOP};
 use crate::{
-    app_store::{OutstandingPhase, TerminalFailure},
+    app_store::{AcceptedOperation, OutstandingPhase, TerminalFailure},
     group::SharedGroup,
     protocol::ClientReply,
 };
@@ -45,7 +45,7 @@ impl Engine {
         if policy.lifecycle != GroupLifecycle::Serving {
             return Err(format!("ERR LIFECYCLE {:?}", policy.lifecycle));
         }
-        if self.poisoned.contains(&group_id) {
+        if policy.poisoned || self.poisoned.contains(&group_id) {
             return Err("ERR GROUP_POISONED".to_string());
         }
         let Some(driver) = entry.driver.clone() else {
@@ -62,13 +62,16 @@ impl Engine {
         group_id: GroupId,
         class: WorkClass,
         command: ReplicatedCounterCommand,
-        request: Option<(RequestIdentity, CounterCommand)>,
+        operation: Option<AcceptedOperation>,
         reply: ClientReply,
-    ) -> bool {
+    ) -> Result<(), ClientAdmissionRefusal> {
         let proposal_id = LocalProposalId(self.next_proposal_id);
         let Some(next) = self.next_proposal_id.checked_add(1) else {
-            reply.send("ERR PROPOSAL_ID_EXHAUSTED".to_string(), false);
-            return false;
+            return Err(ClientAdmissionRefusal {
+                reply,
+                response: "ERR PROPOSAL_ID_EXHAUSTED".to_string(),
+                managed: false,
+            });
         };
         let input = GroupInput::Proposal {
             proposal: Proposal {
@@ -80,22 +83,25 @@ impl Engine {
         let receipt = match self.host.admit(&group_id, class, input) {
             Ok(receipt) => receipt,
             Err(rejected) => {
-                reply.send(format!("ERR BACKPRESSURE {:?}", rejected.reason), false);
-                return false;
+                return Err(ClientAdmissionRefusal {
+                    reply,
+                    response: format!("ERR BACKPRESSURE {:?}", rejected.reason),
+                    managed: true,
+                });
             }
         };
         self.audit
             .observe_admission(group_id, receipt.work_id, class);
         self.next_proposal_id = next;
-        if let Some((identity, _)) = request {
-            self.pending_requests
-                .insert((group_id, identity.client_id), proposal_id);
+        if let Some(operation) = operation {
+            self.pending_operations
+                .insert((group_id, operation.client_id()), proposal_id);
         }
         self.pending.insert(
             proposal_id,
             PendingClient {
                 group_id,
-                request,
+                operation,
                 replies: vec![reply],
                 deadline: Some(Instant::now() + self.request_timeout),
                 recovered: false,
@@ -103,42 +109,39 @@ impl Engine {
         );
         self.work
             .insert(receipt.work_id, WorkKind::Proposal(proposal_id));
-        true
+        Ok(())
     }
 
     pub(super) fn recover_outstanding(&mut self) -> Result<(), String> {
-        let interrupted = self
-            .groups
-            .values()
-            .flat_map(|entry| {
-                let policy = entry.record.policy();
-                let draining = policy.lifecycle == GroupLifecycle::Draining;
-                let poisoned = policy.poisoned;
-                policy
-                    .outstanding
-                    .into_values()
-                    .filter_map(move |outstanding| {
-                        let failure = if poisoned {
-                            Some(match outstanding.phase {
-                                OutstandingPhase::Queued => TerminalFailure::GroupPoisoned,
-                                OutstandingPhase::EnteredDriver => {
-                                    TerminalFailure::GroupPoisonedUnknown
-                                }
-                            })
-                        } else if draining && outstanding.phase == OutstandingPhase::Queued {
-                            Some(TerminalFailure::ProcessRestarted)
-                        } else {
-                            None
-                        };
-                        failure.map(|failure| (outstanding, failure))
+        let mut interrupted = Vec::new();
+        for (group_id, entry) in &self.groups {
+            let policy = entry.record.policy();
+            let draining = policy.lifecycle == GroupLifecycle::Draining;
+            for outstanding in policy.outstanding.into_values() {
+                if self
+                    .pending_operations
+                    .contains_key(&(*group_id, outstanding.operation.client_id()))
+                {
+                    continue;
+                }
+                let failure = if policy.poisoned {
+                    Some(match outstanding.phase {
+                        OutstandingPhase::Queued => TerminalFailure::GroupPoisoned,
+                        OutstandingPhase::EnteredDriver => TerminalFailure::GroupPoisonedUnknown,
                     })
-                    .map(|(outstanding, failure)| (entry.record.clone(), outstanding, failure))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
+                } else if draining && outstanding.phase == OutstandingPhase::Queued {
+                    Some(TerminalFailure::ProcessRestarted)
+                } else {
+                    None
+                };
+                if let Some(failure) = failure {
+                    interrupted.push((entry.record.clone(), outstanding, failure));
+                }
+            }
+        }
         for (record, outstanding, failure) in interrupted {
             record
-                .fail_reservation(outstanding.request, outstanding.command, failure)
+                .fail_reservation(outstanding.operation, failure)
                 .map_err(|error| error.to_string())?;
         }
         let recoverable = self
@@ -156,8 +159,8 @@ impl Engine {
             })
             .filter(|(group_id, outstanding)| {
                 !self
-                    .pending_requests
-                    .contains_key(&(*group_id, outstanding.request.client_id))
+                    .pending_operations
+                    .contains_key(&(*group_id, outstanding.operation.client_id()))
             })
             .collect::<Vec<_>>();
         for (group_id, outstanding) in recoverable {
@@ -169,25 +172,26 @@ impl Engine {
                 proposal: Proposal {
                     local_proposal_id: proposal_id,
                     client_request_id: None,
-                    command: ReplicatedCounterCommand::Counter {
-                        request: outstanding.request,
-                        command: outstanding.command,
-                    },
+                    command: outstanding.operation.replicated_command(),
                 },
             };
-            let Ok(receipt) = self.host.admit(&group_id, WorkClass::Command, input) else {
+            let class = match outstanding.operation {
+                AcceptedOperation::OpenSession { .. } => WorkClass::Control,
+                AcceptedOperation::Counter { .. } => WorkClass::Command,
+            };
+            let Ok(receipt) = self.host.admit(&group_id, class, input) else {
                 continue;
             };
             self.audit
-                .observe_admission(group_id, receipt.work_id, WorkClass::Command);
+                .observe_admission(group_id, receipt.work_id, class);
             self.next_proposal_id = next;
-            self.pending_requests
-                .insert((group_id, outstanding.request.client_id), proposal_id);
+            self.pending_operations
+                .insert((group_id, outstanding.operation.client_id()), proposal_id);
             self.pending.insert(
                 proposal_id,
                 PendingClient {
                     group_id,
-                    request: Some((outstanding.request, outstanding.command)),
+                    operation: Some(outstanding.operation),
                     replies: Vec::new(),
                     deadline: None,
                     recovered: true,

@@ -99,6 +99,7 @@ message name a generation that has already retired.
 Work is submitted to one group incarnation and is one of three shapes:
 
 ```text
+OpenSession { client_id, epoch }        client control work
 Counter { request, command, cost }      client work, scheduled as Command
 System  { class, cost }                 scheduler traffic: Control, Snapshot, Bulk
 Faulty  { class, cost }                 work whose application poisons its group
@@ -111,7 +112,7 @@ Add(delta)      nonzero signed adjustment
 Read            the value at service time
 ```
 
-Sessions are opened out of band:
+The client protocol names session establishment separately:
 
 ```text
 OpenSession(group, incarnation, client_id, session_epoch)
@@ -286,16 +287,14 @@ process admission.
 
 ### Model sessions and real adapter replication
 
-`OpenSession` is an admission-gate action rather than queued work. Queueing it
-would mean a client needed a queue slot to open the session that a queue-full
-rejection tells it to retry under, which is a circle with no exit.
-
-The independent model therefore establishes a session immediately. The real
-adapter admits the same policy action as control work and replicates
-`OpenSession` through the group's Raft log before counter commands can use it.
-This difference is deliberate: the model remains a scheduler oracle rather
-than sharing the adapter's log transitions, while both produce the same
-client-visible session state.
+`OpenSession` is immediate in the independent scheduler model because that
+model owns no replicated session log. The real adapter and process admit it as
+bounded control work and replicate it through the group's Raft log before
+counter commands can use it. The process durably records the exact client and
+epoch before managed admission, with the same queued/entered-driver phases and
+terminal recovery rules as a counter command. This difference keeps the model
+an independent scheduler oracle without making a real accepted session proposal
+disappear at restart.
 
 ## Group Lifecycle
 
@@ -379,11 +378,11 @@ This is the enforcement point the doc asks for, stated as one rule:
 > failed with a record naming it. There is no third outcome and no silent one.
 
 A healthy group drains by servicing. After a restart, its durable outstanding
-requests are re-admitted under their exact request and command identities. A
-poisoned group can service nothing, so draining it retires its queue and moves
-each reserved request to a durable terminal record. Work proven not to have
-entered the driver reports `NOT_COMMITTED GROUP_POISONED`; a request that
-crossed that boundary before the fault reports `UNKNOWN GROUP_POISONED`
+operations are re-admitted under their exact `OpenSession` or counter identity.
+A poisoned group can service nothing, so draining it retires its queue and
+moves each reserved operation to a durable terminal record. Work proven not to
+have entered the driver reports `NOT_COMMITTED GROUP_POISONED`; an operation
+that crossed that boundary before the fault reports `UNKNOWN GROUP_POISONED`
 instead of making a false commit claim. An exact retry reads the same terminal
 record even after removal; a new incarnation clears it. A crash at any point
 therefore either leaves replayable outstanding work or a replayable typed
@@ -966,8 +965,13 @@ learns which limit it hit; a group under its own limit learns the host is full.
 Reporting the global bound first would tell a misbehaving group that the host
 was busy.
 
-Nothing already accepted is touched by either refusal. The bounds decide what
-may enter, never what may stay.
+Nothing already accepted is touched by either refusal. In the durable process,
+a provisional reservation is cancelled and synced before a managed queue
+refusal is exposed as `ERR BACKPRESSURE`. A crash before cancellation leaves an
+accepted operation that recovery may execute but exposes no rejection; a crash
+after cancellation cannot resurrect the operation. If cancellation cannot be
+made durable, the connection closes or reports an unknown outcome instead of a
+false refusal. The bounds decide what may enter, never what may stay.
 
 A per-group bound is what keeps one group from consuming the host's whole queue,
 and the global bound is what keeps the sum of well-behaved groups from doing the
@@ -989,6 +993,13 @@ A poisoned group:
   the items behind the failure stay queued for the drain that will report them;
 - admits nothing new, reported as `GroupPoisoned`; and
 - keeps its accepted work until a drain retires it explicitly.
+
+The process application wrapper publishes the poison health fact in the same
+durable record before returning the injected application failure. Restart reads
+that marker before opening the physical Raft group, quarantines the poisoned
+group without replaying its failing command, and continues opening unrelated
+groups. Poison does not change the stored lifecycle: an explicit `Drain` still
+owns the administrative transition and the ordinary removal path.
 
 Ordinary driving never makes a poisoned group available again. The managed
 scheduler's explicit `fail_queued(group_id)` operation is the only queue
@@ -1396,10 +1407,11 @@ The three lost-outcome forms differ only in what the caller can prove:
 `NotAdmitted` is the counterpart of the siblings' `NotCommitted`. The process
 protocol now earns the distinction at its boundary: malformed requests, stale
 incarnations, lifecycle refusals, session conflicts, and queue refusals return
-before a proposal is accepted, while a proposal whose terminal result cannot be
-proved returns `ERR UNKNOWN`. The bounded process history keeps the exact
-request identity across that second branch. Recording a provable refusal as
-`Unknown` would let an implementation that serviced it be explained away.
+only after any provisional durable reservation has been cancelled, while a
+proposal whose terminal result cannot be proved returns `ERR UNKNOWN`. The
+bounded process history keeps the exact operation identity across that second
+branch. Recording a provable refusal as `Unknown` would let an implementation
+that serviced it be explained away.
 
 ## Deterministic Adoption Evidence and Boundary
 
@@ -1493,12 +1505,13 @@ directory. No test picks a port.
 
 Each group owns `FileRaftNodeStores` and one checksummed application record.
 The application record atomically publishes the applied index, counter value,
-session epochs, completed-request cache, exact outstanding request,
-incarnation, lifecycle, and quota. A restart recovers both stores, replays from
-the application's durable applied floor, and announces readiness only after
-that recovery/catch-up boundary. Snapshot requests build the application
-payload, compact the real Raft log, and preserve the same value and completion
-cache across `SIGKILL` and restart.
+session epochs, completed-request cache, exact outstanding client operations
+(`OpenSession` and counter), their queued/entered-driver phase, typed terminal
+outcomes, poison health, incarnation, lifecycle, and quota. A restart recovers
+both stores, replays from the application's durable applied floor, and announces
+readiness only after that recovery/catch-up boundary. Snapshot requests build
+the application payload, compact the real Raft log, and preserve the same value
+and completion cache across `SIGKILL` and restart.
 
 A checksummed host slot registry is the separate authority for group existence,
 incarnation, lifecycle, and quota. Only a durable first-bootstrap intent grants

@@ -2,7 +2,7 @@
 //!
 //! Each group owns one checksummed image published by write, file sync,
 //! rename, and parent-directory sync. The image keeps the application snapshot,
-//! lifecycle/incarnation policy, quota, and accepted request identities
+//! lifecycle/incarnation policy, quota, and accepted client operations
 //! together. A restart therefore never reconstructs one of those facts from a
 //! different publication generation.
 
@@ -25,22 +25,59 @@ use rafter_reference_sharded_counter::{
     adapter::{
         CounterApplyResult, CounterStateMachine, CounterStateMachineError, ReplicatedCounterCommand,
     },
-    ClientId, CounterCommand, Delta, GroupIncarnation, GroupLifecycle, RequestFingerprint,
-    RequestIdentity, Sequence, SessionEpoch, WorkQuota,
+    ClientId, CounterCommand, CounterResult, Delta, GroupIncarnation, GroupLifecycle,
+    RequestFingerprint, RequestIdentity, Sequence, SessionEpoch, WorkQuota,
 };
 use rafter_storage::FileRaftSnapshotStore;
 
 const MAGIC: [u8; 4] = *b"RCAP";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const LEGACY_VERSION: u8 = 1;
+const COUNTER_WORK_VERSION: u8 = 2;
 const MAX_RECORD_BYTES: usize = 128 * 1024;
 const SNAPSHOT_READ_CHUNK: u32 = 16 * 1024;
 
-/// One accepted request whose client-visible outcome may still be unknown.
+/// Exact client operation accepted into the durable work ledger.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OutstandingRequest {
-    pub request: RequestIdentity,
-    pub command: CounterCommand,
+pub enum AcceptedOperation {
+    OpenSession {
+        /// Bounded client slot being established.
+        client_id: ClientId,
+        /// Exact session generation requested for the slot.
+        epoch: SessionEpoch,
+    },
+    Counter {
+        /// Exact session-scoped request identity.
+        request: RequestIdentity,
+        /// Exact command bound to the request.
+        command: CounterCommand,
+    },
+}
+
+impl AcceptedOperation {
+    pub const fn client_id(self) -> ClientId {
+        match self {
+            Self::OpenSession { client_id, .. } => client_id,
+            Self::Counter { request, .. } => request.client_id,
+        }
+    }
+
+    pub const fn replicated_command(self) -> ReplicatedCounterCommand {
+        match self {
+            Self::OpenSession { client_id, epoch } => {
+                ReplicatedCounterCommand::OpenSession { client_id, epoch }
+            }
+            Self::Counter { request, command } => {
+                ReplicatedCounterCommand::Counter { request, command }
+            }
+        }
+    }
+}
+
+/// One accepted operation whose client-visible outcome may still be unknown.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutstandingWork {
+    pub operation: AcceptedOperation,
     pub phase: OutstandingPhase,
 }
 
@@ -51,11 +88,10 @@ pub enum OutstandingPhase {
     EnteredDriver,
 }
 
-/// One accepted request whose exact terminal refusal must survive a restart.
+/// One accepted operation whose exact terminal refusal must survive a restart.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TerminalRequest {
-    pub request: RequestIdentity,
-    pub command: CounterCommand,
+pub struct TerminalWork {
+    pub operation: AcceptedOperation,
     pub failure: TerminalFailure,
 }
 
@@ -74,8 +110,8 @@ pub struct StoredPolicy {
     pub lifecycle: GroupLifecycle,
     pub poisoned: bool,
     pub quota: WorkQuota,
-    pub outstanding: BTreeMap<ClientId, OutstandingRequest>,
-    pub terminal: BTreeMap<ClientId, TerminalRequest>,
+    pub outstanding: BTreeMap<ClientId, OutstandingWork>,
+    pub terminal: BTreeMap<ClientId, TerminalWork>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,7 +120,7 @@ struct Record {
     application: ApplicationSnapshot,
 }
 
-/// Result of reserving one client request in the durable outstanding table.
+/// Result of reserving one client operation in the durable outstanding table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReserveOutcome {
     Reserved,
@@ -144,15 +180,15 @@ impl fmt::Display for StoreError {
                 "counter application record is {bytes} bytes, above {MAX_RECORD_BYTES}"
             ),
             Self::OutstandingCapacity { bound } => {
-                write!(formatter, "outstanding request capacity {bound} is exhausted")
+                write!(formatter, "outstanding operation capacity {bound} is exhausted")
             }
             Self::ConflictingOutstanding { client_id } => write!(
                 formatter,
-                "client {} already has a different request outstanding",
+                "client {} already has a different operation outstanding",
                 client_id.get()
             ),
             Self::OutstandingRemain { count } => {
-                write!(formatter, "{count} durable requests remain outstanding")
+                write!(formatter, "{count} durable operations remain outstanding")
             }
             Self::Counter(error) => write!(formatter, "counter state machine failed: {error}"),
             Self::SnapshotUnavailable => {
@@ -275,25 +311,58 @@ impl ApplicationRecord {
         self.lock().policy.clone()
     }
 
-    pub fn reserve(
+    pub fn session_is_open(
+        &self,
+        client_id: ClientId,
+        epoch: SessionEpoch,
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .application_view()?
+            .sessions
+            .into_iter()
+            .any(|session| session.client_id == client_id && session.epoch == epoch))
+    }
+
+    pub fn cached_counter_result(
         &self,
         request: RequestIdentity,
         command: CounterCommand,
-    ) -> Result<ReserveOutcome, StoreError> {
+    ) -> Result<Option<CounterResult>, StoreError> {
+        Ok(self
+            .application_view()?
+            .sessions
+            .into_iter()
+            .find(|session| {
+                session.client_id == request.client_id && session.epoch == request.session_epoch
+            })
+            .and_then(|session| session.completed)
+            .filter(|completed| {
+                completed.sequence == request.sequence && completed.command == command
+            })
+            .map(|completed| completed.result))
+    }
+
+    fn application_view(
+        &self,
+    ) -> Result<rafter_reference_sharded_counter::adapter::CounterStateView, StoreError> {
+        let application = self.lock().application.clone();
+        let state_machine = CounterStateMachine::from_snapshot(self.max_outstanding, application)
+            .map_err(|error| snapshot_error(&error))?;
+        Ok(state_machine.view())
+    }
+
+    pub fn reserve(&self, operation: AcceptedOperation) -> Result<ReserveOutcome, StoreError> {
+        let client_id = operation.client_id();
         let mut staged = self.lock().clone();
-        if let Some(existing) = staged.policy.outstanding.get(&request.client_id) {
-            return if existing.request == request && existing.command == command {
+        if let Some(existing) = staged.policy.outstanding.get(&client_id) {
+            return if existing.operation == operation {
                 Ok(ReserveOutcome::ExactRetry)
             } else {
-                Err(StoreError::ConflictingOutstanding {
-                    client_id: request.client_id,
-                })
+                Err(StoreError::ConflictingOutstanding { client_id })
             };
         }
-        if staged.policy.terminal.contains_key(&request.client_id) {
-            return Err(StoreError::ConflictingOutstanding {
-                client_id: request.client_id,
-            });
+        if staged.policy.terminal.contains_key(&client_id) {
+            return Err(StoreError::ConflictingOutstanding { client_id });
         }
         if staged.policy.outstanding.len() + staged.policy.terminal.len() >= self.max_outstanding {
             return Err(StoreError::OutstandingCapacity {
@@ -301,10 +370,9 @@ impl ApplicationRecord {
             });
         }
         staged.policy.outstanding.insert(
-            request.client_id,
-            OutstandingRequest {
-                request,
-                command,
+            client_id,
+            OutstandingWork {
+                operation,
                 phase: OutstandingPhase::Queued,
             },
         );
@@ -312,19 +380,14 @@ impl ApplicationRecord {
         Ok(ReserveOutcome::Reserved)
     }
 
-    pub fn mark_entered_driver(
-        &self,
-        request: RequestIdentity,
-        command: CounterCommand,
-    ) -> Result<(), StoreError> {
+    pub fn mark_entered_driver(&self, operation: AcceptedOperation) -> Result<(), StoreError> {
+        let client_id = operation.client_id();
         let mut staged = self.lock().clone();
-        let Some(outstanding) = staged.policy.outstanding.get_mut(&request.client_id) else {
+        let Some(outstanding) = staged.policy.outstanding.get_mut(&client_id) else {
             return Ok(());
         };
-        if outstanding.request != request || outstanding.command != command {
-            return Err(StoreError::ConflictingOutstanding {
-                client_id: request.client_id,
-            });
+        if outstanding.operation != operation {
+            return Err(StoreError::ConflictingOutstanding { client_id });
         }
         if outstanding.phase == OutstandingPhase::Queued {
             outstanding.phase = OutstandingPhase::EnteredDriver;
@@ -351,58 +414,45 @@ impl ApplicationRecord {
 
     pub fn replay_terminal_failure(
         &self,
-        request: RequestIdentity,
-        command: CounterCommand,
+        operation: AcceptedOperation,
     ) -> Result<Option<TerminalFailure>, StoreError> {
+        let client_id = operation.client_id();
         let staged = self.lock();
-        let Some(terminal) = staged.policy.terminal.get(&request.client_id).copied() else {
+        let Some(terminal) = staged.policy.terminal.get(&client_id).copied() else {
             return Ok(None);
         };
-        if terminal.request == request && terminal.command == command {
+        if terminal.operation == operation {
             Ok(Some(terminal.failure))
         } else {
-            Err(StoreError::ConflictingOutstanding {
-                client_id: request.client_id,
-            })
+            Err(StoreError::ConflictingOutstanding { client_id })
         }
     }
 
     pub fn fail_reservation(
         &self,
-        request: RequestIdentity,
-        command: CounterCommand,
+        operation: AcceptedOperation,
         failure: TerminalFailure,
     ) -> Result<(), StoreError> {
+        let client_id = operation.client_id();
         let mut staged = self.lock().clone();
-        if let Some(terminal) = staged.policy.terminal.get(&request.client_id) {
-            return if terminal.request == request
-                && terminal.command == command
-                && terminal.failure == failure
-            {
+        if let Some(terminal) = staged.policy.terminal.get(&client_id) {
+            return if terminal.operation == operation && terminal.failure == failure {
                 Ok(())
             } else {
-                Err(StoreError::ConflictingOutstanding {
-                    client_id: request.client_id,
-                })
+                Err(StoreError::ConflictingOutstanding { client_id })
             };
         }
-        let Some(outstanding) = staged.policy.outstanding.get(&request.client_id) else {
+        let Some(outstanding) = staged.policy.outstanding.get(&client_id) else {
             return Ok(());
         };
-        if outstanding.request != request || outstanding.command != command {
-            return Err(StoreError::ConflictingOutstanding {
-                client_id: request.client_id,
-            });
+        if outstanding.operation != operation {
+            return Err(StoreError::ConflictingOutstanding { client_id });
         }
-        staged.policy.outstanding.remove(&request.client_id);
-        staged.policy.terminal.insert(
-            request.client_id,
-            TerminalRequest {
-                request,
-                command,
-                failure,
-            },
-        );
+        staged.policy.outstanding.remove(&client_id);
+        staged
+            .policy
+            .terminal
+            .insert(client_id, TerminalWork { operation, failure });
         self.publish(staged)
     }
 
@@ -418,9 +468,8 @@ impl ApplicationRecord {
             };
             staged.policy.terminal.insert(
                 client_id,
-                TerminalRequest {
-                    request: outstanding.request,
-                    command: outstanding.command,
+                TerminalWork {
+                    operation: outstanding.operation,
                     failure,
                 },
             );
@@ -428,21 +477,16 @@ impl ApplicationRecord {
         self.publish(staged)
     }
 
-    pub fn cancel_reservation(
-        &self,
-        request: RequestIdentity,
-        command: CounterCommand,
-    ) -> Result<(), StoreError> {
+    pub fn cancel_reservation(&self, operation: AcceptedOperation) -> Result<(), StoreError> {
+        let client_id = operation.client_id();
         let mut staged = self.lock().clone();
         if staged
             .policy
             .outstanding
-            .get(&request.client_id)
-            .is_some_and(|outstanding| {
-                outstanding.request == request && outstanding.command == command
-            })
+            .get(&client_id)
+            .is_some_and(|outstanding| outstanding.operation == operation)
         {
-            staged.policy.outstanding.remove(&request.client_id);
+            staged.policy.outstanding.remove(&client_id);
             self.publish(staged)?;
         }
         Ok(())
@@ -498,17 +542,29 @@ impl ApplicationRecord {
         let mut staged = self.lock().clone();
         staged.application = application;
         for command in commands {
-            if let ReplicatedCounterCommand::Counter { request, command } = command {
-                if staged
-                    .policy
-                    .outstanding
-                    .get(&request.client_id)
-                    .is_some_and(|outstanding| {
-                        outstanding.request == *request && outstanding.command == *command
-                    })
-                {
-                    staged.policy.outstanding.remove(&request.client_id);
+            let operation = match command {
+                ReplicatedCounterCommand::OpenSession { client_id, epoch } => {
+                    AcceptedOperation::OpenSession {
+                        client_id: *client_id,
+                        epoch: *epoch,
+                    }
                 }
+                ReplicatedCounterCommand::Counter { request, command } => {
+                    AcceptedOperation::Counter {
+                        request: *request,
+                        command: *command,
+                    }
+                }
+                ReplicatedCounterCommand::Faulty => continue,
+            };
+            let client_id = operation.client_id();
+            if staged
+                .policy
+                .outstanding
+                .get(&client_id)
+                .is_some_and(|outstanding| outstanding.operation == operation)
+            {
+                staged.policy.outstanding.remove(&client_id);
             }
         }
         self.publish(staged)
@@ -610,7 +666,15 @@ impl ReplicatedStateMachine for DurableCounterStateMachine {
             .map(|entry| entry.command)
             .collect::<Vec<_>>();
         let mut staged = self.inner.clone();
-        let results = staged.apply_batch(batch)?;
+        let results = match staged.apply_batch(batch) {
+            Ok(results) => results,
+            Err(CounterStateMachineError::InjectedFault) => {
+                self.record.mark_poisoned()?;
+                crate::directed_failpoint("after_poison_publication_before_driver_error");
+                return Err(StoreError::Counter(CounterStateMachineError::InjectedFault));
+            }
+            Err(error) => return Err(StoreError::Counter(error)),
+        };
         let at = staged.applied_index()?;
         let application = staged
             .build_snapshot(at)
@@ -692,8 +756,7 @@ fn encode(record: &Record) -> Result<Vec<u8>, StoreError> {
             .map_err(|_| StoreError::TooLarge { bytes: usize::MAX })?,
     );
     for outstanding in record.policy.outstanding.values() {
-        put_request(&mut bytes, outstanding.request);
-        put_command(&mut bytes, outstanding.command);
+        put_operation(&mut bytes, outstanding.operation);
         bytes.push(encode_outstanding_phase(outstanding.phase));
     }
     put_u32(
@@ -702,8 +765,7 @@ fn encode(record: &Record) -> Result<Vec<u8>, StoreError> {
             .map_err(|_| StoreError::TooLarge { bytes: usize::MAX })?,
     );
     for terminal in record.policy.terminal.values() {
-        put_request(&mut bytes, terminal.request);
-        put_command(&mut bytes, terminal.command);
+        put_operation(&mut bytes, terminal.operation);
         bytes.push(encode_terminal_failure(terminal.failure));
     }
     put_u64(&mut bytes, record.application.applied_index.0);
@@ -749,49 +811,49 @@ fn decode(bytes: &[u8]) -> Result<Record, StoreError> {
     let incarnation =
         GroupIncarnation::new(cursor.u32()?).ok_or(StoreError::Corrupt("zero incarnation"))?;
     let lifecycle = decode_lifecycle(cursor.u8()?)?;
-    let poisoned = version >= VERSION && decode_bool(cursor.u8()?)?;
+    let poisoned = version >= COUNTER_WORK_VERSION && decode_bool(cursor.u8()?)?;
     let quota = WorkQuota::new(cursor.u32()?).ok_or(StoreError::Corrupt("zero quota"))?;
     let outstanding_len = cursor.u32()? as usize;
     let mut outstanding = BTreeMap::new();
     for _ in 0..outstanding_len {
-        let request = cursor.request()?;
-        let command = cursor.command()?;
-        let phase = if version >= VERSION {
+        let operation = if version >= VERSION {
+            cursor.operation()?
+        } else {
+            AcceptedOperation::Counter {
+                request: cursor.request()?,
+                command: cursor.command()?,
+            }
+        };
+        let phase = if version >= COUNTER_WORK_VERSION {
             decode_outstanding_phase(cursor.u8()?)?
         } else {
             OutstandingPhase::EnteredDriver
         };
+        let client_id = operation.client_id();
         if outstanding
-            .insert(
-                request.client_id,
-                OutstandingRequest {
-                    request,
-                    command,
-                    phase,
-                },
-            )
+            .insert(client_id, OutstandingWork { operation, phase })
             .is_some()
         {
             return Err(StoreError::Corrupt("duplicate outstanding client"));
         }
     }
     let mut terminal = BTreeMap::new();
-    if version >= VERSION {
+    if version >= COUNTER_WORK_VERSION {
         let terminal_len = cursor.u32()? as usize;
         for _ in 0..terminal_len {
-            let request = cursor.request()?;
-            let command = cursor.command()?;
+            let operation = if version >= VERSION {
+                cursor.operation()?
+            } else {
+                AcceptedOperation::Counter {
+                    request: cursor.request()?,
+                    command: cursor.command()?,
+                }
+            };
             let failure = decode_terminal_failure(cursor.u8()?)?;
-            if outstanding.contains_key(&request.client_id)
+            let client_id = operation.client_id();
+            if outstanding.contains_key(&client_id)
                 || terminal
-                    .insert(
-                        request.client_id,
-                        TerminalRequest {
-                            request,
-                            command,
-                            failure,
-                        },
-                    )
+                    .insert(client_id, TerminalWork { operation, failure })
                     .is_some()
             {
                 return Err(StoreError::Corrupt("duplicate durable client outcome"));
@@ -819,6 +881,21 @@ fn decode(bytes: &[u8]) -> Result<Record, StoreError> {
             raft_snapshot: None,
         },
     })
+}
+
+fn put_operation(bytes: &mut Vec<u8>, operation: AcceptedOperation) {
+    match operation {
+        AcceptedOperation::OpenSession { client_id, epoch } => {
+            bytes.push(1);
+            put_u32(bytes, client_id.get());
+            put_u64(bytes, epoch.get());
+        }
+        AcceptedOperation::Counter { request, command } => {
+            bytes.push(2);
+            put_request(bytes, request);
+            put_command(bytes, command);
+        }
+    }
 }
 
 fn put_request(bytes: &mut Vec<u8>, request: RequestIdentity) {
@@ -978,6 +1055,22 @@ impl<'a> Cursor<'a> {
         })
     }
 
+    fn operation(&mut self) -> Result<AcceptedOperation, StoreError> {
+        match self.u8()? {
+            1 => {
+                let client_id = ClientId::new(self.u32()?);
+                let epoch = SessionEpoch::new(self.u64()?)
+                    .ok_or(StoreError::Corrupt("zero session epoch"))?;
+                Ok(AcceptedOperation::OpenSession { client_id, epoch })
+            }
+            2 => Ok(AcceptedOperation::Counter {
+                request: self.request()?,
+                command: self.command()?,
+            }),
+            _ => Err(StoreError::Corrupt("unknown accepted operation")),
+        }
+    }
+
     fn command(&mut self) -> Result<CounterCommand, StoreError> {
         match self.u8()? {
             1 => {
@@ -1051,9 +1144,10 @@ mod tests {
             delta: Delta::new(5).expect("test delta is nonzero"),
         };
         let request = request(command);
+        let operation = AcceptedOperation::Counter { request, command };
 
         assert_eq!(
-            record.reserve(request, command).expect("request reserves"),
+            record.reserve(operation).expect("request reserves"),
             ReserveOutcome::Reserved
         );
         record.begin_draining(true).expect("draining publishes");
@@ -1076,16 +1170,53 @@ mod tests {
         assert!(!record.policy().poisoned);
         assert_eq!(
             record
-                .replay_terminal_failure(request, command)
+                .replay_terminal_failure(operation)
                 .expect("terminal lookup succeeds"),
             Some(TerminalFailure::GroupPoisoned)
         );
         record.reopen(quota, 8).expect("new incarnation opens");
         assert_eq!(
             record
-                .replay_terminal_failure(request, command)
+                .replay_terminal_failure(operation)
                 .expect("terminal lookup succeeds"),
             None
+        );
+    }
+
+    #[test]
+    fn session_open_uses_the_same_durable_phase_and_terminal_ledger() {
+        let scratch = ScratchSpace::create("counter-app-store", "session-open")
+            .expect("scratch directory is created");
+        let app_dir = scratch.path().join("app");
+        let quota = WorkQuota::new(4).expect("test quota is nonzero");
+        let (record, state_machine) =
+            ApplicationRecord::bootstrap(&app_dir, 8, quota).expect("record bootstraps");
+        drop(state_machine);
+        let operation = AcceptedOperation::OpenSession {
+            client_id: ClientId::new(3),
+            epoch: SessionEpoch::new(9).expect("test epoch is nonzero"),
+        };
+
+        assert_eq!(
+            record.reserve(operation).expect("session reserves"),
+            ReserveOutcome::Reserved
+        );
+        record
+            .mark_entered_driver(operation)
+            .expect("driver boundary publishes");
+        record
+            .fail_reservation(operation, TerminalFailure::GroupPoisonedUnknown)
+            .expect("terminal session outcome publishes");
+        drop(record);
+
+        let (record, state_machine) =
+            ApplicationRecord::open_existing(&app_dir, 8).expect("record reopens");
+        drop(state_machine);
+        assert_eq!(
+            record
+                .replay_terminal_failure(operation)
+                .expect("terminal lookup succeeds"),
+            Some(TerminalFailure::GroupPoisonedUnknown)
         );
     }
 }

@@ -7,8 +7,8 @@ use rafter_reference_sharded_counter::{
         RoutedPeerEnvelope,
     },
     AdmissionRejection, ClientId, CounterCommand, GroupId, GroupIncarnation, GroupLifecycle,
-    LifecycleRequest, RequestFingerprint, RequestIdentity, Sequence, SessionEpoch, WorkClass,
-    WorkQuota,
+    LifecycleOutcome, LifecycleRequest, RequestFingerprint, RequestIdentity, Sequence,
+    SessionEpoch, SystemClass, WorkClass, WorkQuota,
 };
 
 fn nonzero(value: usize) -> NonZeroUsize {
@@ -110,19 +110,14 @@ fn drain_remove_and_checkpoint(
             class: WorkClass::Command,
         },
     );
-    cluster
-        .enqueue_peer(old_peer.clone())
-        .expect("draining peer traffic remains admissible");
-    let draining = cluster
-        .drive_round()
-        .expect("draining peer traffic helps protocol progress");
-    assert!(
-        draining.refused_peer_traffic.is_empty(),
-        "current-incarnation peer traffic is legal while draining"
+    assert_peer_refusal(
+        cluster,
+        old_peer.clone(),
+        AdmissionRejection::GroupNotAcceptingWork {
+            state: GroupLifecycle::Draining,
+            class: WorkClass::Control,
+        },
     );
-    cluster
-        .drive_until_idle(256)
-        .expect("draining peer traffic quiesces");
 
     cluster
         .lifecycle(group_id, LifecycleRequest::Remove)
@@ -257,4 +252,70 @@ fn late_client_and_peer_traffic_is_explicit_across_every_inactive_boundary() {
     let removed = drain_remove_and_checkpoint(&mut live, group_id, &old_peer);
     let restarted = restart_removed_and_reopen(group_id, removed, &old_peer);
     tombstone_and_restart(restarted, group_id, old_peer);
+}
+
+#[test]
+fn draining_protocol_continues_only_while_accepted_proposal_remains() {
+    let group_id = GroupId::new(9);
+    let first = GroupIncarnation::first();
+    let mut cluster = cluster();
+    let peer = capture_recovery_peer(&mut cluster, group_id);
+    cluster.set_service_delay(group_id, 4);
+    cluster
+        .open_session_for(
+            group_id,
+            first,
+            ClientId::new(1),
+            SessionEpoch::new(1).expect("epoch is nonzero"),
+        )
+        .expect("session proposal is accepted");
+    cluster
+        .lifecycle(group_id, LifecycleRequest::Drain)
+        .expect("serving group starts draining");
+
+    cluster
+        .enqueue_peer(peer.clone())
+        .expect("one continuation frame fits");
+    let continuing = cluster
+        .drive_round()
+        .expect("accepted work permits current-incarnation continuation");
+    assert!(
+        continuing.refused_peer_traffic.is_empty(),
+        "peer traffic is continuation while the accepted proposal remains"
+    );
+    cluster
+        .submit_system(group_id, first, SystemClass::Control)
+        .expect("a protocol tick continues the accepted proposal");
+    cluster
+        .drive_until_idle(256)
+        .expect("the accepted proposal and its continuation settle");
+
+    assert_peer_refusal(
+        &mut cluster,
+        peer,
+        AdmissionRejection::GroupNotAcceptingWork {
+            state: GroupLifecycle::Draining,
+            class: WorkClass::Control,
+        },
+    );
+    let tick = cluster
+        .submit_system(group_id, first, SystemClass::Control)
+        .expect_err("protocol traffic cannot keep an empty drain alive");
+    assert_eq!(
+        tick.reason,
+        CounterAdmissionRejection::Policy(AdmissionRejection::GroupNotAcceptingWork {
+            state: GroupLifecycle::Draining,
+            class: WorkClass::Control,
+        })
+    );
+    assert!(matches!(
+        cluster
+            .lifecycle(group_id, LifecycleRequest::Remove)
+            .expect("empty draining group removes")
+            .outcome,
+        LifecycleOutcome::Applied {
+            to: GroupLifecycle::Removed,
+            ..
+        }
+    ));
 }
