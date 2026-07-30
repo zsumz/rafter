@@ -17,13 +17,29 @@ use rafter_reference_sharded_counter::{
 
 use super::{
     render_apply_rejection, render_counter_result, render_terminal_failure, ClientAdmissionRefusal,
-    Engine, PendingAdmission, PendingClient, WorkKind, MAX_PEERS_PER_LOOP,
+    Engine, PendingAdmission, PendingAdmissionCandidate, PendingClient, WorkKind,
+    MAX_PEERS_PER_LOOP, RECOVERY_RETRY_DELAY,
 };
 use crate::{
-    app_store::{AcceptedOperation, OutstandingPhase, TerminalFailure},
+    app_store::{
+        AcceptedOperation, DurableOperationState, OutstandingPhase, OutstandingWork,
+        ReservationError, ReserveOutcome, TerminalFailure,
+    },
     group::SharedGroup,
     protocol::ClientReply,
 };
+
+fn admission_candidate(
+    operation: AcceptedOperation,
+    reply: ClientReply,
+    durable_outstanding: bool,
+) -> PendingAdmissionCandidate {
+    PendingAdmissionCandidate {
+        operation,
+        replies: vec![reply],
+        durable_outstanding,
+    }
+}
 
 impl Engine {
     pub(super) fn serving_driver(
@@ -85,34 +101,55 @@ impl Engine {
             reply.send("ERR CLIENT_OUT_OF_RANGE".to_string(), false);
             return Ok(());
         }
-        let Some(reply) = self.attach_exact_pending(group_id, operation, reply) else {
-            return Ok(());
-        };
-        let Some(reply) = self.attach_exact_admission(group_id, operation, reply) else {
-            return Ok(());
-        };
-        match record.replay_terminal_failure(operation) {
-            Ok(Some(failure)) => {
+
+        let durable_state = record.durable_operation_state(operation);
+        let durable_outstanding = match durable_state {
+            DurableOperationState::ExactTerminal(failure) => {
                 reply.send(render_terminal_failure(failure).to_string(), false);
                 return Ok(());
             }
-            Ok(None) => {}
-            Err(_) => {
+            DurableOperationState::ConflictingTerminal => {
                 reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
                 return Ok(());
             }
-        }
+            DurableOperationState::ExactOutstanding(_) => true,
+            DurableOperationState::ConflictingOutstanding | DurableOperationState::Absent => false,
+        };
+
+        let Some(reply) =
+            self.attach_or_queue_pending_admission(group_id, operation, reply, durable_outstanding)
+        else {
+            return Ok(());
+        };
+
+        self.start_admission_barrier(group_id, incarnation, operation, reply, durable_outstanding)
+    }
+
+    fn start_admission_barrier(
+        &mut self,
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+        operation: AcceptedOperation,
+        reply: ClientReply,
+        durable_outstanding: bool,
+    ) -> Result<(), String> {
         let driver = match self.serving_driver(group_id, incarnation) {
             Ok(driver) => driver,
             Err(response) => {
-                reply.send(response, false);
+                Self::send_admission_failure(
+                    admission_candidate(operation, reply, durable_outstanding),
+                    &response,
+                );
                 return Ok(());
             }
         };
 
         let read_id = ReadId(self.next_read_id);
         let Some(next) = self.next_read_id.checked_add(1) else {
-            reply.send("ERR READ_ID_EXHAUSTED".to_string(), false);
+            Self::send_admission_failure(
+                admission_candidate(operation, reply, durable_outstanding),
+                "ERR READ_ID_EXHAUSTED",
+            );
             return Ok(());
         };
         self.next_read_id = next;
@@ -123,8 +160,8 @@ impl Engine {
             PendingAdmission {
                 group_id,
                 incarnation,
-                operation,
-                replies: vec![reply],
+                client_id: operation.client_id(),
+                candidates: vec![admission_candidate(operation, reply, durable_outstanding)],
                 deadline: Instant::now() + self.request_timeout,
             },
         );
@@ -149,6 +186,56 @@ impl Engine {
                 Ok(())
             }
         }
+    }
+
+    fn attach_or_queue_pending_admission(
+        &mut self,
+        group_id: GroupId,
+        operation: AcceptedOperation,
+        reply: ClientReply,
+        durable_outstanding: bool,
+    ) -> Option<ClientReply> {
+        if let Some(proposal_id) = self
+            .pending_operations
+            .get(&(group_id, operation.client_id()))
+            .copied()
+        {
+            let pending = self
+                .pending
+                .get_mut(&proposal_id)
+                .expect("pending operation index names a pending proposal");
+            if pending.operation == Some(operation) {
+                pending.replies.push(reply);
+                pending.deadline = Some(Instant::now() + self.request_timeout);
+                return None;
+            }
+        }
+
+        if let Some(read_id) = self
+            .pending_admission_operations
+            .get(&(group_id, operation.client_id()))
+            .copied()
+        {
+            let pending = self
+                .pending_admissions
+                .get_mut(&read_id)
+                .expect("pending admission index names a read");
+            if let Some(candidate) = pending
+                .candidates
+                .iter_mut()
+                .find(|candidate| candidate.operation == operation)
+            {
+                candidate.replies.push(reply);
+                candidate.durable_outstanding |= durable_outstanding;
+            } else {
+                pending
+                    .candidates
+                    .push(admission_candidate(operation, reply, durable_outstanding));
+            }
+            pending.deadline = Instant::now() + self.request_timeout;
+            return None;
+        }
+        Some(reply)
     }
 
     fn admission_record(
@@ -212,126 +299,179 @@ impl Engine {
         let driver = match self.serving_driver(pending.group_id, pending.incarnation) {
             Ok(driver) => driver,
             Err(response) => {
-                for reply in pending.replies {
-                    reply.send(response.clone(), false);
+                for candidate in pending.candidates {
+                    Self::send_admission_failure(candidate, &response);
                 }
                 return Ok(());
             }
         };
-        match driver.admission_decision(pending.operation.replicated_command()) {
-            CounterAdmissionDecision::SessionAlreadyOpen => {
-                for reply in pending.replies {
-                    reply.send("OK SESSION already_open".to_string(), false);
-                }
-            }
-            CounterAdmissionDecision::CounterReplay(result) => {
-                let response = format!("OK REPLAY {}", render_counter_result(result));
-                for reply in pending.replies {
-                    reply.send(response.clone(), false);
-                }
-            }
-            CounterAdmissionDecision::Rejected(rejection) => {
-                let response = render_apply_rejection(rejection);
-                for reply in pending.replies {
-                    reply.send(response.clone(), false);
-                }
-            }
-            CounterAdmissionDecision::Proceed => {
-                let record = self
-                    .groups
-                    .get(&pending.group_id)
-                    .expect("serving group remains installed")
-                    .record
-                    .clone();
-                let reservation = match record.reserve(pending.operation) {
-                    Ok(reservation) => reservation,
-                    Err(error) => {
-                        let response = format!("ERR ADMISSION {error}");
-                        for reply in pending.replies {
-                            reply.send(response.clone(), false);
-                        }
-                        return Ok(());
+        let mut proceeding = Vec::new();
+        for candidate in pending.candidates {
+            match driver.admission_decision(candidate.operation.replicated_command()) {
+                CounterAdmissionDecision::SessionAlreadyOpen => {
+                    for reply in candidate.replies {
+                        reply.send("OK SESSION already_open".to_string(), false);
                     }
-                };
-                let class = match pending.operation {
-                    AcceptedOperation::OpenSession { .. } => WorkClass::Control,
-                    AcceptedOperation::Counter { .. } => WorkClass::Command,
-                };
-                if let Err(refusal) = self.admit_client_proposal(
-                    pending.group_id,
-                    class,
-                    pending.operation.replicated_command(),
-                    Some(pending.operation),
-                    pending.replies,
-                ) {
-                    Self::finish_reserved_admission(
-                        &record,
-                        pending.operation,
-                        reservation,
-                        refusal,
-                    )?;
                 }
+                CounterAdmissionDecision::CounterReplay(result) => {
+                    let response = format!("OK REPLAY {}", render_counter_result(result));
+                    for reply in candidate.replies {
+                        reply.send(response.clone(), false);
+                    }
+                }
+                CounterAdmissionDecision::Rejected(rejection) => {
+                    let response = render_apply_rejection(rejection);
+                    for reply in candidate.replies {
+                        reply.send(response.clone(), false);
+                    }
+                }
+                CounterAdmissionDecision::Proceed => proceeding.push(candidate),
             }
+        }
+
+        let mut claimed = false;
+        for candidate in proceeding {
+            let Some(candidate) = self.attach_exact_pending_candidate(pending.group_id, candidate)
+            else {
+                continue;
+            };
+            if claimed || self.has_conflicting_outstanding(pending.group_id, candidate.operation) {
+                for reply in candidate.replies {
+                    reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
+                }
+                continue;
+            }
+            claimed = true;
+            self.finish_proceeding_admission(pending.group_id, candidate)?;
         }
         Ok(())
     }
 
-    fn attach_exact_pending(
+    fn attach_exact_pending_candidate(
         &mut self,
         group_id: GroupId,
-        operation: AcceptedOperation,
-        reply: ClientReply,
-    ) -> Option<ClientReply> {
+        mut candidate: PendingAdmissionCandidate,
+    ) -> Option<PendingAdmissionCandidate> {
         let Some(proposal_id) = self
             .pending_operations
-            .get(&(group_id, operation.client_id()))
+            .get(&(group_id, candidate.operation.client_id()))
             .copied()
         else {
-            return Some(reply);
+            return Some(candidate);
         };
         let pending = self
             .pending
             .get_mut(&proposal_id)
             .expect("pending operation index names a pending proposal");
-        if pending.operation == Some(operation) {
-            pending.replies.push(reply);
-            pending.deadline = Some(Instant::now() + self.request_timeout);
-        } else {
-            reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
+        if pending.operation != Some(candidate.operation) {
+            return Some(candidate);
         }
+        pending.replies.append(&mut candidate.replies);
+        pending.deadline = Some(Instant::now() + self.request_timeout);
         None
     }
 
-    fn attach_exact_admission(
+    fn has_conflicting_outstanding(&self, group_id: GroupId, operation: AcceptedOperation) -> bool {
+        if let Some(proposal_id) = self
+            .pending_operations
+            .get(&(group_id, operation.client_id()))
+        {
+            let pending = self
+                .pending
+                .get(proposal_id)
+                .expect("pending operation index names a pending proposal");
+            if pending.operation != Some(operation) {
+                return true;
+            }
+        }
+        let record = &self
+            .groups
+            .get(&group_id)
+            .expect("serving group remains installed")
+            .record;
+        matches!(
+            record.durable_operation_state(operation),
+            DurableOperationState::ConflictingOutstanding
+                | DurableOperationState::ConflictingTerminal
+        )
+    }
+
+    fn finish_proceeding_admission(
         &mut self,
         group_id: GroupId,
-        operation: AcceptedOperation,
-        reply: ClientReply,
-    ) -> Option<ClientReply> {
-        let Some(read_id) = self
-            .pending_admission_operations
-            .get(&(group_id, operation.client_id()))
-            .copied()
-        else {
-            return Some(reply);
+        candidate: PendingAdmissionCandidate,
+    ) -> Result<(), String> {
+        let record = self
+            .groups
+            .get(&group_id)
+            .expect("serving group remains installed")
+            .record
+            .clone();
+        let reservation = match record.reserve(candidate.operation) {
+            Ok(reservation) => reservation,
+            Err(ReservationError::Rejected(error)) => {
+                let response = format!("ERR ADMISSION {error}");
+                for reply in candidate.replies {
+                    reply.send(response.clone(), false);
+                }
+                return Ok(());
+            }
+            Err(ReservationError::PublicationUncertain(error)) => {
+                return Err(format!(
+                    "reservation publication is uncertain for group {} client {}: {error}",
+                    group_id.get(),
+                    candidate.operation.client_id().get()
+                ));
+            }
         };
-        let pending = self
-            .pending_admissions
-            .get_mut(&read_id)
-            .expect("pending admission index names a read");
-        if pending.operation == operation {
-            pending.replies.push(reply);
-            pending.deadline = Instant::now() + self.request_timeout;
-        } else {
-            reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
+        if reservation == ReserveOutcome::Reserved {
+            crate::directed_failpoint("after_reservation_publication_before_managed_admission");
         }
-        None
+        let class = match candidate.operation {
+            AcceptedOperation::OpenSession { .. } => WorkClass::Control,
+            AcceptedOperation::Counter { .. } => WorkClass::Command,
+        };
+        if let Err(refusal) = self.admit_client_proposal(
+            group_id,
+            class,
+            candidate.operation.replicated_command(),
+            Some(candidate.operation),
+            candidate.replies,
+        ) {
+            Self::finish_reserved_admission(&record, candidate.operation, reservation, refusal)?;
+        } else {
+            self.deferred_recovery
+                .remove(&(group_id, candidate.operation.client_id()));
+        }
+        Ok(())
+    }
+
+    pub(super) fn send_admission_failure(candidate: PendingAdmissionCandidate, response: &str) {
+        let response = if candidate.durable_outstanding {
+            "ERR UNKNOWN accepted operation remains durable".to_string()
+        } else {
+            response.to_string()
+        };
+        for reply in candidate.replies {
+            reply.send(response.clone(), false);
+        }
+    }
+
+    fn send_barrier_failure(candidate: PendingAdmissionCandidate, detail: &str) {
+        let response = if candidate.durable_outstanding {
+            "ERR UNKNOWN accepted operation remains durable".to_string()
+        } else {
+            format!("ERR NOT_COMMITTED {detail}")
+        };
+        for reply in candidate.replies {
+            reply.send(response.clone(), false);
+        }
     }
 
     fn take_pending_admission(&mut self, read_id: ReadId) -> Option<PendingAdmission> {
         let pending = self.pending_admissions.remove(&read_id)?;
         self.pending_admission_operations
-            .remove(&(pending.group_id, pending.operation.client_id()));
+            .remove(&(pending.group_id, pending.client_id));
         Some(pending)
     }
 
@@ -339,8 +479,8 @@ impl Engine {
         let Some(pending) = self.take_pending_admission(read_id) else {
             return;
         };
-        for reply in pending.replies {
-            reply.send(format!("ERR NOT_COMMITTED {detail}"), false);
+        for candidate in pending.candidates {
+            Self::send_barrier_failure(candidate, detail);
         }
     }
 
@@ -361,11 +501,8 @@ impl Engine {
             {
                 driver.cancel_read(read_id);
             }
-            for reply in pending.replies {
-                reply.send(
-                    "ERR NOT_COMMITTED admission barrier deadline elapsed".to_string(),
-                    false,
-                );
+            for candidate in pending.candidates {
+                Self::send_barrier_failure(candidate, "admission barrier deadline elapsed");
             }
         }
     }
@@ -387,8 +524,8 @@ impl Engine {
             {
                 driver.cancel_read(read_id);
             }
-            for reply in pending.replies {
-                reply.send(response.to_string(), false);
+            for candidate in pending.candidates {
+                Self::send_admission_failure(candidate, response);
             }
         }
     }
@@ -534,6 +671,22 @@ impl Engine {
                 .fail_reservation(outstanding.operation, failure)
                 .map_err(|error| error.to_string())?;
         }
+        let durable_keys = self
+            .groups
+            .iter()
+            .flat_map(|(group_id, entry)| {
+                entry
+                    .record
+                    .policy()
+                    .outstanding
+                    .into_values()
+                    .map(|outstanding| (*group_id, outstanding.operation.client_id()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        self.deferred_recovery
+            .retain(|key, _| durable_keys.contains(key));
+        let now = Instant::now();
         let recoverable = self
             .groups
             .iter()
@@ -548,48 +701,66 @@ impl Engine {
                     .collect::<Vec<_>>()
             })
             .filter(|(group_id, outstanding)| {
-                !self
-                    .pending_operations
-                    .contains_key(&(*group_id, outstanding.operation.client_id()))
+                let key = (*group_id, outstanding.operation.client_id());
+                !self.pending_operations.contains_key(&key)
+                    && self
+                        .deferred_recovery
+                        .get(&key)
+                        .is_none_or(|retry_at| now >= *retry_at)
             })
             .collect::<Vec<_>>();
         for (group_id, outstanding) in recoverable {
-            let proposal_id = LocalProposalId(self.next_proposal_id);
-            let Some(next) = self.next_proposal_id.checked_add(1) else {
-                return Err("proposal identity exhausted while recovering durable work".to_string());
-            };
-            let input = GroupInput::Proposal {
-                proposal: Proposal {
-                    local_proposal_id: proposal_id,
-                    client_request_id: None,
-                    command: outstanding.operation.replicated_command(),
-                },
-            };
-            let class = match outstanding.operation {
-                AcceptedOperation::OpenSession { .. } => WorkClass::Control,
-                AcceptedOperation::Counter { .. } => WorkClass::Command,
-            };
-            let Ok(receipt) = self.host.admit(&group_id, class, input) else {
-                continue;
-            };
-            self.audit
-                .observe_admission(group_id, receipt.work_id, class);
-            self.next_proposal_id = next;
-            self.pending_operations
-                .insert((group_id, outstanding.operation.client_id()), proposal_id);
-            self.pending.insert(
-                proposal_id,
-                PendingClient {
-                    group_id,
-                    operation: Some(outstanding.operation),
-                    replies: Vec::new(),
-                    deadline: None,
-                    recovered: true,
-                },
-            );
-            self.work
-                .insert(receipt.work_id, WorkKind::Proposal(proposal_id));
+            self.admit_recovered_outstanding(group_id, outstanding, now)?;
         }
+        Ok(())
+    }
+
+    fn admit_recovered_outstanding(
+        &mut self,
+        group_id: GroupId,
+        outstanding: OutstandingWork,
+        now: Instant,
+    ) -> Result<(), String> {
+        let key = (group_id, outstanding.operation.client_id());
+        let proposal_id = LocalProposalId(self.next_proposal_id);
+        let Some(next) = self.next_proposal_id.checked_add(1) else {
+            return Err("proposal identity exhausted while recovering durable work".to_string());
+        };
+        let input = GroupInput::Proposal {
+            proposal: Proposal {
+                local_proposal_id: proposal_id,
+                client_request_id: None,
+                command: outstanding.operation.replicated_command(),
+            },
+        };
+        let class = match outstanding.operation {
+            AcceptedOperation::OpenSession { .. } => WorkClass::Control,
+            AcceptedOperation::Counter { .. } => WorkClass::Command,
+        };
+        let Ok(receipt) = self.host.admit(&group_id, class, input) else {
+            self.recovery_refused = self.recovery_refused.saturating_add(1);
+            self.deferred_recovery
+                .insert(key, now + RECOVERY_RETRY_DELAY);
+            return Ok(());
+        };
+        self.deferred_recovery.remove(&key);
+        self.audit
+            .observe_admission(group_id, receipt.work_id, class);
+        self.next_proposal_id = next;
+        self.pending_operations
+            .insert((group_id, outstanding.operation.client_id()), proposal_id);
+        self.pending.insert(
+            proposal_id,
+            PendingClient {
+                group_id,
+                operation: Some(outstanding.operation),
+                replies: Vec::new(),
+                deadline: None,
+                recovered: true,
+            },
+        );
+        self.work
+            .insert(receipt.work_id, WorkKind::Proposal(proposal_id));
         Ok(())
     }
 

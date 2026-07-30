@@ -128,6 +128,58 @@ pub enum ReserveOutcome {
     ExactRetry,
 }
 
+/// Durable-ledger relationship between one request and its client slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DurableOperationState {
+    Absent,
+    ExactOutstanding(OutstandingPhase),
+    ConflictingOutstanding,
+    ExactTerminal(TerminalFailure),
+    ConflictingTerminal,
+}
+
+/// Failure to reserve a client operation.
+#[derive(Debug)]
+pub enum ReservationError {
+    /// A pre-publication policy or encoding decision proves no reservation was
+    /// published.
+    Rejected(StoreError),
+    /// Publication performed I/O, so the caller must not claim rejection.
+    PublicationUncertain(StoreError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicationCertainty {
+    DefinitelyNotPublished,
+    PublicationUncertain,
+}
+
+#[derive(Debug)]
+struct PublicationError {
+    certainty: PublicationCertainty,
+    source: StoreError,
+}
+
+impl PublicationError {
+    fn definitely_not_published(source: StoreError) -> Self {
+        Self {
+            certainty: PublicationCertainty::DefinitelyNotPublished,
+            source,
+        }
+    }
+
+    fn publication_uncertain(source: StoreError) -> Self {
+        Self {
+            certainty: PublicationCertainty::PublicationUncertain,
+            source,
+        }
+    }
+
+    fn into_source(self) -> StoreError {
+        self.source
+    }
+}
+
 /// A durable application-record failure.
 #[derive(Debug)]
 pub enum StoreError {
@@ -272,7 +324,7 @@ impl ApplicationRecord {
             },
             application,
         };
-        persist(&path, &record)?;
+        persist(&path, &record).map_err(PublicationError::into_source)?;
         Self::from_record(app_dir, path, max_sessions, record)
     }
 
@@ -312,23 +364,52 @@ impl ApplicationRecord {
         self.lock().policy.clone()
     }
 
-    pub fn reserve(&self, operation: AcceptedOperation) -> Result<ReserveOutcome, StoreError> {
+    pub fn durable_operation_state(&self, operation: AcceptedOperation) -> DurableOperationState {
+        let client_id = operation.client_id();
+        let staged = self.lock();
+        if let Some(outstanding) = staged.policy.outstanding.get(&client_id) {
+            return if outstanding.operation == operation {
+                DurableOperationState::ExactOutstanding(outstanding.phase)
+            } else {
+                DurableOperationState::ConflictingOutstanding
+            };
+        }
+        if let Some(terminal) = staged.policy.terminal.get(&client_id) {
+            return if terminal.operation == operation {
+                DurableOperationState::ExactTerminal(terminal.failure)
+            } else {
+                DurableOperationState::ConflictingTerminal
+            };
+        }
+        DurableOperationState::Absent
+    }
+
+    pub fn reserve(
+        &self,
+        operation: AcceptedOperation,
+    ) -> Result<ReserveOutcome, ReservationError> {
         let client_id = operation.client_id();
         let mut staged = self.lock().clone();
         if let Some(existing) = staged.policy.outstanding.get(&client_id) {
             return if existing.operation == operation {
                 Ok(ReserveOutcome::ExactRetry)
             } else {
-                Err(StoreError::ConflictingOutstanding { client_id })
+                Err(ReservationError::Rejected(
+                    StoreError::ConflictingOutstanding { client_id },
+                ))
             };
         }
         if staged.policy.terminal.contains_key(&client_id) {
-            return Err(StoreError::ConflictingOutstanding { client_id });
+            return Err(ReservationError::Rejected(
+                StoreError::ConflictingOutstanding { client_id },
+            ));
         }
         if staged.policy.outstanding.len() + staged.policy.terminal.len() >= self.max_outstanding {
-            return Err(StoreError::OutstandingCapacity {
-                bound: self.max_outstanding,
-            });
+            return Err(ReservationError::Rejected(
+                StoreError::OutstandingCapacity {
+                    bound: self.max_outstanding,
+                },
+            ));
         }
         staged.policy.outstanding.insert(
             client_id,
@@ -337,8 +418,16 @@ impl ApplicationRecord {
                 phase: OutstandingPhase::Queued,
             },
         );
-        self.publish(staged)?;
-        Ok(ReserveOutcome::Reserved)
+        match self.publish_classified(staged) {
+            Ok(()) => Ok(ReserveOutcome::Reserved),
+            Err(error)
+                if error.certainty == PublicationCertainty::DefinitelyNotPublished
+                    && !matches!(error.source, StoreError::Io { .. }) =>
+            {
+                Err(ReservationError::Rejected(error.source))
+            }
+            Err(error) => Err(ReservationError::PublicationUncertain(error.source)),
+        }
     }
 
     pub fn mark_entered_driver(&self, operation: AcceptedOperation) -> Result<(), StoreError> {
@@ -371,22 +460,6 @@ impl ApplicationRecord {
             self.publish(staged)?;
         }
         Ok(())
-    }
-
-    pub fn replay_terminal_failure(
-        &self,
-        operation: AcceptedOperation,
-    ) -> Result<Option<TerminalFailure>, StoreError> {
-        let client_id = operation.client_id();
-        let staged = self.lock();
-        let Some(terminal) = staged.policy.terminal.get(&client_id).copied() else {
-            return Ok(None);
-        };
-        if terminal.operation == operation {
-            Ok(Some(terminal.failure))
-        } else {
-            Err(StoreError::ConflictingOutstanding { client_id })
-        }
     }
 
     pub fn fail_reservation(
@@ -533,10 +606,15 @@ impl ApplicationRecord {
         self.publish(staged)
     }
 
-    fn publish(&self, staged: Record) -> Result<(), StoreError> {
+    fn publish_classified(&self, staged: Record) -> Result<(), PublicationError> {
         persist(&self.path, &staged)?;
         *self.lock() = staged;
         Ok(())
+    }
+
+    fn publish(&self, staged: Record) -> Result<(), StoreError> {
+        self.publish_classified(staged)
+            .map_err(PublicationError::into_source)
     }
 
     fn lock(&self) -> MutexGuard<'_, Record> {
@@ -694,21 +772,39 @@ impl ReplicatedStateMachine for DurableCounterStateMachine {
     }
 }
 
-fn persist(path: &Path, record: &Record) -> Result<(), StoreError> {
-    let bytes = encode(record)?;
+fn persist(path: &Path, record: &Record) -> Result<(), PublicationError> {
+    let bytes = encode(record).map_err(PublicationError::definitely_not_published)?;
     let temp = path.with_extension(format!("tmp.{}", std::process::id()));
-    let mut file = fs::File::create(&temp).map_err(|source| io_error("create", &temp, source))?;
-    file.write_all(&bytes)
-        .map_err(|source| io_error("write", &temp, source))?;
-    file.sync_all()
-        .map_err(|source| io_error("sync", &temp, source))?;
-    fs::rename(&temp, path).map_err(|source| io_error("publish", path, source))?;
-    let parent = path
-        .parent()
-        .ok_or(StoreError::Corrupt("record path has no parent"))?;
+    let mut file = fs::File::create(&temp).map_err(|source| {
+        PublicationError::definitely_not_published(io_error("create", &temp, source))
+    })?;
+    file.write_all(&bytes).map_err(|source| {
+        PublicationError::definitely_not_published(io_error("write", &temp, source))
+    })?;
+    file.sync_all().map_err(|source| {
+        PublicationError::definitely_not_published(io_error("sync", &temp, source))
+    })?;
+    crate::directed_failpoint("before_state_rcap_rename");
+    fs::rename(&temp, path).map_err(|source| {
+        PublicationError::definitely_not_published(io_error("publish", path, source))
+    })?;
+    crate::directed_failpoint("after_state_rcap_rename");
+    let parent = path.parent().ok_or_else(|| {
+        PublicationError::publication_uncertain(StoreError::Corrupt("record path has no parent"))
+    })?;
+    crate::directed_failpoint("before_state_rcap_parent_sync");
+    crate::directed_io_failure("state_rcap_parent_sync_failure").map_err(|source| {
+        PublicationError::publication_uncertain(io_error("sync parent directory", parent, source))
+    })?;
     fs::File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|source| io_error("sync parent directory", parent, source))
+        .map_err(|source| {
+            PublicationError::publication_uncertain(io_error(
+                "sync parent directory",
+                parent,
+                source,
+            ))
+        })
 }
 
 fn encode(record: &Record) -> Result<Vec<u8>, StoreError> {
@@ -1138,17 +1234,13 @@ mod tests {
         drop(state_machine);
         assert!(!record.policy().poisoned);
         assert_eq!(
-            record
-                .replay_terminal_failure(operation)
-                .expect("terminal lookup succeeds"),
-            Some(TerminalFailure::GroupPoisoned)
+            record.durable_operation_state(operation),
+            DurableOperationState::ExactTerminal(TerminalFailure::GroupPoisoned)
         );
         record.reopen(quota, 8).expect("new incarnation opens");
         assert_eq!(
-            record
-                .replay_terminal_failure(operation)
-                .expect("terminal lookup succeeds"),
-            None
+            record.durable_operation_state(operation),
+            DurableOperationState::Absent
         );
     }
 
@@ -1182,10 +1274,59 @@ mod tests {
             ApplicationRecord::open_existing(&app_dir, 8).expect("record reopens");
         drop(state_machine);
         assert_eq!(
-            record
-                .replay_terminal_failure(operation)
-                .expect("terminal lookup succeeds"),
-            Some(TerminalFailure::GroupPoisonedUnknown)
+            record.durable_operation_state(operation),
+            DurableOperationState::ExactTerminal(TerminalFailure::GroupPoisonedUnknown)
+        );
+    }
+
+    #[test]
+    fn durable_operation_state_distinguishes_exact_and_conflicting_entries() {
+        let scratch = ScratchSpace::create("counter-app-store", "operation-state")
+            .expect("scratch directory is created");
+        let app_dir = scratch.path().join("app");
+        let quota = WorkQuota::new(4).expect("test quota is nonzero");
+        let (record, state_machine) =
+            ApplicationRecord::bootstrap(&app_dir, 8, quota).expect("record bootstraps");
+        drop(state_machine);
+        let command = CounterCommand::Add {
+            delta: Delta::new(5).expect("test delta is nonzero"),
+        };
+        let exact = AcceptedOperation::Counter {
+            request: request(command),
+            command,
+        };
+        let conflicting = AcceptedOperation::OpenSession {
+            client_id: exact.client_id(),
+            epoch: SessionEpoch::new(4).expect("test epoch is nonzero"),
+        };
+
+        assert_eq!(
+            record.durable_operation_state(exact),
+            DurableOperationState::Absent
+        );
+        assert_eq!(
+            record.reserve(exact).expect("request reserves"),
+            ReserveOutcome::Reserved
+        );
+        assert_eq!(
+            record.durable_operation_state(exact),
+            DurableOperationState::ExactOutstanding(OutstandingPhase::Queued)
+        );
+        assert_eq!(
+            record.durable_operation_state(conflicting),
+            DurableOperationState::ConflictingOutstanding
+        );
+
+        record
+            .fail_reservation(exact, TerminalFailure::GroupPoisoned)
+            .expect("terminal failure publishes");
+        assert_eq!(
+            record.durable_operation_state(exact),
+            DurableOperationState::ExactTerminal(TerminalFailure::GroupPoisoned)
+        );
+        assert_eq!(
+            record.durable_operation_state(conflicting),
+            DurableOperationState::ConflictingTerminal
         );
     }
 }

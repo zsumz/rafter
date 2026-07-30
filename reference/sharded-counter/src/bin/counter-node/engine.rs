@@ -53,6 +53,7 @@ const MAX_PEERS_PER_LOOP: usize = 512;
 const MAX_DISPATCHES_PER_LOOP: usize = 512;
 const LOOP_POLL: Duration = Duration::from_millis(2);
 const MAX_SLOW_DELAY_MS: u64 = 5_000;
+const RECOVERY_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 type Host = ManagedTypedMultiRaftHost<GroupId, ReplicatedCounterCommand, CounterApplyResult>;
 type CounterDispatch = Dispatch<GroupId, GroupInput<GroupId, ReplicatedCounterCommand>>;
@@ -90,11 +91,18 @@ struct ClientAdmissionRefusal {
 }
 
 #[derive(Debug)]
+struct PendingAdmissionCandidate {
+    operation: AcceptedOperation,
+    replies: Vec<ClientReply>,
+    durable_outstanding: bool,
+}
+
+#[derive(Debug)]
 struct PendingAdmission {
     group_id: GroupId,
     incarnation: GroupIncarnation,
-    operation: AcceptedOperation,
-    replies: Vec<ClientReply>,
+    client_id: ClientId,
+    candidates: Vec<PendingAdmissionCandidate>,
     deadline: Instant,
 }
 
@@ -124,6 +132,7 @@ struct Engine {
     pending_operations: BTreeMap<(GroupId, ClientId), LocalProposalId>,
     pending_admissions: BTreeMap<ReadId, PendingAdmission>,
     pending_admission_operations: BTreeMap<(GroupId, ClientId), ReadId>,
+    deferred_recovery: BTreeMap<(GroupId, ClientId), Instant>,
     tick_pending: BTreeSet<GroupId>,
     poisoned: BTreeSet<GroupId>,
     slow: BTreeMap<GroupId, Duration>,
@@ -132,6 +141,7 @@ struct Engine {
     next_proposal_id: u64,
     next_read_id: u64,
     client_admitted: u64,
+    recovery_refused: u64,
     ready_announced: bool,
     refused_peer: u64,
     peers_paused: bool,
@@ -190,6 +200,7 @@ pub fn run(config: &Config) -> Result<(), String> {
         pending_operations: BTreeMap::new(),
         pending_admissions: BTreeMap::new(),
         pending_admission_operations: BTreeMap::new(),
+        deferred_recovery: BTreeMap::new(),
         tick_pending: BTreeSet::new(),
         poisoned: BTreeSet::new(),
         slow: BTreeMap::new(),
@@ -198,6 +209,7 @@ pub fn run(config: &Config) -> Result<(), String> {
         next_proposal_id: 1,
         next_read_id: 1,
         client_admitted: 0,
+        recovery_refused: 0,
         ready_announced: false,
         refused_peer: 0,
         peers_paused: false,
@@ -827,6 +839,12 @@ impl Engine {
             return Ok(());
         };
         if pending.recovered {
+            if let Some(operation) = pending.operation {
+                self.deferred_recovery.insert(
+                    (pending.group_id, operation.client_id()),
+                    Instant::now() + RECOVERY_RETRY_DELAY,
+                );
+            }
             for reply in pending.replies {
                 reply.send(
                     format!("ERR UNKNOWN recovered request remains pending: {detail}"),
@@ -851,6 +869,14 @@ impl Engine {
         let Some(pending) = self.take_pending(proposal_id) else {
             return;
         };
+        if pending.recovered {
+            if let Some(operation) = pending.operation {
+                self.deferred_recovery.insert(
+                    (pending.group_id, operation.client_id()),
+                    Instant::now() + RECOVERY_RETRY_DELAY,
+                );
+            }
+        }
         for reply in pending.replies {
             reply.send(format!("ERR UNKNOWN {detail}"), false);
         }
@@ -900,6 +926,8 @@ impl Engine {
         let pending = self.pending.remove(&proposal_id)?;
         if let Some(operation) = pending.operation {
             self.pending_operations
+                .remove(&(pending.group_id, operation.client_id()));
+            self.deferred_recovery
                 .remove(&(pending.group_id, operation.client_id()));
         }
         Some(pending)
@@ -953,8 +981,8 @@ impl Engine {
         ) {
             return Ok(format!("ERR LIFECYCLE {:?}", policy.lifecycle));
         }
-        self.cancel_admission_reads_for_group(group_id, "ERR LIFECYCLE Draining");
         if policy.lifecycle == GroupLifecycle::Serving {
+            directed_failpoint("before_draining_application_publication");
             record
                 .begin_draining(self.poisoned.contains(&group_id))
                 .map_err(|error| error.to_string())?;
@@ -964,6 +992,7 @@ impl Engine {
         } else if self.poisoned.contains(&group_id) && !policy.poisoned {
             record.mark_poisoned().map_err(|error| error.to_string())?;
         }
+        self.cancel_admission_reads_for_group(group_id, "ERR LIFECYCLE Draining");
         if self.poisoned.contains(&group_id) && has_driver {
             directed_failpoint("before_queued_retirement");
             let retired = self
@@ -1241,11 +1270,22 @@ impl Engine {
             &leader_groups
         };
         let poisoned = self.poisoned.len();
+        let durable_outstanding = self
+            .groups
+            .values()
+            .map(|entry| entry.record.policy().outstanding.len())
+            .sum::<usize>();
+        let admission_candidates = self
+            .pending_admissions
+            .values()
+            .map(|pending| pending.candidates.len())
+            .sum::<usize>();
         let link = self.link.counters();
         format!(
             "OK STATUS ready={} groups={} leaders={} leader_groups={} poisoned={} queued={} \
              in_flight={} workers={} admitted={} client_admitted={} serviced={} failed={} \
-             passes={} refused_peer={} \
+             passes={} pending_proposals={} admission_reads={} admission_candidates={} \
+             durable_outstanding={} recovery_deferred={} recovery_refused={} refused_peer={} \
              link_outbound_full={} link_inbound_full={} link_malformed={} \
              link_identity_refused={} link_inbound_connection_full={}",
             self.all_active_ready(),
@@ -1261,6 +1301,12 @@ impl Engine {
             metrics.serviced,
             metrics.failed,
             metrics.passes_completed,
+            self.pending_operations.len(),
+            self.pending_admissions.len(),
+            admission_candidates,
+            durable_outstanding,
+            self.deferred_recovery.len(),
+            self.recovery_refused,
             self.refused_peer,
             link.outbound_full,
             link.inbound_full,
@@ -1310,8 +1356,8 @@ impl Engine {
             {
                 driver.cancel_read(read_id);
             }
-            for reply in pending.replies {
-                reply.send("ERR NOT_COMMITTED process shutting down".to_string(), false);
+            for candidate in pending.candidates {
+                Self::send_admission_failure(candidate, "ERR NOT_COMMITTED process shutting down");
             }
         }
         self.pending_admission_operations.clear();

@@ -551,6 +551,83 @@ fn backpressure_is_reported_only_after_durable_cancellation() {
 }
 
 #[test]
+#[ignore = "reservation publication certainty across directed crash seams"]
+fn reservation_publication_never_exposes_a_false_rejection() {
+    for failpoint in [
+        "before_state_rcap_rename",
+        "after_state_rcap_rename",
+        "before_state_rcap_parent_sync",
+        "state_rcap_parent_sync_failure",
+    ] {
+        let mut cluster = ProcessCluster::start(&format!("reservation-{failpoint}"));
+        let group = 1;
+        let client = 52;
+        assert!(cluster
+            .request_leader(&format!("OPEN {group} 1 {client} 1"))
+            .starts_with("OK SESSION "));
+        let host = cluster.leader_for_group(group);
+        let request = format!("ADD {group} 1 {client} 1 1 5");
+        cluster.arm_failpoint(host, failpoint);
+        cluster.trigger_failpoint(host, &request, failpoint);
+
+        cluster.restart(host);
+        cluster.wait_ready();
+        let response = cluster.request_leader(&request);
+        assert!(
+            matches!(
+                response.as_str(),
+                "OK ADDED value=5" | "OK REPLAY ADDED value=5"
+            ),
+            "retry after {failpoint} must resolve exactly once: {response}"
+        );
+        cluster.wait_all_values(&std::collections::BTreeMap::from([((group, 1), 5)]));
+    }
+}
+
+#[test]
+#[ignore = "durable outstanding retries cannot receive NOT_COMMITTED"]
+fn durable_outstanding_barrier_failure_remains_unknown_under_queue_pressure() {
+    let mut cluster = ProcessCluster::start("durable-outstanding-barrier");
+    let group = 1;
+    let client = 53;
+    assert!(cluster
+        .request_leader(&format!("OPEN {group} 1 {client} 1"))
+        .starts_with("OK SESSION "));
+    let old_leader = cluster.leader_for_group(group);
+    let request = format!("ADD {group} 1 {client} 1 1 5");
+    cluster.arm_failpoint(
+        old_leader,
+        "after_reservation_publication_before_managed_admission",
+    );
+    cluster.trigger_failpoint(
+        old_leader,
+        &request,
+        "after_reservation_publication_before_managed_admission",
+    );
+    let leader = cluster.leader_for_group_excluding(group, Some(old_leader));
+    cluster.restart(old_leader);
+    cluster.wait_status_at_least(old_leader, "recovery_deferred", 1);
+
+    let _blockers = occupy_all_workers(&mut cluster, old_leader, group);
+    fill_group_queue(&mut cluster, old_leader, group);
+    let refused = number_field(
+        &cluster.request_on(old_leader, "STATUS"),
+        "recovery_refused",
+    );
+    cluster.wait_status_above(old_leader, "recovery_refused", refused);
+    let status = cluster.request_on(old_leader, "STATUS");
+    assert_eq!(number_field(&status, "durable_outstanding"), 1, "{status}");
+    assert_eq!(number_field(&status, "pending_proposals"), 0, "{status}");
+    assert_eq!(
+        cluster.request_on(old_leader, &request),
+        "ERR UNKNOWN accepted operation remains durable"
+    );
+
+    cluster.wait_response(leader, &request, "OK ADDED value=5");
+    cluster.wait_value(leader, group, 1, 5);
+}
+
+#[test]
 #[ignore = "real client-range admission and restart boundary"]
 fn client_range_is_refused_before_admission_and_survives_restart() {
     let mut cluster = ProcessCluster::start("client-range");
@@ -649,6 +726,219 @@ fn linearized_policy_refusals_outrank_saturated_queues() {
         number_field(&after, "client_admitted"),
         number_field(&before, "client_admitted"),
         "policy decisions and exact replay admit no client proposal"
+    );
+}
+
+fn assert_admission_pending_precedence(cluster: &mut ProcessCluster, group: u32, client: u32) {
+    let host = cluster.leader_for_group(group);
+    assert_eq!(cluster.request_on(host, "PAUSE_PEERS"), "OK PEERS paused");
+    let address = cluster.node_addr(host);
+    let primary = thread::spawn(move || {
+        let mut connection =
+            LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
+        connection.request(&format!("ADD {group} 1 {client} 1 4 1"))
+    });
+    cluster.wait_status_at_least(host, "admission_reads", 1);
+    let alternatives = [
+        (
+            format!("ADD {group} 1 {client} 1 3 1"),
+            "OK REPLAY ADDED value=3",
+        ),
+        (
+            format!("ADD {group} 1 {client} 1 3 2"),
+            "ERR CONFLICTING_RETRY",
+        ),
+        (
+            format!("ADD {group} 1 {client} 1 2 1"),
+            "ERR STALE_SEQUENCE highest=3",
+        ),
+        (
+            format!("OPEN {group} 1 {client} 1"),
+            "OK SESSION already_open",
+        ),
+    ]
+    .into_iter()
+    .map(|(request, expected)| {
+        let address = cluster.node_addr(host);
+        (
+            thread::spawn(move || {
+                let mut connection = LineConnection::connect(address, CONNECTION_TIMEOUTS)
+                    .expect("leader connection opens");
+                connection.request(&request)
+            }),
+            expected,
+        )
+    })
+    .collect::<Vec<_>>();
+    cluster.wait_status_at_least(host, "admission_candidates", 5);
+    assert_eq!(
+        number_field(&cluster.request_on(host, "STATUS"), "admission_reads"),
+        1,
+        "one client owns one shared authoritative barrier"
+    );
+    assert_eq!(cluster.request_on(host, "RESUME_PEERS"), "OK PEERS resumed");
+    for (request, expected) in alternatives {
+        assert_eq!(
+            request
+                .join()
+                .expect("alternative request thread does not panic")
+                .expect("alternative request receives a response"),
+            expected
+        );
+    }
+    assert_eq!(
+        primary
+            .join()
+            .expect("primary admission thread does not panic")
+            .expect("primary admission receives a response"),
+        "OK ADDED value=4"
+    );
+}
+
+#[test]
+#[ignore = "completed history outranks managed and admission-pending work"]
+fn completed_history_outranks_different_local_pending_operations() {
+    let mut cluster = ProcessCluster::start("completed-before-pending");
+    let group = 1;
+    let client = 54;
+    assert!(cluster
+        .request_leader(&format!("OPEN {group} 1 {client} 1"))
+        .starts_with("OK SESSION "));
+    for (sequence, value) in [(1, 1), (2, 2)] {
+        assert_eq!(
+            cluster.request_leader(&format!("ADD {group} 1 {client} 1 {sequence} 1")),
+            format!("OK ADDED value={value}")
+        );
+    }
+
+    let host = cluster.leader_for_group(group);
+    assert_eq!(
+        cluster.request_on(host, &format!("SLOW {group} 2000")),
+        format!("OK SLOW group={group} milliseconds=2000")
+    );
+    let admitted = number_field(&cluster.request_on(host, "STATUS"), "client_admitted");
+    let address = cluster.node_addr(host);
+    let pending = thread::spawn(move || {
+        let mut connection =
+            LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
+        connection.request(&format!("ADD {group} 1 {client} 1 3 1"))
+    });
+    cluster.wait_status_above(host, "client_admitted", admitted);
+    cluster.wait_status_at_least(host, "workers", 1);
+    assert_eq!(
+        cluster.request_on(host, &format!("ADD {group} 1 {client} 1 2 1")),
+        "OK REPLAY ADDED value=2"
+    );
+    assert_eq!(
+        cluster.request_on(host, &format!("ADD {group} 1 {client} 1 2 2")),
+        "ERR CONFLICTING_RETRY"
+    );
+    assert_eq!(
+        cluster.request_on(host, &format!("ADD {group} 1 {client} 1 1 1")),
+        "ERR STALE_SEQUENCE highest=2"
+    );
+    assert_eq!(
+        cluster.request_on(host, &format!("OPEN {group} 1 {client} 1")),
+        "OK SESSION already_open"
+    );
+    let pending_response = pending
+        .join()
+        .expect("pending proposal thread does not panic")
+        .expect("pending proposal receives a response");
+    assert!(
+        pending_response == "OK ADDED value=3"
+            || pending_response.starts_with("ERR UNKNOWN ")
+            || pending_response.starts_with("ERR NOT_COMMITTED "),
+        "the delayed proposal returned an unexpected outcome: {pending_response}"
+    );
+    assert_eq!(
+        cluster.request_on(host, &format!("SLOW {group} 0")),
+        format!("OK SLOW group={group} milliseconds=0")
+    );
+    if pending_response != "OK ADDED value=3" {
+        let retry = cluster.request_leader(&format!("ADD {group} 1 {client} 1 3 1"));
+        assert!(
+            matches!(
+                retry.as_str(),
+                "OK ADDED value=3" | "OK REPLAY ADDED value=3"
+            ),
+            "the exact unknown retry must resolve: {retry}"
+        );
+    }
+    let leader = cluster.leader_for_group(group);
+    cluster.wait_value(leader, group, 1, 3);
+    assert_admission_pending_precedence(&mut cluster, group, client);
+}
+
+#[test]
+#[ignore = "draining responses follow durable lifecycle publication"]
+fn draining_publication_precedes_pending_admission_responses() {
+    for (failpoint, expected) in [
+        ("before_draining_application_publication", "OK VALUE"),
+        (
+            "after_draining_application_publication",
+            "ERR LIFECYCLE Draining",
+        ),
+    ] {
+        let mut cluster = ProcessCluster::start(&format!("pending-drain-{failpoint}"));
+        let group = 1;
+        let host = cluster.leader_for_group(group);
+        assert_eq!(cluster.request_on(host, "PAUSE_PEERS"), "OK PEERS paused");
+        let address = cluster.node_addr(host);
+        let pending = thread::spawn(move || {
+            let mut connection = LineConnection::connect(address, CONNECTION_TIMEOUTS)
+                .expect("leader connection opens");
+            connection.request(&format!("OPEN {group} 1 55 1"))
+        });
+        cluster.wait_status_at_least(host, "admission_reads", 1);
+        cluster.arm_failpoint(host, failpoint);
+        cluster.trigger_failpoint(host, &format!("DRAIN {group} 1"), failpoint);
+        assert!(
+            pending
+                .join()
+                .expect("pending admission thread does not panic")
+                .is_err(),
+            "a crash at {failpoint} cannot expose a lifecycle response"
+        );
+
+        cluster.restart(host);
+        if failpoint == "before_draining_application_publication" {
+            cluster.wait_ready();
+        }
+        let response = cluster.request_on(host, &format!("VALUE {group} 1"));
+        assert!(
+            response.starts_with(expected),
+            "{failpoint} recovered unexpected lifecycle: {response}"
+        );
+    }
+
+    let mut cluster = ProcessCluster::start("pending-drain-success");
+    let group = 1;
+    let host = cluster.leader_for_group(group);
+    assert_eq!(cluster.request_on(host, "PAUSE_PEERS"), "OK PEERS paused");
+    let address = cluster.node_addr(host);
+    let pending = thread::spawn(move || {
+        let mut connection =
+            LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
+        connection.request(&format!("OPEN {group} 1 55 1"))
+    });
+    cluster.wait_status_at_least(host, "admission_reads", 1);
+    assert_eq!(
+        cluster.request_on(host, &format!("DRAIN {group} 1")),
+        format!("OK DRAIN group={group}")
+    );
+    assert_eq!(
+        pending
+            .join()
+            .expect("pending admission thread does not panic")
+            .expect("published draining returns a response"),
+        "ERR LIFECYCLE Draining"
+    );
+    cluster.kill(host);
+    cluster.restart(host);
+    assert_eq!(
+        cluster.request_on(host, &format!("VALUE {group} 1")),
+        "ERR LIFECYCLE Draining"
     );
 }
 

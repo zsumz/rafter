@@ -10,7 +10,7 @@ mod host_registry;
 mod peer_link;
 mod protocol;
 
-use std::{env, fs, num::NonZeroUsize, path::PathBuf, process::ExitCode, time::Duration};
+use std::{env, fs, io, num::NonZeroUsize, path::PathBuf, process::ExitCode, time::Duration};
 
 use rafter::NodeId;
 use rafter_reference_sharded_counter::WorkQuota;
@@ -115,12 +115,29 @@ pub fn emit(line: &str) {
 }
 
 pub fn directed_failpoint(name: &str) {
+    if directed_failpoint_armed(name) {
+        emit(&format!("FAILPOINT {name}"));
+        std::process::abort();
+    }
+}
+
+/// Injects a configured I/O failure without aborting the process.
+///
+/// # Errors
+///
+/// Returns the directed error when `name` is armed.
+pub fn directed_io_failure(name: &str) -> io::Result<()> {
+    if directed_failpoint_armed(name) {
+        emit(&format!("FAILPOINT {name}"));
+        return Err(io::Error::other(format!("directed I/O failure at {name}")));
+    }
+    Ok(())
+}
+
+fn directed_failpoint_armed(name: &str) -> bool {
     let environment_match = env::var("RAFTER_COUNTER_FAILPOINT").as_deref() == Ok(name);
     let file_match = env::var_os("RAFTER_COUNTER_FAILPOINT_FILE")
         .and_then(|path| fs::read_to_string(path).ok())
         .is_some_and(|armed| armed.trim() == name);
-    if environment_match || file_match {
-        emit(&format!("FAILPOINT {name}"));
-        std::process::abort();
-    }
+    environment_match || file_match
 }

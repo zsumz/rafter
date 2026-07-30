@@ -96,7 +96,7 @@ message name a generation that has already retired.
 
 ## Commands
 
-Work is submitted to one group incarnation and is one of three shapes:
+Work is submitted to one group incarnation and is one of four shapes:
 
 ```text
 OpenSession { client_id, epoch }        client control work
@@ -104,6 +104,13 @@ Counter { request, command, cost }      client work, scheduled as Command
 System  { class, cost }                 scheduler traffic: Control, Snapshot, Bulk
 Faulty  { class, cost }                 work whose application poisons its group
 ```
+
+The replicated adapter also reserves command tag 4 for `CapacityFault`. It is a
+fixture-only persisted command used to exercise the ordinary
+`SessionCapacity` invariant/quarantine path, including restart from a log that
+already contains it. It is deliberately absent from the client protocol and
+the independent scheduler vocabulary: no production request can create it.
+Removing or reassigning the tag would be an on-disk schema change.
 
 Counter commands are:
 
@@ -281,6 +288,17 @@ indexed by one pending admission per client and group, consumes neither a
 cancellation. This is what lets an exact replay or typed policy refusal outrank
 a saturated application queue without creating a second unbounded queue.
 
+An exact retry of the operation already waiting on that barrier attaches to its
+answer. A different operation for the same client joins the same barrier as
+another bounded candidate; it does not manufacture a second read. Once the
+barrier applies, every candidate is evaluated against completed history and
+session state first. Only candidates whose authoritative decision is `Proceed`
+can lose to a different durable or locally managed outstanding operation.
+Thus completed replay, stale sequence, conflicting retry, and already-open
+session answers are never masked by local pending work. The candidate set is
+bounded by the host's 64 client connections, while the read itself remains one
+per client and group.
+
 ### Request fingerprints
 
 The fingerprint is a deterministic 64-bit digest of the command's canonical
@@ -409,6 +427,14 @@ Because a group can be poisoned by work it services *while* draining, the
 retirement is attached to the drain **request** rather than to the transition.
 Draining an already-draining poisoned group is how an operator clears a backlog
 that `Remove` keeps refusing.
+
+Drain publication has the same ordering obligation. The application record
+first publishes `Draining`, the host registry then reconciles to it, and only
+then may the process cancel admission reads or answer their callers with
+`ERR LIFECYCLE Draining`. A crash before application publication recovers
+`Serving` and has exposed no draining answer; a crash after it recovers
+`Draining`, even if registry publication or pending-response cleanup had not
+finished.
 
 ## Work Classes
 
@@ -990,6 +1016,16 @@ after cancellation cannot resurrect the operation. If cancellation cannot be
 made durable, the connection closes or reports an unknown outcome instead of a
 false refusal. The bounds decide what may enter, never what may stay.
 
+Reservation publication itself follows the same response-truth rule. Pure
+preflight failures, before any persistence begins, are deterministic admission
+rejections. Once persistence can have reached `state.rcap`, an I/O failure is
+publication-uncertain: the process closes the connection instead of returning
+`ERR ADMISSION`. Publication renames the synced temporary record, then syncs
+its parent directory. Failures before and after that rename, before parent
+sync, and from parent sync are directed crash/error seams. This conservative
+classification permits an extra unknown outcome, but never a negative response
+for an operation whose durable copy recovery might execute.
+
 A per-group bound is what keeps one group from consuming the host's whole queue,
 and the global bound is what keeps the sum of well-behaved groups from doing the
 same. Neither substitutes for the other, which is why the configuration requires
@@ -1438,6 +1474,16 @@ history keeps the exact operation identity across that second branch. Recording
 a provable refusal as `Unknown` would let an implementation that serviced it be
 explained away.
 
+That distinction is operation-specific, not merely process-local. Before
+starting or failing a barrier, the process classifies the durable ledger for
+the exact client operation. If the exact operation remains outstanding, a
+leadership, rejection, expiry, or lifecycle failure of its barrier returns
+`ERR UNKNOWN`, because recovery may still execute it. `ERR NOT_COMMITTED` is
+available only when no durable copy of that exact operation exists. Recovery
+backs off a refused re-admission for two seconds, preventing a durable
+outstanding operation from spinning through barriers while preserving its
+retry obligation.
+
 A typed terminal failure for an operation accepted earlier is a durable
 obligation, not a fresh admission decision. After the group identity and client
 range are checked, that failure replays before the group's current lifecycle or
@@ -1628,6 +1674,15 @@ The reviewed process inventory exercises:
   boundary after restart;
 - authoritative session, sequence, conflict, gap, and replay decisions while
   every managed application queue is saturated;
+- completed-history and session decisions outranking a different operation
+  waiting either in managed admission or on the same authoritative barrier;
+- all four reservation-publication uncertainty seams, proving an exact retry
+  resolves once without observing a false admission rejection;
+- an exact durable outstanding retry returning `UNKNOWN` when its follower
+  barrier is refused under saturated queue pressure, then executing after
+  authority returns;
+- drain publication before pending-admission cancellation, across both sides
+  of application publication and through a successful restart;
 - a stale isolated replica refusing to replay its local completion cache after
   another quorum advances the session;
 - `SIGKILL`, exact retry after an unknown outcome, clean restart, snapshot,
