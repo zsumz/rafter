@@ -433,8 +433,10 @@ that `Remove` keeps refusing.
 Drain publication has the same ordering obligation. The application record
 first publishes `Draining`, the host registry then reconciles to it, and only
 then may the process cancel admission reads or answer their callers with
-`ERR LIFECYCLE Draining`. A crash before application publication recovers
-`Serving` and has exposed no draining answer; a crash after it recovers
+`ERR UNKNOWN authoritative admission unresolved: LIFECYCLE Draining`. The
+lifecycle is durable at that point, but the canceled barrier has not established
+the operation's authoritative outcome. A crash before application publication
+recovers `Serving` and has exposed no draining answer; a crash after it recovers
 `Draining`, even if registry publication or pending-response cleanup had not
 finished.
 
@@ -1477,14 +1479,22 @@ a provable refusal as `Unknown` would let an implementation that serviced it be
 explained away.
 
 That distinction is operation-specific, not merely process-local. Before
-starting or failing a barrier, the process classifies the durable ledger for
-the exact client operation. If the exact operation remains outstanding, a
-leadership, rejection, expiry, or lifecycle failure of its barrier returns
-`ERR UNKNOWN`, because recovery may still execute it. `ERR NOT_COMMITTED` is
-available only when no durable copy of that exact operation exists. Recovery
-backs off a refused re-admission for two seconds, preventing a durable
-outstanding operation from spinning through barriers while preserving its
-retry obligation.
+starting a barrier, the process classifies the durable ledger for the exact
+client operation so typed terminal failures and live obligations keep their
+precedence. Ledger absence is not non-acceptance proof: a successful application
+commit removes its local outstanding entry, so an exact retry can be locally
+absent while already committed elsewhere. A leadership rejection, cancellation,
+expiry, lifecycle interruption, or shutdown before an authoritative decision
+therefore returns `ERR UNKNOWN` regardless of local ledger presence.
+`ERR NOT_COMMITTED` is available only when a separate operation-specific fact
+proves that no copy was accepted. Recovery backs off a refused re-admission for
+two seconds, preventing a durable outstanding operation from spinning while
+preserving its retry obligation.
+
+A granted barrier makes `SessionAlreadyOpen`, `CounterReplay`, and `Rejected`
+authoritative terminal decisions. Each decision durably removes an exact
+outstanding obligation before its response is exposed; a cleanup failure closes
+the process instead. Only `Proceed` may leave or create an outstanding entry.
 
 A typed terminal failure for an operation accepted earlier is a durable
 obligation, not a fresh admission decision. After the group identity and client
@@ -1687,6 +1697,10 @@ The reviewed process inventory exercises:
 - an exact durable outstanding retry returning `UNKNOWN` when its follower
   barrier is refused under saturated queue pressure, then executing after
   authority returns;
+- an exact committed retry whose local outstanding entry is absent returning
+  `UNKNOWN` when its authoritative barrier fails;
+- an authoritative stale-session rejection durably retiring its exact
+  outstanding obligation before the response;
 - drain publication before pending-admission cancellation, across both sides
   of application publication and through a successful restart;
 - a stale isolated replica refusing to replay its local completion cache after

@@ -1422,7 +1422,7 @@ impl Engine {
                 driver.cancel_read(read_id);
             }
             for candidate in pending.candidates {
-                Self::send_admission_failure(candidate, "ERR NOT_COMMITTED process shutting down");
+                Self::send_unresolved_admission(candidate, "process shutting down");
             }
         }
         self.pending_admission_operations.clear();

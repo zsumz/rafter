@@ -1105,7 +1105,7 @@ fn draining_publication_precedes_pending_admission_responses() {
             .join()
             .expect("pending admission thread does not panic")
             .expect("published draining returns a response"),
-        "ERR LIFECYCLE Draining"
+        "ERR UNKNOWN authoritative admission unresolved: LIFECYCLE Draining"
     );
     cluster.kill(host);
     cluster.restart(host);

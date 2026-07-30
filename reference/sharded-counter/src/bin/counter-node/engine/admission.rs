@@ -136,7 +136,7 @@ impl Engine {
         let driver = match self.serving_driver(group_id, incarnation) {
             Ok(driver) => driver,
             Err(response) => {
-                Self::send_admission_failure(
+                Self::send_unresolved_admission(
                     admission_candidate(operation, reply, durable_outstanding),
                     &response,
                 );
@@ -146,9 +146,9 @@ impl Engine {
 
         let read_id = ReadId(self.next_read_id);
         let Some(next) = self.next_read_id.checked_add(1) else {
-            Self::send_admission_failure(
+            Self::send_unresolved_admission(
                 admission_candidate(operation, reply, durable_outstanding),
-                "ERR READ_ID_EXHAUSTED",
+                "read id exhausted",
             );
             return Ok(());
         };
@@ -306,7 +306,7 @@ impl Engine {
             Ok(driver) => driver,
             Err(response) => {
                 for candidate in pending.candidates {
-                    Self::send_admission_failure(candidate, &response);
+                    Self::send_unresolved_admission(candidate, &response);
                 }
                 return Ok(());
             }
@@ -319,35 +319,25 @@ impl Engine {
             .clone();
         let mut proceeding = Vec::new();
         for candidate in pending.candidates {
-            match driver.admission_decision(candidate.operation.replicated_command()) {
+            let decision = driver.admission_decision(candidate.operation.replicated_command());
+            if !matches!(&decision, CounterAdmissionDecision::Proceed) {
+                record
+                    .reconcile_authoritative_completion(candidate.operation)
+                    .map_err(|error| {
+                        format!(
+                            "authoritative terminal completion could not be published for group {} client {}: {error}",
+                            pending.group_id.get(),
+                            candidate.operation.client_id().get()
+                        )
+                    })?;
+            }
+            match decision {
                 CounterAdmissionDecision::SessionAlreadyOpen => {
-                    if candidate.durable_outstanding {
-                        record
-                            .reconcile_authoritative_completion(candidate.operation)
-                            .map_err(|error| {
-                                format!(
-                                    "authoritative session completion could not be published for group {} client {}: {error}",
-                                    pending.group_id.get(),
-                                    candidate.operation.client_id().get()
-                                )
-                            })?;
-                    }
                     for reply in candidate.replies {
                         reply.send("OK SESSION already_open".to_string(), false);
                     }
                 }
                 CounterAdmissionDecision::CounterReplay(result) => {
-                    if candidate.durable_outstanding {
-                        record
-                            .reconcile_authoritative_completion(candidate.operation)
-                            .map_err(|error| {
-                                format!(
-                                    "authoritative replay completion could not be published for group {} client {}: {error}",
-                                    pending.group_id.get(),
-                                    candidate.operation.client_id().get()
-                                )
-                            })?;
-                    }
                     let response = format!("OK REPLAY {}", render_counter_result(result));
                     for reply in candidate.replies {
                         reply.send(response.clone(), false);
@@ -478,11 +468,12 @@ impl Engine {
         Ok(())
     }
 
-    pub(super) fn send_admission_failure(candidate: PendingAdmissionCandidate, response: &str) {
+    pub(super) fn send_unresolved_admission(candidate: PendingAdmissionCandidate, detail: &str) {
         let response = if candidate.durable_outstanding {
             "ERR UNKNOWN accepted operation remains durable".to_string()
         } else {
-            response.to_string()
+            let detail = detail.strip_prefix("ERR ").unwrap_or(detail);
+            format!("ERR UNKNOWN authoritative admission unresolved: {detail}")
         };
         for reply in candidate.replies {
             reply.send(response.clone(), false);
@@ -490,14 +481,7 @@ impl Engine {
     }
 
     fn send_barrier_failure(candidate: PendingAdmissionCandidate, detail: &str) {
-        let response = if candidate.durable_outstanding {
-            "ERR UNKNOWN accepted operation remains durable".to_string()
-        } else {
-            format!("ERR NOT_COMMITTED {detail}")
-        };
-        for reply in candidate.replies {
-            reply.send(response.clone(), false);
-        }
+        Self::send_unresolved_admission(candidate, detail);
     }
 
     fn take_pending_admission(&mut self, read_id: ReadId) -> Option<PendingAdmission> {
@@ -557,7 +541,7 @@ impl Engine {
                 driver.cancel_read(read_id);
             }
             for candidate in pending.candidates {
-                Self::send_admission_failure(candidate, response);
+                Self::send_unresolved_admission(candidate, response);
             }
         }
     }
