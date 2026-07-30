@@ -132,6 +132,17 @@ pub struct DispatchItem<T> {
     pub payload: T,
 }
 
+/// One accepted queued item retired explicitly without dispatch.
+#[derive(Debug)]
+pub struct FailedQueuedItem<T> {
+    /// Admission identity.
+    pub work_id: WorkId,
+    /// Class lane the item occupied.
+    pub class: WorkClass,
+    /// Exact caller-owned payload that will not be serviced.
+    pub payload: T,
+}
+
 /// One group turn occupying one worker until exact completion.
 #[derive(Debug)]
 #[must_use = "dropping a dispatch leaves its worker and accepted work in flight"]

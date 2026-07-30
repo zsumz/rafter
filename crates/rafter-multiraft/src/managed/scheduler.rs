@@ -8,9 +8,9 @@ use std::{
 use super::{
     AdmissionReceipt, AdmissionRejected, AdmissionRejection, ArmPass, BeginDispatch,
     CompletionError, Dispatch, DispatchCompletion, DispatchCompletionPermit, DispatchId,
-    DispatchItem, GroupStateError, IdentityError, ManagedConfig, ManagedMetrics, PassCompletion,
-    PassId, PassPlan, RegisterError, RemoveError, SkipReason, SkippedOpportunity, WorkClass,
-    WorkDisposition, WorkId,
+    DispatchItem, FailedQueuedItem, GroupStateError, IdentityError, ManagedConfig, ManagedMetrics,
+    PassCompletion, PassId, PassPlan, RegisterError, RemoveError, SkipReason, SkippedOpportunity,
+    WorkClass, WorkDisposition, WorkId,
 };
 
 #[derive(Debug)]
@@ -152,6 +152,23 @@ where
     ///
     /// Refuses a group with queued or in-flight accepted work.
     pub fn remove_group(&mut self, group_id: &G) -> Result<bool, RemoveError<G>> {
+        if !self.can_remove_group(group_id)? {
+            return Ok(false);
+        }
+        self.ready.remove(group_id);
+        self.groups.remove(group_id);
+        Ok(true)
+    }
+
+    /// Checks the exact preconditions for removing a group without changing it.
+    ///
+    /// This is useful when a caller must durably publish a removal transaction
+    /// before detaching the already-proven-idle driver.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a group with queued or in-flight accepted work.
+    pub fn can_remove_group(&self, group_id: &G) -> Result<bool, RemoveError<G>> {
         let Some(group) = self.groups.get(group_id) else {
             return Ok(false);
         };
@@ -165,9 +182,38 @@ where
         if group.in_flight {
             return Err(RemoveError::InFlight(group_id.clone()));
         }
-        self.ready.remove(group_id);
-        self.groups.remove(group_id);
         Ok(true)
+    }
+
+    /// Explicitly fails every queued item for one group in class/FIFO order.
+    ///
+    /// An in-flight dispatch is deliberately untouched: its owner must finish
+    /// through the exact dispatch-completion protocol. The returned payloads
+    /// are the only copy held by the scheduler.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GroupStateError::UnknownGroup`] for an unregistered key.
+    pub fn fail_queued(
+        &mut self,
+        group_id: &G,
+    ) -> Result<Vec<FailedQueuedItem<T>>, GroupStateError<G>> {
+        let group = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| GroupStateError::UnknownGroup(group_id.clone()))?;
+        let mut failed = Vec::with_capacity(group.len());
+        while let Some(item) = group.pop() {
+            failed.push(FailedQueuedItem {
+                work_id: item.work_id,
+                class: item.class,
+                payload: item.payload,
+            });
+        }
+        self.queued -= failed.len();
+        self.failed += failed.len() as u64;
+        self.refresh_ready(group_id);
+        Ok(failed)
     }
 
     /// Sets whether a group may appear in newly armed passes.

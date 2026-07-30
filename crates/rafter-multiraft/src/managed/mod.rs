@@ -23,6 +23,7 @@ pub use typed::{
 };
 pub use types::{
     AdmissionReceipt, ArmPass, BeginDispatch, Dispatch, DispatchCompletion,
-    DispatchCompletionPermit, DispatchId, DispatchItem, ManagedMetrics, PassCompletion, PassId,
-    PassPlan, SkipReason, SkippedOpportunity, WorkClass, WorkDisposition, WorkId,
+    DispatchCompletionPermit, DispatchId, DispatchItem, FailedQueuedItem, ManagedMetrics,
+    PassCompletion, PassId, PassPlan, SkipReason, SkippedOpportunity, WorkClass, WorkDisposition,
+    WorkId,
 };

@@ -11,8 +11,9 @@ use crate::{
 
 use super::{
     AdmissionReceipt, AdmissionRejected, ArmPass, BeginDispatch, CompletionError, Dispatch,
-    DispatchCompletion, DispatchId, GroupStateError, IdentityError, ManagedConfig, ManagedMetrics,
-    ManagedScheduler, RegisterError, RemoveError, WorkClass, WorkDisposition, WorkId,
+    DispatchCompletion, DispatchId, FailedQueuedItem, GroupStateError, IdentityError,
+    ManagedConfig, ManagedMetrics, ManagedScheduler, RegisterError, RemoveError, WorkClass,
+    WorkDisposition, WorkId,
 };
 
 /// Erased typed driver returned when a managed group is removed.
@@ -152,6 +153,29 @@ where
             return Ok(None);
         }
         Ok(self.manual.remove_group(group_id))
+    }
+
+    /// Checks whether removal would succeed without detaching either layer.
+    ///
+    /// # Errors
+    ///
+    /// Refuses removal while accepted work is queued or in flight.
+    pub fn can_remove_group(&self, group_id: &G) -> Result<bool, RemoveError<G>> {
+        self.scheduler.can_remove_group(group_id)
+    }
+
+    /// Explicitly fails queued inputs and returns every payload to the caller.
+    ///
+    /// In-flight work remains owned by its dispatch and must complete normally.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GroupStateError::UnknownGroup`] for an unopened key.
+    pub fn fail_queued(
+        &mut self,
+        group_id: &G,
+    ) -> Result<Vec<FailedQueuedItem<GroupInput<G, C>>>, GroupStateError<G>> {
+        self.scheduler.fail_queued(group_id)
     }
 
     /// Sets whether a group participates in newly armed passes.

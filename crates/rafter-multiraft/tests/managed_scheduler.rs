@@ -295,6 +295,43 @@ fn planning_uses_the_ready_set_not_the_group_id_span() {
     assert_eq!(scheduler.metrics().ready_groups, 1);
 }
 
+#[test]
+fn explicit_queue_failure_preserves_in_flight_ownership_and_conservation() {
+    let mut scheduler = ManagedScheduler::new(config(1, 4, 4, 1));
+    ready_with_work(&mut scheduler, 1, "in flight");
+    let queued = scheduler
+        .admit(&1, WorkClass::Bulk, "queued")
+        .expect("second item is admitted");
+    scheduler.arm_pass().expect("pass arms");
+    let BeginDispatch::Dispatched(dispatch) = scheduler.begin_dispatch().expect("dispatch opens")
+    else {
+        panic!("one item enters flight");
+    };
+
+    let retired = scheduler
+        .fail_queued(&1)
+        .expect("explicit failure drains only queued work");
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].work_id, queued.work_id);
+    assert_eq!(retired[0].payload, "queued");
+    let metrics = scheduler.metrics();
+    assert_eq!(metrics.admitted, 2);
+    assert_eq!(metrics.failed, 1);
+    assert_eq!(metrics.in_flight_work, 1);
+    assert_eq!(metrics.queued, 0);
+
+    let permit = dispatch.completion_permit();
+    scheduler
+        .complete_dispatch(
+            &permit,
+            &[WorkDisposition::Serviced(dispatch.items[0].work_id)],
+        )
+        .expect("in-flight work keeps its exact completion path");
+    let metrics = scheduler.metrics();
+    assert_eq!(metrics.admitted, metrics.serviced + metrics.failed);
+    assert_eq!(metrics.in_flight_work + metrics.queued, 0);
+}
+
 #[derive(Debug)]
 struct TypedTestDriver {
     group_id: u64,
@@ -437,7 +474,8 @@ fn typed_composition_retains_reports_and_isolates_a_poisoned_group() {
     assert_eq!(metrics.failed, 1);
     assert_eq!(metrics.queued + metrics.in_flight_work, 0);
 
-    host.admit(&2, WorkClass::Command, GroupInput::Tick)
+    let queued_after_poison = host
+        .admit(&2, WorkClass::Command, GroupInput::Tick)
         .expect("poisoned group admission remains explicit");
     assert!(matches!(
         host.arm_pass().expect("no new identity is needed"),
@@ -451,4 +489,30 @@ fn typed_composition_retains_reports_and_isolates_a_poisoned_group() {
         host.arm_pass().expect("poisoned group stays unavailable"),
         ArmPass::Idle
     ));
+    assert!(
+        host.remove_group(&2).is_err(),
+        "accepted poisoned backlog fences removal"
+    );
+    let retired = host
+        .fail_queued(&2)
+        .expect("explicit drain owns poisoned backlog retirement");
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].work_id, queued_after_poison.work_id);
+    assert_eq!(retired[0].class, WorkClass::Command);
+    assert!(matches!(retired[0].payload, GroupInput::Tick));
+    assert!(
+        host.fail_queued(&2)
+            .expect("repeated drain is lossless and idempotent")
+            .is_empty(),
+        "each failure is returned exactly once"
+    );
+    let metrics = host.managed_metrics();
+    assert_eq!(metrics.admitted, 4);
+    assert_eq!(metrics.serviced, 2);
+    assert_eq!(metrics.failed, 2);
+    assert_eq!(metrics.queued + metrics.in_flight_work, 0);
+    assert!(host
+        .remove_group(&2)
+        .expect("drained group is removable")
+        .is_some());
 }
