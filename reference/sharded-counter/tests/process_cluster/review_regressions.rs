@@ -41,13 +41,19 @@ fn later_invocation_uses_a_fresh_barrier_without_claiming_the_client_slot() {
             .join()
             .expect("session request thread does not panic")
             .expect("saturated admission returns a response");
+        // Peer isolation can cost this host leadership before either barrier
+        // resolves. That retryable outcome proves no more ownership than the
+        // deterministic queue refusal does.
         assert!(
-            response.starts_with("ERR BACKPRESSURE GroupQueueFull"),
-            "a rejected successor candidate cannot invent ownership: {response}"
+            response.starts_with("ERR BACKPRESSURE GroupQueueFull")
+                || response.starts_with("ERR UNKNOWN authoritative admission unresolved:"),
+            "a rejected or unresolved successor candidate cannot invent ownership: {response}"
         );
     }
     cluster.wait_status_at_least(host, "admission_barriers", barriers + 2);
     let status = cluster.request_on(host, "STATUS");
+    assert_eq!(number_field(&status, "admission_reads"), 0, "{status}");
+    assert_eq!(number_field(&status, "admission_candidates"), 0, "{status}");
     assert_eq!(number_field(&status, "durable_outstanding"), 0, "{status}");
     assert_eq!(number_field(&status, "pending_proposals"), 0, "{status}");
 }

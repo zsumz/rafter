@@ -1309,10 +1309,12 @@ fn pre_drain_poison_restart_quarantines_only_the_failed_group() {
         .collect::<Vec<_>>();
     cluster.wait_status_at_least(host, "admitted", baseline + 3);
     cluster.wait_status_at_least(host, "queued", 2);
-    assert_eq!(
-        cluster.request_on(host, &format!("SLOW {group} 0")),
-        format!("OK SLOW group={group} milliseconds=0")
-    );
+    // The armed failpoint may stop the process before this control reply
+    // arrives. The exact failpoint exit required below distinguishes that
+    // legal race from an unrelated transport failure.
+    if let Ok(response) = cluster.try_request_on(host, &format!("SLOW {group} 0")) {
+        assert_eq!(response, format!("OK SLOW group={group} milliseconds=0"));
+    }
     cluster.wait_for_failpoint_exit(host, "after_poison_publication_before_driver_error");
     assert!(
         fault.join().expect("fault thread does not panic").is_err(),

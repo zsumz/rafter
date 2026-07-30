@@ -198,11 +198,15 @@ impl ProcessCluster {
     }
 
     pub fn request_on(&mut self, node_id: u64, line: &str) -> String {
+        self.try_request_on(node_id, line)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    pub fn try_request_on(&mut self, node_id: u64, line: &str) -> Result<String, String> {
         self.nodes
             .get_mut(&node_id)
             .unwrap_or_else(|| panic!("node {node_id} is not live"))
             .request(line)
-            .unwrap_or_else(|error| panic!("{error}"))
     }
 
     pub fn request_leader(&mut self, line: &str) -> String {
