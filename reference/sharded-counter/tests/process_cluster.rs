@@ -915,19 +915,22 @@ fn assert_admission_pending_precedence(cluster: &mut ProcessCluster, group: u32,
     let alternatives = [
         (
             format!("ADD {group} 1 {client} 1 3 1"),
-            "OK REPLAY ADDED value=3",
+            ["OK REPLAY ADDED value=3", "ERR STALE_SEQUENCE highest=4"],
         ),
         (
             format!("ADD {group} 1 {client} 1 3 2"),
-            "ERR CONFLICTING_RETRY",
+            ["ERR CONFLICTING_RETRY", "ERR STALE_SEQUENCE highest=4"],
         ),
         (
             format!("ADD {group} 1 {client} 1 2 1"),
-            "ERR STALE_SEQUENCE highest=3",
+            [
+                "ERR STALE_SEQUENCE highest=3",
+                "ERR STALE_SEQUENCE highest=4",
+            ],
         ),
         (
             format!("OPEN {group} 1 {client} 1"),
-            "OK SESSION already_open",
+            ["OK SESSION already_open", "OK SESSION already_open"],
         ),
     ]
     .into_iter()
@@ -947,16 +950,18 @@ fn assert_admission_pending_precedence(cluster: &mut ProcessCluster, group: u32,
     assert_eq!(
         number_field(&cluster.request_on(host, "STATUS"), "admission_reads"),
         1,
-        "one client owns one shared authoritative barrier"
+        "one client owns one submitted authoritative barrier"
     );
+    cluster.wait_status_at_least(host, "admission_successors", 4);
     assert_eq!(cluster.request_on(host, "RESUME_PEERS"), "OK PEERS resumed");
     for (request, expected) in alternatives {
-        assert_eq!(
-            request
-                .join()
-                .expect("alternative request thread does not panic")
-                .expect("alternative request receives a response"),
-            expected
+        let response = request
+            .join()
+            .expect("alternative request thread does not panic")
+            .expect("alternative request receives a response");
+        assert!(
+            expected.contains(&response.as_str()),
+            "successor decision {response:?} was not one of {expected:?}"
         );
     }
     assert_eq!(

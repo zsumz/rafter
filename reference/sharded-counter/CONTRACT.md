@@ -290,16 +290,23 @@ indexed by one pending admission per client and group, consumes neither a
 cancellation. This is what lets an exact replay or typed policy refusal outrank
 a saturated application queue without creating a second unbounded queue.
 
-An exact retry of the operation already waiting on that barrier attaches to its
-answer. A different operation for the same client joins the same barrier as
-another bounded candidate; it does not manufacture a second read. Once the
-barrier applies, every candidate is evaluated against completed history and
-session state first. Only candidates whose authoritative decision is `Proceed`
-can lose to a different durable or locally managed outstanding operation.
-Thus completed replay, stale sequence, conflicting retry, and already-open
-session answers are never masked by local pending work. The candidate set is
-bounded by the host's 64 client connections, while the read itself remains one
-per client and group.
+A submitted barrier seals its candidate generation. No later invocation,
+including an exact retry, can attach to authority that may predate that
+invocation. Later operations for the same client wait in one bounded successor
+generation; exact duplicates coalesce only inside that not-yet-submitted
+generation. The first successor candidate fixes its deadline, and the
+`max-group-queue` bound rejects further distinct candidates as `UNKNOWN`.
+
+When the current barrier terminates, a nonexpired successor receives a fresh
+`ReadId` and read barrier. `FreshnessUnavailable` can leave the submitted
+barrier pending, but it cannot widen that barrier's sealed generation. Once a
+barrier applies, every candidate in its generation is evaluated against
+completed history and session state first. Only candidates whose authoritative
+decision is `Proceed` can lose to a different durable or locally managed
+outstanding operation. Thus completed replay, stale sequence, conflicting
+retry, and already-open session answers are never masked by local pending work.
+At most one submitted generation and one bounded successor exist per client and
+group.
 
 ### Request fingerprints
 
@@ -1691,7 +1698,9 @@ The reviewed process inventory exercises:
 - authoritative session, sequence, conflict, gap, and replay decisions while
   every managed application queue is saturated;
 - completed-history and session decisions outranking a different operation
-  waiting either in managed admission or on the same authoritative barrier;
+  waiting either in managed admission or in a bounded successor generation;
+- a later invocation remaining outside an already-submitted barrier and
+  receiving a fresh barrier after that generation terminates;
 - all four reservation-publication uncertainty seams, proving an exact retry
   resolves once without observing a false admission rejection;
 - an exact durable outstanding retry returning `UNKNOWN` when its follower

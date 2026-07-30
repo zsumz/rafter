@@ -34,6 +34,7 @@ use rafter_reference_sharded_counter::{
 };
 
 use self::{
+    admission::PendingAdmission,
     audit::Audit,
     durability::{
         activate_staged_raft, archive_raft_with_failpoints, prepare_staged_raft, slot_from_policy,
@@ -95,22 +96,6 @@ struct ClientAdmissionRefusal {
 }
 
 #[derive(Debug)]
-struct PendingAdmissionCandidate {
-    operation: AcceptedOperation,
-    replies: Vec<ClientReply>,
-    durable_outstanding: bool,
-}
-
-#[derive(Debug)]
-struct PendingAdmission {
-    group_id: GroupId,
-    incarnation: GroupIncarnation,
-    client_id: ClientId,
-    candidates: Vec<PendingAdmissionCandidate>,
-    deadline: Instant,
-}
-
-#[derive(Debug)]
 struct DelayedDispatch {
     ready_at: Instant,
     dispatch: CounterDispatch,
@@ -132,7 +117,7 @@ struct Engine {
     election_timeout_ticks: u64,
     request_timeout: Duration,
     tick_interval: Duration,
-    max_pressure: usize,
+    max_group_queue: usize,
     registry: Option<HostRegistry>,
     host: Host,
     groups: BTreeMap<GroupId, GroupEntry>,
@@ -150,6 +135,7 @@ struct Engine {
     audit: Audit,
     next_proposal_id: u64,
     next_read_id: u64,
+    admission_barriers_started: u64,
     client_admitted: u64,
     recovery_refused: u64,
     ready_announced: bool,
@@ -201,7 +187,7 @@ pub fn run(config: &Config) -> Result<(), String> {
         election_timeout_ticks: config.election_timeout_ticks,
         request_timeout: config.request_timeout,
         tick_interval: config.tick_interval,
-        max_pressure: config.max_group_queue.get(),
+        max_group_queue: config.max_group_queue.get(),
         registry: None,
         host: ManagedTypedMultiRaftHost::new(managed),
         groups: BTreeMap::new(),
@@ -219,6 +205,7 @@ pub fn run(config: &Config) -> Result<(), String> {
         audit: Audit::default(),
         next_proposal_id: 1,
         next_read_id: 1,
+        admission_barriers_started: 0,
         client_admitted: 0,
         recovery_refused: 0,
         ready_announced: false,
@@ -386,7 +373,7 @@ impl Engine {
                 self.admit_ticks()?;
                 next_tick = now + self.tick_interval;
             }
-            self.expire_clients(now);
+            self.expire_clients(now)?;
             self.drive(now)?;
             if !self.ready_announced && self.all_active_ready() {
                 self.ready_announced = true;
@@ -568,8 +555,11 @@ impl Engine {
                 class,
                 count,
             } => {
-                if count > self.max_pressure {
-                    reply.send(format!("ERR PRESSURE_LIMIT {}", self.max_pressure), false);
+                if count > self.max_group_queue {
+                    reply.send(
+                        format!("ERR PRESSURE_LIMIT {}", self.max_group_queue),
+                        false,
+                    );
                     return Ok(());
                 }
                 if let Err(response) = self.serving_driver(group_id, incarnation) {
@@ -998,8 +988,8 @@ impl Engine {
         Some(pending)
     }
 
-    fn expire_clients(&mut self, now: Instant) {
-        self.expire_admission_reads(now);
+    fn expire_clients(&mut self, now: Instant) -> Result<(), String> {
+        self.expire_admission_reads(now)?;
         let expired = self
             .pending
             .iter()
@@ -1020,6 +1010,7 @@ impl Engine {
                 reply.send("ERR UNKNOWN client deadline elapsed".to_string(), false);
             }
         }
+        Ok(())
     }
 
     fn drain(
@@ -1057,7 +1048,7 @@ impl Engine {
         } else if self.poisoned.contains(&group_id) && !policy.poisoned {
             record.mark_poisoned().map_err(|error| error.to_string())?;
         }
-        self.cancel_admission_reads_for_group(group_id, "ERR LIFECYCLE Draining");
+        self.cancel_admission_reads_for_group(group_id, "ERR LIFECYCLE Draining")?;
         if self.poisoned.contains(&group_id) && has_driver {
             directed_failpoint("before_queued_retirement");
             let retired = self
@@ -1343,14 +1334,20 @@ impl Engine {
         let admission_candidates = self
             .pending_admissions
             .values()
-            .map(|pending| pending.candidates.len())
+            .map(PendingAdmission::candidate_count)
+            .sum::<usize>();
+        let admission_successors = self
+            .pending_admissions
+            .values()
+            .map(PendingAdmission::successor_count)
             .sum::<usize>();
         let link = self.link.counters();
         format!(
             "OK STATUS ready={} groups={} leaders={} leader_groups={} poisoned={} queued={} \
              in_flight={} workers={} admitted={} client_admitted={} serviced={} failed={} \
              passes={} pending_proposals={} admission_reads={} admission_candidates={} \
-             durable_outstanding={} recovery_deferred={} recovery_refused={} refused_peer={} \
+             admission_successors={} admission_barriers={} durable_outstanding={} \
+             recovery_deferred={} recovery_refused={} refused_peer={} \
              link_outbound_full={} link_inbound_full={} link_malformed={} \
              link_identity_refused={} link_inbound_connection_full={}",
             self.all_active_ready(),
@@ -1369,6 +1366,8 @@ impl Engine {
             self.pending_operations.len(),
             self.pending_admissions.len(),
             admission_candidates,
+            admission_successors,
+            self.admission_barriers_started,
             durable_outstanding,
             self.deferred_recovery.len(),
             self.recovery_refused,
@@ -1416,14 +1415,12 @@ impl Engine {
         for (read_id, pending) in std::mem::take(&mut self.pending_admissions) {
             if let Some(driver) = self
                 .groups
-                .get(&pending.group_id)
+                .get(&pending.group_id())
                 .and_then(|entry| entry.driver.as_ref())
             {
                 driver.cancel_read(read_id);
             }
-            for candidate in pending.candidates {
-                Self::send_unresolved_admission(candidate, "process shutting down");
-            }
+            Self::finish_pending_admission(pending, "process shutting down");
         }
         self.pending_admission_operations.clear();
         for (_, pending) in std::mem::take(&mut self.pending) {

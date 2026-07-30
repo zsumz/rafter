@@ -1,36 +1,52 @@
 #[test]
-#[ignore = "shared admission candidates under deterministic queue saturation"]
-fn rejected_shared_barrier_candidates_do_not_claim_the_client_slot() {
-    let mut cluster = ProcessCluster::start("shared-barrier-no-speculative-claim");
+#[ignore = "later admission invocations require a fresh authoritative barrier"]
+fn later_invocation_uses_a_fresh_barrier_without_claiming_the_client_slot() {
+    let mut cluster = ProcessCluster::start("fresh-successor-barrier");
     let host = cluster.leader();
     let group = cluster.leader_group_on(host);
     let _blockers = occupy_all_workers(&mut cluster, host, group);
     fill_group_queue(&mut cluster, host, group);
     assert_eq!(cluster.request_on(host, "PAUSE_PEERS"), "OK PEERS paused");
+    let barriers = number_field(
+        &cluster.request_on(host, "STATUS"),
+        "admission_barriers",
+    );
 
-    let requests = [1, 2]
-        .map(|epoch| format!("OPEN {group} 1 56 {epoch}"))
-        .map(|request| {
-            let address = cluster.node_addr(host);
-            thread::spawn(move || {
-                let mut connection = LineConnection::connect(address, CONNECTION_TIMEOUTS)
-                    .expect("leader connection opens");
-                connection.request(&request)
-            })
-        });
+    let address = cluster.node_addr(host);
+    let first = thread::spawn(move || {
+        let mut connection =
+            LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
+        connection.request(&format!("OPEN {group} 1 56 1"))
+    });
+    cluster.wait_status_at_least(host, "admission_barriers", barriers + 1);
+    let address = cluster.node_addr(host);
+    let later = thread::spawn(move || {
+        let mut connection =
+            LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
+        connection.request(&format!("OPEN {group} 1 56 2"))
+    });
     cluster.wait_status_at_least(host, "admission_candidates", 2);
+    cluster.wait_status_at_least(host, "admission_successors", 1);
+    let pending = cluster.request_on(host, "STATUS");
+    assert_eq!(number_field(&pending, "admission_reads"), 1, "{pending}");
+    assert_eq!(
+        number_field(&pending, "admission_barriers"),
+        barriers + 1,
+        "the later invocation cannot join or start beside the submitted barrier: {pending}"
+    );
     assert_eq!(cluster.request_on(host, "RESUME_PEERS"), "OK PEERS resumed");
 
-    for request in requests {
+    for request in [first, later] {
         let response = request
             .join()
             .expect("session request thread does not panic")
             .expect("saturated admission returns a response");
         assert!(
             response.starts_with("ERR BACKPRESSURE GroupQueueFull"),
-            "a rejected peer candidate cannot invent ownership: {response}"
+            "a rejected successor candidate cannot invent ownership: {response}"
         );
     }
+    cluster.wait_status_at_least(host, "admission_barriers", barriers + 2);
     let status = cluster.request_on(host, "STATUS");
     assert_eq!(number_field(&status, "durable_outstanding"), 0, "{status}");
     assert_eq!(number_field(&status, "pending_proposals"), 0, "{status}");

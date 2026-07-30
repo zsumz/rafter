@@ -12,13 +12,13 @@ use rafter_app::{
 use rafter_multiraft::{driver::DriverErrorKind, managed::WorkClass};
 use rafter_reference_sharded_counter::{
     adapter::{CounterAdmissionDecision, ReplicatedCounterCommand},
-    GroupId, GroupIncarnation, GroupLifecycle, WorkClass as PolicyWorkClass,
+    ClientId, GroupId, GroupIncarnation, GroupLifecycle, WorkClass as PolicyWorkClass,
 };
 
 use super::{
     driver_application_durability_failed, render_apply_rejection, render_counter_result,
-    render_terminal_failure, ClientAdmissionRefusal, Engine, PendingAdmission,
-    PendingAdmissionCandidate, PendingClient, WorkKind, MAX_PEERS_PER_LOOP, RECOVERY_RETRY_DELAY,
+    render_terminal_failure, ClientAdmissionRefusal, Engine, PendingClient, WorkKind,
+    MAX_PEERS_PER_LOOP, RECOVERY_RETRY_DELAY,
 };
 use crate::{
     app_store::{
@@ -29,6 +29,29 @@ use crate::{
     protocol::ClientReply,
 };
 
+#[derive(Debug)]
+struct PendingAdmissionCandidate {
+    operation: AcceptedOperation,
+    replies: Vec<ClientReply>,
+    durable_outstanding: bool,
+}
+
+#[derive(Debug)]
+struct QueuedAdmission {
+    candidates: Vec<PendingAdmissionCandidate>,
+    deadline: Instant,
+}
+
+#[derive(Debug)]
+pub(super) struct PendingAdmission {
+    group_id: GroupId,
+    incarnation: GroupIncarnation,
+    client_id: ClientId,
+    candidates: Vec<PendingAdmissionCandidate>,
+    deadline: Instant,
+    successor: Option<QueuedAdmission>,
+}
+
 fn admission_candidate(
     operation: AcceptedOperation,
     reply: ClientReply,
@@ -38,6 +61,57 @@ fn admission_candidate(
         operation,
         replies: vec![reply],
         durable_outstanding,
+    }
+}
+
+fn unresolved_admission_response(durable_outstanding: bool, detail: &str) -> String {
+    if durable_outstanding {
+        "ERR UNKNOWN accepted operation remains durable".to_string()
+    } else {
+        let detail = detail.strip_prefix("ERR ").unwrap_or(detail);
+        format!("ERR UNKNOWN authoritative admission unresolved: {detail}")
+    }
+}
+
+impl PendingAdmission {
+    pub(super) const fn group_id(&self) -> GroupId {
+        self.group_id
+    }
+
+    pub(super) fn candidate_count(&self) -> usize {
+        self.candidates.len() + self.successor_count()
+    }
+
+    pub(super) fn successor_count(&self) -> usize {
+        self.successor
+            .as_ref()
+            .map_or(0, |successor| successor.candidates.len())
+    }
+
+    fn queue_successor(
+        &mut self,
+        candidate: PendingAdmissionCandidate,
+        deadline: Instant,
+        bound: usize,
+    ) -> Result<(), PendingAdmissionCandidate> {
+        let successor = self.successor.get_or_insert_with(|| QueuedAdmission {
+            candidates: Vec::new(),
+            deadline,
+        });
+        if let Some(existing) = successor
+            .candidates
+            .iter_mut()
+            .find(|existing| existing.operation == candidate.operation)
+        {
+            existing.replies.extend(candidate.replies);
+            existing.durable_outstanding |= candidate.durable_outstanding;
+            return Ok(());
+        }
+        if successor.candidates.len() >= bound {
+            return Err(candidate);
+        }
+        successor.candidates.push(candidate);
+        Ok(())
     }
 }
 
@@ -133,36 +207,65 @@ impl Engine {
         reply: ClientReply,
         durable_outstanding: bool,
     ) -> Result<(), String> {
+        self.start_admission_batch(
+            group_id,
+            incarnation,
+            operation.client_id(),
+            QueuedAdmission {
+                candidates: vec![admission_candidate(operation, reply, durable_outstanding)],
+                deadline: Instant::now() + self.request_timeout,
+            },
+        )
+    }
+
+    fn start_admission_batch(
+        &mut self,
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+        client_id: ClientId,
+        batch: QueuedAdmission,
+    ) -> Result<(), String> {
+        debug_assert!(!batch.candidates.is_empty());
+        debug_assert!(batch
+            .candidates
+            .iter()
+            .all(|candidate| candidate.operation.client_id() == client_id));
+        if Instant::now() >= batch.deadline {
+            for candidate in batch.candidates {
+                Self::send_unresolved_admission(candidate, "queued admission deadline elapsed");
+            }
+            return Ok(());
+        }
         let driver = match self.serving_driver(group_id, incarnation) {
             Ok(driver) => driver,
             Err(response) => {
-                Self::send_unresolved_admission(
-                    admission_candidate(operation, reply, durable_outstanding),
-                    &response,
-                );
+                for candidate in batch.candidates {
+                    Self::send_unresolved_admission(candidate, &response);
+                }
                 return Ok(());
             }
         };
 
         let read_id = ReadId(self.next_read_id);
         let Some(next) = self.next_read_id.checked_add(1) else {
-            Self::send_unresolved_admission(
-                admission_candidate(operation, reply, durable_outstanding),
-                "read id exhausted",
-            );
+            for candidate in batch.candidates {
+                Self::send_unresolved_admission(candidate, "read id exhausted");
+            }
             return Ok(());
         };
         self.next_read_id = next;
+        self.admission_barriers_started = self.admission_barriers_started.saturating_add(1);
         self.pending_admission_operations
-            .insert((group_id, operation.client_id()), read_id);
+            .insert((group_id, client_id), read_id);
         self.pending_admissions.insert(
             read_id,
             PendingAdmission {
                 group_id,
                 incarnation,
-                client_id: operation.client_id(),
-                candidates: vec![admission_candidate(operation, reply, durable_outstanding)],
-                deadline: Instant::now() + self.request_timeout,
+                client_id,
+                candidates: batch.candidates,
+                deadline: batch.deadline,
+                successor: None,
             },
         );
         let input = GroupInput::ReadBarrier {
@@ -185,7 +288,7 @@ impl Engine {
                 self.finish_failed_admission_read(
                     read_id,
                     &format!("read barrier failed: {error}"),
-                );
+                )?;
                 if error.kind() == DriverErrorKind::Poisoned {
                     self.persist_runtime_poison(group_id)?;
                 }
@@ -222,23 +325,16 @@ impl Engine {
             .get(&(group_id, operation.client_id()))
             .copied()
         {
+            let candidate = admission_candidate(operation, reply, durable_outstanding);
+            let deadline = Instant::now() + self.request_timeout;
+            let bound = self.max_group_queue;
             let pending = self
                 .pending_admissions
                 .get_mut(&read_id)
                 .expect("pending admission index names a read");
-            if let Some(candidate) = pending
-                .candidates
-                .iter_mut()
-                .find(|candidate| candidate.operation == operation)
-            {
-                candidate.replies.push(reply);
-                candidate.durable_outstanding |= durable_outstanding;
-            } else {
-                pending
-                    .candidates
-                    .push(admission_candidate(operation, reply, durable_outstanding));
+            if let Err(candidate) = pending.queue_successor(candidate, deadline, bound) {
+                Self::send_unresolved_admission(candidate, "admission successor queue is full");
             }
-            pending.deadline = Instant::now() + self.request_timeout;
             return None;
         }
         Some(reply)
@@ -283,7 +379,7 @@ impl Engine {
             } => self.finish_failed_admission_read(
                 *read_id,
                 &format!("read rejected: {reason:?} leader={leader_hint:?}"),
-            ),
+            )?,
             ReadEvent::Canceled {
                 read_id,
                 reason,
@@ -291,7 +387,7 @@ impl Engine {
             } => self.finish_failed_admission_read(
                 *read_id,
                 &format!("read canceled: {reason:?} leader={leader_hint:?}"),
-            ),
+            )?,
             ReadEvent::FreshnessUnavailable { .. } => {}
             _ => return Err("unsupported admission read event".to_string()),
         }
@@ -302,18 +398,22 @@ impl Engine {
         let Some(pending) = self.take_pending_admission(read_id) else {
             return Ok(());
         };
-        let driver = match self.serving_driver(pending.group_id, pending.incarnation) {
+        let group_id = pending.group_id;
+        let incarnation = pending.incarnation;
+        let client_id = pending.client_id;
+        let successor = pending.successor;
+        let driver = match self.serving_driver(group_id, incarnation) {
             Ok(driver) => driver,
             Err(response) => {
                 for candidate in pending.candidates {
                     Self::send_unresolved_admission(candidate, &response);
                 }
-                return Ok(());
+                return self.start_successor_admission(group_id, incarnation, client_id, successor);
             }
         };
         let record = self
             .groups
-            .get(&pending.group_id)
+            .get(&group_id)
             .expect("serving group remains installed")
             .record
             .clone();
@@ -326,7 +426,7 @@ impl Engine {
                     .map_err(|error| {
                         format!(
                             "authoritative terminal completion could not be published for group {} client {}: {error}",
-                            pending.group_id.get(),
+                            group_id.get(),
                             candidate.operation.client_id().get()
                         )
                     })?;
@@ -354,19 +454,18 @@ impl Engine {
         }
 
         for candidate in proceeding {
-            let Some(candidate) = self.attach_exact_pending_candidate(pending.group_id, candidate)
-            else {
+            let Some(candidate) = self.attach_exact_pending_candidate(group_id, candidate) else {
                 continue;
             };
-            if self.has_conflicting_outstanding(pending.group_id, candidate.operation) {
+            if self.has_conflicting_outstanding(group_id, candidate.operation) {
                 for reply in candidate.replies {
                     reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
                 }
                 continue;
             }
-            self.finish_proceeding_admission(pending.group_id, candidate)?;
+            self.finish_proceeding_admission(group_id, candidate)?;
         }
-        Ok(())
+        self.start_successor_admission(group_id, incarnation, client_id, successor)
     }
 
     fn attach_exact_pending_candidate(
@@ -468,15 +567,21 @@ impl Engine {
         Ok(())
     }
 
-    pub(super) fn send_unresolved_admission(candidate: PendingAdmissionCandidate, detail: &str) {
-        let response = if candidate.durable_outstanding {
-            "ERR UNKNOWN accepted operation remains durable".to_string()
-        } else {
-            let detail = detail.strip_prefix("ERR ").unwrap_or(detail);
-            format!("ERR UNKNOWN authoritative admission unresolved: {detail}")
-        };
+    fn send_unresolved_admission(candidate: PendingAdmissionCandidate, detail: &str) {
+        let response = unresolved_admission_response(candidate.durable_outstanding, detail);
         for reply in candidate.replies {
             reply.send(response.clone(), false);
+        }
+    }
+
+    pub(super) fn finish_pending_admission(pending: PendingAdmission, detail: &str) {
+        for candidate in pending.candidates {
+            Self::send_unresolved_admission(candidate, detail);
+        }
+        if let Some(successor) = pending.successor {
+            for candidate in successor.candidates {
+                Self::send_unresolved_admission(candidate, detail);
+            }
         }
     }
 
@@ -491,16 +596,37 @@ impl Engine {
         Some(pending)
     }
 
-    fn finish_failed_admission_read(&mut self, read_id: ReadId, detail: &str) {
-        let Some(pending) = self.take_pending_admission(read_id) else {
-            return;
-        };
-        for candidate in pending.candidates {
-            Self::send_barrier_failure(candidate, detail);
+    fn start_successor_admission(
+        &mut self,
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+        client_id: ClientId,
+        successor: Option<QueuedAdmission>,
+    ) -> Result<(), String> {
+        match successor {
+            Some(batch) => self.start_admission_batch(group_id, incarnation, client_id, batch),
+            None => Ok(()),
         }
     }
 
-    pub(super) fn expire_admission_reads(&mut self, now: Instant) {
+    fn finish_failed_admission_read(
+        &mut self,
+        read_id: ReadId,
+        detail: &str,
+    ) -> Result<(), String> {
+        let Some(pending) = self.take_pending_admission(read_id) else {
+            return Ok(());
+        };
+        let group_id = pending.group_id;
+        let incarnation = pending.incarnation;
+        let client_id = pending.client_id;
+        for candidate in pending.candidates {
+            Self::send_barrier_failure(candidate, detail);
+        }
+        self.start_successor_admission(group_id, incarnation, client_id, pending.successor)
+    }
+
+    pub(super) fn expire_admission_reads(&mut self, now: Instant) -> Result<(), String> {
         let expired = self
             .pending_admissions
             .iter()
@@ -520,10 +646,21 @@ impl Engine {
             for candidate in pending.candidates {
                 Self::send_barrier_failure(candidate, "admission barrier deadline elapsed");
             }
+            self.start_successor_admission(
+                pending.group_id,
+                pending.incarnation,
+                pending.client_id,
+                pending.successor,
+            )?;
         }
+        Ok(())
     }
 
-    pub(super) fn cancel_admission_reads_for_group(&mut self, group_id: GroupId, response: &str) {
+    pub(super) fn cancel_admission_reads_for_group(
+        &mut self,
+        group_id: GroupId,
+        response: &str,
+    ) -> Result<(), String> {
         let reads = self
             .pending_admissions
             .iter()
@@ -543,7 +680,14 @@ impl Engine {
             for candidate in pending.candidates {
                 Self::send_unresolved_admission(candidate, response);
             }
+            self.start_successor_admission(
+                pending.group_id,
+                pending.incarnation,
+                pending.client_id,
+                pending.successor,
+            )?;
         }
+        Ok(())
     }
 
     pub(super) fn persist_runtime_poison(&mut self, group_id: GroupId) -> Result<(), String> {
@@ -562,7 +706,7 @@ impl Engine {
             .set_available(&group_id, false)
             .map_err(|error| format!("poisoned group availability failed: {error:?}"))?;
         self.audit.set_available(group_id, false);
-        self.cancel_admission_reads_for_group(group_id, "ERR NOT_COMMITTED GROUP_POISONED");
+        self.cancel_admission_reads_for_group(group_id, "GROUP_POISONED")?;
         Ok(())
     }
 
@@ -910,5 +1054,102 @@ impl Engine {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use rafter_reference_sharded_counter::{ClientId, GroupId, GroupIncarnation, SessionEpoch};
+
+    use super::{unresolved_admission_response, PendingAdmission, PendingAdmissionCandidate};
+    use crate::app_store::AcceptedOperation;
+
+    fn open_session(epoch: u64) -> AcceptedOperation {
+        AcceptedOperation::OpenSession {
+            client_id: ClientId::new(7),
+            epoch: SessionEpoch::new(epoch).expect("test epoch is nonzero"),
+        }
+    }
+
+    fn candidate(epoch: u64) -> PendingAdmissionCandidate {
+        PendingAdmissionCandidate {
+            operation: open_session(epoch),
+            replies: Vec::new(),
+            durable_outstanding: false,
+        }
+    }
+
+    fn submitted_admission() -> PendingAdmission {
+        PendingAdmission {
+            group_id: GroupId::new(3),
+            incarnation: GroupIncarnation::new(1).expect("test incarnation is nonzero"),
+            client_id: ClientId::new(7),
+            candidates: vec![candidate(1)],
+            deadline: Instant::now() + Duration::from_secs(1),
+            successor: None,
+        }
+    }
+
+    #[test]
+    fn submitted_generation_is_sealed_from_later_invocations() {
+        let mut pending = submitted_admission();
+        let successor_deadline = Instant::now() + Duration::from_secs(1);
+
+        pending
+            .queue_successor(candidate(2), successor_deadline, 2)
+            .expect("successor accepts a later invocation");
+        pending
+            .queue_successor(candidate(2), successor_deadline, 2)
+            .expect("an exact successor retry coalesces");
+
+        assert_eq!(pending.candidates.len(), 1);
+        assert_eq!(pending.candidates[0].operation, open_session(1));
+        assert_eq!(pending.successor_count(), 1);
+        assert_eq!(
+            pending
+                .successor
+                .as_ref()
+                .expect("the successor exists")
+                .candidates[0]
+                .operation,
+            open_session(2)
+        );
+    }
+
+    #[test]
+    fn successor_generation_is_bounded_without_extending_its_deadline() {
+        let mut pending = submitted_admission();
+        let first_deadline = Instant::now() + Duration::from_secs(1);
+        pending
+            .queue_successor(candidate(2), first_deadline, 1)
+            .expect("the bounded successor accepts its first candidate");
+
+        let rejected = pending
+            .queue_successor(candidate(3), first_deadline + Duration::from_secs(1), 1)
+            .expect_err("a distinct candidate cannot exceed the successor bound");
+
+        assert_eq!(rejected.operation, open_session(3));
+        assert_eq!(pending.successor_count(), 1);
+        assert_eq!(
+            pending
+                .successor
+                .as_ref()
+                .expect("the successor exists")
+                .deadline,
+            first_deadline
+        );
+    }
+
+    #[test]
+    fn poison_cancellation_is_unknown_without_a_non_commitment_claim() {
+        let response = unresolved_admission_response(false, "GROUP_POISONED");
+
+        assert_eq!(
+            response,
+            "ERR UNKNOWN authoritative admission unresolved: GROUP_POISONED"
+        );
+        assert!(!response.contains("NOT_COMMITTED"));
     }
 }
