@@ -957,11 +957,7 @@ impl Engine {
                     message: frame.message,
                 },
             };
-            let admission_read_pending = self
-                .pending_admissions
-                .values()
-                .any(|pending| pending.group_id == frame.group_id);
-            if admission_read_pending {
+            if self.direct_control_plane_required(frame.group_id) {
                 let driver = entry
                     .driver
                     .as_ref()
@@ -1015,11 +1011,7 @@ impl Engine {
             if !admits_tick || entry.driver.is_none() {
                 continue;
             }
-            let admission_read_pending = self
-                .pending_admissions
-                .values()
-                .any(|pending| pending.group_id == group_id);
-            if admission_read_pending {
+            if self.direct_control_plane_required(group_id) {
                 let driver = entry
                     .driver
                     .as_ref()
@@ -1054,6 +1046,25 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    fn direct_control_plane_required(&self, group_id: GroupId) -> bool {
+        // `SLOW` is a process-fixture delay for non-control dispatches. It may
+        // deliberately hold every managed worker on other groups, but it must
+        // not manufacture a Raft outage while a test is arranging queue
+        // pressure. Do not bypass ordering for a group whose own dispatch is
+        // delayed. Admission barriers need the same direct tick/peer path until
+        // their read ends.
+        let other_groups_hold_every_worker = self.delayed.len() >= self.worker_capacity
+            && self
+                .delayed
+                .iter()
+                .all(|delayed| delayed.dispatch.group_id != group_id);
+        other_groups_hold_every_worker
+            || self
+                .pending_admissions
+                .values()
+                .any(|pending| pending.group_id == group_id)
     }
 }
 

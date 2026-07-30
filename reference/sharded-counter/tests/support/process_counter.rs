@@ -281,48 +281,76 @@ impl ProcessCluster {
     }
 
     pub fn wait_ready(&mut self) {
-        PROCESS_WAIT
-            .until(
-                "all live nodes to recover and every group to have a live leader",
-                || {
-                    let mut ready = true;
-                    let mut leader_groups = BTreeSet::new();
-                    let mut active_groups = 0;
-                    for node_id in self.live_node_ids() {
-                        match self
-                            .nodes
-                            .get_mut(&node_id)
-                            .expect("live node")
-                            .request("STATUS")
-                        {
-                            Ok(status) => {
-                                ready &= field(&status, "ready") == Some("true");
-                                active_groups = active_groups.max(
-                                    usize::try_from(number_field(&status, "groups"))
-                                        .expect("configured group count fits usize"),
+        let mut last = BTreeMap::new();
+        let result = PROCESS_WAIT.until(
+            "all live nodes to recover and every group to have a live leader",
+            || {
+                let mut ready = true;
+                let mut leader_groups = BTreeSet::new();
+                let mut active_groups = 0;
+                for node_id in self.live_node_ids() {
+                    match self
+                        .nodes
+                        .get_mut(&node_id)
+                        .expect("live node")
+                        .request("STATUS")
+                    {
+                        Ok(status) => {
+                            ready &= field(&status, "ready") == Some("true");
+                            active_groups = active_groups.max(
+                                usize::try_from(number_field(&status, "groups"))
+                                    .expect("configured group count fits usize"),
+                            );
+                            if let Some(groups) = field(&status, "leader_groups") {
+                                leader_groups.extend(
+                                    groups
+                                        .split(',')
+                                        .filter(|group| *group != "-")
+                                        .map(|group| {
+                                            group.parse::<u32>().unwrap_or_else(|_| {
+                                                panic!(
+                                                    "invalid leader group {group:?} in \
+                                                     status {status:?}"
+                                                )
+                                            })
+                                        }),
                                 );
-                                if let Some(groups) = field(&status, "leader_groups") {
-                                    leader_groups.extend(
-                                        groups.split(',').filter(|group| *group != "-").map(
-                                            |group| {
-                                                group.parse::<u32>().unwrap_or_else(|_| {
-                                                    panic!(
-                                                        "invalid leader group {group:?} in \
-                                                         status {status:?}"
-                                                    )
-                                                })
-                                            },
-                                        ),
-                                    );
-                                }
                             }
-                            Err(_) => ready = false,
+                            last.insert(node_id, status);
+                        }
+                        Err(error) => {
+                            ready = false;
+                            last.insert(node_id, format!("connection error: {error}"));
                         }
                     }
-                    (ready && leader_groups.len() == active_groups).then_some(())
-                },
-            )
-            .unwrap_or_else(|error| panic!("{error}"));
+                }
+                (ready && leader_groups.len() == active_groups).then_some(())
+            },
+        );
+        result.unwrap_or_else(|error| panic!("{error}; last statuses: {last:?}"));
+    }
+
+    pub fn wait_ready_on(&mut self, node_id: u64) {
+        let mut last = None;
+        let result = PROCESS_WAIT.until(format!("node {node_id} to recover"), || {
+            match self
+                .nodes
+                .get_mut(&node_id)
+                .expect("node is live")
+                .request("STATUS")
+            {
+                Ok(status) => {
+                    let ready = field(&status, "ready") == Some("true");
+                    last = Some(status);
+                    ready.then_some(())
+                }
+                Err(error) => {
+                    last = Some(format!("connection error: {error}"));
+                    None
+                }
+            }
+        });
+        result.unwrap_or_else(|error| panic!("{error}; last status: {last:?}"));
     }
 
     pub fn leader(&mut self) -> u64 {

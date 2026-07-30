@@ -55,11 +55,29 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+patch_file="$(mktemp "${TMPDIR:-/tmp}/rafter-counter-profile-patch.XXXXXX")"
+trap 'rm -f "$patch_file"' EXIT
+"${repo_root}/scripts/reference-source-check" --print-args > "$patch_file"
+
 patch=()
 while IFS= read -r argument; do
     [[ -n "$argument" ]] || continue
     patch+=("$argument")
-done < <("${repo_root}/scripts/reference-source-check" --print-args)
+done < "$patch_file"
+
+if (( ${#patch[@]} == 0 )); then
+    echo "error: empty dependency patch table; the profile would resolve Rafter from crates.io" >&2
+    exit 1
+fi
+
+# `reference/Cargo.lock` is intentionally untracked, so a clean checkout has
+# neither a resolution nor the third-party registry sources needed by the
+# offline source-identity run below. Fetch the same patched graph first. This
+# keeps every Rafter crate bound to the checkout while making cold CI runners
+# independent of an incidental Cargo cache populated by another reference job.
+cargo fetch \
+    --manifest-path "${repo_root}/reference/Cargo.toml" \
+    "${patch[@]}"
 
 CARGO_NET_OFFLINE=true cargo run \
     --manifest-path "${repo_root}/reference/Cargo.toml" \

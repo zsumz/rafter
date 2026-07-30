@@ -47,9 +47,20 @@ fn occupy_all_workers_for(
 }
 
 fn fill_group_queue(cluster: &mut ProcessCluster, host: u64, group: u32) {
+    let response = cluster.request_on(host, &format!("PRESSURE {group} 1 bulk 64"));
+    assert!(
+        response.starts_with("OK PRESSURE "),
+        "group queue pressure failed: {response}"
+    );
     assert_eq!(
-        cluster.request_on(host, &format!("PRESSURE {group} 1 bulk 64")),
-        "OK PRESSURE accepted=64 refused=0"
+        number_field(&response, "accepted") + number_field(&response, "refused"),
+        64,
+        "the pressure request must account for every attempted admission: {response}"
+    );
+    assert_eq!(
+        cluster.request_on(host, &format!("PRESSURE {group} 1 bulk 1")),
+        "OK PRESSURE accepted=0 refused=1",
+        "the fixture must leave the selected group queue at its bound"
     );
 }
 
@@ -1183,7 +1194,11 @@ fn non_synthetic_apply_failure_is_durably_quarantined() {
     );
 
     cluster.restart(host);
-    cluster.wait_ready();
+    // The deterministic capacity failure may quarantine the group on a quorum
+    // before the remaining replica observes the same application error. That
+    // last replica cannot elect a leader alone, so cluster-wide leader coverage
+    // is not a legal readiness condition for this asymmetric quarantine case.
+    cluster.wait_ready_on(host);
     let status = cluster.request_on(host, "STATUS");
     assert_eq!(number_field(&status, "poisoned"), 1, "{status}");
     assert_eq!(
@@ -1394,20 +1409,7 @@ fn poisoned_queue_crashes_preserve_typed_terminal_failures() {
                 "the selected host must lead the selected group"
             );
         }
-        let blockers = (1..=GROUP_COUNT)
-            .filter(|candidate| *candidate != group)
-            .take(4)
-            .collect::<Vec<_>>();
-        for blocker in &blockers {
-            assert_eq!(
-                cluster.request_on(host, &format!("SLOW {blocker} 250")),
-                format!("OK SLOW group={blocker} milliseconds=250")
-            );
-            assert!(cluster
-                .request_on(host, &format!("PRESSURE {blocker} 1 bulk 1"))
-                .starts_with("OK PRESSURE "));
-        }
-        cluster.wait_status_at_least(host, "workers", 4);
+        let blockers = occupy_all_workers(&mut cluster, host, group);
         for blocker in blockers {
             assert_eq!(
                 cluster.request_on(host, &format!("SLOW {blocker} 0")),
