@@ -694,6 +694,11 @@ impl QueuedRequest {
             .expect("the request is written and flushed");
     }
 
+    /// Attempts to write one request when the process may already be exiting.
+    pub fn try_send(&mut self, line: &str) -> Result<(), String> {
+        self.conn.send_line(line).map_err(|error| error.to_string())
+    }
+
     /// Reads the answer to whatever was sent.
     pub fn recv(&mut self) -> Result<String, String> {
         self.conn.receive_line().map_err(|error| error.to_string())

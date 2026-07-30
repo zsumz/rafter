@@ -424,9 +424,8 @@ fn a_stored_control_plane_failure_refuses_the_requests_queued_behind_it() {
         .collect();
 
     breaking.send("QUERY LOCK vault");
-    for request in &mut queued {
-        request.send("LOCAL LOCK vault");
-    }
+    queued.retain_mut(|request| request.try_send("LOCAL LOCK vault").is_ok());
+    let refused_before_receive = queued.len() < QUEUED_BEHIND;
 
     let breaking_answer = breaking
         .recv()
@@ -437,7 +436,7 @@ fn a_stored_control_plane_failure_refuses_the_requests_queued_behind_it() {
          than served: {breaking_answer}"
     );
     let breaking_ticket = harness_ticket(&breaking_answer);
-    let mut observed_behind = false;
+    let mut observed_behind = refused_before_receive;
     for (index, request) in queued.iter_mut().enumerate() {
         // A connection the replica closed as it exits is not a served read, and
         // is the ordinary ending for a request that arrived after the loop.

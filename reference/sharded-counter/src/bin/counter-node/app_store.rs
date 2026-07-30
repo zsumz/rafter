@@ -31,7 +31,8 @@ use rafter_reference_sharded_counter::{
 use rafter_storage::FileRaftSnapshotStore;
 
 const MAGIC: [u8; 4] = *b"RCAP";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
+const LEGACY_VERSION: u8 = 1;
 const MAX_RECORD_BYTES: usize = 128 * 1024;
 const SNAPSHOT_READ_CHUNK: u32 = 16 * 1024;
 
@@ -40,6 +41,30 @@ const SNAPSHOT_READ_CHUNK: u32 = 16 * 1024;
 pub struct OutstandingRequest {
     pub request: RequestIdentity,
     pub command: CounterCommand,
+    pub phase: OutstandingPhase,
+}
+
+/// Durable proof of whether an accepted request may have entered the driver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutstandingPhase {
+    Queued,
+    EnteredDriver,
+}
+
+/// One accepted request whose exact terminal refusal must survive a restart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TerminalRequest {
+    pub request: RequestIdentity,
+    pub command: CounterCommand,
+    pub failure: TerminalFailure,
+}
+
+/// Durable terminal outcomes for accepted work that a group can no longer run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalFailure {
+    GroupPoisoned,
+    GroupPoisonedUnknown,
+    ProcessRestarted,
 }
 
 /// Durable policy restored before a group is admitted to the process host.
@@ -47,8 +72,10 @@ pub struct OutstandingRequest {
 pub struct StoredPolicy {
     pub incarnation: GroupIncarnation,
     pub lifecycle: GroupLifecycle,
+    pub poisoned: bool,
     pub quota: WorkQuota,
     pub outstanding: BTreeMap<ClientId, OutstandingRequest>,
+    pub terminal: BTreeMap<ClientId, TerminalRequest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,6 +113,9 @@ pub enum StoreError {
     ConflictingOutstanding {
         client_id: ClientId,
     },
+    OutstandingRemain {
+        count: usize,
+    },
     Counter(CounterStateMachineError),
     SnapshotUnavailable,
     Missing {
@@ -121,6 +151,9 @@ impl fmt::Display for StoreError {
                 "client {} already has a different request outstanding",
                 client_id.get()
             ),
+            Self::OutstandingRemain { count } => {
+                write!(formatter, "{count} durable requests remain outstanding")
+            }
             Self::Counter(error) => write!(formatter, "counter state machine failed: {error}"),
             Self::SnapshotUnavailable => {
                 formatter.write_str("promoted Raft snapshot payload is unavailable")
@@ -195,8 +228,10 @@ impl ApplicationRecord {
             policy: StoredPolicy {
                 incarnation: GroupIncarnation::first(),
                 lifecycle: GroupLifecycle::Serving,
+                poisoned: false,
                 quota,
                 outstanding: BTreeMap::new(),
+                terminal: BTreeMap::new(),
             },
             application,
         };
@@ -210,7 +245,7 @@ impl ApplicationRecord {
         max_sessions: usize,
         record: Record,
     ) -> Result<(Self, DurableCounterStateMachine), StoreError> {
-        if record.policy.outstanding.len() > max_sessions {
+        if record.policy.outstanding.len() + record.policy.terminal.len() > max_sessions {
             return Err(StoreError::OutstandingCapacity {
                 bound: max_sessions,
             });
@@ -255,27 +290,140 @@ impl ApplicationRecord {
                 })
             };
         }
-        if staged.policy.outstanding.len() >= self.max_outstanding {
+        if staged.policy.terminal.contains_key(&request.client_id) {
+            return Err(StoreError::ConflictingOutstanding {
+                client_id: request.client_id,
+            });
+        }
+        if staged.policy.outstanding.len() + staged.policy.terminal.len() >= self.max_outstanding {
             return Err(StoreError::OutstandingCapacity {
                 bound: self.max_outstanding,
             });
         }
-        staged
-            .policy
-            .outstanding
-            .insert(request.client_id, OutstandingRequest { request, command });
+        staged.policy.outstanding.insert(
+            request.client_id,
+            OutstandingRequest {
+                request,
+                command,
+                phase: OutstandingPhase::Queued,
+            },
+        );
         self.publish(staged)?;
         Ok(ReserveOutcome::Reserved)
     }
 
-    pub fn set_lifecycle(&self, lifecycle: GroupLifecycle) -> Result<(), StoreError> {
+    pub fn mark_entered_driver(
+        &self,
+        request: RequestIdentity,
+        command: CounterCommand,
+    ) -> Result<(), StoreError> {
         let mut staged = self.lock().clone();
-        staged.policy.lifecycle = lifecycle;
-        if matches!(
-            lifecycle,
-            GroupLifecycle::Removed | GroupLifecycle::Tombstoned
-        ) {
-            staged.policy.outstanding.clear();
+        let Some(outstanding) = staged.policy.outstanding.get_mut(&request.client_id) else {
+            return Ok(());
+        };
+        if outstanding.request != request || outstanding.command != command {
+            return Err(StoreError::ConflictingOutstanding {
+                client_id: request.client_id,
+            });
+        }
+        if outstanding.phase == OutstandingPhase::Queued {
+            outstanding.phase = OutstandingPhase::EnteredDriver;
+            self.publish(staged)?;
+        }
+        Ok(())
+    }
+
+    pub fn begin_draining(&self, poisoned: bool) -> Result<(), StoreError> {
+        let mut staged = self.lock().clone();
+        staged.policy.lifecycle = GroupLifecycle::Draining;
+        staged.policy.poisoned |= poisoned;
+        self.publish(staged)
+    }
+
+    pub fn mark_poisoned(&self) -> Result<(), StoreError> {
+        let mut staged = self.lock().clone();
+        if !staged.policy.poisoned {
+            staged.policy.poisoned = true;
+            self.publish(staged)?;
+        }
+        Ok(())
+    }
+
+    pub fn replay_terminal_failure(
+        &self,
+        request: RequestIdentity,
+        command: CounterCommand,
+    ) -> Result<Option<TerminalFailure>, StoreError> {
+        let staged = self.lock();
+        let Some(terminal) = staged.policy.terminal.get(&request.client_id).copied() else {
+            return Ok(None);
+        };
+        if terminal.request == request && terminal.command == command {
+            Ok(Some(terminal.failure))
+        } else {
+            Err(StoreError::ConflictingOutstanding {
+                client_id: request.client_id,
+            })
+        }
+    }
+
+    pub fn fail_reservation(
+        &self,
+        request: RequestIdentity,
+        command: CounterCommand,
+        failure: TerminalFailure,
+    ) -> Result<(), StoreError> {
+        let mut staged = self.lock().clone();
+        if let Some(terminal) = staged.policy.terminal.get(&request.client_id) {
+            return if terminal.request == request
+                && terminal.command == command
+                && terminal.failure == failure
+            {
+                Ok(())
+            } else {
+                Err(StoreError::ConflictingOutstanding {
+                    client_id: request.client_id,
+                })
+            };
+        }
+        let Some(outstanding) = staged.policy.outstanding.get(&request.client_id) else {
+            return Ok(());
+        };
+        if outstanding.request != request || outstanding.command != command {
+            return Err(StoreError::ConflictingOutstanding {
+                client_id: request.client_id,
+            });
+        }
+        staged.policy.outstanding.remove(&request.client_id);
+        staged.policy.terminal.insert(
+            request.client_id,
+            TerminalRequest {
+                request,
+                command,
+                failure,
+            },
+        );
+        self.publish(staged)
+    }
+
+    pub fn fail_poisoned_outstanding(&self) -> Result<(), StoreError> {
+        let mut staged = self.lock().clone();
+        if staged.policy.outstanding.is_empty() {
+            return Ok(());
+        }
+        for (client_id, outstanding) in std::mem::take(&mut staged.policy.outstanding) {
+            let failure = match outstanding.phase {
+                OutstandingPhase::Queued => TerminalFailure::GroupPoisoned,
+                OutstandingPhase::EnteredDriver => TerminalFailure::GroupPoisonedUnknown,
+            };
+            staged.policy.terminal.insert(
+                client_id,
+                TerminalRequest {
+                    request: outstanding.request,
+                    command: outstanding.command,
+                    failure,
+                },
+            );
         }
         self.publish(staged)
     }
@@ -306,12 +454,17 @@ impl ApplicationRecord {
             GroupLifecycle::Removed | GroupLifecycle::Tombstoned
         ));
         let mut staged = self.lock().clone();
+        if !staged.policy.outstanding.is_empty() {
+            return Err(StoreError::OutstandingRemain {
+                count: staged.policy.outstanding.len(),
+            });
+        }
         let mut state_machine = CounterStateMachine::new(self.max_outstanding);
         staged.application = state_machine
             .build_snapshot(LogIndex::ZERO)
             .map_err(|error| snapshot_error(&error))?;
         staged.policy.lifecycle = lifecycle;
-        staged.policy.outstanding.clear();
+        staged.policy.poisoned = false;
         self.publish(staged)
     }
 
@@ -329,8 +482,10 @@ impl ApplicationRecord {
         staged.policy = StoredPolicy {
             incarnation,
             lifecycle: GroupLifecycle::Serving,
+            poisoned: false,
             quota,
             outstanding: BTreeMap::new(),
+            terminal: BTreeMap::new(),
         };
         self.publish(staged)
     }
@@ -529,6 +684,7 @@ fn encode(record: &Record) -> Result<Vec<u8>, StoreError> {
     bytes.push(VERSION);
     put_u32(&mut bytes, record.policy.incarnation.get());
     bytes.push(encode_lifecycle(record.policy.lifecycle));
+    bytes.push(u8::from(record.policy.poisoned));
     put_u32(&mut bytes, record.policy.quota.get());
     put_u32(
         &mut bytes,
@@ -538,6 +694,17 @@ fn encode(record: &Record) -> Result<Vec<u8>, StoreError> {
     for outstanding in record.policy.outstanding.values() {
         put_request(&mut bytes, outstanding.request);
         put_command(&mut bytes, outstanding.command);
+        bytes.push(encode_outstanding_phase(outstanding.phase));
+    }
+    put_u32(
+        &mut bytes,
+        u32::try_from(record.policy.terminal.len())
+            .map_err(|_| StoreError::TooLarge { bytes: usize::MAX })?,
+    );
+    for terminal in record.policy.terminal.values() {
+        put_request(&mut bytes, terminal.request);
+        put_command(&mut bytes, terminal.command);
+        bytes.push(encode_terminal_failure(terminal.failure));
     }
     put_u64(&mut bytes, record.application.applied_index.0);
     put_u32(
@@ -575,23 +742,60 @@ fn decode(bytes: &[u8]) -> Result<Record, StoreError> {
     if cursor.take(4)? != MAGIC {
         return Err(StoreError::Corrupt("wrong magic"));
     }
-    if cursor.u8()? != VERSION {
+    let version = cursor.u8()?;
+    if !(LEGACY_VERSION..=VERSION).contains(&version) {
         return Err(StoreError::Corrupt("unsupported version"));
     }
     let incarnation =
         GroupIncarnation::new(cursor.u32()?).ok_or(StoreError::Corrupt("zero incarnation"))?;
     let lifecycle = decode_lifecycle(cursor.u8()?)?;
+    let poisoned = version >= VERSION && decode_bool(cursor.u8()?)?;
     let quota = WorkQuota::new(cursor.u32()?).ok_or(StoreError::Corrupt("zero quota"))?;
     let outstanding_len = cursor.u32()? as usize;
     let mut outstanding = BTreeMap::new();
     for _ in 0..outstanding_len {
         let request = cursor.request()?;
         let command = cursor.command()?;
+        let phase = if version >= VERSION {
+            decode_outstanding_phase(cursor.u8()?)?
+        } else {
+            OutstandingPhase::EnteredDriver
+        };
         if outstanding
-            .insert(request.client_id, OutstandingRequest { request, command })
+            .insert(
+                request.client_id,
+                OutstandingRequest {
+                    request,
+                    command,
+                    phase,
+                },
+            )
             .is_some()
         {
             return Err(StoreError::Corrupt("duplicate outstanding client"));
+        }
+    }
+    let mut terminal = BTreeMap::new();
+    if version >= VERSION {
+        let terminal_len = cursor.u32()? as usize;
+        for _ in 0..terminal_len {
+            let request = cursor.request()?;
+            let command = cursor.command()?;
+            let failure = decode_terminal_failure(cursor.u8()?)?;
+            if outstanding.contains_key(&request.client_id)
+                || terminal
+                    .insert(
+                        request.client_id,
+                        TerminalRequest {
+                            request,
+                            command,
+                            failure,
+                        },
+                    )
+                    .is_some()
+            {
+                return Err(StoreError::Corrupt("duplicate durable client outcome"));
+            }
         }
     }
     let applied_index = LogIndex(cursor.u64()?);
@@ -604,8 +808,10 @@ fn decode(bytes: &[u8]) -> Result<Record, StoreError> {
         policy: StoredPolicy {
             incarnation,
             lifecycle,
+            poisoned,
             quota,
             outstanding,
+            terminal,
         },
         application: ApplicationSnapshot {
             applied_index,
@@ -629,6 +835,46 @@ fn put_command(bytes: &mut Vec<u8>, command: CounterCommand) {
             bytes.extend_from_slice(&delta.get().to_le_bytes());
         }
         CounterCommand::Read => bytes.push(2),
+    }
+}
+
+const fn encode_terminal_failure(failure: TerminalFailure) -> u8 {
+    match failure {
+        TerminalFailure::GroupPoisoned => 1,
+        TerminalFailure::ProcessRestarted => 2,
+        TerminalFailure::GroupPoisonedUnknown => 3,
+    }
+}
+
+fn decode_terminal_failure(value: u8) -> Result<TerminalFailure, StoreError> {
+    match value {
+        1 => Ok(TerminalFailure::GroupPoisoned),
+        2 => Ok(TerminalFailure::ProcessRestarted),
+        3 => Ok(TerminalFailure::GroupPoisonedUnknown),
+        _ => Err(StoreError::Corrupt("unknown terminal failure")),
+    }
+}
+
+fn decode_bool(value: u8) -> Result<bool, StoreError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(StoreError::Corrupt("invalid boolean")),
+    }
+}
+
+const fn encode_outstanding_phase(phase: OutstandingPhase) -> u8 {
+    match phase {
+        OutstandingPhase::Queued => 1,
+        OutstandingPhase::EnteredDriver => 2,
+    }
+}
+
+fn decode_outstanding_phase(value: u8) -> Result<OutstandingPhase, StoreError> {
+    match value {
+        1 => Ok(OutstandingPhase::Queued),
+        2 => Ok(OutstandingPhase::EnteredDriver),
+        _ => Err(StoreError::Corrupt("unknown outstanding phase")),
     }
 }
 
@@ -774,5 +1020,72 @@ fn io_error(operation: &'static str, path: &Path, source: io::Error) -> StoreErr
         operation,
         path: path.to_path_buf(),
         source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rafter_reference_harness::process::ScratchSpace;
+
+    use super::*;
+
+    fn request(command: CounterCommand) -> RequestIdentity {
+        RequestIdentity {
+            client_id: ClientId::new(7),
+            session_epoch: SessionEpoch::new(3).expect("test epoch is nonzero"),
+            sequence: Sequence::new(11).expect("test sequence is nonzero"),
+            fingerprint: RequestFingerprint::of(&command),
+        }
+    }
+
+    #[test]
+    fn terminal_poison_failure_survives_retirement_and_clears_on_reopen() {
+        let scratch = ScratchSpace::create("counter-app-store", "terminal-poison")
+            .expect("scratch directory is created");
+        let app_dir = scratch.path().join("app");
+        let quota = WorkQuota::new(4).expect("test quota is nonzero");
+        let (record, state_machine) =
+            ApplicationRecord::bootstrap(&app_dir, 8, quota).expect("record bootstraps");
+        drop(state_machine);
+        let command = CounterCommand::Add {
+            delta: Delta::new(5).expect("test delta is nonzero"),
+        };
+        let request = request(command);
+
+        assert_eq!(
+            record.reserve(request, command).expect("request reserves"),
+            ReserveOutcome::Reserved
+        );
+        record.begin_draining(true).expect("draining publishes");
+        assert!(matches!(
+            record.retire(GroupLifecycle::Removed),
+            Err(StoreError::OutstandingRemain { count: 1 })
+        ));
+
+        record
+            .fail_poisoned_outstanding()
+            .expect("terminal refusal publishes");
+        record
+            .retire(GroupLifecycle::Removed)
+            .expect("resolved record retires");
+        drop(record);
+
+        let (record, state_machine) =
+            ApplicationRecord::open_existing(&app_dir, 8).expect("retired record reopens");
+        drop(state_machine);
+        assert!(!record.policy().poisoned);
+        assert_eq!(
+            record
+                .replay_terminal_failure(request, command)
+                .expect("terminal lookup succeeds"),
+            Some(TerminalFailure::GroupPoisoned)
+        );
+        record.reopen(quota, 8).expect("new incarnation opens");
+        assert_eq!(
+            record
+                .replay_terminal_failure(request, command)
+                .expect("terminal lookup succeeds"),
+            None
+        );
     }
 }

@@ -18,6 +18,8 @@ use rafter_reference_sharded_counter::{GroupId, GroupIncarnation, GroupLifecycle
 
 const REGISTRY_MAGIC: [u8; 4] = *b"RCHR";
 const INTENT_MAGIC: [u8; 4] = *b"RCRI";
+const ACTIVATION_MAGIC: [u8; 4] = *b"RCRA";
+const BOOTSTRAP_MAGIC: [u8; 4] = *b"RCRB";
 const VERSION: u8 = 1;
 const MAX_REGISTRY_BYTES: usize = 128 * 1024;
 
@@ -150,6 +152,98 @@ impl RetirementIntent {
     }
 }
 
+/// Durable marker for one Removed-to-Serving activation transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActivationIntent {
+    pub group_id: GroupId,
+    pub previous_incarnation: GroupIncarnation,
+    pub next_incarnation: GroupIncarnation,
+    pub quota: WorkQuota,
+}
+
+impl ActivationIntent {
+    pub fn load(group_dir: &Path) -> Result<Option<Self>, String> {
+        let path = Self::path(group_dir);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        decode_activation(&bytes).map(Some)
+    }
+
+    pub fn publish(self, group_dir: &Path) -> Result<(), String> {
+        let path = Self::path(group_dir);
+        if path.exists() {
+            return Err(format!(
+                "activation intent already exists at {}",
+                path.display()
+            ));
+        }
+        let mut bytes = Vec::with_capacity(4 + 1 + 4 * 4 + 4);
+        bytes.extend_from_slice(&ACTIVATION_MAGIC);
+        bytes.push(VERSION);
+        put_u32(&mut bytes, self.group_id.get());
+        put_u32(&mut bytes, self.previous_incarnation.get());
+        put_u32(&mut bytes, self.next_incarnation.get());
+        put_u32(&mut bytes, self.quota.get());
+        append_checksum(&mut bytes);
+        persist_bytes(&path, &bytes)
+    }
+
+    pub fn clear(group_dir: &Path) -> Result<(), String> {
+        clear_intent(&Self::path(group_dir), group_dir)
+    }
+
+    fn path(group_dir: &Path) -> PathBuf {
+        group_dir.join("activation.intent")
+    }
+}
+
+/// Durable authority for resuming an interrupted first host bootstrap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BootstrapIntent {
+    pub group_count: u32,
+    pub quota: WorkQuota,
+}
+
+impl BootstrapIntent {
+    pub fn load(groups_dir: &Path) -> Result<Option<Self>, String> {
+        let path = Self::path(groups_dir);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        decode_bootstrap(&bytes).map(Some)
+    }
+
+    pub fn publish(self, groups_dir: &Path) -> Result<(), String> {
+        let path = Self::path(groups_dir);
+        if path.exists() {
+            return Err(format!(
+                "bootstrap intent already exists at {}",
+                path.display()
+            ));
+        }
+        let mut bytes = Vec::with_capacity(4 + 1 + 4 * 2 + 4);
+        bytes.extend_from_slice(&BOOTSTRAP_MAGIC);
+        bytes.push(VERSION);
+        put_u32(&mut bytes, self.group_count);
+        put_u32(&mut bytes, self.quota.get());
+        append_checksum(&mut bytes);
+        persist_bytes(&path, &bytes)
+    }
+
+    pub fn clear(groups_dir: &Path) -> Result<(), String> {
+        clear_intent(&Self::path(groups_dir), groups_dir)
+    }
+
+    fn path(groups_dir: &Path) -> PathBuf {
+        groups_dir.join("bootstrap.intent")
+    }
+}
+
 pub fn sync_directory(directory: &Path) -> Result<(), String> {
     fs::File::open(directory)
         .and_then(|handle| handle.sync_all())
@@ -260,6 +354,53 @@ fn decode_intent(bytes: &[u8]) -> Result<RetirementIntent, String> {
         group_id,
         incarnation,
     })
+}
+
+fn decode_activation(bytes: &[u8]) -> Result<ActivationIntent, String> {
+    let body = checked_body(bytes, ACTIVATION_MAGIC, "activation intent")?;
+    let mut cursor = Cursor::new(body);
+    let group_id = GroupId::new(cursor.u32()?);
+    let previous_incarnation = GroupIncarnation::new(cursor.u32()?)
+        .ok_or_else(|| "activation intent contains a zero previous incarnation".to_string())?;
+    let next_incarnation = GroupIncarnation::new(cursor.u32()?)
+        .ok_or_else(|| "activation intent contains a zero next incarnation".to_string())?;
+    let quota = WorkQuota::new(cursor.u32()?)
+        .ok_or_else(|| "activation intent contains a zero quota".to_string())?;
+    if previous_incarnation.successor() != Some(next_incarnation) {
+        return Err("activation intent incarnations are not consecutive".to_string());
+    }
+    if !cursor.remaining().is_empty() {
+        return Err("activation intent contains trailing bytes".to_string());
+    }
+    Ok(ActivationIntent {
+        group_id,
+        previous_incarnation,
+        next_incarnation,
+        quota,
+    })
+}
+
+fn decode_bootstrap(bytes: &[u8]) -> Result<BootstrapIntent, String> {
+    let body = checked_body(bytes, BOOTSTRAP_MAGIC, "bootstrap intent")?;
+    let mut cursor = Cursor::new(body);
+    let group_count = cursor.u32()?;
+    let quota = WorkQuota::new(cursor.u32()?)
+        .ok_or_else(|| "bootstrap intent contains a zero quota".to_string())?;
+    if group_count == 0 {
+        return Err("bootstrap intent contains a zero group count".to_string());
+    }
+    if !cursor.remaining().is_empty() {
+        return Err("bootstrap intent contains trailing bytes".to_string());
+    }
+    Ok(BootstrapIntent { group_count, quota })
+}
+
+fn clear_intent(path: &Path, parent: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
+    }
+    sync_directory(parent)
 }
 
 fn checked_body<'a>(bytes: &'a [u8], magic: [u8; 4], label: &str) -> Result<&'a [u8], String> {

@@ -101,8 +101,10 @@ for suite in "${suites[@]}"; do
     expected="$(grep -c . "$inventory")"
 
     echo "reference process suite: ${package} --test ${target}"
+    # Each target owns several real three-process clusters. Serial execution
+    # bounds host pressure and keeps directed crash timing deterministic.
     "${repo_root}/scripts/cargo-test-exact" "$expected" - \
         --inventory "$inventory" "${list_only[@]+"${list_only[@]}"}" \
         "${patch[@]}" -p "$package" \
-        --test "$target" -- --ignored
+        --test "$target" -- --ignored --test-threads=1
 done

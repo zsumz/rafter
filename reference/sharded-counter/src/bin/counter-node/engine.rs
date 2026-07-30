@@ -1,5 +1,6 @@
 //! Bounded process loop that composes durable groups through the managed host.
 
+mod admission;
 mod audit;
 mod durability;
 
@@ -14,11 +15,7 @@ use std::{
 };
 
 use rafter::{LocalProposalId, NodeId, Role};
-use rafter_app::{
-    group::GroupInput,
-    proposal::{Proposal, ProposalEvent},
-    transport::PeerEnvelope,
-};
+use rafter_app::{group::GroupInput, proposal::ProposalEvent};
 use rafter_multiraft::{
     managed::{
         ArmPass, BeginDispatch, Dispatch, ManagedConfig, ManagedTypedMultiRaftHost, WorkClass,
@@ -36,12 +33,15 @@ use rafter_reference_sharded_counter::{
 
 use self::{
     audit::Audit,
-    durability::{archive_raft_with_failpoints, directed_failpoint, slot_from_policy},
+    durability::{
+        activate_staged_raft, archive_raft_with_failpoints, directed_failpoint,
+        prepare_staged_raft, slot_from_policy,
+    },
 };
 use super::{
-    app_store::{ApplicationRecord, ReserveOutcome},
+    app_store::{ApplicationRecord, ReserveOutcome, TerminalFailure},
     group::{OpenedGroup, Report, SharedGroup},
-    host_registry::{sync_directory, HostRegistry, RetirementIntent},
+    host_registry::{ActivationIntent, HostRegistry, RetirementIntent},
     peer_link::{PeerFrame, PeerLink},
     protocol::{self, ClientReply, Job, PressureClass, Request},
     Config,
@@ -78,7 +78,8 @@ struct PendingClient {
     group_id: GroupId,
     request: Option<(RequestIdentity, CounterCommand)>,
     replies: Vec<ClientReply>,
-    deadline: Instant,
+    deadline: Option<Instant>,
+    recovered: bool,
 }
 
 #[derive(Debug)]
@@ -191,6 +192,7 @@ impl Engine {
         for raw in 1..=self.group_count {
             let group_id = GroupId::new(raw);
             let directory = groups_dir.join(raw.to_string());
+            self.reconcile_activation(&directory, group_id)?;
             let (record, state_machine) =
                 ApplicationRecord::open_existing(&directory.join("app"), self.max_sessions)
                     .map_err(|error| {
@@ -204,6 +206,27 @@ impl Engine {
             let policy = record.policy();
             self.reconcile_registry(group_id, &policy)?;
             Self::validate_group_shape(&directory, group_id, policy.incarnation, policy.lifecycle)?;
+            if policy.poisoned {
+                if policy.lifecycle != GroupLifecycle::Draining {
+                    return Err(format!(
+                        "group {raw} durable poison marker conflicts with {:?}",
+                        policy.lifecycle
+                    ));
+                }
+                record
+                    .fail_poisoned_outstanding()
+                    .map_err(|error| error.to_string())?;
+                self.poisoned.insert(group_id);
+                self.groups.insert(
+                    group_id,
+                    GroupEntry {
+                        directory,
+                        record,
+                        driver: None,
+                    },
+                );
+                continue;
+            }
             if matches!(
                 policy.lifecycle,
                 GroupLifecycle::Removed | GroupLifecycle::Tombstoned
@@ -261,9 +284,11 @@ impl Engine {
                 ),
             )
             .map_err(|rejected| format!("managed group open failed: {:?}", rejected.error))?;
+        self.audit.register_group(group_id);
         self.host
             .set_available(&group_id, true)
             .map_err(|error| format!("managed group availability failed: {error:?}"))?;
+        self.audit.set_available(group_id, true);
         self.groups.insert(
             group_id,
             GroupEntry {
@@ -282,6 +307,7 @@ impl Engine {
     ) -> Result<(), String> {
         let mut next_tick = Instant::now();
         while !self.stopping {
+            self.recover_outstanding()?;
             self.receive_jobs(jobs)?;
             if self.stopping {
                 break;
@@ -374,19 +400,34 @@ impl Engine {
                 sequence,
                 command,
             } => {
-                let driver = match self.serving_driver(group_id, incarnation) {
-                    Ok(driver) => driver,
-                    Err(response) => {
-                        reply.send(response, false);
-                        return Ok(());
-                    }
-                };
                 let request = RequestIdentity {
                     client_id,
                     session_epoch: epoch,
                     sequence,
                     fingerprint: RequestFingerprint::of(&command),
                 };
+                let Some(entry) = self.groups.get(&group_id) else {
+                    reply.send("ERR GROUP_UNKNOWN".to_string(), false);
+                    return Ok(());
+                };
+                let policy = entry.record.policy();
+                if incarnation < policy.incarnation {
+                    reply.send(
+                        format!("ERR STALE_INCARNATION current={}", policy.incarnation.get()),
+                        false,
+                    );
+                    return Ok(());
+                }
+                if incarnation > policy.incarnation {
+                    reply.send(
+                        format!(
+                            "ERR FUTURE_INCARNATION current={}",
+                            policy.incarnation.get()
+                        ),
+                        false,
+                    );
+                    return Ok(());
+                }
                 if let Some(proposal_id) =
                     self.pending_requests.get(&(group_id, client_id)).copied()
                 {
@@ -396,16 +437,44 @@ impl Engine {
                         .expect("pending request index names a pending proposal");
                     if pending.request == Some((request, command)) {
                         pending.replies.push(reply);
+                        pending.deadline = Some(Instant::now() + self.request_timeout);
                     } else {
                         reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
                     }
                     return Ok(());
                 }
-                if let Some(result) = cached_result(&driver, request, command) {
+                match entry.record.replay_terminal_failure(request, command) {
+                    Ok(Some(TerminalFailure::GroupPoisoned)) => {
+                        reply.send("ERR NOT_COMMITTED GROUP_POISONED".to_string(), false);
+                        return Ok(());
+                    }
+                    Ok(Some(TerminalFailure::GroupPoisonedUnknown)) => {
+                        reply.send("ERR UNKNOWN GROUP_POISONED".to_string(), false);
+                        return Ok(());
+                    }
+                    Ok(Some(TerminalFailure::ProcessRestarted)) => {
+                        reply.send("ERR NOT_COMMITTED PROCESS_RESTARTED".to_string(), false);
+                        return Ok(());
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        reply.send("ERR CONFLICTING_OUTSTANDING".to_string(), false);
+                        return Ok(());
+                    }
+                }
+                if let Some(result) = entry
+                    .driver
+                    .as_ref()
+                    .and_then(|driver| cached_result(driver, request, command))
+                {
                     reply.send(
                         format!("OK REPLAY {}", render_counter_result(result)),
                         false,
                     );
+                    return Ok(());
+                }
+                if let Err(response) = self.serving_driver(group_id, incarnation) {
+                    reply.send(response, false);
                     return Ok(());
                 }
                 let record = self
@@ -491,6 +560,8 @@ impl Engine {
                 for _ in 0..count {
                     match self.host.admit(&group_id, class, GroupInput::Tick) {
                         Ok(receipt) => {
+                            self.audit
+                                .observe_admission(group_id, receipt.work_id, class);
                             self.work.insert(receipt.work_id, WorkKind::Pressure);
                             accepted += 1;
                         }
@@ -518,6 +589,11 @@ impl Engine {
                     .admit(&group_id, WorkClass::Snapshot, GroupInput::Tick)
                 {
                     Ok(receipt) => {
+                        self.audit.observe_admission(
+                            group_id,
+                            receipt.work_id,
+                            WorkClass::Snapshot,
+                        );
                         self.work.insert(receipt.work_id, WorkKind::Snapshot(reply));
                     }
                     Err(rejected) => {
@@ -574,144 +650,6 @@ impl Engine {
         Ok(())
     }
 
-    fn serving_driver(
-        &self,
-        group_id: GroupId,
-        incarnation: GroupIncarnation,
-    ) -> Result<SharedGroup, String> {
-        let Some(entry) = self.groups.get(&group_id) else {
-            return Err("ERR GROUP_UNKNOWN".to_string());
-        };
-        let policy = entry.record.policy();
-        if incarnation < policy.incarnation {
-            return Err(format!(
-                "ERR STALE_INCARNATION current={}",
-                policy.incarnation.get()
-            ));
-        }
-        if incarnation > policy.incarnation {
-            return Err(format!(
-                "ERR FUTURE_INCARNATION current={}",
-                policy.incarnation.get()
-            ));
-        }
-        if policy.lifecycle == GroupLifecycle::Tombstoned {
-            return Err("ERR TOMBSTONED".to_string());
-        }
-        if policy.lifecycle != GroupLifecycle::Serving {
-            return Err(format!("ERR LIFECYCLE {:?}", policy.lifecycle));
-        }
-        if self.poisoned.contains(&group_id) {
-            return Err("ERR GROUP_POISONED".to_string());
-        }
-        let Some(driver) = entry.driver.clone() else {
-            return Err("ERR GROUP_REMOVED".to_string());
-        };
-        if !driver.is_ready() {
-            return Err("ERR NOT_READY".to_string());
-        }
-        Ok(driver)
-    }
-
-    fn admit_client_proposal(
-        &mut self,
-        group_id: GroupId,
-        class: WorkClass,
-        command: ReplicatedCounterCommand,
-        request: Option<(RequestIdentity, CounterCommand)>,
-        reply: ClientReply,
-    ) -> bool {
-        let proposal_id = LocalProposalId(self.next_proposal_id);
-        let Some(next) = self.next_proposal_id.checked_add(1) else {
-            reply.send("ERR PROPOSAL_ID_EXHAUSTED".to_string(), false);
-            return false;
-        };
-        let input = GroupInput::Proposal {
-            proposal: Proposal {
-                local_proposal_id: proposal_id,
-                client_request_id: None,
-                command,
-            },
-        };
-        let receipt = match self.host.admit(&group_id, class, input) {
-            Ok(receipt) => receipt,
-            Err(rejected) => {
-                reply.send(format!("ERR BACKPRESSURE {:?}", rejected.reason), false);
-                return false;
-            }
-        };
-        self.next_proposal_id = next;
-        if let Some((identity, _)) = request {
-            self.pending_requests
-                .insert((group_id, identity.client_id), proposal_id);
-        }
-        self.pending.insert(
-            proposal_id,
-            PendingClient {
-                group_id,
-                request,
-                replies: vec![reply],
-                deadline: Instant::now() + self.request_timeout,
-            },
-        );
-        self.work
-            .insert(receipt.work_id, WorkKind::Proposal(proposal_id));
-        true
-    }
-
-    fn admit_peer_frames(&mut self) {
-        for frame in self.link.drain_inbound(MAX_PEERS_PER_LOOP) {
-            let Some(entry) = self.groups.get(&frame.group_id) else {
-                self.refused_peer += 1;
-                continue;
-            };
-            let policy = entry.record.policy();
-            if frame.incarnation != policy.incarnation
-                || !policy.lifecycle.is_serviceable()
-                || entry.driver.is_none()
-                || self.poisoned.contains(&frame.group_id)
-            {
-                self.refused_peer += 1;
-                continue;
-            }
-            let input = GroupInput::PeerMessage {
-                envelope: PeerEnvelope {
-                    group_id: frame.group_id,
-                    from: frame.from,
-                    to: frame.to,
-                    message: frame.message,
-                },
-            };
-            match self.host.admit(&frame.group_id, WorkClass::Control, input) {
-                Ok(receipt) => {
-                    self.work.insert(receipt.work_id, WorkKind::Peer);
-                }
-                Err(_) => self.refused_peer += 1,
-            }
-        }
-    }
-
-    fn admit_ticks(&mut self) {
-        let group_ids = self.groups.keys().copied().collect::<Vec<_>>();
-        for group_id in group_ids {
-            if self.tick_pending.contains(&group_id) || self.poisoned.contains(&group_id) {
-                continue;
-            }
-            let entry = &self.groups[&group_id];
-            let policy = entry.record.policy();
-            if !policy.lifecycle.is_serviceable() || entry.driver.is_none() {
-                continue;
-            }
-            if let Ok(receipt) = self
-                .host
-                .admit(&group_id, WorkClass::Control, GroupInput::Tick)
-            {
-                self.tick_pending.insert(group_id);
-                self.work.insert(receipt.work_id, WorkKind::Tick);
-            }
-        }
-    }
-
     fn drive(&mut self, now: Instant) -> Result<(), String> {
         self.release_delayed(now)?;
         match self
@@ -732,7 +670,13 @@ impl Engine {
             {
                 BeginDispatch::Dispatched(dispatch) => {
                     self.audit.observe_dispatch(&dispatch);
-                    if let Some(delay) = self.slow.get(&dispatch.group_id).copied() {
+                    let delay = self.slow.get(&dispatch.group_id).copied().filter(|_| {
+                        dispatch
+                            .items
+                            .iter()
+                            .any(|item| item.class != WorkClass::Control)
+                    });
+                    if let Some(delay) = delay {
                         self.delayed.push(DelayedDispatch {
                             ready_at: now + delay,
                             dispatch,
@@ -770,11 +714,18 @@ impl Engine {
     }
 
     fn execute(&mut self, dispatch: CounterDispatch) -> Result<(), String> {
+        self.mark_dispatch_entered(&dispatch)?;
         let managed = self
             .host
             .execute_dispatch(dispatch)
             .map_err(|rejected| format!("dispatch validation failed: {:?}", rejected.error))?;
         let group_id = managed.group_id;
+        let work_ids = managed
+            .items
+            .iter()
+            .map(|item| item.work_id)
+            .collect::<Vec<_>>();
+        let mut poisoned = false;
         for item in managed.items {
             let work_kind = self.work.remove(&item.work_id);
             if matches!(work_kind, Some(WorkKind::Tick)) {
@@ -801,13 +752,18 @@ impl Engine {
                     let kind = error.kind();
                     if kind == MultiRaftErrorKind::DriverPoisoned {
                         self.poisoned.insert(group_id);
+                        poisoned = true;
                     }
                     match work_kind {
                         Some(WorkKind::Proposal(proposal_id)) => {
-                            self.complete_unknown(
-                                proposal_id,
-                                &format!("managed group failed: {kind:?}"),
-                            );
+                            if kind == MultiRaftErrorKind::DriverPoisoned {
+                                self.complete_poisoned_dispatch(proposal_id)?;
+                            } else {
+                                self.complete_unknown(
+                                    proposal_id,
+                                    &format!("managed group failed: {kind:?}"),
+                                );
+                            }
                         }
                         Some(WorkKind::Snapshot(reply)) => {
                             reply.send(format!("ERR SNAPSHOT {kind:?}"), false);
@@ -820,6 +776,27 @@ impl Engine {
         managed
             .completion
             .map_err(|error| format!("dispatch completion failed: {error:?}"))?;
+        self.audit
+            .observe_dispatch_completion(group_id, &work_ids, poisoned);
+        Ok(())
+    }
+
+    fn mark_dispatch_entered(&self, dispatch: &CounterDispatch) -> Result<(), String> {
+        for item in &dispatch.items {
+            let Some(WorkKind::Proposal(proposal_id)) = self.work.get(&item.work_id) else {
+                continue;
+            };
+            let Some(pending) = self.pending.get(proposal_id) else {
+                continue;
+            };
+            let Some((request, command)) = pending.request else {
+                continue;
+            };
+            self.groups[&pending.group_id]
+                .record
+                .mark_entered_driver(request, command)
+                .map_err(|error| error.to_string())?;
+        }
         Ok(())
     }
 
@@ -889,6 +866,15 @@ impl Engine {
         let Some(pending) = self.take_pending(proposal_id) else {
             return Ok(());
         };
+        if pending.recovered {
+            for reply in pending.replies {
+                reply.send(
+                    format!("ERR UNKNOWN recovered request remains pending: {detail}"),
+                    false,
+                );
+            }
+            return Ok(());
+        }
         if let Some((request, command)) = pending.request {
             self.groups[&pending.group_id]
                 .record
@@ -910,6 +896,46 @@ impl Engine {
         }
     }
 
+    fn complete_poisoned_dispatch(&mut self, proposal_id: LocalProposalId) -> Result<(), String> {
+        let Some(pending) = self.take_pending(proposal_id) else {
+            return Ok(());
+        };
+        let disposition = if let Some((request, command)) = pending.request {
+            self.groups[&pending.group_id]
+                .record
+                .fail_reservation(request, command, TerminalFailure::GroupPoisonedUnknown)
+                .map_err(|error| error.to_string())?;
+            "UNKNOWN"
+        } else {
+            "NOT_COMMITTED"
+        };
+        for reply in pending.replies {
+            reply.send(format!("ERR {disposition} GROUP_POISONED"), false);
+        }
+        Ok(())
+    }
+
+    fn complete_not_committed(
+        &mut self,
+        proposal_id: LocalProposalId,
+        failure: TerminalFailure,
+        detail: &str,
+    ) -> Result<(), String> {
+        let Some(pending) = self.take_pending(proposal_id) else {
+            return Ok(());
+        };
+        if let Some((request, command)) = pending.request {
+            self.groups[&pending.group_id]
+                .record
+                .fail_reservation(request, command, failure)
+                .map_err(|error| error.to_string())?;
+        }
+        for reply in pending.replies {
+            reply.send(format!("ERR NOT_COMMITTED {detail}"), false);
+        }
+        Ok(())
+    }
+
     fn take_pending(&mut self, proposal_id: LocalProposalId) -> Option<PendingClient> {
         let pending = self.pending.remove(&proposal_id)?;
         if let Some((request, _)) = pending.request {
@@ -923,10 +949,22 @@ impl Engine {
         let expired = self
             .pending
             .iter()
-            .filter_map(|(id, pending)| (now >= pending.deadline).then_some(*id))
+            .filter_map(|(id, pending)| {
+                pending
+                    .deadline
+                    .is_some_and(|deadline| now >= deadline)
+                    .then_some(*id)
+            })
             .collect::<Vec<_>>();
         for proposal_id in expired {
-            self.complete_unknown(proposal_id, "client deadline elapsed");
+            let pending = self
+                .pending
+                .get_mut(&proposal_id)
+                .expect("expired identity names a pending proposal");
+            pending.deadline = None;
+            for reply in std::mem::take(&mut pending.replies) {
+                reply.send("ERR UNKNOWN client deadline elapsed".to_string(), false);
+            }
         }
     }
 
@@ -939,7 +977,9 @@ impl Engine {
             .groups
             .get(&group_id)
             .ok_or_else(|| "group is unknown".to_string())?;
-        let policy = entry.record.policy();
+        let record = entry.record.clone();
+        let policy = record.policy();
+        let has_driver = entry.driver.is_some();
         if policy.incarnation != incarnation {
             return Ok(format!(
                 "ERR INCARNATION current={}",
@@ -953,25 +993,37 @@ impl Engine {
             return Ok(format!("ERR LIFECYCLE {:?}", policy.lifecycle));
         }
         if policy.lifecycle == GroupLifecycle::Serving {
-            entry
-                .record
-                .set_lifecycle(GroupLifecycle::Draining)
+            record
+                .begin_draining(self.poisoned.contains(&group_id))
                 .map_err(|error| error.to_string())?;
+            directed_failpoint("after_draining_application_publication");
             self.publish_group_policy(group_id)?;
+            directed_failpoint("after_draining_registry_publication");
+        } else if self.poisoned.contains(&group_id) && !policy.poisoned {
+            record.mark_poisoned().map_err(|error| error.to_string())?;
         }
-        if self.poisoned.contains(&group_id) {
+        if self.poisoned.contains(&group_id) && has_driver {
+            directed_failpoint("before_queued_retirement");
             let retired = self
                 .host
                 .fail_queued(&group_id)
                 .map_err(|error| format!("poisoned queue drain failed: {error:?}"))?;
-            for item in retired {
+            let retired_ids = retired.iter().map(|item| item.work_id).collect::<Vec<_>>();
+            self.audit.observe_failed_queued(group_id, &retired_ids);
+            directed_failpoint("after_queued_retirement_before_durable_failure_publication");
+            let retired_count = retired.len();
+            for (index, item) in retired.into_iter().enumerate() {
                 let work_kind = self.work.remove(&item.work_id);
                 match work_kind {
                     Some(WorkKind::Tick) => {
                         self.tick_pending.remove(&group_id);
                     }
                     Some(WorkKind::Proposal(proposal_id)) => {
-                        self.complete_unknown(proposal_id, "managed group is poisoned");
+                        self.complete_not_committed(
+                            proposal_id,
+                            TerminalFailure::GroupPoisoned,
+                            "GROUP_POISONED",
+                        )?;
                     }
                     Some(WorkKind::Snapshot(reply)) => {
                         reply.send("ERR SNAPSHOT DriverPoisoned".to_string(), false);
@@ -979,7 +1031,11 @@ impl Engine {
                     Some(WorkKind::Peer | WorkKind::Pressure) | None => {}
                 }
                 drop(item.payload);
+                if index == 0 && retired_count > 1 {
+                    directed_failpoint("midway_through_queued_retirement");
+                }
             }
+            directed_failpoint("after_durable_failure_publication");
         }
         Ok(format!("OK DRAIN group={}", group_id.get()))
     }
@@ -1002,10 +1058,22 @@ impl Engine {
         if policy.lifecycle != GroupLifecycle::Draining {
             return Ok(format!("ERR LIFECYCLE {:?}", policy.lifecycle));
         }
-        match self.host.can_remove_group(&group_id) {
-            Ok(true) => {}
-            Ok(false) => return Ok("ERR GROUP_NOT_OPEN".to_string()),
-            Err(error) => return Ok(format!("ERR BUSY {error:?}")),
+        if !policy.outstanding.is_empty() {
+            directed_failpoint("before_removal_with_durable_outstanding_work");
+            return Ok(format!(
+                "ERR BUSY DURABLE_OUTSTANDING count={}",
+                policy.outstanding.len()
+            ));
+        }
+        let managed = entry.driver.is_some();
+        if managed {
+            match self.host.can_remove_group(&group_id) {
+                Ok(true) => {}
+                Ok(false) => return Ok("ERR GROUP_NOT_OPEN".to_string()),
+                Err(error) => return Ok(format!("ERR BUSY {error:?}")),
+            }
+        } else if !policy.poisoned {
+            return Ok("ERR GROUP_NOT_OPEN".to_string());
         }
         directed_failpoint("before_intent_publish");
         RetirementIntent {
@@ -1014,24 +1082,27 @@ impl Engine {
         }
         .publish(&entry.directory)?;
         directed_failpoint("after_intent_publish");
-        let removed = match self.host.remove_group(&group_id) {
-            Ok(Some(driver)) => driver,
-            Ok(None) => {
-                return Err(format!(
-                    "group {} disappeared after its retirement intent became durable",
-                    group_id.get()
-                ));
-            }
-            Err(error) => {
-                return Err(format!(
-                    "group {} became non-removable after its retirement intent became durable: \
-                     {error:?}",
-                    group_id.get()
-                ));
-            }
-        };
-        drop(removed);
-        directed_failpoint("after_driver_detach");
+        if managed {
+            let removed = match self.host.remove_group(&group_id) {
+                Ok(Some(driver)) => driver,
+                Ok(None) => {
+                    return Err(format!(
+                        "group {} disappeared after its retirement intent became durable",
+                        group_id.get()
+                    ));
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "group {} became non-removable after its retirement intent became durable: \
+                         {error:?}",
+                        group_id.get()
+                    ));
+                }
+            };
+            drop(removed);
+            self.audit.remove_group(group_id);
+            directed_failpoint("after_driver_detach");
+        }
         let entry = self
             .groups
             .get_mut(&group_id)
@@ -1082,16 +1153,29 @@ impl Engine {
         if directory.join("raft").exists() {
             return Err("removed group still has an active Raft directory".to_string());
         }
+        let new_incarnation = incarnation
+            .successor()
+            .ok_or_else(|| "group incarnation exhausted".to_string())?;
+        let intent = ActivationIntent {
+            group_id,
+            previous_incarnation: incarnation,
+            next_incarnation: new_incarnation,
+            quota,
+        };
+        directed_failpoint("before_activation_intent_publication");
+        intent.publish(&directory)?;
+        directed_failpoint("after_activation_intent_publication");
+        prepare_staged_raft(&directory, new_incarnation, true)?;
         entry
             .record
             .reopen(quota, self.max_sessions)
             .map_err(|error| error.to_string())?;
-        let new_incarnation = entry.record.policy().incarnation;
+        directed_failpoint("after_activation_application_publication");
         self.publish_group_policy(group_id)?;
-        let raft_dir = directory.join("raft");
-        fs::create_dir_all(&raft_dir)
-            .map_err(|error| format!("could not create {}: {error}", raft_dir.display()))?;
-        sync_directory(&directory)?;
+        directed_failpoint("after_activation_registry_publication");
+        activate_staged_raft(&directory, new_incarnation, true)?;
+        directed_failpoint("before_activation_intent_cleanup");
+        ActivationIntent::clear(&directory)?;
         let opened = self.open_physical(&directory, group_id)?;
         let recovery = opened.recovery.clone();
         self.install_opened(group_id, directory, opened)?;
@@ -1148,7 +1232,10 @@ impl Engine {
             if matches!(
                 lifecycle,
                 GroupLifecycle::Removed | GroupLifecycle::Tombstoned
-            ) {
+            ) || (lifecycle == GroupLifecycle::Draining
+                && entry.record.policy().poisoned
+                && entry.driver.is_none())
+            {
                 return true;
             }
             entry.driver.as_ref().is_some_and(SharedGroup::is_ready)

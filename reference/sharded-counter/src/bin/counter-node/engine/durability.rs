@@ -7,7 +7,10 @@ use rafter_reference_sharded_counter::{GroupId, GroupIncarnation, GroupLifecycle
 use super::Engine;
 use crate::{
     app_store::{ApplicationRecord, StoredPolicy},
-    host_registry::{sync_directory, HostRegistry, RetirementIntent, SlotRecord},
+    host_registry::{
+        sync_directory, ActivationIntent, BootstrapIntent, HostRegistry, RetirementIntent,
+        SlotRecord,
+    },
 };
 
 impl Engine {
@@ -15,6 +18,16 @@ impl Engine {
         &self,
         groups_dir: &Path,
     ) -> Result<HostRegistry, String> {
+        if let Some(intent) = BootstrapIntent::load(groups_dir)? {
+            if intent.group_count != self.group_count || intent.quota != self.default_quota {
+                return Err(
+                    "bootstrap intent conflicts with the configured group count or quota"
+                        .to_string(),
+                );
+            }
+            let registry = HostRegistry::open(groups_dir, self.group_count)?;
+            return self.resume_bootstrap(groups_dir, intent, registry);
+        }
         if let Some(registry) = HostRegistry::open(groups_dir, self.group_count)? {
             return Ok(registry);
         }
@@ -66,27 +79,152 @@ impl Engine {
     }
 
     fn bootstrap_registry(&self, groups_dir: &Path) -> Result<HostRegistry, String> {
-        let slots = (1..=self.group_count)
+        let intent = BootstrapIntent {
+            group_count: self.group_count,
+            quota: self.default_quota,
+        };
+        directed_failpoint("before_bootstrap_intent_publication");
+        intent.publish(groups_dir)?;
+        directed_failpoint("after_bootstrap_intent_publication");
+        self.resume_bootstrap(groups_dir, intent, None)
+    }
+
+    fn resume_bootstrap(
+        &self,
+        groups_dir: &Path,
+        intent: BootstrapIntent,
+        existing_registry: Option<HostRegistry>,
+    ) -> Result<HostRegistry, String> {
+        let slots = (1..=intent.group_count)
             .map(|raw| SlotRecord {
                 group_id: GroupId::new(raw),
                 incarnation: GroupIncarnation::first(),
                 lifecycle: GroupLifecycle::Serving,
-                quota: self.default_quota,
+                quota: intent.quota,
             })
             .collect::<Vec<_>>();
-        let registry = HostRegistry::create(groups_dir, slots)?;
-        for raw in 1..=self.group_count {
+        for raw in 1..=intent.group_count {
             let slot_dir = groups_dir.join(raw.to_string());
+            fs::create_dir_all(&slot_dir)
+                .map_err(|error| format!("could not create {}: {error}", slot_dir.display()))?;
+            prepare_staged_raft(&slot_dir, GroupIncarnation::first(), true)?;
             let app_dir = slot_dir.join("app");
-            let _ = ApplicationRecord::bootstrap(&app_dir, self.max_sessions, self.default_quota)
-                .map_err(|error| format!("group {raw} explicit bootstrap failed: {error}"))?;
-            let raft_dir = slot_dir.join("raft");
-            fs::create_dir_all(&raft_dir)
-                .map_err(|error| format!("could not create {}: {error}", raft_dir.display()))?;
-            sync_directory(&slot_dir)?;
+            if app_dir.join("state.rcap").exists() {
+                let (record, state_machine) =
+                    ApplicationRecord::open_existing(&app_dir, self.max_sessions)
+                        .map_err(|error| format!("group {raw} bootstrap replay failed: {error}"))?;
+                drop(state_machine);
+                let policy = record.policy();
+                if policy.incarnation != GroupIncarnation::first()
+                    || policy.lifecycle != GroupLifecycle::Serving
+                    || policy.poisoned
+                    || policy.quota != intent.quota
+                    || !policy.outstanding.is_empty()
+                    || !policy.terminal.is_empty()
+                {
+                    return Err(format!(
+                        "group {raw} conflicts with its durable bootstrap intent"
+                    ));
+                }
+            } else {
+                let _ = ApplicationRecord::bootstrap(&app_dir, self.max_sessions, intent.quota)
+                    .map_err(|error| format!("group {raw} explicit bootstrap failed: {error}"))?;
+                directed_failpoint("after_bootstrap_application_publication");
+            }
         }
-        sync_directory(groups_dir)?;
+        let registry = if let Some(registry) = existing_registry {
+            for slot in &slots {
+                if registry.slot(slot.group_id)? != *slot {
+                    return Err(format!(
+                        "host registry conflicts with bootstrap intent for group {}",
+                        slot.group_id.get()
+                    ));
+                }
+            }
+            registry
+        } else {
+            let registry = HostRegistry::create(groups_dir, slots)?;
+            directed_failpoint("after_bootstrap_registry_publication");
+            registry
+        };
+        for raw in 1..=intent.group_count {
+            activate_staged_raft(
+                &groups_dir.join(raw.to_string()),
+                GroupIncarnation::first(),
+                true,
+            )?;
+        }
+        directed_failpoint("before_bootstrap_intent_cleanup");
+        BootstrapIntent::clear(groups_dir)?;
         Ok(registry)
+    }
+
+    pub(super) fn reconcile_activation(
+        &mut self,
+        directory: &Path,
+        group_id: GroupId,
+    ) -> Result<(), String> {
+        let Some(intent) = ActivationIntent::load(directory)? else {
+            return Ok(());
+        };
+        if intent.group_id != group_id {
+            return Err(format!(
+                "group {} activation intent names group {}",
+                group_id.get(),
+                intent.group_id.get()
+            ));
+        }
+        let durable = self
+            .registry
+            .as_ref()
+            .expect("registry installed before activation reconciliation")
+            .slot(group_id)?;
+        let old_slot = SlotRecord {
+            group_id,
+            incarnation: intent.previous_incarnation,
+            lifecycle: GroupLifecycle::Removed,
+            quota: durable.quota,
+        };
+        let next_slot = SlotRecord {
+            group_id,
+            incarnation: intent.next_incarnation,
+            lifecycle: GroupLifecycle::Serving,
+            quota: intent.quota,
+        };
+        if durable != old_slot && durable != next_slot {
+            return Err(format!(
+                "group {} activation intent conflicts with the host registry",
+                group_id.get()
+            ));
+        }
+        prepare_staged_raft(directory, intent.next_incarnation, false)?;
+        let (record, state_machine) =
+            ApplicationRecord::open_existing(&directory.join("app"), self.max_sessions).map_err(
+                |error| format!("group {} activation replay failed: {error}", group_id.get()),
+            )?;
+        drop(state_machine);
+        let policy = record.policy();
+        if policy.incarnation == intent.previous_incarnation
+            && policy.lifecycle == GroupLifecycle::Removed
+        {
+            record
+                .reopen(intent.quota, self.max_sessions)
+                .map_err(|error| error.to_string())?;
+        } else if policy.incarnation != intent.next_incarnation
+            || policy.lifecycle != GroupLifecycle::Serving
+            || policy.quota != intent.quota
+        {
+            return Err(format!(
+                "group {} activation intent conflicts with the application record",
+                group_id.get()
+            ));
+        }
+        self.registry
+            .as_mut()
+            .expect("registry installed before activation reconciliation")
+            .publish(next_slot)?;
+        activate_staged_raft(directory, intent.next_incarnation, false)?;
+        ActivationIntent::clear(directory)
     }
 
     pub(super) fn reconcile_retirement(
@@ -262,8 +400,94 @@ fn archive_raft_inner(
     Ok(())
 }
 
+pub(super) fn prepare_staged_raft(
+    directory: &Path,
+    incarnation: GroupIncarnation,
+    use_failpoints: bool,
+) -> Result<(), String> {
+    let active = directory.join("raft");
+    let staged = staged_raft_path(directory, incarnation);
+    if active.exists() && staged.exists() {
+        return Err(format!(
+            "both active {} and staged {} exist",
+            active.display(),
+            staged.display()
+        ));
+    }
+    if active.exists() {
+        return Ok(());
+    }
+    if !staged.exists() {
+        if use_failpoints {
+            directed_failpoint("before_staged_raft_creation");
+        }
+        fs::create_dir_all(&staged)
+            .map_err(|error| format!("could not create {}: {error}", staged.display()))?;
+        if use_failpoints {
+            directed_failpoint("after_staged_raft_creation");
+        }
+    }
+    sync_directory(&staged)?;
+    sync_directory(directory)?;
+    if use_failpoints {
+        directed_failpoint("after_staged_raft_sync");
+    }
+    Ok(())
+}
+
+pub(super) fn activate_staged_raft(
+    directory: &Path,
+    incarnation: GroupIncarnation,
+    use_failpoints: bool,
+) -> Result<(), String> {
+    let active = directory.join("raft");
+    let staged = staged_raft_path(directory, incarnation);
+    if active.exists() && staged.exists() {
+        return Err(format!(
+            "both active {} and staged {} exist",
+            active.display(),
+            staged.display()
+        ));
+    }
+    if !active.exists() {
+        if !staged.is_dir() {
+            return Err(format!(
+                "activation has neither active {} nor staged {}",
+                active.display(),
+                staged.display()
+            ));
+        }
+        if use_failpoints {
+            directed_failpoint("before_activation_raft_rename");
+        }
+        fs::rename(&staged, &active).map_err(|error| {
+            format!(
+                "could not activate {} as {}: {error}",
+                staged.display(),
+                active.display()
+            )
+        })?;
+        if use_failpoints {
+            directed_failpoint("after_activation_raft_rename");
+        }
+    }
+    sync_directory(directory)?;
+    if use_failpoints {
+        directed_failpoint("after_activation_parent_sync");
+    }
+    Ok(())
+}
+
+fn staged_raft_path(directory: &Path, incarnation: GroupIncarnation) -> std::path::PathBuf {
+    directory.join(format!("raft.activating-{}", incarnation.get()))
+}
+
 pub(super) fn directed_failpoint(name: &str) {
-    if std::env::var("RAFTER_COUNTER_FAILPOINT").as_deref() == Ok(name) {
+    let environment_match = std::env::var("RAFTER_COUNTER_FAILPOINT").as_deref() == Ok(name);
+    let file_match = std::env::var_os("RAFTER_COUNTER_FAILPOINT_FILE")
+        .and_then(|path| fs::read_to_string(path).ok())
+        .is_some_and(|armed| armed.trim() == name);
+    if environment_match || file_match {
         crate::emit(&format!("FAILPOINT {name}"));
         std::process::abort();
     }

@@ -76,7 +76,13 @@ impl NodeProcess {
             .arg("--max-group-queue")
             .arg("64")
             .arg("--max-global-queue")
-            .arg("1024");
+            .arg("1024")
+            .env(
+                "RAFTER_COUNTER_FAILPOINT_FILE",
+                scratch
+                    .path()
+                    .join(format!("host-{node_id}/armed.failpoint")),
+            );
         if let Some(failpoint) = failpoint {
             command.env("RAFTER_COUNTER_FAILPOINT", failpoint);
         }
@@ -131,6 +137,19 @@ impl NodeProcess {
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(status.success(), "node {} exited as {status}", self.node_id);
     }
+
+    fn wait_for_failpoint_exit(&mut self, failpoint: &str) {
+        let observed = self
+            .child
+            .wait_for_stdout_prefix(&format!("FAILPOINT {failpoint}"), PROCESS_WAIT)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(observed, format!("FAILPOINT {failpoint}"));
+        let status = self
+            .child
+            .wait_for_exit(PROCESS_WAIT)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!status.success(), "{failpoint} must stop the process");
+    }
 }
 
 #[derive(Debug)]
@@ -143,6 +162,20 @@ impl ProcessCluster {
     pub fn start(label: &str) -> Self {
         let scratch = ScratchSpace::create("rafter-counter", label)
             .unwrap_or_else(|error| panic!("could not create process scratch space: {error}"));
+        let nodes = NODE_IDS
+            .into_iter()
+            .map(|node_id| (node_id, NodeProcess::spawn(&scratch, node_id)))
+            .collect();
+        let mut cluster = Self { scratch, nodes };
+        cluster.wait_ready();
+        cluster
+    }
+
+    pub fn start_after_bootstrap_failpoint(label: &str, failpoint: &str) -> Self {
+        let scratch = ScratchSpace::create("rafter-counter", label)
+            .unwrap_or_else(|error| panic!("could not create process scratch space: {error}"));
+        let mut interrupted = NodeProcess::spawn_with_failpoint(&scratch, 1, Some(failpoint));
+        interrupted.wait_for_failpoint_exit(failpoint);
         let nodes = NODE_IDS
             .into_iter()
             .map(|node_id| (node_id, NodeProcess::spawn(&scratch, node_id)))
@@ -200,20 +233,51 @@ impl ProcessCluster {
     }
 
     pub fn wait_response(&mut self, node_id: u64, line: &str, expected: &str) {
-        PROCESS_WAIT
-            .until(
-                format!("node {node_id} to answer {line:?} with {expected:?}"),
-                || {
-                    self.nodes
-                        .get_mut(&node_id)
-                        .expect("node is live")
-                        .request(line)
-                        .ok()
-                        .filter(|response| response == expected)
-                        .map(drop)
-                },
-            )
-            .unwrap_or_else(|error| panic!("{error}"));
+        let mut last = None;
+        let result = PROCESS_WAIT.until(
+            format!("node {node_id} to answer {line:?} with {expected:?}"),
+            || match self
+                .nodes
+                .get_mut(&node_id)
+                .expect("node is live")
+                .request(line)
+            {
+                Ok(response) if response == expected => Some(()),
+                Ok(response) => {
+                    last = Some(response);
+                    None
+                }
+                Err(error) => {
+                    last = Some(format!("connection error: {error}"));
+                    None
+                }
+            },
+        );
+        result.unwrap_or_else(|error| panic!("{error}; last response: {last:?}"));
+    }
+
+    pub fn wait_response_one_of(&mut self, node_id: u64, line: &str, expected: &[&str]) -> String {
+        let mut last = None;
+        let result = PROCESS_WAIT.until(
+            format!("node {node_id} to answer {line:?} with one of {expected:?}"),
+            || match self
+                .nodes
+                .get_mut(&node_id)
+                .expect("node is live")
+                .request(line)
+            {
+                Ok(response) if expected.contains(&response.as_str()) => Some(response),
+                Ok(response) => {
+                    last = Some(response);
+                    None
+                }
+                Err(error) => {
+                    last = Some(format!("connection error: {error}"));
+                    None
+                }
+            },
+        );
+        result.unwrap_or_else(|error| panic!("{error}; last response: {last:?}"))
     }
 
     pub fn wait_ready(&mut self) {
@@ -282,6 +346,23 @@ impl ProcessCluster {
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
+    pub fn leader_group_on(&mut self, node_id: u64) -> u32 {
+        PROCESS_WAIT
+            .until(format!("node {node_id} to lead one group"), || {
+                let status = self
+                    .nodes
+                    .get_mut(&node_id)
+                    .expect("node is live")
+                    .request("STATUS")
+                    .ok()?;
+                field(&status, "leader_groups")?
+                    .split(',')
+                    .find(|group| *group != "-")
+                    .and_then(|group| group.parse().ok())
+            })
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
     pub fn kill(&mut self, node_id: u64) {
         let mut node = self
             .nodes
@@ -329,17 +410,18 @@ impl ProcessCluster {
                 }
             })
             .unwrap_or_else(|error| panic!("{error}"));
-        let observed = node
-            .child
-            .wait_for_stdout_prefix(&format!("FAILPOINT {failpoint}"), PROCESS_WAIT)
-            .unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(observed, format!("FAILPOINT {failpoint}"));
-        let status = node
-            .child
-            .wait_for_exit(PROCESS_WAIT)
-            .unwrap_or_else(|error| panic!("{error}"));
-        assert!(!status.success(), "{failpoint} must stop the process");
+        node.wait_for_failpoint_exit(failpoint);
         self.nodes.remove(&node_id);
+        self.clear_armed_failpoint(node_id);
+    }
+
+    pub fn arm_failpoint(&self, node_id: u64, failpoint: &str) {
+        let path = self
+            .scratch
+            .path()
+            .join(format!("host-{node_id}/armed.failpoint"));
+        fs::write(&path, failpoint)
+            .unwrap_or_else(|error| panic!("could not arm {}: {error}", path.display()));
     }
 
     pub fn restart_expect_fatal(&mut self, node_id: u64, expected: &str) {
@@ -361,6 +443,21 @@ impl ProcessCluster {
             .wait_for_exit(PROCESS_WAIT)
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(!status.success(), "corrupt identity must fail closed");
+    }
+
+    fn clear_armed_failpoint(&self, node_id: u64) {
+        let path = self
+            .scratch
+            .path()
+            .join(format!("host-{node_id}/armed.failpoint"));
+        if let Err(error) = fs::remove_file(&path) {
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::NotFound,
+                "could not clear {}: {error}",
+                path.display()
+            );
+        }
     }
 
     pub fn wait_value(&mut self, node_id: u64, group: u32, incarnation: u32, expected: i64) {
@@ -425,6 +522,23 @@ impl ProcessCluster {
                         .request("STATUS")
                         .ok()?;
                     (number_field(&status, name) > baseline).then_some(())
+                },
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    pub fn wait_status_at_least(&mut self, node_id: u64, name: &str, minimum: u64) {
+        PROCESS_WAIT
+            .until(
+                format!("node {node_id} status {name} to reach {minimum}"),
+                || {
+                    let status = self
+                        .nodes
+                        .get_mut(&node_id)
+                        .expect("live node")
+                        .request("STATUS")
+                        .ok()?;
+                    (number_field(&status, name) >= minimum).then_some(())
                 },
             )
             .unwrap_or_else(|error| panic!("{error}"));
@@ -619,13 +733,19 @@ pub fn fill_peer_connection_bound(cluster_dir: &Path, target: u64) -> Vec<TcpStr
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .expect("bounded peer write timeout is installed");
-        stream
-            .write_all(&claimed.to_be_bytes())
-            .expect("bounded peer preamble sender writes");
-        stream
-            .write_all(&target.to_be_bytes())
-            .expect("bounded peer preamble target writes");
-        connections.push(stream);
+        let sender = stream.write_all(&claimed.to_be_bytes());
+        let target = sender.and_then(|()| stream.write_all(&target.to_be_bytes()));
+        match target {
+            Ok(()) => connections.push(stream),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionReset
+                ) => {}
+            Err(error) => panic!("bounded peer preamble failed unexpectedly: {error}"),
+        }
     }
     connections
 }

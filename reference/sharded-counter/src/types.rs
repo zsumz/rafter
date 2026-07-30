@@ -600,10 +600,11 @@ pub enum GroupLifecycle {
     Recovering,
     /// The slot is fully serviceable.
     Serving,
-    /// The slot accepts no new work and is retiring what it already accepted.
+    /// The slot accepts no new consumer or system work and is retiring what it
+    /// already accepted.
     ///
-    /// Serviceable, because draining is how accepted work leaves without being
-    /// discarded.
+    /// Current-incarnation protocol messages may continue only while they are
+    /// needed to settle that bounded accepted-work set.
     Draining,
     /// The slot is gone and its counter, sessions, and queue are gone with it.
     ///
@@ -629,6 +630,20 @@ impl GroupLifecycle {
             Self::Serving => true,
             Self::Recovering => !matches!(class, WorkClass::Command),
             Self::Creating | Self::Draining | Self::Removed | Self::Tombstoned => false,
+        }
+    }
+
+    /// Returns whether current-incarnation protocol traffic may continue.
+    ///
+    /// Draining is deliberately conditional: protocol continuation is not new
+    /// consumer work, but it is legal only while previously accepted work
+    /// remains to be settled.
+    #[must_use]
+    pub const fn permits_protocol_continuation(self, accepted_work_remains: bool) -> bool {
+        match self {
+            Self::Recovering | Self::Serving => true,
+            Self::Draining => accepted_work_remains,
+            Self::Creating | Self::Removed | Self::Tombstoned => false,
         }
     }
 }

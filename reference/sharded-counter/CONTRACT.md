@@ -305,7 +305,7 @@ Six states, one administrative axis:
 Creating     the slot exists and its durable state is being established
 Recovering   the slot is replaying and catching up
 Serving      the slot is fully serviceable
-Draining     the slot admits nothing and is retiring what it accepted
+Draining     the slot admits no new work and settles what it accepted
 Removed      the slot is gone; its ID may be created again
 Tombstoned   the slot is gone; its ID may never be created again
 ```
@@ -333,8 +333,11 @@ client commands. Parking commands behind a recovery of unknown length would turn
 one slow group into a queue-limit outage for the whole host; refusing them lets
 the client retry the same request identity when the group is serving.
 
-A draining group is serviceable and admits nothing. That is the entire content
-of draining: it is how accepted work leaves.
+A draining group admits no new consumer work, pressure, or snapshot work. It
+may accept bounded current-incarnation protocol continuation—peer traffic and
+ticks—only while durable outstanding work or a live accepted proposal still
+needs progress. That continuation is not a new client admission, ends when the
+accepted-work set is empty, and cannot be kept alive by protocol traffic alone.
 
 ### Transition table
 
@@ -363,10 +366,10 @@ the caller asked for while reporting that nothing changed.
 had accepted. The only route out is the drain, and the drain accounts for every
 item.
 
-**`Remove` on a draining slot with a queue is refused with the count still
-owed.** A healthy group's accepted work leaves by being serviced; a poisoned
-group's leaves through the failure records its drain emitted. Neither vanishes,
-and neither can be outrun.
+**`Remove` on a draining slot with scheduler or durable application work is
+refused with the count still owed.** A healthy group's accepted work leaves by
+being serviced; a poisoned group's leaves through the durable failure records
+its drain emitted. Neither vanishes, and neither can be outrun.
 
 ### Accepted work is never silently discarded
 
@@ -375,11 +378,16 @@ This is the enforcement point the doc asks for, stated as one rule:
 > Every admitted item reaches exactly one terminal disposition — serviced, or
 > failed with a record naming it. There is no third outcome and no silent one.
 
-A healthy group drains by servicing. A poisoned group can service nothing, so
-draining it retires its queue and reports each item individually as
-`GroupPoisoned`. That is a failure, not a disappearance: the count is
-observable, the identifiers are named, and the conservation law
-`admitted = serviced + failed + queued` holds over any history.
+A healthy group drains by servicing. After a restart, its durable outstanding
+requests are re-admitted under their exact request and command identities. A
+poisoned group can service nothing, so draining it retires its queue and moves
+each reserved request to a durable terminal record. Work proven not to have
+entered the driver reports `NOT_COMMITTED GROUP_POISONED`; a request that
+crossed that boundary before the fault reports `UNKNOWN GROUP_POISONED`
+instead of making a false commit claim. An exact retry reads the same terminal
+record even after removal; a new incarnation clears it. A crash at any point
+therefore either leaves replayable outstanding work or a replayable typed
+failure.
 
 Because a group can be poisoned by work it services *while* draining, the
 retirement is attached to the drain **request** rather than to the transition.
@@ -1465,13 +1473,13 @@ descriptor-based `RaftGroup` apply restores the promoted payload, and 32
 scheduled snapshot-class inputs do not remove a cold group from their shared
 pass.
 
-The real-history audit consumes admission receipts, immutable pass plans,
-dispatch reports, and public managed metrics rather than scheduler internals.
-Its red-team fixture mutates plan order and membership, opportunity count,
-quota, work identity, terminal disposition, class order, route/class,
-occupancy, conservation, and ready-set span; each mutation is rejected. The
-older independent oracle retains its more detailed release/stall controls,
-including early, late, fabricated, and expired occupancy histories.
+The process audit maintains a shadow readiness ledger from admission receipts,
+group availability, queued-to-in-flight dispatch transitions, and exact
+terminal dispositions. At each arm boundary it derives the ready set without
+consulting the scheduler's plan and compares exact ordered membership before it
+audits terminal opportunities. Public managed metrics remain a conservation
+cross-check, not the readiness oracle. Its red-team coverage includes a plan
+that omits an independently ready group.
 
 ### Durable process composition
 
@@ -1493,8 +1501,11 @@ payload, compact the real Raft log, and preserve the same value and completion
 cache across `SIGKILL` and restart.
 
 A checksummed host slot registry is the separate authority for group existence,
-incarnation, lifecycle, and quota. Only a freshly created empty registry grants
-the explicit incarnation-one bootstrap path. Once a slot is known, a missing
+incarnation, lifecycle, and quota. Only a durable first-bootstrap intent grants
+the explicit incarnation-one bootstrap path. It stages and syncs every Raft
+directory, publishes every application record and the host registry, activates
+the staged directories, then clears the intent. Startup resumes that
+transaction from any durable prefix. Once a slot is known, a missing
 application record is corruption even when its active Raft directory has
 already been archived or its lifecycle is Removed/Tombstoned; restart refuses
 instead of recreating it. A complete pre-registry host may migrate only when
@@ -1513,10 +1524,26 @@ an impossible combination. Directed process failpoints cover before/after each
 publication, detach, rename, directory sync, Removed publication, and intent
 cleanup.
 
+Reopening is a second replayable transaction:
+
+```text
+Removed(n) -> durable activation intent(n -> n+1, quota)
+           -> create and sync raft.activating-(n+1)
+           -> publish Serving(n+1) in the application and registry
+           -> rename the staged directory to raft and sync its parent
+           -> clear the intent
+```
+
+Startup accepts only the old Removed or exact target Serving prefix named by the
+intent, completes the remaining steps, and clears it. Directed process
+failpoints cover every intent/application/registry publication, staged
+directory creation and sync, rename, parent sync, and cleanup.
+
 The client and peer paths are bounded. Client lines, connections, the global
 job queue, group queues, peer frames, per-peer outbound queues, and the global
 inbound queue all have explicit limits. Scheduler evidence is bounded too. The
-process audit retains one `PassArmed(pass_id, ready_set)`, records exactly one
+process audit retains one `PassArmed(pass_id, ready_set)`, first compares it
+with the independently derived shadow ready set, records exactly one
 dispatched-or-skipped `Opportunity` for each planned group, and accepts
 `PassCompleted` only after the sets and public dispatch/skip counts agree.
 `AUDIT` reports completed and certified pass counts plus invalid-plan/turn
