@@ -122,6 +122,24 @@ fn runtime_limits_refuse_zero_and_crossed_reservations() {
         })
     );
     assert_eq!(
+        OutboundQueueLimits::new(8, 1024, 8, 128, 1),
+        Err(RuntimeLimitError::ControlReserveConsumesTotal {
+            reserved_frames: 8,
+            total_frames: 8,
+            reserved_bytes: 128,
+            total_bytes: 1024,
+        })
+    );
+    assert_eq!(
+        OutboundQueueLimits::new(8, 1024, 1, 1024, 1),
+        Err(RuntimeLimitError::ControlReserveConsumesTotal {
+            reserved_frames: 1,
+            total_frames: 8,
+            reserved_bytes: 1024,
+            total_bytes: 1024,
+        })
+    );
+    assert_eq!(
         InboundQueueLimits::new(5, 1024, 4, 2048),
         Err(RuntimeLimitError::PeerInboundExceedsGlobal {
             peer_frames: 5,
@@ -157,4 +175,64 @@ fn aggregate_limits_allow_an_explicit_runtime_override() {
         TransportLimits::default().with_runtime(runtime).runtime(),
         runtime
     );
+}
+
+#[test]
+fn timeout_groups_refuse_zero_before_aggregate_configuration() {
+    use std::time::Duration;
+
+    use rafter_transport_tls::{
+        TimeoutKind, TransportIoTimeouts, TransportRuntimeTimeouts, TransportTimeouts,
+    };
+
+    let second = Duration::from_secs(1);
+    for (error, expected) in [
+        (
+            TransportIoTimeouts::new(Duration::ZERO, second, second, second)
+                .expect_err("zero connect timeout"),
+            TimeoutKind::Connect,
+        ),
+        (
+            TransportIoTimeouts::new(second, Duration::ZERO, second, second)
+                .expect_err("zero handshake timeout"),
+            TimeoutKind::Handshake,
+        ),
+        (
+            TransportIoTimeouts::new(second, second, Duration::ZERO, second)
+                .expect_err("zero read timeout"),
+            TimeoutKind::Read,
+        ),
+        (
+            TransportIoTimeouts::new(second, second, second, Duration::ZERO)
+                .expect_err("zero write timeout"),
+            TimeoutKind::Write,
+        ),
+    ] {
+        assert_eq!(error.kind(), expected);
+    }
+    for (error, expected) in [
+        (
+            TransportRuntimeTimeouts::new(Duration::ZERO, second, second)
+                .expect_err("zero redial timeout"),
+            TimeoutKind::Redial,
+        ),
+        (
+            TransportRuntimeTimeouts::new(second, Duration::ZERO, second)
+                .expect_err("zero poll timeout"),
+            TimeoutKind::Poll,
+        ),
+        (
+            TransportRuntimeTimeouts::new(second, second, Duration::ZERO)
+                .expect_err("zero shutdown timeout"),
+            TimeoutKind::ShutdownGrace,
+        ),
+    ] {
+        assert_eq!(error.kind(), expected);
+    }
+
+    let io = TransportIoTimeouts::new(second, second, second, second).expect("I/O timeouts");
+    let runtime = TransportRuntimeTimeouts::new(second, second, second).expect("runtime timeouts");
+    let aggregate = TransportTimeouts::new(io, runtime);
+    assert_eq!(aggregate.io(), io);
+    assert_eq!(aggregate.runtime(), runtime);
 }

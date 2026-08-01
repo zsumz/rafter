@@ -33,7 +33,6 @@ pub(crate) struct SenderContext<G, C> {
     pub(crate) timeouts: TransportTimeouts,
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn sender_loop<G, C>(context: &SenderContext<G, C>)
 where
     G: Send + 'static,
@@ -46,10 +45,7 @@ where
     let mut connected_once = false;
 
     loop {
-        if context.control.terminal()
-            || context.control.shutdown_grace_expired()
-            || context.control.stopping_while_paused()
-        {
+        if should_stop(context) {
             break;
         }
         if context.control.starting() {
@@ -61,128 +57,42 @@ where
         // when no frame is queued. During shutdown, dial only to drain work
         // that was accepted before admission closed.
         if connection.is_none() && (!context.control.shutdown_requested() || current.is_some()) {
-            match dial(context, connected_once) {
-                Ok(open) => {
-                    connected_once = true;
-                    connection = Some(open);
-                }
-                Err(DialError::Retry) => {
-                    sleep_interruptibly(context, context.timeouts.redial());
-                    continue;
-                }
-                Err(DialError::Terminal(message)) => {
-                    context.control.fail(message);
-                    break;
-                }
+            match connect(context, &mut connection, &mut connected_once) {
+                WorkerStep::Ready => {}
+                WorkerStep::Retry => continue,
+                WorkerStep::Stop => break,
             }
         }
 
         if current.is_none() {
-            match context.queue.pop_timeout(context.timeouts.poll()) {
-                Ok(item) => current = item,
-                Err(OutboundQueueError::Closed) => {}
-                Err(OutboundQueueError::Full(_)) => {
-                    context
-                        .control
-                        .fail("outbound queue returned a pop-time full error");
-                    break;
-                }
-                Err(OutboundQueueError::Poisoned) => {
-                    context.control.fail("outbound queue state is poisoned");
-                    break;
-                }
-            }
-        }
-        if current.is_none() {
-            match context.queue.is_closed_and_empty() {
-                Ok(true) => break,
-                Ok(false) => continue,
-                Err(_) => {
-                    context.control.fail("outbound queue state is poisoned");
-                    break;
-                }
+            match poll_work(context, &mut current) {
+                WorkerStep::Ready => {}
+                WorkerStep::Retry => continue,
+                WorkerStep::Stop => break,
             }
         }
 
         // A shutdown may have begun while this worker was waiting for work. An
         // accepted frame still gets its bounded drain opportunity.
         if connection.is_none() {
-            match dial(context, connected_once) {
-                Ok(open) => {
-                    connected_once = true;
-                    connection = Some(open);
-                }
-                Err(DialError::Retry) => {
-                    sleep_interruptibly(context, context.timeouts.redial());
-                    continue;
-                }
-                Err(DialError::Terminal(message)) => {
-                    context.control.fail(message);
-                    break;
-                }
+            match connect(context, &mut connection, &mut connected_once) {
+                WorkerStep::Ready => {}
+                WorkerStep::Retry => continue,
+                WorkerStep::Stop => break,
             }
         }
-
-        let Some(item_bytes) = current.as_ref().map(OutboundItem::bytes) else {
-            continue;
-        };
-        let Some(frame_bytes) = connection.as_ref().map(|open| open.frame_bytes) else {
-            continue;
-        };
-        if item_bytes > frame_bytes {
-            increment(&context.counters.frame_too_large);
-            drop_current(context, &mut current);
-            continue;
-        }
-
-        let Some(item) = current.as_mut() else {
-            continue;
-        };
-        match prepare_snapshot(context, item, &mut scratch) {
-            SnapshotPreparation::Ready => {}
-            SnapshotPreparation::Drop => {
-                drop_current(context, &mut current);
-                continue;
-            }
-            SnapshotPreparation::Terminal(message) => {
-                context.control.fail(message);
-                break;
-            }
-        }
-
-        let sequence = {
-            let Some(open) = connection.as_mut() else {
-                continue;
-            };
-            let Ok(sequence) = open.sequence.take_next() else {
-                increment(&context.counters.sequence_violations);
-                connection = None;
-                continue;
-            };
-            sequence
-        };
-        let Some(frame) = current.as_ref().and_then(OutboundItem::prepared) else {
-            context
-                .control
-                .fail("outbound item is not prepared for transmission");
+        if matches!(
+            transmit_current(
+                context,
+                &mut connection,
+                &mut current,
+                &mut encoded,
+                &mut scratch,
+            ),
+            WorkerStep::Stop
+        ) {
             break;
-        };
-        frame.encode_into(sequence, &mut encoded);
-        let write_result = {
-            let Some(open) = connection.as_mut() else {
-                continue;
-            };
-            write_all_flush(&mut open.stream, &encoded)
-        };
-        if write_result.is_err() {
-            increment(&context.counters.tls_failures);
-            connection = None;
-            continue;
         }
-
-        increment(&context.counters.frames_sent);
-        context.peer_counters.sent();
-        release_current(context, &mut current);
     }
 
     drop(connection);
@@ -196,6 +106,139 @@ where
         }
         Err(_) => context.control.fail("outbound queue state is poisoned"),
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerStep {
+    Ready,
+    Retry,
+    Stop,
+}
+
+fn should_stop<G, C>(context: &SenderContext<G, C>) -> bool {
+    context.control.terminal()
+        || context.control.shutdown_grace_expired()
+        || context.control.stopping_while_paused()
+}
+
+fn connect<G, C>(
+    context: &SenderContext<G, C>,
+    connection: &mut Option<OutboundConnection>,
+    connected_once: &mut bool,
+) -> WorkerStep {
+    match dial(context, *connected_once) {
+        Ok(open) => {
+            *connected_once = true;
+            *connection = Some(open);
+            WorkerStep::Ready
+        }
+        Err(DialError::Retry) => {
+            sleep_interruptibly(context, context.timeouts.redial());
+            WorkerStep::Retry
+        }
+        Err(DialError::Terminal(message)) => {
+            context.control.fail(message);
+            WorkerStep::Stop
+        }
+    }
+}
+
+fn poll_work<G, C>(
+    context: &SenderContext<G, C>,
+    current: &mut Option<OutboundItem<G>>,
+) -> WorkerStep {
+    match context.queue.pop_timeout(context.timeouts.poll()) {
+        Ok(item) => *current = item,
+        Err(OutboundQueueError::Closed) => {}
+        Err(OutboundQueueError::Full(_)) => {
+            context
+                .control
+                .fail("outbound queue returned a pop-time full error");
+            return WorkerStep::Stop;
+        }
+        Err(OutboundQueueError::Poisoned) => {
+            context.control.fail("outbound queue state is poisoned");
+            return WorkerStep::Stop;
+        }
+    }
+    if current.is_some() {
+        return WorkerStep::Ready;
+    }
+    match context.queue.is_closed_and_empty() {
+        Ok(true) => WorkerStep::Stop,
+        Ok(false) => WorkerStep::Retry,
+        Err(_) => {
+            context.control.fail("outbound queue state is poisoned");
+            WorkerStep::Stop
+        }
+    }
+}
+
+fn transmit_current<G, C>(
+    context: &SenderContext<G, C>,
+    connection: &mut Option<OutboundConnection>,
+    current: &mut Option<OutboundItem<G>>,
+    encoded: &mut Vec<u8>,
+    scratch: &mut PeerFrameScratch,
+) -> WorkerStep
+where
+    C: GroupIdCodec<G>,
+{
+    let Some(item_bytes) = current.as_ref().map(OutboundItem::bytes) else {
+        return WorkerStep::Retry;
+    };
+    let Some(frame_bytes) = connection.as_ref().map(|open| open.frame_bytes) else {
+        return WorkerStep::Retry;
+    };
+    if item_bytes > frame_bytes {
+        increment(&context.counters.frame_too_large);
+        drop_current(context, current);
+        return WorkerStep::Retry;
+    }
+
+    let Some(item) = current.as_mut() else {
+        return WorkerStep::Retry;
+    };
+    match prepare_snapshot(context, item, scratch) {
+        SnapshotPreparation::Ready => {}
+        SnapshotPreparation::Drop => {
+            drop_current(context, current);
+            return WorkerStep::Retry;
+        }
+        SnapshotPreparation::Terminal(message) => {
+            context.control.fail(message);
+            return WorkerStep::Stop;
+        }
+    }
+
+    let Some(open) = connection.as_mut() else {
+        return WorkerStep::Retry;
+    };
+    let Ok(sequence) = open.sequence.take_next() else {
+        increment(&context.counters.sequence_violations);
+        *connection = None;
+        return WorkerStep::Retry;
+    };
+    let Some(frame) = current.as_ref().and_then(OutboundItem::prepared) else {
+        context
+            .control
+            .fail("outbound item is not prepared for transmission");
+        return WorkerStep::Stop;
+    };
+    frame.encode_into(sequence, encoded);
+    let Some(open) = connection.as_mut() else {
+        return WorkerStep::Retry;
+    };
+    if write_all_flush(&mut open.stream, encoded).is_err() {
+        increment(&context.counters.tls_failures);
+        *connection = None;
+        return WorkerStep::Retry;
+    }
+
+    increment(&context.counters.frames_sent);
+    context.peer_counters.sent();
+    release_current(context, current);
+    WorkerStep::Ready
 }
 
 fn release_current<G, C>(context: &SenderContext<G, C>, current: &mut Option<OutboundItem<G>>) {

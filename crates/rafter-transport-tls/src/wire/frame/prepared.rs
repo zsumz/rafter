@@ -5,6 +5,7 @@ use rafter::NodeId;
 use crate::wire::read::{put_u16, put_u32, put_u64, put_u8};
 use crate::ConnectionSequence;
 
+use super::encode::EncodedLengths;
 use super::{PEER_FRAME_FIXED_BODY_BYTES, PEER_FRAME_KIND_MESSAGE, PEER_FRAME_LENGTH_PREFIX_BYTES};
 
 /// One validated frame whose live connection sequence is not assigned yet.
@@ -26,26 +27,22 @@ pub(crate) struct PreparedPeerFrame {
 }
 
 impl PreparedPeerFrame {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         group_id: Vec<u8>,
         message: Vec<u8>,
         from: NodeId,
         to: NodeId,
-        body_len: u32,
-        complete_len: usize,
-        group_len: u16,
-        message_len: u32,
+        lengths: EncodedLengths,
     ) -> Self {
         Self {
             group_id: group_id.into_boxed_slice(),
             message: message.into_boxed_slice(),
             from,
             to,
-            body_len,
-            complete_len,
-            group_len,
-            message_len,
+            body_len: lengths.body,
+            complete_len: lengths.complete,
+            group_len: lengths.group,
+            message_len: lengths.message,
         }
     }
 

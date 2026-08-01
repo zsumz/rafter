@@ -23,8 +23,8 @@ fn allocation_provisions_public_transport_session_state() {
 
     let store = FileTransportSessionStore::open_existing(
         transport_session_path(&scratch.path().join("node-1")),
-        &transport_cluster_id(1),
-        &transport_peer_id(NodeId(1)),
+        &transport_cluster_id(1).expect("fixture cluster identity"),
+        &transport_peer_id(NodeId(1)).expect("fixture peer identity"),
     )
     .expect("the public transport state opens under the allocated identity");
     let state = store.snapshot().expect("fresh session state is readable");

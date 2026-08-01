@@ -3,7 +3,7 @@ use std::time::Duration;
 use rafter::NodeId;
 
 use super::*;
-use crate::wire::PreparedPeerFrame;
+use crate::wire::{EncodedLengths, PreparedPeerFrame};
 use crate::{InboundQueueLimits, OutboundQueueLimits};
 
 fn limits() -> RuntimeLimits {
@@ -73,10 +73,12 @@ fn item(class: TrafficClass, complete_len: usize) -> OutboundItem<()> {
         vec![0],
         NodeId(1),
         NodeId(2),
-        body_len,
-        complete_len,
-        1,
-        1,
+        EncodedLengths {
+            body: body_len,
+            complete: complete_len,
+            group: 1,
+            message: 1,
+        },
     );
     OutboundItem::message(NodeId(1), NodeId(2), class, frame)
 }

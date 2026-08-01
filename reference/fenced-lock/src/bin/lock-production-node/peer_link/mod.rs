@@ -98,7 +98,7 @@ impl PeerLink {
         let bind_addr = bind_addr
             .parse()
             .map_err(|error| format!("peer listen address is invalid: {error}"))?;
-        let local_peer = transport_peer_id(node_id);
+        let local_peer = transport_peer_id(node_id).map_err(|error| error.to_string())?;
         if tls.peer_id(node_id) != Some(&local_peer) {
             return Err(format!("TLS principal map omits local node {}", node_id.0));
         }
@@ -115,7 +115,7 @@ impl PeerLink {
 
         let endpoint_book = EndpointBook::new(limits.endpoints());
         install_placeholders(&endpoint_book, &remote_map, &tls.server_name())?;
-        let cluster_id = transport_cluster_id(GROUP_ID.0);
+        let cluster_id = transport_cluster_id(GROUP_ID.0).map_err(|error| error.to_string())?;
         let sessions = ReopeningTransportSessionStore::new(
             transport_session_path(node_dir),
             cluster_id.clone(),

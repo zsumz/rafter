@@ -27,7 +27,7 @@ impl OutboundQueueLimits {
     /// # Errors
     ///
     /// Returns [`RuntimeLimitError`] for zero values or a control reservation
-    /// larger than the complete queue.
+    /// that leaves no finite capacity for replication and snapshot work.
     pub fn new(
         frames_per_peer: usize,
         bytes_per_peer: usize,
@@ -54,6 +54,14 @@ impl OutboundQueueLimits {
         }
         if reserved_control_frames > frames_per_peer || reserved_control_bytes > bytes_per_peer {
             return Err(RuntimeLimitError::ControlReserveExceedsTotal {
+                reserved_frames: reserved_control_frames,
+                total_frames: frames_per_peer,
+                reserved_bytes: reserved_control_bytes,
+                total_bytes: bytes_per_peer,
+            });
+        }
+        if reserved_control_frames == frames_per_peer || reserved_control_bytes == bytes_per_peer {
+            return Err(RuntimeLimitError::ControlReserveConsumesTotal {
                 reserved_frames: reserved_control_frames,
                 total_frames: frames_per_peer,
                 reserved_bytes: reserved_control_bytes,

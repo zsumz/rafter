@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use rafter_transport_tls::{
     CertificateDirectoryLimits, DirectoryLimits, EndpointBookLimits, InboundQueueLimits,
-    OutboundQueueLimits, RuntimeLimits, TransportLimits, TransportTimeouts, WireLimits,
+    OutboundQueueLimits, RuntimeLimits, TransportIoTimeouts, TransportLimits,
+    TransportRuntimeTimeouts, TransportTimeouts, WireLimits,
 };
 
 pub(super) const GLOBAL_INBOUND_QUEUE_LEN: usize = 4_096;
@@ -48,14 +49,18 @@ pub(super) fn transport_limits() -> Result<TransportLimits, String> {
 }
 
 pub(super) fn transport_timeouts() -> Result<TransportTimeouts, String> {
-    TransportTimeouts::new(
+    let io = TransportIoTimeouts::new(
         Duration::from_millis(200),
         Duration::from_secs(2),
         Duration::from_secs(2),
         Duration::from_millis(500),
+    )
+    .map_err(|error| error.to_string())?;
+    let runtime = TransportRuntimeTimeouts::new(
         Duration::from_millis(20),
         Duration::from_millis(20),
         Duration::from_secs(3),
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    Ok(TransportTimeouts::new(io, runtime))
 }

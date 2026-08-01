@@ -15,4 +15,6 @@ pub use types::{
     PEER_FRAME_LENGTH_PREFIX_BYTES,
 };
 
+#[cfg(test)]
+pub(crate) use encode::EncodedLengths;
 pub(crate) use prepared::PreparedPeerFrame;

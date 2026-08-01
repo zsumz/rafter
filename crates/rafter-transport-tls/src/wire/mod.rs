@@ -16,4 +16,6 @@ pub use handshake::{
     HANDSHAKE_MAGIC, MAX_CLIENT_HELLO_BYTES, MAX_SERVER_HELLO_BYTES,
 };
 
+#[cfg(test)]
+pub(crate) use frame::EncodedLengths;
 pub(crate) use frame::PreparedPeerFrame;

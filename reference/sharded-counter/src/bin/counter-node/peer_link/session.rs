@@ -7,14 +7,12 @@ use rafter_transport_tls::{ClusterId, FileTransportSessionStore, PeerId, Session
 
 const TRANSPORT_SESSION_FILE: &str = "transport.state";
 
-pub(super) fn transport_peer_id(node_id: NodeId) -> PeerId {
-    PeerId::new(&format!("counter-host-{}", node_id.0))
-        .expect("the bounded counter host identity is valid")
+pub(super) fn transport_peer_id(node_id: NodeId) -> Result<PeerId, String> {
+    PeerId::new(&format!("counter-host-{}", node_id.0)).map_err(|error| error.to_string())
 }
 
-pub(super) fn transport_cluster_id() -> ClusterId {
-    ClusterId::new("rafter-reference-sharded-counter")
-        .expect("the fixed counter cluster identity is valid")
+pub(super) fn transport_cluster_id() -> Result<ClusterId, String> {
+    ClusterId::new("rafter-reference-sharded-counter").map_err(|error| error.to_string())
 }
 
 pub(super) fn open_transport_state(

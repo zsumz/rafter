@@ -1,21 +1,24 @@
 //! Validated runtime assembly and all-or-nothing worker startup.
 
-use std::{collections::BTreeMap, net::TcpListener, sync::Arc, thread};
+use std::{collections::BTreeMap, sync::Arc, thread};
 
 use crate::connection::{
     accept_loop, sender_loop, AcceptorContext, ReceiverRegistry, ReceiverTemplate, SenderContext,
 };
 use crate::diagnostics::{Counters, PeerCounterMap, PeerCounters};
 use crate::queue::{InboundQueue, OutboundQueue};
-use crate::runtime::{run_guarded, InboundEpochs, RuntimeControl};
+use crate::runtime::{run_guarded, InboundEpochs, RuntimeControl, SessionStoreHandle};
 use crate::sender::{SenderCore, TlsSender};
+use crate::snapshot::SnapshotResolverHandle;
 use crate::transport::NamedWorker;
 use crate::{
-    CertificateDirectory, GroupIdCodec, PeerFrameCodec, PeerId, TlsHandshakeConfig, TlsInbound,
-    TlsPeerTransport, TlsPeerTransportBuilder, TlsTransportBuildError, TransportConfig,
+    CertificateDirectory, EndpointBook, GroupIdCodec, PeerFrameCodec, PeerId, RuntimeLimits,
+    TlsHandshakeConfig, TlsIdentity, TlsInbound, TlsPeerTransport, TlsPeerTransportBuilder,
+    TlsTransportBuildError, TransportTimeouts,
 };
 
-#[allow(clippy::too_many_lines)]
+use super::validated::ValidatedBuilder;
+
 pub(super) fn bind<G, C>(
     builder: TlsPeerTransportBuilder<G, C>,
 ) -> Result<TlsPeerTransport<G, C>, TlsTransportBuildError>
@@ -23,54 +26,19 @@ where
     G: Ord + Send + Sync + 'static,
     C: GroupIdCodec<G>,
 {
-    let TlsPeerTransportBuilder {
+    let ValidatedBuilder {
         config,
-        group_codec,
         identity,
         certificates,
         directory,
         endpoints,
         sessions,
         snapshot_resolver,
-    } = builder;
-    let identity = identity.ok_or(TlsTransportBuildError::MissingIdentity)?;
-    let certificates = certificates.ok_or(TlsTransportBuildError::MissingCertificates)?;
-    let directory = directory.ok_or(TlsTransportBuildError::MissingDirectory)?;
-    let endpoints = endpoints.ok_or(TlsTransportBuildError::MissingEndpoints)?;
-    let sessions = sessions.ok_or(TlsTransportBuildError::MissingSessionStore)?;
-
-    identity
-        .validate_local_peer(config.local_peer_id(), &certificates)
-        .map_err(|source| TlsTransportBuildError::LocalIdentity { source })?;
-    sessions
-        .preflight(config.local_peer_id())
-        .map_err(|source| TlsTransportBuildError::SessionStore {
-            peer: config.local_peer_id().clone(),
-            source,
-        })?;
-    let peers = endpoints
-        .peer_ids()
-        .map_err(|source| TlsTransportBuildError::EndpointBook { source })?;
-    validate_remote_peers(&config, &certificates, &sessions, &peers)?;
-
-    let codec = Arc::new(
-        PeerFrameCodec::new(group_codec, config.limits().wire())
-            .map_err(|source| TlsTransportBuildError::FrameCodec { source })?,
-    );
-    let handshake = TlsHandshakeConfig::current(
-        config.cluster_id().clone(),
-        config.local_peer_id().clone(),
-        config.limits().wire(),
-    )
-    .map_err(|source| TlsTransportBuildError::HandshakeConfig { source })?;
-    let listener =
-        TcpListener::bind(config.bind_addr()).map_err(|source| TlsTransportBuildError::Bind {
-            address: config.bind_addr(),
-            source,
-        })?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|source| TlsTransportBuildError::ConfigureListener { source })?;
+        codec,
+        handshake,
+        listener,
+        peers,
+    } = ValidatedBuilder::new(builder)?;
     let local_addr = listener
         .local_addr()
         .map_err(|source| TlsTransportBuildError::LocalAddress { source })?;
@@ -78,21 +46,12 @@ where
     let runtime_limits = config.limits().runtime();
     let control = Arc::new(RuntimeControl::new(config.timeouts().shutdown_grace()));
     let counters = Arc::new(Counters::default());
-    let mut queue_map: BTreeMap<PeerId, Arc<OutboundQueue<G>>> = BTreeMap::new();
-    let mut counter_map = BTreeMap::new();
-    let mut sender_inputs = Vec::with_capacity(peers.len());
-    for peer in peers {
-        let queue = Arc::new(OutboundQueue::new(runtime_limits));
-        let peer_counter = Arc::new(PeerCounters::default());
-        queue_map.insert(peer.clone(), Arc::clone(&queue));
-        counter_map.insert(peer.clone(), Arc::clone(&peer_counter));
-        sender_inputs.push((peer, queue, peer_counter));
-    }
-    let queues = Arc::new(queue_map);
-    let peer_counters: Arc<PeerCounterMap> = Arc::new(counter_map);
-    for peer in queues.keys() {
-        control.mark_degraded(peer);
-    }
+    let OutboundState {
+        queues,
+        peer_counters,
+        sender_inputs,
+    } = outbound_state(peers, runtime_limits);
+    mark_initial_degradation(&control, &queues);
 
     let inbound_queue = Arc::new(InboundQueue::new(runtime_limits));
     let inbound = TlsInbound {
@@ -125,32 +84,20 @@ where
         timeouts: config.timeouts(),
     };
 
-    let mut sender_workers = Vec::with_capacity(sender_inputs.len());
-    for (peer, queue, peer_counter) in sender_inputs {
-        let context = SenderContext {
-            peer: peer.clone(),
-            endpoints: endpoints.clone(),
-            identity: identity.clone(),
-            certificates: certificates.clone(),
-            handshake: handshake.clone(),
-            sessions: sessions.clone(),
-            codec: Arc::clone(&codec),
-            snapshot_resolver: snapshot_resolver.clone(),
-            queue,
-            control: Arc::clone(&control),
-            counters: Arc::clone(&counters),
-            peer_counters: peer_counter,
-            timeouts: config.timeouts(),
-        };
-        let role = format!("rafter-tls-sender-{}-{peer}", config.local_peer_id());
-        match spawn_guarded(role, &control, move || sender_loop(&context)) {
-            Ok(worker) => sender_workers.push(worker),
-            Err(error) => {
-                stop_started(&control, &queues, &mut sender_workers);
-                return Err(error);
-            }
-        }
-    }
+    let sender_dependencies = SenderDependencies {
+        local_peer: config.local_peer_id().clone(),
+        endpoints,
+        identity,
+        certificates,
+        handshake,
+        sessions,
+        codec,
+        snapshot_resolver,
+        control: Arc::clone(&control),
+        counters: Arc::clone(&counters),
+        timeouts: config.timeouts(),
+    };
+    let mut sender_workers = spawn_senders(sender_inputs, &sender_dependencies, &queues)?;
 
     let acceptor_context = AcceptorContext {
         listener,
@@ -160,16 +107,13 @@ where
         limits: runtime_limits,
         timeouts: config.timeouts(),
     };
-    let acceptor_role = format!("rafter-tls-acceptor-{}", config.local_peer_id());
-    let acceptor = match spawn_guarded(acceptor_role, &control, move || {
-        accept_loop(&acceptor_context);
-    }) {
-        Ok(worker) => worker,
-        Err(error) => {
-            stop_started(&control, &queues, &mut sender_workers);
-            return Err(error);
-        }
-    };
+    let acceptor = spawn_acceptor(
+        acceptor_context,
+        config.local_peer_id(),
+        &control,
+        &queues,
+        &mut sender_workers,
+    )?;
 
     Ok(TlsPeerTransport {
         config,
@@ -188,27 +132,112 @@ where
     })
 }
 
-fn validate_remote_peers(
-    config: &TransportConfig,
-    certificates: &CertificateDirectory,
-    sessions: &crate::runtime::SessionStoreHandle,
-    peers: &[PeerId],
-) -> Result<(), TlsTransportBuildError> {
+type SenderInput<G> = (PeerId, Arc<OutboundQueue<G>>, Arc<PeerCounters>);
+
+struct OutboundState<G> {
+    queues: Arc<BTreeMap<PeerId, Arc<OutboundQueue<G>>>>,
+    peer_counters: Arc<PeerCounterMap>,
+    sender_inputs: Vec<SenderInput<G>>,
+}
+
+struct SenderDependencies<G, C> {
+    local_peer: PeerId,
+    endpoints: EndpointBook,
+    identity: TlsIdentity,
+    certificates: CertificateDirectory,
+    handshake: TlsHandshakeConfig,
+    sessions: SessionStoreHandle,
+    codec: Arc<PeerFrameCodec<G, C>>,
+    snapshot_resolver: Option<SnapshotResolverHandle<G>>,
+    control: Arc<RuntimeControl>,
+    counters: Arc<Counters>,
+    timeouts: TransportTimeouts,
+}
+
+fn outbound_state<G>(peers: Vec<PeerId>, limits: RuntimeLimits) -> OutboundState<G> {
+    let mut queues = BTreeMap::new();
+    let mut counters = BTreeMap::new();
+    let mut inputs = Vec::with_capacity(peers.len());
     for peer in peers {
-        if peer == config.local_peer_id() {
-            return Err(TlsTransportBuildError::LocalPeerEndpoint { peer: peer.clone() });
-        }
-        if !certificates.contains_peer(peer) {
-            return Err(TlsTransportBuildError::UnconfiguredCertificate { peer: peer.clone() });
-        }
-        sessions
-            .preflight(peer)
-            .map_err(|source| TlsTransportBuildError::SessionStore {
-                peer: peer.clone(),
-                source,
-            })?;
+        let queue = Arc::new(OutboundQueue::new(limits));
+        let peer_counters = Arc::new(PeerCounters::default());
+        queues.insert(peer.clone(), Arc::clone(&queue));
+        counters.insert(peer.clone(), Arc::clone(&peer_counters));
+        inputs.push((peer, queue, peer_counters));
     }
-    Ok(())
+    OutboundState {
+        queues: Arc::new(queues),
+        peer_counters: Arc::new(counters),
+        sender_inputs: inputs,
+    }
+}
+
+fn mark_initial_degradation<G>(
+    control: &RuntimeControl,
+    queues: &BTreeMap<PeerId, Arc<OutboundQueue<G>>>,
+) {
+    for peer in queues.keys() {
+        control.mark_degraded(peer);
+    }
+}
+
+fn spawn_senders<G, C>(
+    inputs: Vec<SenderInput<G>>,
+    dependencies: &SenderDependencies<G, C>,
+    queues: &BTreeMap<PeerId, Arc<OutboundQueue<G>>>,
+) -> Result<Vec<NamedWorker>, TlsTransportBuildError>
+where
+    G: Send + 'static,
+    C: GroupIdCodec<G>,
+{
+    let mut workers = Vec::with_capacity(inputs.len());
+    for (peer, queue, peer_counters) in inputs {
+        let context = SenderContext {
+            peer: peer.clone(),
+            endpoints: dependencies.endpoints.clone(),
+            identity: dependencies.identity.clone(),
+            certificates: dependencies.certificates.clone(),
+            handshake: dependencies.handshake.clone(),
+            sessions: dependencies.sessions.clone(),
+            codec: Arc::clone(&dependencies.codec),
+            snapshot_resolver: dependencies.snapshot_resolver.clone(),
+            queue,
+            control: Arc::clone(&dependencies.control),
+            counters: Arc::clone(&dependencies.counters),
+            peer_counters,
+            timeouts: dependencies.timeouts,
+        };
+        let role = format!("rafter-tls-sender-{}-{peer}", dependencies.local_peer);
+        match spawn_guarded(role, &dependencies.control, move || sender_loop(&context)) {
+            Ok(worker) => workers.push(worker),
+            Err(error) => {
+                stop_started(&dependencies.control, queues, &mut workers);
+                return Err(error);
+            }
+        }
+    }
+    Ok(workers)
+}
+
+fn spawn_acceptor<G, C>(
+    context: AcceptorContext<G, C>,
+    local_peer: &PeerId,
+    control: &Arc<RuntimeControl>,
+    queues: &BTreeMap<PeerId, Arc<OutboundQueue<G>>>,
+    sender_workers: &mut [NamedWorker],
+) -> Result<NamedWorker, TlsTransportBuildError>
+where
+    G: Ord + Send + Sync + 'static,
+    C: GroupIdCodec<G>,
+{
+    let role = format!("rafter-tls-acceptor-{local_peer}");
+    match spawn_guarded(role, control, move || accept_loop(&context)) {
+        Ok(worker) => Ok(worker),
+        Err(error) => {
+            stop_started(control, queues, sender_workers);
+            Err(error)
+        }
+    }
 }
 
 fn spawn_guarded(

@@ -8,7 +8,10 @@ use crate::diagnostics::increment;
 use crate::{authenticate_server_connection, PeerId, ServerHelloStatus, ServerRefusal};
 
 use super::{classify::classify_authentication, ReceiverTemplate};
-use crate::connection::io::{complete_server_tls, read_client_hello, write_server_hello};
+use crate::connection::{
+    deadline::HandshakeDeadline,
+    io::{complete_server_tls, read_client_hello, write_server_hello},
+};
 use crate::runtime::InboundEpochGuard;
 
 pub(super) struct EstablishedInbound {
@@ -18,21 +21,20 @@ pub(super) struct EstablishedInbound {
     pub(super) epoch: InboundEpochGuard,
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn establish<G, C>(
     template: &ReceiverTemplate<G, C>,
     mut socket: TcpStream,
     shutdown_socket: Arc<TcpStream>,
 ) -> Option<EstablishedInbound> {
-    if configure_handshake_socket(&socket, template).is_err() {
+    let Ok(deadline) = configure_handshake_socket(&socket, template) else {
         increment(&template.counters.tls_failures);
         return None;
-    }
+    };
     let Ok(mut connection) = template.identity.server_connection() else {
         increment(&template.counters.tls_failures);
         return None;
     };
-    if complete_server_tls(&mut connection, &mut socket).is_err() {
+    if complete_server_tls(&mut connection, &mut socket, deadline).is_err() {
         increment(&template.counters.tls_failures);
         return None;
     }
@@ -46,9 +48,13 @@ pub(super) fn establish<G, C>(
     };
     let mut stream = StreamOwned::new(connection, socket);
     let mut scratch = Vec::new();
-    let Ok(client_hello) = read_client_hello(&mut stream, &mut scratch) else {
-        increment(&template.counters.malformed_frames);
-        return None;
+    let client_hello = {
+        let mut handshake_stream = deadline.stream(&mut stream);
+        let Ok(client_hello) = read_client_hello(&mut handshake_stream, &mut scratch) else {
+            increment(&template.counters.malformed_frames);
+            return None;
+        };
+        client_hello
     };
     let mut response = match template.handshake.accept_client_hello(
         &authenticated,
@@ -84,9 +90,12 @@ pub(super) fn establish<G, C>(
         classify_refusal(template, response.status());
         None
     };
-    if write_server_hello(&mut stream, &response, &mut scratch).is_err() {
-        increment(&template.counters.tls_failures);
-        return None;
+    {
+        let mut handshake_stream = deadline.stream(&mut stream);
+        if write_server_hello(&mut handshake_stream, &response, &mut scratch).is_err() {
+            increment(&template.counters.tls_failures);
+            return None;
+        }
     }
     let epoch = epoch?;
     let Some(frame_bytes) = response.accepted_frame_bytes() else {
@@ -114,10 +123,11 @@ pub(super) fn establish<G, C>(
 fn configure_handshake_socket<G, C>(
     socket: &TcpStream,
     template: &ReceiverTemplate<G, C>,
-) -> std::io::Result<()> {
+) -> std::io::Result<HandshakeDeadline> {
     socket.set_nodelay(true)?;
-    socket.set_read_timeout(Some(template.timeouts.handshake()))?;
-    socket.set_write_timeout(Some(template.timeouts.handshake()))
+    let deadline = HandshakeDeadline::new(template.timeouts.handshake())?;
+    deadline.configure(socket)?;
+    Ok(deadline)
 }
 
 fn configure_established_socket<G, C>(

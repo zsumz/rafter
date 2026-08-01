@@ -9,11 +9,12 @@ use rustls::{ClientConnection, StreamOwned};
 
 use crate::diagnostics::increment;
 use crate::{
-    authenticate_client_connection, ServerHelloStatus, ServerRefusal, TlsClientHandshakeError,
-    TlsPeerAuthenticationError,
+    authenticate_client_connection, PeerEndpoint, ServerHelloStatus, ServerRefusal,
+    TlsClientHandshakeError, TlsPeerAuthenticationError,
 };
 
 use super::{
+    deadline::HandshakeDeadline,
     io::{complete_client_tls, read_server_hello, write_client_hello},
     sender::SenderContext,
 };
@@ -61,7 +62,6 @@ impl Drop for OutboundPresence {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn dial<G, C>(
     context: &SenderContext<G, C>,
     reconnect: bool,
@@ -81,111 +81,124 @@ pub(crate) fn dial<G, C>(
         if context.control.terminal() || context.control.shutdown_grace_expired() {
             return Err(DialError::Retry);
         }
-        let address = endpoint.address();
-        let Ok(mut socket) = TcpStream::connect_timeout(&address, context.timeouts.connect())
-        else {
-            endpoint_failed(context);
-            continue;
-        };
-        if configure_handshake_socket(&socket, context).is_err() {
-            endpoint_failed(context);
-            continue;
+        if let Some(connection) = dial_endpoint(context, endpoint, reconnect)? {
+            return Ok(connection);
         }
-        let Ok(mut connection) = context.identity.client_connection(endpoint.server_name()) else {
-            tls_failed(context);
-            continue;
-        };
-        if complete_client_tls(&mut connection, &mut socket).is_err() {
-            tls_failed(context);
-            continue;
-        }
-        increment(&context.counters.tls_handshakes);
-        let authenticated = match authenticate_client_connection(&connection, &context.certificates)
-        {
-            Ok(authenticated) => authenticated,
-            Err(error) => {
-                classify_authentication(context, &error);
-                continue;
-            }
-        };
-        if authenticated.peer_id() != &context.peer {
-            increment(&context.counters.identity_mismatches);
-            endpoint_failed(context);
-            continue;
-        }
+    }
+    Err(DialError::Retry)
+}
 
-        let hello = context
-            .handshake
-            .begin_client_hello(&context.peer, &context.sessions)
-            .map_err(|error| {
-                increment(&context.counters.session_store_failures);
-                DialError::Terminal(error.to_string())
-            })?;
-        let mut stream = StreamOwned::new(connection, socket);
-        let mut scratch = Vec::new();
-        if write_client_hello(&mut stream, &hello, &mut scratch).is_err() {
-            tls_failed(context);
-            continue;
+fn dial_endpoint<G, C>(
+    context: &SenderContext<G, C>,
+    endpoint: &PeerEndpoint,
+    reconnect: bool,
+) -> Result<Option<OutboundConnection>, DialError> {
+    let address = endpoint.address();
+    let Ok(mut socket) = TcpStream::connect_timeout(&address, context.timeouts.connect()) else {
+        endpoint_failed(context);
+        return Ok(None);
+    };
+    let Ok(deadline) = configure_handshake_socket(&socket, context) else {
+        endpoint_failed(context);
+        return Ok(None);
+    };
+    let Ok(mut connection) = context.identity.client_connection(endpoint.server_name()) else {
+        tls_failed(context);
+        return Ok(None);
+    };
+    if complete_client_tls(&mut connection, &mut socket, deadline).is_err() {
+        tls_failed(context);
+        return Ok(None);
+    }
+    increment(&context.counters.tls_handshakes);
+    let authenticated = match authenticate_client_connection(&connection, &context.certificates) {
+        Ok(authenticated) => authenticated,
+        Err(error) => {
+            classify_authentication(context, &error);
+            return Ok(None);
         }
-        let Ok(server_hello) = read_server_hello(&mut stream, &mut scratch) else {
+    };
+    if authenticated.peer_id() != &context.peer {
+        increment(&context.counters.identity_mismatches);
+        endpoint_failed(context);
+        return Ok(None);
+    }
+
+    let hello = context
+        .handshake
+        .begin_client_hello(&context.peer, &context.sessions)
+        .map_err(|error| {
+            increment(&context.counters.session_store_failures);
+            DialError::Terminal(error.to_string())
+        })?;
+    let mut stream = StreamOwned::new(connection, socket);
+    let mut scratch = Vec::new();
+    let server_hello = {
+        let mut handshake_stream = deadline.stream(&mut stream);
+        if write_client_hello(&mut handshake_stream, &hello, &mut scratch).is_err() {
+            tls_failed(context);
+            return Ok(None);
+        }
+        let Ok(server_hello) = read_server_hello(&mut handshake_stream, &mut scratch) else {
             increment(&context.counters.malformed_frames);
             endpoint_failed(context);
-            continue;
+            return Ok(None);
         };
-        let negotiated = match context.handshake.validate_server_hello(
-            &context.peer,
-            &authenticated,
-            &server_hello,
-        ) {
+        server_hello
+    };
+    let negotiated =
+        match context
+            .handshake
+            .validate_server_hello(&context.peer, &authenticated, &server_hello)
+        {
             Ok(negotiated) => negotiated,
             Err(error) => {
                 classify_client_handshake(context, &error, server_hello.status());
-                continue;
+                return Ok(None);
             }
         };
-        if configure_established_socket(&stream.sock, context).is_err() {
-            tls_failed(context);
-            continue;
-        }
-
-        let frame_bytes = usize::try_from(negotiated.frame_bytes()).map_err(|_| {
-            DialError::Terminal(format!(
-                "negotiated frame bound {} does not fit local address space",
-                negotiated.frame_bytes()
-            ))
-        })?;
-        context
-            .counters
-            .active_outbound
-            .fetch_add(1, Ordering::Relaxed);
-        context.peer_counters.set_connected(true);
-        context.control.mark_connected(&context.peer);
-        if reconnect {
-            increment(&context.counters.reconnects);
-            context.peer_counters.reconnected();
-        }
-        return Ok(OutboundConnection {
-            stream,
-            sequence: crate::OutboundSequence::new(),
-            frame_bytes,
-            _presence: OutboundPresence {
-                peer: context.peer.clone(),
-                counters: Arc::clone(&context.counters),
-                peer_counters: Arc::clone(&context.peer_counters),
-                control: Arc::clone(&context.control),
-            },
-        });
+    if configure_established_socket(&stream.sock, context).is_err() {
+        tls_failed(context);
+        return Ok(None);
     }
-    Err(DialError::Retry)
+
+    let frame_bytes = usize::try_from(negotiated.frame_bytes()).map_err(|_| {
+        DialError::Terminal(format!(
+            "negotiated frame bound {} does not fit local address space",
+            negotiated.frame_bytes()
+        ))
+    })?;
+    context
+        .counters
+        .active_outbound
+        .fetch_add(1, Ordering::Relaxed);
+    context.peer_counters.set_connected(true);
+    context.control.mark_connected(&context.peer);
+    if reconnect {
+        increment(&context.counters.reconnects);
+        context.peer_counters.reconnected();
+    }
+    Ok(Some(OutboundConnection {
+        stream,
+        sequence: crate::OutboundSequence::new(),
+        frame_bytes,
+        _presence: OutboundPresence {
+            peer: context.peer.clone(),
+            counters: Arc::clone(&context.counters),
+            peer_counters: Arc::clone(&context.peer_counters),
+            control: Arc::clone(&context.control),
+        },
+    }))
 }
 
 fn configure_handshake_socket<G, C>(
     socket: &TcpStream,
     context: &SenderContext<G, C>,
-) -> std::io::Result<()> {
+) -> std::io::Result<HandshakeDeadline> {
     socket.set_nodelay(true)?;
-    socket.set_read_timeout(Some(context.timeouts.handshake()))?;
-    socket.set_write_timeout(Some(context.timeouts.handshake()))
+    let deadline = HandshakeDeadline::new(context.timeouts.handshake())?;
+    deadline.configure(socket)?;
+    Ok(deadline)
 }
 
 fn configure_established_socket<G, C>(

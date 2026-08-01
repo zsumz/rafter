@@ -48,7 +48,10 @@ pub use certificate::{
     CertificateFingerprint, CertificateFingerprintParseError, CertificatePemError,
     MAX_CERTIFICATE_PEM_BYTES,
 };
-pub use config::{TimeoutKind, TransportConfig, TransportTimeoutError, TransportTimeouts};
+pub use config::{
+    TimeoutKind, TransportConfig, TransportIoTimeouts, TransportRuntimeTimeouts,
+    TransportTimeoutError, TransportTimeouts,
+};
 pub use diagnostics::{PeerDiagnostics, QueueDepths, TransportDiagnostics, TransportHealth};
 pub use directory::{DirectoryError, InstalledPeerPolicy, PeerAuthorization, TlsPeerDirectory};
 pub use endpoint::{

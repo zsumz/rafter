@@ -98,6 +98,11 @@ authenticated `PeerId`, and requires exact sequence progression from one. A
 newer epoch closes and fences the older live connection. An older delayed
 handshake cannot replace a newer epoch.
 
+The configured handshake timeout is one absolute deadline shared by the TLS
+exchange and the Rafter hello, not a renewable idle timeout. A client that
+trickles syntactically plausible bytes therefore cannot retain a bounded
+inbound connection permit indefinitely.
+
 Before delivery, every frame is checked for canonical group routing, embedded
 sender agreement, authenticated `PeerId -> NodeId` ownership, local recipient,
 authorization, and retirement. Accepted envelopes enter count-and-byte-bounded

@@ -42,14 +42,14 @@ impl PeerTlsConfig {
         let mut builder = CertificateDirectory::builder();
         let mut peer_by_node = BTreeMap::new();
         for (node_id, path) in &paths.peer_certificates {
-            let peer_id = transport_peer_id(*node_id);
+            let peer_id = transport_peer_id(*node_id).map_err(|error| error.to_string())?;
             builder = builder
                 .map_pem_certificate_file(path, peer_id.clone())
                 .map_err(|error| error.to_string())?;
             peer_by_node.insert(*node_id, peer_id);
         }
         let certificates = builder.build();
-        let local_peer = transport_peer_id(local_node);
+        let local_peer = transport_peer_id(local_node).map_err(|error| error.to_string())?;
         identity
             .validate_local_peer(&local_peer, &certificates)
             .map_err(|error| error.to_string())?;

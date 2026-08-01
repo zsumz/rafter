@@ -5,6 +5,7 @@ mod classify;
 mod tls;
 
 use std::{
+    io::Read,
     net::TcpStream,
     sync::{atomic::Ordering, Arc},
 };
@@ -95,7 +96,6 @@ impl Drop for ConnectionPermit {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub(crate) fn receive_loop<G, C>(context: ReceiverContext<G, C>)
 where
     G: Ord + Send + Sync + 'static,
@@ -115,33 +115,19 @@ where
     let mut scratch = PeerFrameScratch::new();
 
     while !template.control.shutdown_requested() {
-        match established.epoch.is_current() {
-            Ok(true) => {}
-            Ok(false) => {
-                increment(&template.counters.sequence_violations);
-                return;
-            }
-            Err(()) => {
-                template.control.fail("inbound epoch state is poisoned");
-                return;
-            }
+        if !epoch_is_current(&template, &established.epoch) {
+            return;
         }
-        let complete = match read_peer_frame(
+        let complete = match read_next_frame(
+            &template,
+            &established.epoch,
             &mut established.stream,
             established.frame_bytes,
             &mut encoded,
         ) {
-            Ok(PeerFrameRead::Complete(complete)) => complete,
-            Ok(PeerFrameRead::Idle) => continue,
-            Ok(PeerFrameRead::Closed) => return,
-            Err(error) => {
-                match established.epoch.is_current() {
-                    Ok(false) => return,
-                    Ok(true) => classify_frame_io(&template.counters, &error),
-                    Err(()) => template.control.fail("inbound epoch state is poisoned"),
-                }
-                return;
-            }
+            FrameReadStep::Complete(complete) => complete,
+            FrameReadStep::Idle => continue,
+            FrameReadStep::Stop => return,
         };
         let frame = match template.codec.decode(&encoded, &mut scratch) {
             Ok(frame) => frame,
@@ -212,6 +198,52 @@ where
                 template.control.fail("inbound epoch state is poisoned");
                 return;
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameReadStep {
+    Complete(usize),
+    Idle,
+    Stop,
+}
+
+fn read_next_frame<G, C>(
+    template: &ReceiverTemplate<G, C>,
+    epoch: &crate::runtime::InboundEpochGuard,
+    stream: &mut impl Read,
+    frame_bytes: usize,
+    encoded: &mut Vec<u8>,
+) -> FrameReadStep {
+    match read_peer_frame(stream, frame_bytes, encoded) {
+        Ok(PeerFrameRead::Complete(complete)) => FrameReadStep::Complete(complete),
+        Ok(PeerFrameRead::Idle) => FrameReadStep::Idle,
+        Ok(PeerFrameRead::Closed) => FrameReadStep::Stop,
+        Err(error) => {
+            match epoch.is_current() {
+                Ok(false) => {}
+                Ok(true) => classify_frame_io(&template.counters, &error),
+                Err(()) => template.control.fail("inbound epoch state is poisoned"),
+            }
+            FrameReadStep::Stop
+        }
+    }
+}
+
+fn epoch_is_current<G, C>(
+    template: &ReceiverTemplate<G, C>,
+    epoch: &crate::runtime::InboundEpochGuard,
+) -> bool {
+    match epoch.is_current() {
+        Ok(true) => true,
+        Ok(false) => {
+            increment(&template.counters.sequence_violations);
+            false
+        }
+        Err(()) => {
+            template.control.fail("inbound epoch state is poisoned");
+            false
         }
     }
 }

@@ -5,8 +5,8 @@ use rafter_service::{PeerEnvelope, PeerPolicy};
 use rafter_transport_tls::{
     CertificateDirectory, ClusterId, EndpointBook, PeerEndpoint, PeerId, RuntimeLimits,
     SnapshotChunkResolver, TlsIdentity, TlsPeerDirectory, TlsPeerTransport,
-    TlsPeerTransportBuilder, TransportConfig, TransportLimits, TransportSessionStore,
-    TransportTimeouts,
+    TlsPeerTransportBuilder, TransportConfig, TransportIoTimeouts, TransportLimits,
+    TransportRuntimeTimeouts, TransportSessionStore, TransportTimeouts,
 };
 
 use super::session_store::MemorySessionStore;
@@ -71,15 +71,20 @@ impl RuntimeFixture {
             certificates,
             limits: TransportLimits::default().with_runtime(runtime),
             timeouts: TransportTimeouts::new(
-                Duration::from_millis(100),
-                Duration::from_secs(2),
-                Duration::from_secs(2),
-                Duration::from_secs(2),
-                Duration::from_millis(20),
-                Duration::from_millis(5),
-                Duration::from_millis(250),
-            )
-            .expect("valid runtime timeouts"),
+                TransportIoTimeouts::new(
+                    Duration::from_millis(100),
+                    Duration::from_secs(2),
+                    Duration::from_secs(2),
+                    Duration::from_secs(2),
+                )
+                .expect("valid I/O timeouts"),
+                TransportRuntimeTimeouts::new(
+                    Duration::from_millis(20),
+                    Duration::from_millis(5),
+                    Duration::from_millis(250),
+                )
+                .expect("valid runtime timeouts"),
+            ),
         }
     }
 
@@ -93,6 +98,11 @@ impl RuntimeFixture {
 
     pub fn limits(&self) -> TransportLimits {
         self.limits
+    }
+
+    pub fn with_timeouts(mut self, timeouts: TransportTimeouts) -> Self {
+        self.timeouts = timeouts;
+        self
     }
 
     pub fn start_a(&self, endpoints: EndpointBook) -> TestTransport {

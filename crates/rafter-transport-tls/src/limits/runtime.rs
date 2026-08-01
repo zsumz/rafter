@@ -71,6 +71,17 @@ pub enum RuntimeLimitError {
         /// Total bytes.
         total_bytes: usize,
     },
+    /// Reserved control capacity left no slot or byte capacity for bulk work.
+    ControlReserveConsumesTotal {
+        /// Reserved frame slots.
+        reserved_frames: usize,
+        /// Total frame slots.
+        total_frames: usize,
+        /// Reserved bytes.
+        reserved_bytes: usize,
+        /// Total bytes.
+        total_bytes: usize,
+    },
     /// One peer could consume more than the complete inbound queue.
     PeerInboundExceedsGlobal {
         /// Per-peer frame slots.
@@ -97,6 +108,16 @@ impl fmt::Display for RuntimeLimitError {
                 formatter,
                 "control reserve {reserved_frames} frames/{reserved_bytes} bytes exceeds total \
                  outbound capacity {total_frames} frames/{total_bytes} bytes"
+            ),
+            Self::ControlReserveConsumesTotal {
+                reserved_frames,
+                total_frames,
+                reserved_bytes,
+                total_bytes,
+            } => write!(
+                formatter,
+                "control reserve {reserved_frames} frames/{reserved_bytes} bytes leaves no bulk \
+                 capacity within {total_frames} frames/{total_bytes} bytes"
             ),
             Self::PeerInboundExceedsGlobal {
                 peer_frames,

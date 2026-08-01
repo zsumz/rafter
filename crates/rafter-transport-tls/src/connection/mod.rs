@@ -1,6 +1,7 @@
 //! Blocking persistent sender, listener, and authenticated receiver adapters.
 
 mod acceptor;
+mod deadline;
 mod dial;
 mod io;
 mod receiver;

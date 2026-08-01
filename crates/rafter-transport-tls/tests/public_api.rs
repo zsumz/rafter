@@ -6,7 +6,8 @@ use rafter_transport_tls::{
     AuthenticatedTlsPeer, CertificateDirectory, EndpointBook, FileTransportSessionStore,
     PeerFrameCodec, PeerId, RuntimeLimits, SnapshotChunkSourceResolver, TlsHandshakeConfig,
     TlsIdentity, TlsInbound, TlsPeerDirectory, TlsPeerTransport, TlsSender, TransportConfig,
-    TransportSessionState, TransportTimeouts, WireLimits,
+    TransportIoTimeouts, TransportRuntimeTimeouts, TransportSessionState, TransportTimeouts,
+    WireLimits,
 };
 
 use support::StringGroupCodec;
@@ -34,6 +35,8 @@ fn shared_contract_handles_are_send_and_sync() {
     assert_send_sync::<TransportSessionState>();
     assert_send_sync::<FileTransportSessionStore>();
     assert_send_sync::<TransportConfig>();
+    assert_send_sync::<TransportIoTimeouts>();
+    assert_send_sync::<TransportRuntimeTimeouts>();
     assert_send_sync::<TransportTimeouts>();
     assert_send_sync::<RuntimeLimits>();
     assert_send_sync::<SnapshotChunkSourceResolver<InMemorySnapshotChunkSource>>();

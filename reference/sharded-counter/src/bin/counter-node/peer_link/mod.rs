@@ -6,30 +6,33 @@
 //! queueing, authorization, diagnostics, and worker lifecycle remain in
 //! `rafter-transport-tls`.
 
+mod api;
 mod config;
+mod diagnostics;
 mod endpoints;
 mod group_codec;
 mod limits;
 mod session;
 
 use std::{
-    error::Error,
     fmt,
     net::SocketAddr,
     path::Path,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-use rafter::{Message, NodeId};
+use rafter::NodeId;
 use rafter_reference_sharded_counter::{GroupId, GroupIncarnation};
 use rafter_service::{PeerEnvelope, PeerPolicy, RaftTransport};
 use rafter_transport_tls::{
-    EndpointBook, TlsInbound, TlsPeerDirectory, TlsPeerTransport, TlsSender, TlsTransportError,
-    TransportConfig, TransportDiagnostics,
+    EndpointBook, TlsInbound, TlsPeerDirectory, TlsPeerTransport, TlsSender, TransportConfig,
+    TransportDiagnostics,
 };
 
+pub use api::{LinkError, PeerFrame};
 use config::PeerTlsConfig;
 pub use config::PeerTlsPaths;
+pub use diagnostics::LinkCounters;
 use endpoints::{install_placeholders, remote_peers, EndpointLifecycle};
 use group_codec::{PeerGroupCodec, PeerGroupId};
 use limits::{transport_limits, transport_timeouts, GLOBAL_INBOUND_QUEUE_LEN};
@@ -38,53 +41,6 @@ use session::{open_transport_state, transport_cluster_id, transport_peer_id};
 type PeerDirectory = TlsPeerDirectory<PeerGroupId>;
 type Sender = TlsSender<PeerGroupId, PeerGroupCodec>;
 type Runtime = TlsPeerTransport<PeerGroupId, PeerGroupCodec>;
-
-/// One peer frame in the counter consumer's lifecycle vocabulary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PeerFrame {
-    pub group_id: GroupId,
-    pub incarnation: GroupIncarnation,
-    pub from: NodeId,
-    pub to: NodeId,
-    pub message: Message,
-}
-
-/// Typed synchronous admission refusal from the public transport.
-#[derive(Debug)]
-pub struct LinkError {
-    source: TlsTransportError,
-}
-
-impl fmt::Display for LinkError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "authenticated peer transport refused the frame: {}",
-            self.source
-        )
-    }
-}
-
-impl Error for LinkError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.source)
-    }
-}
-
-/// Stable process-facing projection of the public diagnostic vocabulary.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct LinkCounters {
-    pub outbound_full: u64,
-    pub inbound_full: u64,
-    pub malformed: u64,
-    pub identity_refused: u64,
-    pub inbound_connection_full: u64,
-    pub tls_handshakes: u64,
-    pub tls_failures: u64,
-    pub stale_sessions: u64,
-    pub active_outbound_connections: usize,
-    pub active_inbound_connections: usize,
-}
 
 /// Bounded multi-group TLS link owned by one counter host process.
 pub struct PeerLink {
@@ -128,20 +84,18 @@ impl PeerLink {
     ) -> Result<Self, String> {
         let limits = transport_limits()?;
         let tls = PeerTlsConfig::load(node_id, tls_paths, limits.certificates())?;
-        let local_peer = transport_peer_id(node_id);
+        let local_peer = transport_peer_id(node_id)?;
         let peer_map = tls.peer_map();
         let remote_map = remote_peers(node_id, &peer_map);
         let endpoints = EndpointBook::new(limits.endpoints());
         install_placeholders(&endpoints, &remote_map, &tls.server_name())?;
         let directory = PeerDirectory::new(limits.directory());
-        let cluster_id = transport_cluster_id();
+        let cluster_id = transport_cluster_id()?;
         let sessions = open_transport_state(host_dir, &cluster_id, &local_peer, limits.sessions())?;
         let config = TransportConfig::new(
             cluster_id,
             local_peer,
-            "127.0.0.1:0"
-                .parse()
-                .expect("the fixed loopback bind address is valid"),
+            SocketAddr::from(([127, 0, 0, 1], 0)),
             limits,
             transport_timeouts()?,
         );
@@ -189,7 +143,7 @@ impl PeerLink {
         let route = PeerGroupId::new(group_id, incarnation);
         for member in &self.members {
             self.directory
-                .bind(route, *member, transport_peer_id(*member))
+                .bind(route, *member, transport_peer_id(*member)?)
                 .map_err(|error| error.to_string())?;
         }
         let peers = self
@@ -198,7 +152,7 @@ impl PeerLink {
             .copied()
             .filter(|member| *member != self.local_node)
             .map(transport_peer_id)
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let retirement_floor = self.members.iter().copied().max();
         self.sender
             .update_peers(&route, PeerPolicy::new(peers, retirement_floor))
@@ -262,7 +216,7 @@ impl PeerLink {
                 to: frame.to,
                 message: frame.message,
             })
-            .map_err(|source| LinkError { source })
+            .map_err(LinkError::new)
     }
 
     /// Drains already authenticated and authorized peer frames.
@@ -328,31 +282,6 @@ impl PeerLink {
 
     fn latch(&self, detail: String) {
         lock(&self.failure).get_or_insert(detail);
-    }
-}
-
-impl From<TransportDiagnostics> for LinkCounters {
-    fn from(diagnostics: TransportDiagnostics) -> Self {
-        Self {
-            outbound_full: diagnostics.queue_full,
-            inbound_full: diagnostics.inbound_full,
-            malformed: diagnostics
-                .malformed_frames
-                .saturating_add(diagnostics.frame_too_large),
-            identity_refused: diagnostics
-                .unknown_certificates
-                .saturating_add(diagnostics.identity_mismatches)
-                .saturating_add(diagnostics.cluster_mismatches)
-                .saturating_add(diagnostics.version_mismatches)
-                .saturating_add(diagnostics.unauthorized_frames)
-                .saturating_add(diagnostics.retired_peer_frames),
-            inbound_connection_full: diagnostics.connection_full,
-            tls_handshakes: diagnostics.tls_handshakes,
-            tls_failures: diagnostics.tls_failures,
-            stale_sessions: diagnostics.stale_sessions,
-            active_outbound_connections: diagnostics.active_outbound_connections,
-            active_inbound_connections: diagnostics.active_inbound_connections,
-        }
     }
 }
 

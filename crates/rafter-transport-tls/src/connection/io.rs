@@ -4,6 +4,7 @@ use std::{
     error::Error,
     fmt,
     io::{self, Read, Write},
+    net::TcpStream,
 };
 
 use crate::{
@@ -11,6 +12,8 @@ use crate::{
     ClientHello, DecodeHandshakeError, ServerHello, HANDSHAKE_MAGIC, MAX_CLIENT_HELLO_BYTES,
     MAX_ID_BYTES, MAX_SERVER_HELLO_BYTES, PEER_FRAME_LENGTH_PREFIX_BYTES,
 };
+
+use super::deadline::HandshakeDeadline;
 
 #[derive(Debug)]
 pub(crate) enum HandshakeIoError {
@@ -77,27 +80,27 @@ impl Error for PeerFrameIoError {
 
 pub(crate) fn complete_client_tls(
     connection: &mut rustls::ClientConnection,
-    socket: &mut impl ReadWrite,
+    socket: &mut TcpStream,
+    deadline: HandshakeDeadline,
 ) -> io::Result<()> {
+    let mut socket = deadline.socket(socket);
     while connection.is_handshaking() {
-        connection.complete_io(socket)?;
+        connection.complete_io(&mut socket)?;
     }
     Ok(())
 }
 
 pub(crate) fn complete_server_tls(
     connection: &mut rustls::ServerConnection,
-    socket: &mut impl ReadWrite,
+    socket: &mut TcpStream,
+    deadline: HandshakeDeadline,
 ) -> io::Result<()> {
+    let mut socket = deadline.socket(socket);
     while connection.is_handshaking() {
-        connection.complete_io(socket)?;
+        connection.complete_io(&mut socket)?;
     }
     Ok(())
 }
-
-pub(crate) trait ReadWrite: Read + Write {}
-
-impl<T> ReadWrite for T where T: Read + Write {}
 
 pub(crate) fn write_client_hello(
     writer: &mut impl Write,

@@ -77,12 +77,12 @@ impl GroupIdCodec<PeerGroupId> for PeerGroupCodec {
                 .map_err(|_| PeerGroupCodecError::InvalidLength {
                     actual: input.len(),
                 })?;
-        let group_id = GroupId::new(u32::from_be_bytes(
-            encoded[..4].try_into().expect("four-byte group identity"),
-        ));
-        let incarnation = GroupIncarnation::new(u32::from_be_bytes(
-            encoded[4..].try_into().expect("four-byte incarnation"),
-        ))
+        let group_id = GroupId::new(u32::from_be_bytes([
+            encoded[0], encoded[1], encoded[2], encoded[3],
+        ]));
+        let incarnation = GroupIncarnation::new(u32::from_be_bytes([
+            encoded[4], encoded[5], encoded[6], encoded[7],
+        ]))
         .ok_or(PeerGroupCodecError::ZeroIncarnation)?;
         Ok(PeerGroupId::new(group_id, incarnation))
     }

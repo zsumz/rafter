@@ -17,8 +17,9 @@ use std::{
 use rafter::NodeId;
 use rafter_transport_tls::{
     ClusterId, ConnectionSession, CreateTransportSessionStoreError, FileTransportSessionStore,
-    FileTransportSessionStoreError, InboundSessionDecision, OpenTransportSessionStoreError, PeerId,
-    PeerSessionState, SessionStoreLimits, TransportSessionStore,
+    FileTransportSessionStoreError, IdentityError, InboundSessionDecision,
+    OpenTransportSessionStoreError, PeerId, PeerSessionState, SessionStoreLimits,
+    TransportSessionStore,
 };
 
 /// Durable public-transport state file inside one replica directory.
@@ -33,26 +34,22 @@ const STORE_OPEN_POLL: Duration = Duration::from_millis(2);
 
 /// Stable physical principal used by this single-group fixture.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics only if the transport crate narrows its bounded identity contract so
-/// far that the fixed `lock-node-<u64>` fixture convention no longer fits.
-#[must_use]
-pub fn transport_peer_id(node_id: NodeId) -> PeerId {
+/// Returns a validation error if the public transport identity contract no
+/// longer accepts the fixture's `lock-node-<u64>` convention.
+pub fn transport_peer_id(node_id: NodeId) -> Result<PeerId, IdentityError> {
     PeerId::new(&format!("lock-node-{}", node_id.0))
-        .expect("the bounded fixture peer identity is valid")
 }
 
 /// Stable deployment boundary used by one fenced-lock Raft group.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics only if the transport crate narrows its bounded identity contract so
-/// far that the fixed fixture cluster convention no longer fits.
-#[must_use]
-pub fn transport_cluster_id(group_id: u64) -> ClusterId {
+/// Returns a validation error if the public transport identity contract no
+/// longer accepts the fixture's cluster convention.
+pub fn transport_cluster_id(group_id: u64) -> Result<ClusterId, IdentityError> {
     ClusterId::new(&format!("rafter-reference-fenced-lock-{group_id}"))
-        .expect("the bounded fixture cluster identity is valid")
 }
 
 /// Durable transport state beneath one replica directory.
@@ -73,8 +70,10 @@ pub(super) fn initialize_transport_state(
 ) -> Result<(), TransportSessionStateError> {
     let store = FileTransportSessionStore::create_new(
         transport_session_path(node_dir),
-        transport_cluster_id(group_id),
-        transport_peer_id(node_id),
+        transport_cluster_id(group_id)
+            .map_err(|source| TransportSessionStateError::Identity { source })?,
+        transport_peer_id(node_id)
+            .map_err(|source| TransportSessionStateError::Identity { source })?,
         SessionStoreLimits::DEFAULT,
     )
     .map_err(|source| TransportSessionStateError::Create { source })?;
@@ -93,10 +92,14 @@ pub fn open_transport_state(
     group_id: u64,
     node_id: NodeId,
 ) -> Result<FileTransportSessionStore, TransportSessionStateError> {
+    let cluster_id = transport_cluster_id(group_id)
+        .map_err(|source| TransportSessionStateError::Identity { source })?;
+    let peer_id = transport_peer_id(node_id)
+        .map_err(|source| TransportSessionStateError::Identity { source })?;
     FileTransportSessionStore::open_existing(
         transport_session_path(node_dir),
-        &transport_cluster_id(group_id),
-        &transport_peer_id(node_id),
+        &cluster_id,
+        &peer_id,
     )
     .map_err(|source| TransportSessionStateError::Open { source })
 }
@@ -199,6 +202,11 @@ impl TransportSessionStore for ReopeningTransportSessionStore {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum TransportSessionStateError {
+    /// The fixture's stable principal convention violated the public contract.
+    Identity {
+        /// Public identity-validation failure.
+        source: IdentityError,
+    },
     /// The replica directory name does not identify a node.
     InvalidReplicaDirectory {
         /// Directory whose final component was refused.
@@ -224,6 +232,9 @@ pub enum TransportSessionStateError {
 impl fmt::Display for TransportSessionStateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Identity { source } => {
+                write!(formatter, "invalid transport session identity: {source}")
+            }
             Self::InvalidReplicaDirectory { path } => write!(
                 formatter,
                 "replica directory {} does not end in node-<u64>",
@@ -251,6 +262,7 @@ impl fmt::Display for TransportSessionStateError {
 impl Error for TransportSessionStateError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Identity { source } => Some(source),
             Self::Create { source } => Some(source),
             Self::Open { source } => Some(source),
             Self::Operation { source } => Some(source),

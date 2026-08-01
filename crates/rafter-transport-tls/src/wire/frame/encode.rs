@@ -74,10 +74,7 @@ where
             std::mem::take(&mut scratch.message),
             from,
             to,
-            lengths.body,
-            lengths.complete,
-            lengths.group,
-            lengths.message,
+            lengths,
         ))
     }
 
@@ -188,11 +185,11 @@ where
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct EncodedLengths {
-    body: u32,
-    complete: usize,
-    group: u16,
-    message: u32,
+pub(crate) struct EncodedLengths {
+    pub(crate) body: u32,
+    pub(crate) complete: usize,
+    pub(crate) group: u16,
+    pub(crate) message: u32,
 }
 
 fn validate_encoded_group<E>(

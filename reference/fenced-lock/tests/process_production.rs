@@ -210,7 +210,7 @@ fn assert_replay_refusals(
 ) -> FileTransportSessionStore {
     cluster.stop(peer_two);
     let sessions = cluster.session_store(peer_two);
-    let target_peer = transport_peer_id(target);
+    let target_peer = transport_peer_id(target).expect("fixture peer identity");
     let first = sessions
         .allocate_outbound_session(&target_peer)
         .expect("first durable session");
@@ -285,7 +285,7 @@ fn remove_peer_and_assert_refused(
     root: &std::path::Path,
     sessions: &FileTransportSessionStore,
 ) {
-    let target_peer = transport_peer_id(target);
+    let target_peer = transport_peer_id(target).expect("fixture peer identity");
     assert_eq!(
         cluster.ask_leader("REMOVE_NODE 2"),
         "OK MEMBERSHIP_ACCEPTED"
