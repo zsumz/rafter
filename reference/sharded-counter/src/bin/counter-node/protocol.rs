@@ -52,6 +52,11 @@ pub enum Request {
     },
     PausePeers,
     ResumePeers,
+    PeerProbe {
+        group_id: GroupId,
+        incarnation: GroupIncarnation,
+        target: NodeId,
+    },
     PauseRecovery,
     ResumeRecovery,
     TransferLeadership {
@@ -257,6 +262,7 @@ fn parse(line: &str) -> Result<Request, String> {
         }),
         "PAUSE_PEERS" if fields.len() == 1 => Ok(Request::PausePeers),
         "RESUME_PEERS" if fields.len() == 1 => Ok(Request::ResumePeers),
+        "PEER_PROBE" if fields.len() == 4 => peer_probe(&fields),
         "PAUSE_RECOVERY" if fields.len() == 1 => Ok(Request::PauseRecovery),
         "RESUME_RECOVERY" if fields.len() == 1 => Ok(Request::ResumeRecovery),
         "TRANSFER" if fields.len() == 4 => Ok(Request::TransferLeadership {
@@ -294,11 +300,7 @@ fn parse(line: &str) -> Result<Request, String> {
             group_id: group(fields[1])?,
             incarnation: incarnation(fields[2])?,
         }),
-        "REOPEN" if fields.len() == 4 => Ok(Request::Reopen {
-            group_id: group(fields[1])?,
-            incarnation: incarnation(fields[2])?,
-            quota: number(fields[3], "quota")?,
-        }),
+        "REOPEN" if fields.len() == 4 => reopen(&fields),
         "TOMBSTONE" if fields.len() == 3 => Ok(Request::Tombstone {
             group_id: group(fields[1])?,
             incarnation: incarnation(fields[2])?,
@@ -306,6 +308,22 @@ fn parse(line: &str) -> Result<Request, String> {
         "SHUTDOWN" if fields.len() == 1 => Ok(Request::Shutdown),
         _ => Err("unknown command or wrong field count".to_string()),
     }
+}
+
+fn peer_probe(fields: &[&str]) -> Result<Request, String> {
+    Ok(Request::PeerProbe {
+        target: NodeId(u64::from(number(fields[1], "target node id")?)),
+        group_id: group(fields[2])?,
+        incarnation: incarnation(fields[3])?,
+    })
+}
+
+fn reopen(fields: &[&str]) -> Result<Request, String> {
+    Ok(Request::Reopen {
+        group_id: group(fields[1])?,
+        incarnation: incarnation(fields[2])?,
+        quota: number(fields[3], "quota")?,
+    })
 }
 
 fn group(value: &str) -> Result<GroupId, String> {

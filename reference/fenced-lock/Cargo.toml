@@ -20,7 +20,10 @@ rafter-runtime-api = "0.0.1"
 rafter-service = "0.0.1"
 rafter-storage = "0.0.1"
 rafter-transport-tcp-insecure = "0.0.1"
-rustls = { version = "0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
+rafter-transport-tls = "0.0.1"
+
+[dev-dependencies]
+rustls = { version = "0.23.42", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.2.0"
 
 [lints]
@@ -33,13 +36,10 @@ workspace = true
 # way. It is a binary rather than an example so that the process suite can find
 # a built copy through `CARGO_BIN_EXE_lock-node` in both dependency modes.
 #
-# `rafter-runtime` and `rafter-storage` moved out of `dev-dependencies` for it:
-# a binary under `src/bin/` links the ordinary dependency graph, and this
-# replica needs the durable runtime and the file-backed Raft stores.
+# `rafter-runtime` and `rafter-storage` are ordinary dependencies because the
+# process replica owns the durable runtime and file-backed Raft stores.
 #
-# `rafter-transport-tcp-insecure` supplies the peer frame encoding and nothing
-# else. It is named here rather than hand-rolled because it is inside the set
-# of crates `scripts/reference-source-check` patches — the whole publishable
-# set, which it has not always been — so naming it resolves from the checkout
-# like every other Rafter dependency rather than splitting the graph. It is
-# insecure by name and by contract, and `CONTRACT.md` says what that costs.
+# `rafter-transport-tcp-insecure` remains the deliberately insecure demo link.
+# `rafter-transport-tls` supplies the production-composition process's complete
+# bounded authenticated link. Source mode patches it from the checkout and the
+# package lane builds its exact unpublished archive; release promotion is Slice 8.

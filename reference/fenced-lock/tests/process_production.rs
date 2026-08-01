@@ -14,6 +14,8 @@
 mod process;
 #[path = "support/production_process.rs"]
 mod production_process;
+#[path = "support/public_transport.rs"]
+mod public_transport;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[allow(
@@ -22,26 +24,24 @@ mod scratch;
 )]
 mod support;
 
-use std::{io::Write, net::TcpStream, sync::Arc};
+use std::{io::Write, net::TcpStream};
 
-use rafter::{LogIndex, Message, NodeId, PreVote, Term};
-use rafter_codec::encode_message;
+use rafter::{LogIndex, NodeId};
 use rafter_reference_fenced_lock::{
     check_evidence,
     production::{
-        allocate_replica, load_active_replica, retire_replica, AllocationCrashPoint, IdentityError,
-        ReplicaIdentity,
+        allocate_replica, load_active_replica, retire_replica, transport_peer_id,
+        AllocationCrashPoint, IdentityError, ReplicaIdentity,
     },
     ApplyDisposition, FencingToken, GuardedRejection, GuardedWrite, LockConfig, LockResponse,
     OperationResult, RecordingGuardedResource,
 };
-use rustls::{
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName},
-    ClientConfig, ClientConnection, RootCertStore, StreamOwned,
+use rafter_transport_tls::{
+    FileTransportSessionStore, ServerHelloStatus, ServerRefusal, TransportSessionStore,
 };
 
 use process::{QueuedRequest, SubmitOutcome};
-use production_process::{fixture_dir, wait_until, ProductionCluster, ProductionNode, NODE_IDS};
+use production_process::{wait_until, ProductionCluster, ProductionNode, NODE_IDS};
 use support::{acquire, config, expire_through, open_session, resource, submit};
 
 const GROUP_ID: u64 = 1;
@@ -88,7 +88,7 @@ fn authenticated_cluster_serves_lock_and_exposes_bounded_operations_evidence() {
         let observation = cluster.observe(node_id);
         assert!(observation.boolean("ready"));
         assert_eq!(observation.number("frame_limit"), 2_163_089);
-        assert_eq!(observation.number("replay_window"), 64);
+        assert_eq!(observation.number("replay_window"), 1);
         assert_eq!(observation.number("outbound_limit"), 256);
         assert_eq!(observation.number("inbound_peer_limit"), 128);
         assert_eq!(observation.number("inbound_global_limit"), 512);
@@ -156,8 +156,22 @@ fn authenticated_cluster_serves_lock_and_exposes_bounded_operations_evidence() {
 fn peer_authentication_replay_and_removed_identity_refuse_before_raft() {
     let mut cluster = ProductionCluster::start("production-security", process_config());
     let target = NodeId(1);
+    let peer_two = NodeId(2);
     let root = cluster.root().to_path_buf();
     let peer_addr = cluster.node_mut(target).peer_addr(&root);
+
+    assert_authentication_refusals(&mut cluster, target, peer_two, peer_addr);
+    let sessions = assert_replay_refusals(&mut cluster, target, peer_two, peer_addr, &root);
+    remove_peer_and_assert_refused(&mut cluster, target, peer_two, &root, &sessions);
+    cluster.shutdown();
+}
+
+fn assert_authentication_refusals(
+    cluster: &mut ProductionCluster,
+    target: NodeId,
+    peer_two: NodeId,
+    peer_addr: std::net::SocketAddr,
+) {
     let before = cluster.observe(target).number("applied_index");
 
     let mut unauthenticated = TcpStream::connect(peer_addr).expect("peer listener accepts TCP");
@@ -165,68 +179,113 @@ fn peer_authentication_replay_and_removed_identity_refuse_before_raft() {
         .write_all(b"not a TLS handshake")
         .expect("bad handshake bytes reach the listener");
     drop(unauthenticated);
-    wait_counter(&mut cluster, target, "authentication_failed", 1);
+    wait_counter(cluster, target, "authentication_failed", 1);
 
-    open_authenticated(peer_addr, NodeId(9));
-    wait_counter(&mut cluster, target, "unknown_certificate", 1);
+    public_transport::open_authenticated(peer_addr, NodeId(9));
+    wait_counter(cluster, target, "unknown_certificate", 1);
 
-    send_frame(peer_addr, NodeId(2), NodeId(3), NodeId(3), 1, 1);
-    wait_counter(&mut cluster, target, "identity_mismatch", 1);
+    let refused = public_transport::send_sequences(
+        peer_addr,
+        public_transport::SequenceAttempt::authenticated(peer_two, NodeId(3), target, 1),
+        &[],
+    );
+    assert_eq!(
+        refused.status(),
+        ServerHelloStatus::Refused(ServerRefusal::IdentityMismatch)
+    );
+    wait_counter(cluster, target, "identity_mismatch", 1);
     assert_eq!(
         cluster.observe(target).number("applied_index"),
         before,
         "authentication refusals never reached the application"
     );
+}
 
-    cluster.stop(NodeId(2));
-    let replay = cluster.replay_store(NodeId(2));
-    let first_session = replay.allocate_session().expect("fresh durable session");
-    let second_session = replay.allocate_session().expect("next durable session");
+fn assert_replay_refusals(
+    cluster: &mut ProductionCluster,
+    target: NodeId,
+    peer_two: NodeId,
+    peer_addr: std::net::SocketAddr,
+    root: &std::path::Path,
+) -> FileTransportSessionStore {
+    cluster.stop(peer_two);
+    let sessions = cluster.session_store(peer_two);
+    let target_peer = transport_peer_id(target);
+    let first = sessions
+        .allocate_outbound_session(&target_peer)
+        .expect("first durable session");
+    let second = sessions
+        .allocate_outbound_session(&target_peer)
+        .expect("second durable session");
+    let third = sessions
+        .allocate_outbound_session(&target_peer)
+        .expect("third durable session");
+    let fourth = sessions
+        .allocate_outbound_session(&target_peer)
+        .expect("fourth durable session");
 
-    send_frame(peer_addr, NodeId(2), NodeId(2), NodeId(2), first_session, 1);
-    send_frame(peer_addr, NodeId(2), NodeId(2), NodeId(2), first_session, 1);
-    wait_counter(&mut cluster, target, "replay_duplicate", 1);
-    send_frame(
+    public_transport::send_sequences(
         peer_addr,
-        NodeId(2),
-        NodeId(2),
-        NodeId(2),
-        first_session,
-        65,
+        public_transport::SequenceAttempt::authenticated(peer_two, peer_two, target, first.get())
+            .with_outer_from(NodeId(3)),
+        &[1],
     );
-    send_frame(peer_addr, NodeId(2), NodeId(2), NodeId(2), first_session, 1);
-    wait_counter(&mut cluster, target, "replay_outside_window", 1);
-    send_frame(
+    wait_counter(cluster, target, "identity_mismatch", 2);
+
+    public_transport::send_sequences(
         peer_addr,
-        NodeId(2),
-        NodeId(2),
-        NodeId(2),
-        second_session,
-        1,
+        public_transport::SequenceAttempt::authenticated(peer_two, peer_two, target, second.get()),
+        &[1, 1],
     );
-    send_frame(
+    wait_counter(cluster, target, "replay_duplicate", 1);
+
+    public_transport::send_sequences(
         peer_addr,
-        NodeId(2),
-        NodeId(2),
-        NodeId(2),
-        first_session,
-        66,
+        public_transport::SequenceAttempt::authenticated(peer_two, peer_two, target, third.get()),
+        &[1, 3],
     );
-    wait_counter(&mut cluster, target, "replay_stale_session", 1);
+    wait_counter(cluster, target, "replay_outside_window", 2);
+
+    public_transport::send_sequences(
+        peer_addr,
+        public_transport::SequenceAttempt::authenticated(peer_two, peer_two, target, fourth.get()),
+        &[1],
+    );
+    let stale = public_transport::send_sequences(
+        peer_addr,
+        public_transport::SequenceAttempt::authenticated(peer_two, peer_two, target, third.get()),
+        &[],
+    );
+    assert_eq!(
+        stale.status(),
+        ServerHelloStatus::Refused(ServerRefusal::StaleSession)
+    );
+    wait_counter(cluster, target, "replay_stale_session", 1);
 
     cluster.stop(target);
     cluster.restart(target, &NODE_IDS);
-    let restarted_addr = cluster.node_mut(target).peer_addr(&root);
-    send_frame(
+    let restarted_addr = cluster.node_mut(target).peer_addr(root);
+    let stale_after_restart = public_transport::send_sequences(
         restarted_addr,
-        NodeId(2),
-        NodeId(2),
-        NodeId(2),
-        second_session,
-        1,
+        public_transport::SequenceAttempt::authenticated(peer_two, peer_two, target, fourth.get()),
+        &[],
     );
-    wait_counter(&mut cluster, target, "replay_duplicate", 1);
+    assert_eq!(
+        stale_after_restart.status(),
+        ServerHelloStatus::Refused(ServerRefusal::StaleSession)
+    );
+    wait_counter(cluster, target, "replay_stale_session", 1);
+    sessions
+}
 
+fn remove_peer_and_assert_refused(
+    cluster: &mut ProductionCluster,
+    target: NodeId,
+    peer_two: NodeId,
+    root: &std::path::Path,
+    sessions: &FileTransportSessionStore,
+) {
+    let target_peer = transport_peer_id(target);
     assert_eq!(
         cluster.ask_leader("REMOVE_NODE 2"),
         "OK MEMBERSHIP_ACCEPTED"
@@ -236,26 +295,25 @@ fn peer_authentication_replay_and_removed_identity_refuse_before_raft() {
         (cluster.observe(leader).string("committed_membership_phase") == "joint").then_some(())
     });
     assert_eq!(cluster.ask_leader("LEAVE_JOINT"), "OK MEMBERSHIP_ACCEPTED");
-    cluster.wait_for_membership(leader, NodeId(2), false);
-    retire_replica(&ReplicaIdentity::path(cluster.root(), NodeId(2)), GROUP_ID)
+    cluster.wait_for_membership(leader, peer_two, false);
+    retire_replica(&ReplicaIdentity::path(cluster.root(), peer_two), GROUP_ID)
         .expect("committed removal permanently retires identity 2");
 
+    let fifth = sessions
+        .allocate_outbound_session(&target_peer)
+        .expect("post-removal durable session");
     cluster.stop(target);
     cluster.restart(target, &[NodeId(1), NodeId(3)]);
-    let removed_addr = cluster.node_mut(target).peer_addr(&root);
-    send_frame(
+    let removed_addr = cluster.node_mut(target).peer_addr(root);
+    public_transport::send_sequences(
         removed_addr,
-        NodeId(2),
-        NodeId(2),
-        NodeId(2),
-        second_session + 1,
-        1,
+        public_transport::SequenceAttempt::authenticated(peer_two, peer_two, target, fifth.get()),
+        &[1],
     );
-    wait_counter(&mut cluster, target, "unauthorized_peer", 1);
+    wait_counter(cluster, target, "unauthorized_peer", 1);
     let restored = cluster.observe(target);
-    assert!(!restored.contains_member("committed_members", NodeId(2)));
+    assert!(!restored.contains_member("committed_members", peer_two));
     assert!(restored.number("control_plane_epoch") > 0);
-    cluster.shutdown();
 }
 
 #[test]
@@ -299,7 +357,30 @@ fn readiness_and_checkpoint_recovery_fail_closed() {
     assert!(output.contains("control-plane checkpoint"));
     assert!(output.contains("malformed"));
 
-    std::fs::write(&checkpoint, original).expect("the fixture restores the checkpoint again");
+    std::fs::write(&checkpoint, &original).expect("the fixture restores the checkpoint again");
+
+    let node_dir = cluster.root().join("node-3");
+    let session_path = rafter_reference_fenced_lock::production::transport_session_path(&node_dir);
+    let session_state = std::fs::read(&session_path).expect("transport state exists");
+
+    std::fs::remove_file(&session_path).expect("the negative test removes transport state");
+    let mut missing_transport =
+        ProductionNode::spawn(cluster.root(), NodeId(3), &NODE_IDS, cluster.config());
+    let (status, output) = missing_transport.wait_refused();
+    assert!(!status.success());
+    assert!(output.contains("transport session state"));
+    assert!(output.contains("does not exist"));
+
+    std::fs::write(&session_path, b"corrupt transport state\n")
+        .expect("the negative test corrupts transport state");
+    let mut corrupt_transport =
+        ProductionNode::spawn(cluster.root(), NodeId(3), &NODE_IDS, cluster.config());
+    let (status, output) = corrupt_transport.wait_refused();
+    assert!(!status.success());
+    assert!(output.contains("transport session state"));
+    assert!(output.contains("could not decode") || output.contains("checksum"));
+
+    std::fs::write(&session_path, session_state).expect("the fixture restores transport state");
     cluster.restart(NodeId(3), &NODE_IDS);
     let after = cluster.observe(NodeId(3));
     assert_eq!(
@@ -417,101 +498,4 @@ fn wait_counter(cluster: &mut ProductionCluster, node: NodeId, name: &str, minim
         let observation = cluster.observe(node);
         (observation.number(name) >= minimum).then_some(())
     });
-}
-
-fn open_authenticated(addr: std::net::SocketAddr, certificate_node: NodeId) {
-    let config = tls_client_config(certificate_node);
-    let connection = ClientConnection::new(
-        config,
-        ServerName::try_from("rafter-peer").expect("fixture server name is valid"),
-    )
-    .expect("TLS client builds");
-    let socket = TcpStream::connect(addr).expect("authenticated peer TCP connects");
-    let mut stream = StreamOwned::new(connection, socket);
-    while stream.conn.is_handshaking() {
-        stream
-            .conn
-            .complete_io(&mut stream.sock)
-            .expect("the test TLS handshake completes");
-    }
-}
-
-fn send_frame(
-    addr: std::net::SocketAddr,
-    certificate_node: NodeId,
-    outer_from: NodeId,
-    embedded_from: NodeId,
-    session: u64,
-    sequence: u64,
-) {
-    let config = tls_client_config(certificate_node);
-    let connection = ClientConnection::new(
-        config,
-        ServerName::try_from("rafter-peer").expect("fixture server name is valid"),
-    )
-    .expect("TLS client builds");
-    let socket = TcpStream::connect(addr).expect("authenticated peer TCP connects");
-    let mut stream = StreamOwned::new(connection, socket);
-    let message = Message::PreVote(PreVote {
-        term: Term(0),
-        candidate_id: embedded_from,
-        last_log_index: LogIndex::ZERO,
-        last_log_term: Term(0),
-    });
-    let payload = encode_message(&message).expect("test peer message encodes");
-    let body_len = 49 + payload.len();
-    let mut frame = Vec::with_capacity(body_len + 4);
-    frame.extend_from_slice(
-        &u32::try_from(body_len)
-            .expect("test frame length fits")
-            .to_be_bytes(),
-    );
-    frame.extend_from_slice(b"RFTP");
-    frame.push(1);
-    frame.extend_from_slice(&GROUP_ID.to_be_bytes());
-    frame.extend_from_slice(&outer_from.0.to_be_bytes());
-    frame.extend_from_slice(&NodeId(1).0.to_be_bytes());
-    frame.extend_from_slice(&session.to_be_bytes());
-    frame.extend_from_slice(&sequence.to_be_bytes());
-    frame.extend_from_slice(
-        &u32::try_from(payload.len())
-            .expect("test payload length fits")
-            .to_be_bytes(),
-    );
-    frame.extend_from_slice(&payload);
-    stream.write_all(&frame).expect("test frame writes");
-    stream.flush().expect("test frame flushes");
-}
-
-fn tls_client_config(node_id: NodeId) -> Arc<ClientConfig> {
-    let fixtures = fixture_dir();
-    let mut roots = RootCertStore::empty();
-    let mut ca = std::io::BufReader::new(
-        std::fs::File::open(fixtures.join("ca.pem")).expect("test CA opens"),
-    );
-    let certificates = rustls_pemfile::certs(&mut ca)
-        .collect::<Result<Vec<_>, _>>()
-        .expect("test CA parses");
-    roots.add_parsable_certificates(certificates);
-
-    let mut certificate = std::io::BufReader::new(
-        std::fs::File::open(fixtures.join(format!("node-{}.pem", node_id.0)))
-            .expect("test leaf opens"),
-    );
-    let certificate: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut certificate)
-        .collect::<Result<_, _>>()
-        .expect("test leaf parses");
-    let mut key = std::io::BufReader::new(
-        std::fs::File::open(fixtures.join(format!("node-{}-key.pem", node_id.0)))
-            .expect("test key opens"),
-    );
-    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key)
-        .expect("test key parses")
-        .expect("test key exists");
-    Arc::new(
-        ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_client_auth_cert(certificate, key)
-            .expect("test client certificate and key agree"),
-    )
 }

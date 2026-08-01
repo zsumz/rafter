@@ -314,6 +314,9 @@ required_package_files() {
         rafter-storage)
             printf 'README.md LICENSE NOTICE STORAGE_FORMAT_V1.md DURABILITY_PROTOCOL.md'
             ;;
+        rafter-transport-tls)
+            printf 'README.md LICENSE NOTICE FORMAT.md'
+            ;;
         *)
             printf 'README.md LICENSE NOTICE'
             ;;
@@ -346,6 +349,23 @@ if ((${#never_publish_crates[@]} == 0)); then
     fail "RELEASE.md lists no unpublishable crates"
 fi
 
+# The fenced-lock acceptance consumer reaches the TLS transport before public
+# release promotion. Package it as an exact consumer-only archive, while the
+# release manifest continues to classify it as unpublished.
+consumer_only_crates=(rafter-transport-tls)
+for crate in "${consumer_only_crates[@]}"; do
+    listed=false
+    for unpublished in "${never_publish_crates[@]}"; do
+        if [[ "$crate" == "$unpublished" ]]; then
+            listed=true
+            break
+        fi
+    done
+    if [[ "$listed" != true ]]; then
+        fail "consumer-only crate $crate must remain in RELEASE.md's unpublished list"
+    fi
+done
+
 suites=()
 if [[ "$mode" == process || "$mode" == process-msrv ]]; then
     suites_file="$repo_root/verification/reference-process-suites.txt"
@@ -368,7 +388,7 @@ if [[ "$mode" == process || "$mode" == process-msrv ]]; then
     fi
 fi
 
-packaged_crates=("${publish_crates[@]}")
+packaged_crates=("${publish_crates[@]}" "${consumer_only_crates[@]}")
 for crate in "${packaged_crates[@]}"; do
     if [[ ! -f "$repo_root/crates/$crate/Cargo.toml" ]]; then
         fail "packaged crate $crate has no manifest under crates/"
@@ -376,6 +396,7 @@ for crate in "${packaged_crates[@]}"; do
 done
 
 log "publishable crates: ${publish_crates[*]}"
+log "consumer-only exact archives: ${consumer_only_crates[*]}"
 log "never-publish crates: ${never_publish_crates[*]}"
 
 if [[ -n "$artifact_dir" ]]; then
@@ -586,7 +607,22 @@ mkdir -p "$tools_root/inventories"
 cp "$repo_root/scripts/cargo-test-exact" "$tools_root/cargo-test-exact"
 cp "$repo_root/scripts/reference-package-boundary-check" \
     "$tools_root/reference-package-boundary-check"
-printf '%s\n' "${never_publish_crates[@]}" > "$tools_root/never-publish-crates.txt"
+: > "$tools_root/never-publish-crates.txt"
+for crate in "${never_publish_crates[@]}"; do
+    consumer_only=false
+    for allowed in "${consumer_only_crates[@]}"; do
+        if [[ "$crate" == "$allowed" ]]; then
+            consumer_only=true
+            break
+        fi
+    done
+    if [[ "$consumer_only" == false ]]; then
+        printf '%s\n' "$crate" >> "$tools_root/never-publish-crates.txt"
+    fi
+done
+if [[ ! -s "$tools_root/never-publish-crates.txt" ]]; then
+    fail "the boundary unpublished-crate set became empty"
+fi
 chmod +x \
     "$tools_root/cargo-test-exact" \
     "$tools_root/reference-package-boundary-check"

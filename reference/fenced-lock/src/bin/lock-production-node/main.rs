@@ -3,9 +3,9 @@
 //! This is deliberately one fixture, not a generic Rafter daemon. It reuses the
 //! integration process's proven transactional application store, durable Raft
 //! stores, control-plane checkpoint, and service loop. Its production boundary
-//! is caller-owned: durable monotonic replica identity, mutually authenticated
-//! Rustls peer channels, durable replay windows, explicit queue/connection
-//! limits, complete recovery readiness, and JSON Lines operations evidence.
+//! is caller-owned: durable monotonic replica identity, the public mutually
+//! authenticated TLS peer transport, durable connection epochs, explicit
+//! queue/connection limits, complete recovery readiness, and JSON Lines evidence.
 //!
 //! The file-backed Raft store proves publication and recovery correctness. It is
 //! not described as a segmented high-throughput WAL. The committed test
@@ -40,8 +40,8 @@
 //!
 //! The client listener exists before Raft/app recovery so the readiness gate is
 //! externally observable. Every service request is refused until identity, TLS,
-//! replay metadata, stores, checkpoint reconciliation, catch-up, and worker
-//! startup have succeeded. Client connections, client lines, pending jobs,
+//! transport session metadata, stores, checkpoint reconciliation, catch-up,
+//! and worker startup have succeeded. Client connections, client lines, pending jobs,
 //! peer connections, frame bytes, outbound queues, per-peer inbound queues, and
 //! the global inbound queue all have explicit limits.
 
@@ -501,16 +501,22 @@ fn run(config: &Config) -> Result<(), String> {
     )
     .map_err(|error| format!("could not bind the peer port: {error}"))?;
 
-    let outcome = serve(
+    serve(
         config,
         &node_dir,
         &link,
         &jobs_rx,
         client_addr,
         &client_counters,
-    );
-    link.shut_down();
-    outcome
+    )
+}
+
+struct LinkShutdownGuard<'a>(&'a PeerLink);
+
+impl Drop for LinkShutdownGuard<'_> {
+    fn drop(&mut self) {
+        self.0.shut_down();
+    }
 }
 
 #[allow(
@@ -530,6 +536,9 @@ fn serve(
         next_attempt: Instant::now(),
         announced: false,
     };
+    // Declared after `state`, so transport workers stop and join before the
+    // recovered replica releases its filesystem ownership on every exit path.
+    let _link_shutdown = LinkShutdownGuard(link);
     let mut responders: BTreeMap<u64, ClientReply> = BTreeMap::new();
     let mut next_ticket = 1_u64;
     let mut next_tick = Instant::now() + config.tick_interval;
@@ -539,7 +548,7 @@ fn serve(
     loop {
         if let Some(failure) = link.terminal_failure() {
             return Err(format!(
-                "transport replay metadata became unavailable: {failure}"
+                "transport session metadata became unavailable: {failure}"
             ));
         }
         // Client requests first, so that a `SHUTDOWN` or a `STATUS` is answered
@@ -626,11 +635,20 @@ fn serve(
                     control_plane_fault_after: config.control_plane_fault_after,
                 }) {
                     Ok(replica) => {
-                        // The address is published only now, so a peer never
-                        // dials a process that does not own its directory.
-                        link.publish_address(node_dir).map_err(|error| {
-                            format!("could not publish the peer address: {error}")
-                        })?;
+                        // Recovery and directory ownership are established before
+                        // any TLS worker can dial, accept, or mutate session state.
+                        if let Err(error) = link.start(node_dir, config.node_id) {
+                            link.shut_down();
+                            return Err(format!(
+                                "could not start the authenticated peer transport: {error}"
+                            ));
+                        }
+                        // Published only after activation, so a peer never dials a
+                        // process that does not own and run its recovered replica.
+                        if let Err(error) = link.publish_address(node_dir) {
+                            link.shut_down();
+                            return Err(format!("could not publish the peer address: {error}"));
+                        }
                         emit(&format!(
                             "PEER_LISTENING {} {}",
                             config.node_id.0,

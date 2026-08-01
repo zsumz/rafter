@@ -1,15 +1,18 @@
 //! Caller-owned production-composition support.
 //!
-//! This module belongs to the unpublished fenced-lock acceptance consumer. It
-//! is not a Rafter deployment API. The production process fixture uses it to
-//! prove the durable identity-allocation half of the embedding contract without
-//! putting allocation or retention policy into a public Rafter crate.
+//! These modules remain application-owned. They provision monotonic single-use
+//! Raft identities and compose the public TLS transport's durable connection
+//! epochs without moving deployment control into Rafter.
 
 mod identity;
-mod replay;
+mod transport;
 
 pub use identity::{
     allocate_replica, load_active_replica, load_allocation_high_water, retire_replica,
     AllocationCrashPoint, IdentityError, ReplicaIdentity,
 };
-pub use replay::{ReplayDecision, TransportReplayError, TransportReplayStore, REPLAY_WINDOW};
+pub use transport::{
+    open_transport_state, open_transport_state_from_directory, transport_cluster_id,
+    transport_peer_id, transport_session_path, ReopeningTransportSessionStore,
+    TransportSessionStateError, CONNECTION_SEQUENCE_WINDOW, REPLAY_WINDOW, TRANSPORT_SESSION_FILE,
+};

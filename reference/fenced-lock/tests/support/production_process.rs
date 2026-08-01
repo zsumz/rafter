@@ -12,15 +12,6 @@ use std::{
     time::Duration,
 };
 
-use rafter::{LogIndex, NodeId};
-use rafter_reference_fenced_lock::{
-    production::{allocate_replica, AllocationCrashPoint, ReplicaIdentity, TransportReplayStore},
-    Command, HistoryEvent, LockConfig, OperationId, ResourceName,
-};
-use rafter_reference_harness::process::{
-    ChildProcess, ConnectionTimeouts, ReconnectingClient, Wait,
-};
-
 use crate::{
     process::{
         parse_query_response, parse_submit_response, process_history, render_command, QueryOutcome,
@@ -28,6 +19,15 @@ use crate::{
     },
     scratch::ScratchDir,
 };
+use rafter::{LogIndex, NodeId};
+use rafter_reference_fenced_lock::{
+    production::{allocate_replica, open_transport_state, AllocationCrashPoint, ReplicaIdentity},
+    Command, HistoryEvent, LockConfig, OperationId, ResourceName,
+};
+use rafter_reference_harness::process::{
+    ChildProcess, ConnectionTimeouts, ReconnectingClient, Wait,
+};
+use rafter_transport_tls::FileTransportSessionStore;
 
 pub const NODE_IDS: [NodeId; 3] = [NodeId(1), NodeId(2), NodeId(3)];
 const GROUP_ID: u64 = 1;
@@ -483,9 +483,13 @@ impl ProductionCluster {
         );
     }
 
-    pub fn replay_store(&self, node_id: NodeId) -> TransportReplayStore {
-        TransportReplayStore::open(&self.root().join(format!("node-{}", node_id.0)), GROUP_ID)
-            .expect("the process's durable replay store opens while it is stopped")
+    pub fn session_store(&self, node_id: NodeId) -> FileTransportSessionStore {
+        open_transport_state(
+            &self.root().join(format!("node-{}", node_id.0)),
+            GROUP_ID,
+            node_id,
+        )
+        .expect("the stopped process's public transport state opens")
     }
 
     pub fn shutdown(&mut self) {

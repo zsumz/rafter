@@ -1,7 +1,7 @@
 //! Three-host, many-group durable process fixture for the sharded counter.
 //!
-//! This is integration evidence. Its peer transport is explicitly
-//! unauthenticated and its filesystem address discovery is test-only.
+//! This is integration evidence. It composes the public mutually authenticated
+//! TLS transport with caller-owned test-only filesystem endpoint discovery.
 
 mod app_store;
 mod engine;
@@ -10,10 +10,19 @@ mod host_registry;
 mod peer_link;
 mod protocol;
 
-use std::{env, fs, io, num::NonZeroUsize, path::PathBuf, process::ExitCode, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fs, io,
+    num::NonZeroUsize,
+    path::PathBuf,
+    process::ExitCode,
+    time::Duration,
+};
 
 use rafter::NodeId;
 use rafter_reference_sharded_counter::WorkQuota;
+
+use peer_link::PeerTlsPaths;
 
 fn main() -> ExitCode {
     match Config::parse().and_then(|config| engine::run(&config)) {
@@ -39,6 +48,7 @@ pub struct Config {
     pub workers: NonZeroUsize,
     pub max_group_queue: NonZeroUsize,
     pub max_global_queue: NonZeroUsize,
+    pub peer_tls: PeerTlsPaths,
 }
 
 impl Config {
@@ -56,8 +66,11 @@ impl Config {
             .split(',')
             .map(|field| parse(field, "member id").map(NodeId))
             .collect::<Result<Vec<_>, _>>()?;
-        if members.len() != 3 || !members.contains(&node_id) {
-            return Err("members must name exactly three nodes including this node".to_string());
+        let member_set = members.iter().copied().collect::<BTreeSet<_>>();
+        if member_set.len() != 3 || !member_set.contains(&node_id) {
+            return Err(
+                "members must name exactly three distinct nodes including this node".to_string(),
+            );
         }
         let group_count = parse(value("--groups")?, "group count")?;
         if group_count == 0 || group_count > 4096 {
@@ -69,6 +82,10 @@ impl Config {
         }
         let quota = WorkQuota::new(parse(value("--quota")?, "quota")?)
             .ok_or_else(|| "quota must be nonzero".to_string())?;
+        let peer_certificates = parse_peer_certificates(value("--peer-certificates")?)?;
+        if peer_certificates.keys().copied().collect::<BTreeSet<_>>() != member_set {
+            return Err("peer certificate map must name every configured member once".to_string());
+        }
         Ok(Self {
             node_id,
             members,
@@ -82,6 +99,12 @@ impl Config {
             workers: nonzero(value("--workers")?, "worker count")?,
             max_group_queue: nonzero(value("--max-group-queue")?, "group queue bound")?,
             max_global_queue: nonzero(value("--max-global-queue")?, "global queue bound")?,
+            peer_tls: PeerTlsPaths {
+                ca: PathBuf::from(value("--tls-ca")?),
+                certificate: PathBuf::from(value("--tls-cert")?),
+                private_key: PathBuf::from(value("--tls-key")?),
+                peer_certificates,
+            },
         })
     }
 
@@ -89,6 +112,26 @@ impl Config {
     pub fn host_dir(&self) -> PathBuf {
         self.cluster_dir.join(format!("host-{}", self.node_id.0))
     }
+}
+
+fn parse_peer_certificates(value: &str) -> Result<BTreeMap<NodeId, PathBuf>, String> {
+    let mut certificates = BTreeMap::new();
+    for entry in value.split(',') {
+        let (node, path) = entry
+            .split_once('=')
+            .ok_or_else(|| "peer certificate entries must be NODE=PATH".to_string())?;
+        let node_id = NodeId(parse(node, "peer certificate node id")?);
+        if path.is_empty() {
+            return Err(format!(
+                "peer certificate path for node {} is empty",
+                node_id.0
+            ));
+        }
+        if certificates.insert(node_id, PathBuf::from(path)).is_some() {
+            return Err(format!("peer certificate map repeats node {}", node_id.0));
+        }
+    }
+    Ok(certificates)
 }
 
 fn parse<T>(value: &str, label: &str) -> Result<T, String>

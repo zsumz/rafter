@@ -27,16 +27,16 @@ fn sealed_tree_node_accounting_rejects_u64_overflow() {
 mod archive_path_scenarios;
 
 #[test]
-#[ignore = "full 248-package registry materialization is exercised by aggregate replay"]
+#[ignore = "full 256-package registry materialization is exercised by aggregate replay"]
 fn current_registry_cache_materializes_and_revalidates() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let snapshot = super::RegistrySnapshot::materialize(&root, registry_policy())
         .expect("materialize current authenticated registry source");
 
-    assert_eq!(snapshot.receipt().package_count, 248);
+    assert_eq!(snapshot.receipt().package_count, 256);
     assert!(snapshot.receipt().archive_bytes > 0);
     assert!(snapshot.receipt().expanded_bytes > snapshot.receipt().archive_bytes);
-    assert!(snapshot.receipt().entries > 248);
+    assert!(snapshot.receipt().entries > 256);
     assert!(snapshot.vendor_root().is_dir());
     snapshot
         .revalidate()
@@ -48,7 +48,7 @@ fn current_lock_has_only_unique_checksummed_crates_io_packages() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let locked = lock::parse(&root.join("Cargo.lock")).expect("parse authenticated lock fixture");
 
-    assert_eq!(locked.packages.len(), 248);
+    assert_eq!(locked.packages.len(), 256);
     assert!(locked
         .packages
         .iter()
@@ -514,7 +514,7 @@ fn extraction_budget() -> extract::ExtractionBudget {
 
 fn registry_policy() -> crate::verification::source::RegistryMaterializationPolicy {
     crate::verification::source::RegistryMaterializationPolicy {
-        required_packages: 248,
+        required_packages: 256,
         maximum_archive_bytes: 268_435_456,
         maximum_expanded_bytes: 2_147_483_648,
         maximum_entries: 250_000,

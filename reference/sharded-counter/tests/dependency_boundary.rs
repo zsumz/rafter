@@ -71,7 +71,9 @@ fn the_real_adapter_uses_only_versioned_public_rafter_crates() {
         "rafter-app",
         "rafter-multiraft",
         "rafter-runtime",
+        "rafter-service",
         "rafter-storage",
+        "rafter-transport-tls",
     ] {
         let requirement = format!("{dependency} = \"0.0.1\"");
         assert!(

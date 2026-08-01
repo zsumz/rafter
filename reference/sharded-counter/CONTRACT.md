@@ -1676,7 +1676,10 @@ Raft leadership transfer to a named caught-up voter. Like `SLOW`, `PRESSURE`,
 and the fault controls, these fixture surfaces exist only to make a required
 black-box failure shape deterministic. The reviewed stale-replica test uses the
 partition controls to prove that a local completion cache cannot bypass the
-authoritative read barrier.
+authoritative read barrier. `PEER_PROBE` is likewise a fixture-only control: it
+asks one live host to send a chosen old-incarnation vote through its ordinary
+mutually authenticated connection so the target's retired route is exercised
+without a private or plaintext test protocol.
 
 The shared reconnecting client distinguishes connect, send, and receive stages.
 It may report a pre-send connection failure as unattempted, but never replays a
@@ -1721,9 +1724,12 @@ The reviewed process inventory exercises:
   old-incarnation fence;
 - fail-closed missing application records in active, Removed, and Tombstoned
   slots;
+- fail-closed missing and checksummed-corrupt durable TLS session state, plus
+  successful recovery after the exact state is restored;
 - all nine directed retirement-intent crash points and deterministic restart
   reconciliation;
-- stale client requests and an independently encoded stale peer frame; and
+- stale client requests and an authenticated stale-incarnation peer frame sent
+  over the ordinary multiplexed host connection; and
 - nonempty process histories checked against a harness-owned per-group counter
   model after each substantive phase.
 
@@ -1753,14 +1759,13 @@ accounting of 18,440 admitted = 18,438 serviced + 2 failed.
 
 Named consequences, so they are not discovered later:
 
-- **Integration process composition is complete.** Durable stores, sockets,
-  process restart, process-visible histories, and nightly/weekly profiles are
-  exercised. This closes the integration milestone only.
-- **The process peer link is not production transport.** It is bounded and
-  identity-consistent, but deliberately unauthenticated and advertised as such
-  in both source and process output. Authenticated transport, production
-  configuration, secret handling, operational metrics export, and multi-node
-  deployment evidence belong to the production-composition milestone.
+- **Authenticated process composition is complete.** Durable stores, mutual
+  TLS, explicit certificate-to-`PeerId` mapping, multiplexed group routes,
+  bounded queues and connections, session freshness, process restart,
+  process-visible diagnostics, and nightly/weekly scheduler profiles are
+  exercised. Test credentials and filesystem endpoint discovery remain
+  fixture-owned; certificate issuance, secret distribution, and deployment
+  orchestration remain external operator responsibilities.
 - **The deterministic network is not process evidence.** It remains the
   replayable mechanism for the larger profiles; only the reviewed 16-group
   suite makes restart, disk, socket, and wall-clock claims.

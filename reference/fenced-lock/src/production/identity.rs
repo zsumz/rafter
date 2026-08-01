@@ -23,7 +23,7 @@ use rafter::NodeId;
 
 use crate::store::crc32;
 
-use super::replay::initialize_transport_state;
+use super::transport::{initialize_transport_state, transport_session_path};
 
 const ALLOCATION_FILE: &str = "identity-allocation";
 const ALLOCATION_LOCK: &str = "identity-allocation.lock";
@@ -206,9 +206,11 @@ pub fn allocate_replica(
     let identity_path = parent.join(IDENTITY_FILE);
     fs::create_dir_all(&parent)
         .map_err(|source| io("create the replica identity directory", &parent, source))?;
-    initialize_transport_state(&parent, group_id).map_err(|error| IdentityError::Malformed {
-        path: parent.join("transport-replay"),
-        detail: error.to_string(),
+    initialize_transport_state(&parent, group_id, next).map_err(|error| {
+        IdentityError::Malformed {
+            path: transport_session_path(&parent),
+            detail: error.to_string(),
+        }
     })?;
     publish(&identity_path, encode_identity(identity).as_bytes(), false)?;
     drop(guard);

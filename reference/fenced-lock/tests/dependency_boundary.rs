@@ -41,6 +41,7 @@ fn rafter_dependencies_are_versioned_registry_requirements() {
         "rafter = \"0.0.1\"",
         "rafter-app = \"0.0.1\"",
         "rafter-service = \"0.0.1\"",
+        "rafter-transport-tls = \"0.0.1\"",
     ] {
         assert!(
             FENCED_LOCK_MANIFEST.contains(requirement),

@@ -35,9 +35,11 @@ scripts/counter-profile counter-weekly
 
 The scheduled `invariants-nightly`, `invariants-weekly`, and pinned Maelstrom
 jobs remain the authoritative Linux evidence for their full profiles. The
-fenced-lock production-composition cases are included in the reviewed process
-inventory; that fixture proves bounded composability and is not a generic
-server, transport, certificate platform, or deployment controller.
+fenced-lock and sharded-counter authenticated transport cases are included in
+the reviewed process inventories. `rafter-transport-tls` is built as an exact
+consumer-only archive by the package lanes while it remains unpublished; the
+fixtures prove bounded composability and are not a generic server, certificate
+platform, or deployment controller.
 
 This section does not authorize a version change, RC, `1.0.0`, tag, publish,
 mandatory release workflow, or mixed-version compatibility claim.
@@ -77,6 +79,7 @@ rafter-maelstrom
 rafter-invariants
 rafter-invariant-test
 rafter-invariant-test-macros
+rafter-transport-tls
 rafter-fuzz
 bench-compare
 ```

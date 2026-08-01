@@ -257,6 +257,7 @@ fn expected_workspace_crates() -> BTreeSet<String> {
         "rafter-sim",
         "rafter-storage",
         "rafter-transport-tcp-insecure",
+        "rafter-transport-tls",
     ])
 }
 
@@ -272,6 +273,7 @@ fn allowed_normal_workspace_deps(crate_name: &str) -> BTreeSet<String> {
         "rafter-runtime" => &["rafter", "rafter-runtime-api", "rafter-storage"],
         "rafter-service" => &["rafter", "rafter-app", "rafter-runtime-api"],
         "rafter-transport-tcp-insecure" => &["rafter", "rafter-codec"],
+        "rafter-transport-tls" => &["rafter", "rafter-codec", "rafter-crc32", "rafter-service"],
         unexpected => panic!("missing normal dependency policy for `{unexpected}`"),
     })
 }
@@ -352,6 +354,20 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
             "rafter-invariant-test",
             "registered storage tests emit typed invariant-oracle verdicts",
         )],
+        "rafter-transport-tls" => &[
+            (
+                "rafter-app",
+                "transport integration tests exercise the public application adapter",
+            ),
+            (
+                "rafter-runtime",
+                "transport integration tests instantiate durable runtimes",
+            ),
+            (
+                "rafter-storage",
+                "transport integration tests use public durable stores",
+            ),
+        ],
         "rafter-codec"
         | "rafter-crc32"
         | "rafter-invariant-test"

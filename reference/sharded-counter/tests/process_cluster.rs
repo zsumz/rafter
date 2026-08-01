@@ -12,11 +12,12 @@ use rafter_reference_harness::process::LineConnection;
 mod process_counter;
 
 use process_counter::{
-    fill_peer_connection_bound, number_field, open_session, send_stale_vote, ProcessCluster,
-    ProcessHistory, CONNECTION_TIMEOUTS, GROUP_COUNT, NODE_IDS,
+    fill_peer_connection_bound, number_field, open_session, ProcessCluster, ProcessHistory,
+    CONNECTION_TIMEOUTS, GROUP_COUNT, NODE_IDS,
 };
 
 include!("process_cluster/review_regressions.rs");
+include!("process_cluster/transport_tls.rs");
 
 fn occupy_all_workers(cluster: &mut ProcessCluster, host: u64, excluded_group: u32) -> Vec<u32> {
     occupy_all_workers_for(cluster, host, excluded_group, 5_000)
@@ -209,7 +210,14 @@ fn removal_reopen_and_tombstone_fence_old_clients_and_peers() {
     assert!(cluster
         .request_on(1, "VALUE 7 1")
         .starts_with("ERR LIFECYCLE Draining"));
-    for node_id in NODE_IDS {
+    cluster.wait_response(1, "REMOVE 7 1", "OK REMOVE group=7");
+    let baseline = number_field(&cluster.request_on(1, "STATUS"), "link_identity_refused");
+    assert_eq!(
+        cluster.request_on(2, "PEER_PROBE 1 7 1"),
+        "OK PEER_PROBE queued"
+    );
+    cluster.wait_status_above(1, "link_identity_refused", baseline);
+    for node_id in [2, 3] {
         cluster.wait_response(node_id, "REMOVE 7 1", "OK REMOVE group=7");
     }
     for response in cluster.request_each("REOPEN 7 1 4") {
@@ -220,10 +228,6 @@ fn removal_reopen_and_tombstone_fence_old_clients_and_peers() {
         cluster.request_on(1, "VALUE 7 1"),
         "ERR STALE_INCARNATION current=2"
     );
-
-    let baseline = cluster.refused_peer(1);
-    send_stale_vote(cluster.scratch_path(), 1, 7, 1);
-    cluster.wait_refused_peer_above(1, baseline);
 
     open_session(&mut cluster, 7, 2, 58);
     history.reset_group(7, 2);

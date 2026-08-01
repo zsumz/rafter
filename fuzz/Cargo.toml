@@ -28,6 +28,9 @@ path = "../crates/rafter-sim"
 [dependencies.rafter-storage]
 path = "../crates/rafter-storage"
 
+[dependencies.rafter-transport-tls]
+path = "../crates/rafter-transport-tls"
+
 [[bin]]
 name = "codec_decode"
 path = "fuzz_targets/codec_decode.rs"
@@ -52,6 +55,20 @@ bench = false
 [[bin]]
 name = "cluster_schedules"
 path = "fuzz_targets/cluster_schedules.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transport_hello_decode"
+path = "fuzz_targets/transport_hello_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transport_frame_decode"
+path = "fuzz_targets/transport_frame_decode.rs"
 test = false
 doc = false
 bench = false

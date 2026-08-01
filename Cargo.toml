@@ -15,6 +15,7 @@ members = [
     "crates/rafter-storage",
     "crates/rafter-maelstrom",
     "crates/rafter-transport-tcp-insecure",
+    "crates/rafter-transport-tls",
 ]
 exclude = ["reference"]
 resolver = "2"

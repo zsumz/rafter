@@ -64,6 +64,13 @@ patched_crates=(
     rafter-transport-tcp-insecure
 )
 
+# Unpublished crates may still have an exact acceptance consumer before release
+# promotion. They are patched from this checkout but deliberately excluded from
+# the publishable-set closure assertion below.
+consumer_only_patched_crates=(
+    rafter-transport-tls
+)
+
 # The list above is a closure claim -- "every publishable Rafter crate" -- and a
 # hand-maintained list cannot keep one. Derive the same set from the manifests
 # and refuse to run when they disagree, so adding a publishable crate fails here
@@ -88,8 +95,12 @@ if [[ "$declared" != "$discovered" ]]; then
     exit 1
 fi
 
+patched_dependency_crates=(
+    "${patched_crates[@]}"
+    "${consumer_only_patched_crates[@]}"
+)
 config_args=()
-for crate in "${patched_crates[@]}"; do
+for crate in "${patched_dependency_crates[@]}"; do
     crate_dir="${repo_root}/crates/${crate}"
     if [[ ! -f "${crate_dir}/Cargo.toml" ]]; then
         echo "error: patched crate is missing: ${crate_dir}" >&2

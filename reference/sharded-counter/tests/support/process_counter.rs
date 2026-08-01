@@ -8,16 +8,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::Write,
     net::{SocketAddr, TcpStream},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     time::Duration,
 };
 
-use rafter::{LogIndex, Message, NodeId, RequestVote, Term};
-use rafter_codec::encode_message;
-use rafter_crc32::crc32;
 use rafter_reference_harness::process::{
     ChildProcess, ConnectionTimeouts, ReconnectingClient, ScratchSpace, Wait,
 };
@@ -51,6 +47,17 @@ impl NodeProcess {
             .iter()
             .find_map(|(candidate, timeout)| (*candidate == node_id).then_some(*timeout))
             .expect("every process node has an election timeout");
+        let fixtures = transport_fixture_dir();
+        let peer_certificates = NODE_IDS
+            .iter()
+            .map(|peer| {
+                format!(
+                    "{peer}={}",
+                    fixtures.join(format!("node-{peer}.pem")).display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         let mut command = Command::new(env!("CARGO_BIN_EXE_counter-node"));
         command
             .arg("--id")
@@ -59,6 +66,14 @@ impl NodeProcess {
             .arg("1,2,3")
             .arg("--cluster-dir")
             .arg(scratch.path())
+            .arg("--tls-ca")
+            .arg(fixtures.join("ca.pem"))
+            .arg("--tls-cert")
+            .arg(fixtures.join(format!("node-{node_id}.pem")))
+            .arg("--tls-key")
+            .arg(fixtures.join(format!("node-{node_id}-key.pem")))
+            .arg("--peer-certificates")
+            .arg(peer_certificates)
             .arg("--groups")
             .arg(GROUP_COUNT.to_string())
             .arg("--election-timeout-ticks")
@@ -150,6 +165,13 @@ impl NodeProcess {
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(!status.success(), "{failpoint} must stop the process");
     }
+}
+
+fn transport_fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("transport-tls")
 }
 
 #[derive(Debug)]
@@ -597,10 +619,6 @@ impl ProcessCluster {
         }
     }
 
-    pub fn wait_refused_peer_above(&mut self, node_id: u64, baseline: u64) {
-        self.wait_status_above(node_id, "refused_peer", baseline);
-    }
-
     pub fn wait_status_above(&mut self, node_id: u64, name: &str, baseline: u64) {
         PROCESS_WAIT
             .until(
@@ -633,11 +651,6 @@ impl ProcessCluster {
                 },
             )
             .unwrap_or_else(|error| panic!("{error}"));
-    }
-
-    pub fn refused_peer(&mut self, node_id: u64) -> u64 {
-        let status = self.request_on(node_id, "STATUS");
-        number_field(&status, "refused_peer")
     }
 }
 
@@ -754,89 +767,21 @@ fn signed_field(line: &str, name: &str) -> Option<i64> {
     field(line, name)?.parse().ok()
 }
 
-pub fn send_stale_vote(cluster_dir: &Path, target: u64, group: u32, incarnation: u32) {
-    let address = fs::read_to_string(cluster_dir.join(format!("host-{target}")).join("peer.addr"))
-        .expect("target peer address is published")
-        .trim()
-        .parse::<SocketAddr>()
-        .expect("published peer address parses");
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
-        .expect("late peer connection opens");
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .expect("late peer write timeout is installed");
-    let claimed = NODE_IDS
-        .into_iter()
-        .find(|node_id| *node_id != target)
-        .expect("a different peer exists");
-    stream
-        .write_all(&claimed.to_be_bytes())
-        .expect("peer preamble sender writes");
-    stream
-        .write_all(&target.to_be_bytes())
-        .expect("peer preamble target writes");
-    let message = Message::RequestVote(RequestVote {
-        term: Term(1),
-        candidate_id: NodeId(claimed),
-        last_log_index: LogIndex(0),
-        last_log_term: Term(0),
-    });
-    let message = encode_message(&message).expect("late vote message encodes");
-    let mut body = Vec::new();
-    body.extend_from_slice(b"RCPE");
-    body.push(1);
-    body.extend_from_slice(&group.to_be_bytes());
-    body.extend_from_slice(&incarnation.to_be_bytes());
-    body.extend_from_slice(&claimed.to_be_bytes());
-    body.extend_from_slice(&target.to_be_bytes());
-    body.extend_from_slice(
-        &u32::try_from(message.len())
-            .expect("encoded vote length fits u32")
-            .to_be_bytes(),
-    );
-    body.extend_from_slice(&message);
-    body.extend_from_slice(&crc32(&body).to_be_bytes());
-    stream
-        .write_all(
-            &u32::try_from(body.len())
-                .expect("peer frame length fits u32")
-                .to_be_bytes(),
-        )
-        .expect("peer frame length writes");
-    stream.write_all(&body).expect("peer frame writes");
-    stream.flush().expect("late peer frame flushes");
-}
-
 pub fn fill_peer_connection_bound(cluster_dir: &Path, target: u64) -> Vec<TcpStream> {
-    let address = fs::read_to_string(cluster_dir.join(format!("host-{target}")).join("peer.addr"))
-        .expect("target peer address is published")
-        .trim()
-        .parse::<SocketAddr>()
-        .expect("published peer address parses");
-    let claimed = NODE_IDS
-        .into_iter()
-        .find(|node_id| *node_id != target)
-        .expect("a different peer exists");
+    let address = fs::read_to_string(
+        cluster_dir
+            .join(format!("host-{target}"))
+            .join("peer.tls.addr"),
+    )
+    .expect("target TLS peer address is published")
+    .trim()
+    .parse::<SocketAddr>()
+    .expect("published TLS peer address parses");
     let mut connections = Vec::new();
     for _ in 0..70 {
-        let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+        let stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
             .expect("bounded peer connection opens");
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .expect("bounded peer write timeout is installed");
-        let sender = stream.write_all(&claimed.to_be_bytes());
-        let target = sender.and_then(|()| stream.write_all(&target.to_be_bytes()));
-        match target {
-            Ok(()) => connections.push(stream),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::BrokenPipe
-                        | std::io::ErrorKind::ConnectionAborted
-                        | std::io::ErrorKind::ConnectionReset
-                ) => {}
-            Err(error) => panic!("bounded peer preamble failed unexpectedly: {error}"),
-        }
+        connections.push(stream);
     }
     connections
 }

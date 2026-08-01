@@ -5,6 +5,7 @@ mod audit;
 mod durability;
 mod failure;
 mod report;
+mod status;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rafter::{LocalProposalId, NodeId, ReadId, Role};
+use rafter::{LocalProposalId, LogIndex, Message, NodeId, ReadId, RequestVote, Term};
 use rafter_app::{group::GroupInput, proposal::ProposalEvent};
 use rafter_multiraft::{
     managed::{
@@ -162,15 +163,14 @@ pub fn run(config: &Config) -> Result<(), String> {
     protocol::spawn_client_acceptor(client_listener, jobs_tx);
     super::emit(&format!("LISTENING {} {client_addr}", config.node_id.0));
 
-    let link = PeerLink::bind(&config.cluster_dir, config.node_id, &config.members)
-        .map_err(|error| format!("peer bind failed: {error}"))?;
-    link.publish_address(&config.cluster_dir, config.node_id)
-        .map_err(|error| format!("peer address publication failed: {error}"))?;
-    super::emit(&format!(
-        "PEER_LISTENING {} {} unauthenticated=true",
-        config.node_id.0,
-        link.local_addr()
-    ));
+    let link = PeerLink::bind(
+        &config.cluster_dir,
+        &config.host_dir(),
+        config.node_id,
+        &config.members,
+        &config.peer_tls,
+    )
+    .map_err(|error| format!("peer bind failed: {error}"))?;
 
     let managed = ManagedConfig::new(
         config.workers,
@@ -217,6 +217,19 @@ pub fn run(config: &Config) -> Result<(), String> {
         stopping: false,
     };
     engine.open_groups(&config.host_dir())?;
+    engine
+        .link
+        .start()
+        .map_err(|error| format!("authenticated peer start failed: {error}"))?;
+    engine
+        .link
+        .publish_address(&config.host_dir())
+        .map_err(|error| format!("peer address publication failed: {error}"))?;
+    super::emit(&format!(
+        "PEER_LISTENING {} {} authenticated=true",
+        config.node_id.0,
+        engine.link.local_addr()
+    ));
     engine.serve(&jobs_rx, client_addr)
 }
 
@@ -329,6 +342,14 @@ impl Engine {
         opened: OpenedGroup,
     ) -> Result<(), String> {
         let policy = opened.record.policy();
+        self.link
+            .configure_group(group_id, policy.incarnation)
+            .map_err(|error| {
+                format!(
+                    "group {} transport configuration failed: {error}",
+                    group_id.get()
+                )
+            })?;
         self.host
             .open_group(
                 &group_id,
@@ -362,6 +383,9 @@ impl Engine {
     ) -> Result<(), String> {
         let mut next_tick = Instant::now();
         while !self.stopping {
+            if let Some(failure) = self.link.terminal_failure() {
+                return Err(format!("authenticated peer transport failed: {failure}"));
+            }
             if self.recovery_mode == RecoveryMode::Running {
                 self.recover_outstanding()?;
             }
@@ -507,6 +531,28 @@ impl Engine {
             Request::ResumePeers => {
                 self.peers_paused = false;
                 reply.send("OK PEERS resumed".to_string(), false);
+            }
+            Request::PeerProbe {
+                group_id,
+                incarnation,
+                target,
+            } => {
+                let outcome = self.link.send(PeerFrame {
+                    group_id,
+                    incarnation,
+                    from: self.node_id,
+                    to: target,
+                    message: Message::RequestVote(RequestVote {
+                        term: Term(1),
+                        candidate_id: self.node_id,
+                        last_log_index: LogIndex::ZERO,
+                        last_log_term: Term(0),
+                    }),
+                });
+                match outcome {
+                    Ok(()) => reply.send("OK PEER_PROBE queued".to_string(), false),
+                    Err(error) => reply.send(format!("ERR PEER_PROBE {error}"), false),
+                }
             }
             Request::PauseRecovery => {
                 self.recovery_mode = RecoveryMode::Paused;
@@ -1164,6 +1210,7 @@ impl Engine {
             .retire(GroupLifecycle::Removed)
             .map_err(|error| error.to_string())?;
         self.publish_group_policy(group_id)?;
+        self.link.remove_group(group_id, incarnation)?;
         directed_failpoint("after_removed_publish");
         directed_failpoint("before_intent_cleanup");
         RetirementIntent::clear(&self.groups[&group_id].directory)?;
@@ -1301,142 +1348,6 @@ impl Engine {
                     && !self.poisoned.contains(group_id)
             })
             .count()
-    }
-
-    fn status_line(&self) -> String {
-        let metrics = self.host.managed_metrics();
-        let raft = self.host.raft_metrics();
-        let leaders = raft
-            .groups
-            .iter()
-            .filter(|metrics| {
-                metrics.role == Role::Leader && !self.poisoned.contains(&metrics.group_id)
-            })
-            .count();
-        let leader_groups = raft
-            .groups
-            .iter()
-            .filter(|metrics| {
-                metrics.role == Role::Leader && !self.poisoned.contains(&metrics.group_id)
-            })
-            .map(|metrics| metrics.group_id.get().to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let leader_groups = if leader_groups.is_empty() {
-            "-"
-        } else {
-            &leader_groups
-        };
-        let poisoned = self.poisoned.len();
-        let durable_outstanding = self
-            .groups
-            .values()
-            .map(|entry| entry.record.policy().outstanding.len())
-            .sum::<usize>();
-        let admission_candidates = self
-            .pending_admissions
-            .values()
-            .map(PendingAdmission::candidate_count)
-            .sum::<usize>();
-        let admission_successors = self
-            .pending_admissions
-            .values()
-            .map(PendingAdmission::successor_count)
-            .sum::<usize>();
-        let link = self.link.counters();
-        format!(
-            "OK STATUS ready={} groups={} leaders={} leader_groups={} poisoned={} queued={} \
-             in_flight={} workers={} admitted={} client_admitted={} serviced={} failed={} \
-             passes={} pending_proposals={} admission_reads={} admission_candidates={} \
-             admission_successors={} admission_barriers={} durable_outstanding={} \
-             recovery_deferred={} recovery_refused={} refused_peer={} \
-             link_outbound_full={} link_inbound_full={} link_malformed={} \
-             link_identity_refused={} link_inbound_connection_full={}",
-            self.all_active_ready(),
-            self.active_group_count(),
-            leaders,
-            leader_groups,
-            poisoned,
-            metrics.queued,
-            metrics.in_flight_work,
-            metrics.occupied_workers,
-            metrics.admitted,
-            self.client_admitted,
-            metrics.serviced,
-            metrics.failed,
-            metrics.passes_completed,
-            self.pending_operations.len(),
-            self.pending_admissions.len(),
-            admission_candidates,
-            admission_successors,
-            self.admission_barriers_started,
-            durable_outstanding,
-            self.deferred_recovery.len(),
-            self.recovery_refused,
-            self.refused_peer,
-            link.outbound_full,
-            link.inbound_full,
-            link.malformed,
-            link.identity_refused,
-            link.inbound_connection_full
-        )
-    }
-
-    fn audit_line(&self) -> String {
-        let metrics = self.host.managed_metrics();
-        let (coverage, widest_gap) = self.audit.fairness();
-        let conserved = metrics.admitted
-            == metrics.serviced
-                + metrics.failed
-                + metrics.queued as u64
-                + metrics.in_flight_work as u64;
-        format!(
-            "OK AUDIT plans={} passes_completed={} certified_passes={} opportunities={} \
-             coverage={} widest_gap={} invalid_plans={} invalid_turns={} plan_digest={:016x} \
-             turn_digest={:016x} admitted={} serviced={} failed={} queued={} in_flight={} \
-             conserved={conserved}",
-            self.audit.plans,
-            self.audit.passes_completed,
-            self.audit.certified_passes,
-            self.audit.opportunities,
-            coverage,
-            widest_gap,
-            self.audit.invalid_plans,
-            self.audit.invalid_turns,
-            self.audit.plan_digest,
-            self.audit.turn_digest,
-            metrics.admitted,
-            metrics.serviced,
-            metrics.failed,
-            metrics.queued,
-            metrics.in_flight_work
-        )
-    }
-
-    fn finish(&mut self) {
-        for (read_id, pending) in std::mem::take(&mut self.pending_admissions) {
-            if let Some(driver) = self
-                .groups
-                .get(&pending.group_id())
-                .and_then(|entry| entry.driver.as_ref())
-            {
-                driver.cancel_read(read_id);
-            }
-            Self::finish_pending_admission(pending, "process shutting down");
-        }
-        self.pending_admission_operations.clear();
-        for (_, pending) in std::mem::take(&mut self.pending) {
-            for reply in pending.replies {
-                reply.send("ERR UNKNOWN process shutting down".to_string(), false);
-            }
-        }
-        self.pending_operations.clear();
-        let audit = self.audit_line();
-        let status = self.status_line();
-        super::emit(&format!("FINAL {} {status}", self.node_id.0));
-        super::emit(&format!("FINAL {} {audit}", self.node_id.0));
-        self.link.shut_down();
-        super::emit(&format!("STOPPED {}", self.node_id.0));
     }
 }
 

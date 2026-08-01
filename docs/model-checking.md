@@ -400,7 +400,7 @@ the bound test context fails closed. The analyzer binds `test`, the host target,
 and disabled package features to the exact host-targeted
 `--no-default-features` detector compile contract; custom and profile-sensitive
 `cfg` predicates without an execution binding remain red. Profile schema v9
-requires exactly 248 locked registry packages, 77 unique fixtures, 79
+requires exactly 256 locked registry packages, 77 unique fixtures, 79
 invariant/evidence bindings, and two test targets, and binds their complete
 identities, transitive target source graphs, and associations to one reviewed
 digest. The verifier snapshots the

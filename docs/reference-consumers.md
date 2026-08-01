@@ -460,16 +460,18 @@ are labeled integration evidence only.
 
 ### Production composition
 
-The unpublished fenced-lock `lock-production-node` fixture closes this
-composition criterion with one bounded implementation:
+The unpublished `rafter-transport-tls` crate closes this composition criterion
+through two structurally different bounded process consumers. The fenced-lock
+`lock-production-node` fixture proves:
 
 - durable per-group monotonic identity allocation and per-replica identity
   records, with committed removal permanently spending an ID;
 - the transactional fenced-lock application backend and
   `FileRaftNodeStores` correctness-oriented Raft storage;
-- Rustls mutually authenticated peer channels whose leaf certificate maps to
-  exactly one node and must agree with both envelope identities;
-- a durable 64-frame per-peer replay window and monotonic connection sessions;
+- Rustls mutually authenticated peer channels whose configured leaf
+  fingerprint maps to one stable `PeerId` and whose per-group `NodeId` must
+  agree with both envelope identities;
+- durable monotonic connection sessions and exact per-stream sequencing;
 - a 2,163,089-byte receive-frame ceiling, 256-frame outbound per-peer queues,
   128-frame inbound per-peer queues, a 512-frame global inbound queue, 16 peer
   connections, 16 client connections, and 64 pending client requests;
@@ -484,10 +486,18 @@ mismatched credentials, replay and removed-peer refusal, checkpoint
 loss/corruption, readiness under incomplete recovery, connection overflow,
 monotonic replacement, and both independent lock/guarded-resource checkers.
 `scripts/reference-process-check` selects it through a reviewed five-test
-inventory. The fixture proves that the public Rafter crates can be composed this
-way; it is not a generic server, certificate platform, deployment controller,
-or high-throughput WAL claim. The separate insecure `lock-node` remains
-integration evidence only.
+inventory. Its frozen version-1 adversarial client hand-encodes the outer hello
+and peer frame before talking to the current runtime over real mutual TLS.
+
+The sharded-counter process uses one stable physical `PeerId` per host and one
+persistent connection per remote host for all canonical `(group, incarnation)`
+routes. Its reviewed suite exercises hot/cold groups, scheduler and transport
+pressure, authenticated old-incarnation refusal, endpoint discovery, rolling
+restart, durable transport-session recovery, and fail-closed missing/corrupt
+session state. Both fixtures keep PKI provisioning and endpoint discovery
+caller-owned. Neither is a generic server, certificate platform, deployment
+controller, or high-throughput WAL claim. The separate insecure `lock-node`
+remains integration evidence only.
 
 The allocation clause is the deployment's half of a contract Rafter states and
 cannot enforce for it. A `NodeId` is single-use within its group: a committed
@@ -709,12 +719,14 @@ removal/reopen/tombstone across every directed retirement crash point.
 The 64/1,024/4,096-group profiles retain replay inputs and quantitative
 fairness, conservation, failure, and lifecycle artifacts.
 
-This completes the counter's initial integration-composition scope. Its peer
-link is deliberately unauthenticated and makes no production-transport claim.
-Authenticated counter transport, production configuration and secrets,
-operational metrics export, and deployment evidence are additive future work,
-not hidden requirements of this completed scope. The portfolio's bounded
-production-composability evidence is the fenced-lock fixture described above.
+This completes the counter's authenticated process-composition scope. Its thin
+link adapter supplies caller-owned test credential paths, stable host
+principals, canonical group/incarnation routing, finite limits, and filesystem
+endpoint discovery to `rafter-transport-tls`; it does not contain a second TLS,
+framing, replay, or queue runtime. Production certificate issuance and secret
+distribution, operational metrics export, and deployment orchestration remain
+caller-owned additive work rather than responsibilities of the transport
+crate.
 
 ### Release integration
 
