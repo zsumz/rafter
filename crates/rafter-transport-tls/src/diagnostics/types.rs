@@ -122,7 +122,7 @@ pub struct TransportDiagnostics {
     pub listener_failures: u64,
     /// Connections refused because the configured concurrency bound was full.
     pub connection_full: u64,
-    /// Permanent peer-configuration incompatibilities observed by senders.
+    /// Endpoint attempts blocked by permanent peer-configuration incompatibility.
     pub configuration_blocks: u64,
 }
 

@@ -1,11 +1,11 @@
 //! Dedicated snapshot-resolution lane for one physical peer.
 
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, thread, time::Duration};
 
 use rafter::{InstallSnapshotChunk, Message};
 
 use crate::diagnostics::{increment, Counters, PeerCounters};
-use crate::queue::{OutboundItem, OutboundQueue};
+use crate::queue::{OutboundItem, OutboundQueue, RequeueOutcome};
 use crate::runtime::RuntimeControl;
 use crate::snapshot::{SnapshotChunkResolveRequest, SnapshotResolverHandle};
 use crate::{GroupIdCodec, PeerFrameCodec, PeerFrameScratch};
@@ -27,8 +27,15 @@ where
 {
     let mut scratch = PeerFrameScratch::new();
     loop {
-        if context.control.terminal() || context.control.shutdown_grace_expired() {
+        if context.control.terminal()
+            || context.control.shutdown_grace_expired()
+            || context.control.stopping_while_paused()
+        {
             break;
+        }
+        if context.control.starting() {
+            thread::sleep(context.poll);
+            continue;
         }
         let item = match context.queue.pop_snapshot_timeout(context.poll) {
             Ok(Some(item)) => item,
@@ -135,8 +142,13 @@ fn resolve_one<G, C>(
 
     increment(&context.counters.snapshot_chunks_resolved);
     context.peer_counters.snapshot_resolved();
-    if context.queue.requeue_ready(item).is_err() {
-        fail_queue(context);
+    match context.queue.requeue_ready(item) {
+        Ok(RequeueOutcome::Queued) => {}
+        Ok(RequeueOutcome::SenderStopped) => {
+            increment(&context.counters.frames_dropped);
+            context.peer_counters.dropped();
+        }
+        Err(_) => fail_queue(context),
     }
 }
 

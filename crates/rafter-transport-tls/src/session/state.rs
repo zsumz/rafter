@@ -141,7 +141,7 @@ impl TransportSessionState {
         self.peers.iter().map(|(peer, state)| (peer, *state))
     }
 
-    /// Checks that a future outbound session for `peer` can be represented.
+    /// Checks that future sessions with `peer` can be represented.
     ///
     /// The check is pure: an absent peer consumes no record until a session is
     /// actually allocated or accepted.
@@ -149,15 +149,22 @@ impl TransportSessionState {
     /// # Errors
     ///
     /// Returns [`SessionStateError::PeerLimit`] for an absent peer at capacity,
-    /// or [`SessionStateError::OutboundExhausted`] when no next session exists.
+    /// or an exhaustion error when either local session direction has no
+    /// representable successor.
     pub fn preflight_peer(&self, peer: &PeerId) -> Result<(), SessionStateError> {
         self.ensure_peer_capacity(peer)?;
-        if self
-            .peer_state(peer)
+        let state = self.peer_state(peer);
+        if state
             .highest_outbound()
             .is_some_and(|session| session.get() == u64::MAX)
         {
             return Err(SessionStateError::OutboundExhausted { peer: peer.clone() });
+        }
+        if state
+            .highest_inbound()
+            .is_some_and(|session| session.get() == u64::MAX)
+        {
+            return Err(SessionStateError::InboundExhausted { peer: peer.clone() });
         }
         Ok(())
     }
@@ -262,6 +269,11 @@ pub enum SessionStateError {
         /// Peer whose next session cannot be represented.
         peer: PeerId,
     },
+    /// One peer consumed the complete inbound session number space.
+    InboundExhausted {
+        /// Peer from which no newer session can be represented.
+        peer: PeerId,
+    },
     /// Recovered state contained a record with no high-water in either direction.
     EmptyPeerRecord {
         /// Peer named by the noncanonical empty record.
@@ -280,6 +292,12 @@ impl fmt::Display for SessionStateError {
                 write!(
                     formatter,
                     "outbound connection sessions for {peer} are exhausted"
+                )
+            }
+            Self::InboundExhausted { peer } => {
+                write!(
+                    formatter,
+                    "inbound connection sessions from {peer} are exhausted"
                 )
             }
             Self::EmptyPeerRecord { peer } => {

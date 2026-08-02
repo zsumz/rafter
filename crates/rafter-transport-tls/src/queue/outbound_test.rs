@@ -81,7 +81,10 @@ fn failed_bulk_is_requeued_behind_later_control_work() {
     queue
         .try_push(item(TrafficClass::Control, 80))
         .expect("control frame");
-    queue.requeue_ready(failed).expect("requeue failed bulk");
+    assert_eq!(
+        queue.requeue_ready(failed).expect("requeue failed bulk"),
+        RequeueOutcome::Queued
+    );
 
     let control = queue
         .pop_timeout(Duration::ZERO)
@@ -105,6 +108,37 @@ fn bulk_retry_count_is_bounded() {
         assert!(failed.retry_bulk());
     }
     assert!(!failed.retry_bulk());
+}
+
+#[test]
+fn work_returned_after_sender_retirement_is_released_instead_of_stranded() {
+    let queue = OutboundQueue::new(limits());
+    queue
+        .try_push(item(TrafficClass::Snapshot, 80))
+        .expect("snapshot frame");
+    let current = queue
+        .pop_timeout(Duration::ZERO)
+        .expect("queue read")
+        .expect("snapshot item");
+
+    assert_eq!(
+        queue
+            .stop_sender_and_discard_queued()
+            .expect("retire sender"),
+        QueueUsage::default()
+    );
+    assert_eq!(
+        queue.requeue_ready(current).expect("reject late return"),
+        RequeueOutcome::SenderStopped
+    );
+    assert_eq!(
+        queue.depth().expect("released depth"),
+        QueueUsage::default()
+    );
+    assert_eq!(
+        queue.try_push(item(TrafficClass::Control, 80)),
+        Err(OutboundQueueError::Closed)
+    );
 }
 
 fn item(class: TrafficClass, complete_len: usize) -> OutboundItem<()> {

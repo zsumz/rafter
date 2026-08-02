@@ -24,6 +24,12 @@ pub(crate) enum OutboundQueueError {
     Poisoned,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RequeueOutcome {
+    Queued,
+    SenderStopped,
+}
+
 #[derive(Debug)]
 pub(crate) struct OutboundQueue<G> {
     limits: RuntimeLimits,
@@ -118,19 +124,29 @@ impl<G> OutboundQueue<G> {
         Ok(state.snapshot_pending.pop_front())
     }
 
-    /// Returns already-accounted work to the appropriate sender lane.
-    pub(crate) fn requeue_ready(&self, item: OutboundItem<G>) -> Result<(), OutboundQueueError> {
+    /// Returns already-accounted work to the sender lane when it still exists.
+    ///
+    /// [`RequeueOutcome::SenderStopped`] means retirement atomically released
+    /// and discarded the item, so the caller records but does not release it.
+    pub(crate) fn requeue_ready(
+        &self,
+        item: OutboundItem<G>,
+    ) -> Result<RequeueOutcome, OutboundQueueError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| OutboundQueueError::Poisoned)?;
+        if state.sender_stopped {
+            release_retained(&mut state, item.class(), item.bytes())?;
+            return Ok(RequeueOutcome::SenderStopped);
+        }
         match item.class() {
             TrafficClass::Control => state.control.push_front(item),
             TrafficClass::Replication => state.replication.push_back(item),
             TrafficClass::Snapshot => state.snapshot_ready.push_back(item),
         }
         self.available.notify_all();
-        Ok(())
+        Ok(RequeueOutcome::Queued)
     }
 
     pub(crate) fn snapshots_closed_and_empty(&self) -> Result<bool, OutboundQueueError> {
@@ -192,12 +208,14 @@ impl<G> OutboundQueue<G> {
         Ok(())
     }
 
-    /// Discards only items still owned by the queue.
-    pub(crate) fn discard_queued(&self) -> Result<QueueUsage, OutboundQueueError> {
+    /// Atomically retires the sender and discards items still owned by the queue.
+    pub(crate) fn stop_sender_and_discard_queued(&self) -> Result<QueueUsage, OutboundQueueError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| OutboundQueueError::Poisoned)?;
+        state.sender_stopped = true;
+        state.closed = true;
         let discarded = queued_usage(&state)?;
         discard_class(&mut state, TrafficClass::Control)?;
         discard_class(&mut state, TrafficClass::Replication)?;

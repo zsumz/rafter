@@ -2,7 +2,6 @@
 
 use std::{thread, time::Duration};
 
-use crate::diagnostics::increment;
 use crate::PeerId;
 
 use super::{should_stop, SenderContext, WorkerStep};
@@ -33,7 +32,6 @@ pub(super) fn connect<G>(
             generation,
             message,
         }) => {
-            increment(&context.counters.configuration_blocks);
             context.peer_counters.record_failure(message, true);
             *retry_attempt = 0;
             if wait_for_endpoint_change(context, generation) {

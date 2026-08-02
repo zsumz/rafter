@@ -180,6 +180,11 @@ where
                     bytes: usage.bytes,
                 })
             }
+            Err(OutboundQueueError::Closed) if self.core.control.terminal() => {
+                Err(TlsTransportError::TerminalFailure {
+                    message: self.core.control.terminal_failure(),
+                })
+            }
             Err(OutboundQueueError::Closed) => Err(TlsTransportError::Stopped),
             Err(OutboundQueueError::Poisoned) => {
                 self.core.control.fail("outbound queue state is poisoned");

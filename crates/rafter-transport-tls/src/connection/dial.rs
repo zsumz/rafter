@@ -11,6 +11,7 @@ use std::{
 
 use rustls::{ClientConnection, StreamOwned};
 
+use crate::diagnostics::increment;
 use crate::{EndpointGeneration, PeerEndpoint};
 
 use self::classify::endpoint_failed;
@@ -122,6 +123,7 @@ pub(crate) fn dial<G>(
             Ok(connection) => return Ok(connection),
             Err(DialError::Retry(message)) => transient = Some(message),
             Err(DialError::ConfigurationBlocked { message, .. }) => {
+                increment(&context.counters.configuration_blocks);
                 attempts.block(endpoint, message.clone());
                 blocked = Some(message);
             }
@@ -129,6 +131,12 @@ pub(crate) fn dial<G>(
         }
     }
     if let Some(message) = transient {
+        let message = match &attempts.last_blocked_error {
+            Some(blocked) => {
+                format!("{message}; another endpoint is configuration-blocked: {blocked}")
+            }
+            None => message,
+        };
         Err(DialError::Retry(message))
     } else {
         Err(DialError::ConfigurationBlocked {

@@ -5,7 +5,7 @@ mod retry;
 use std::{sync::Arc, thread};
 
 use crate::diagnostics::{add, increment, Counters, PeerCounters};
-use crate::queue::{OutboundItem, OutboundQueue, OutboundQueueError};
+use crate::queue::{OutboundItem, OutboundQueue, OutboundQueueError, RequeueOutcome};
 use crate::runtime::{RuntimeControl, SessionStoreHandle};
 use crate::{
     CertificateDirectory, EndpointBook, PeerId, TlsHandshakeConfig, TlsIdentity, TransportTimeouts,
@@ -102,7 +102,7 @@ where
     if current.is_some() {
         drop_current(context, &mut current);
     }
-    match context.queue.discard_queued() {
+    match context.queue.stop_sender_and_discard_queued() {
         Ok(discarded) => {
             add(&context.counters.frames_dropped, discarded.frames);
             context.peer_counters.dropped_many(discarded.frames);
@@ -179,7 +179,11 @@ fn transmit_current<G>(
     if item_bytes > frame_bytes {
         increment(&context.counters.frame_too_large);
         drop_current(context, current);
-        return WorkerStep::Retry;
+        context.control.fail(format!(
+            "accepted outbound frame of {item_bytes} bytes exceeds exact negotiated bound of \
+             {frame_bytes} bytes"
+        ));
+        return WorkerStep::Stop;
     }
 
     let Some(open) = connection.as_mut() else {
@@ -235,9 +239,17 @@ fn transmit_current<G>(
                 context.control.fail("outbound retry lost its current item");
                 return WorkerStep::Stop;
             };
-            if context.queue.requeue_ready(item).is_err() {
-                context.control.fail("outbound queue state is poisoned");
-                return WorkerStep::Stop;
+            match context.queue.requeue_ready(item) {
+                Ok(RequeueOutcome::Queued) => {}
+                Ok(RequeueOutcome::SenderStopped) => {
+                    increment(&context.counters.frames_dropped);
+                    context.peer_counters.dropped();
+                    return WorkerStep::Stop;
+                }
+                Err(_) => {
+                    context.control.fail("outbound queue state is poisoned");
+                    return WorkerStep::Stop;
+                }
             }
         }
         return WorkerStep::Retry;

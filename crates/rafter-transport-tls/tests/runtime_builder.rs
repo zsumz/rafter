@@ -122,3 +122,27 @@ fn builder_refuses_a_memory_budget_that_cannot_hold_one_maximum_frame() {
         Err(TlsTransportBuildError::ReceiveMemoryTooSmall { maximum: 1, .. })
     ));
 }
+
+#[test]
+fn builder_refuses_a_peer_with_exhausted_inbound_sessions() {
+    use rafter_transport_tls::{ConnectionSession, TransportSessionStore};
+    use support::session_store::MemorySessionStore;
+
+    let fixture = RuntimeFixture::new(RuntimeLimits::default());
+    let store = MemorySessionStore::new();
+    store
+        .accept_inbound_session(
+            fixture.peer_b(),
+            ConnectionSession::new(u64::MAX).expect("maximum nonzero session"),
+        )
+        .expect("install recovered inbound high-water");
+    let result = fixture.try_start_a_with_store(
+        fixture.endpoints_to_b("127.0.0.1:9".parse().expect("discard endpoint")),
+        store,
+    );
+
+    assert!(matches!(
+        result,
+        Err(TlsTransportBuildError::SessionStore { .. })
+    ));
+}

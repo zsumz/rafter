@@ -120,6 +120,26 @@ fn recovered_maximum_outbound_session_is_terminal_for_that_peer() {
 }
 
 #[test]
+fn recovered_maximum_inbound_session_fails_startup_preflight() {
+    let peer = peer("node-b");
+    let mut peers = BTreeMap::new();
+    peers.insert(
+        peer.clone(),
+        PeerSessionState::new(
+            None,
+            Some(ConnectionSession::new(u64::MAX).expect("nonzero")),
+        ),
+    );
+    let state = TransportSessionState::from_peer_states(SessionStoreLimits::default(), peers)
+        .expect("valid recovered state");
+
+    assert_eq!(
+        state.preflight_peer(&peer),
+        Err(SessionStateError::InboundExhausted { peer })
+    );
+}
+
+#[test]
 fn recovered_empty_records_are_noncanonical() {
     let peer = peer("node-b");
     let mut peers = BTreeMap::new();

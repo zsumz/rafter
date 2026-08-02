@@ -108,6 +108,15 @@ fn blocked_endpoint_is_not_reallocated_while_another_endpoint_retries() {
     }));
     thread::sleep(Duration::from_millis(500));
     assert_eq!(sessions.allocation_count(), 1);
+    assert_eq!(sender.diagnostics().configuration_blocks, 1);
+    assert!(sender
+        .peer_diagnostics(sender_fixture.peer_b())
+        .expect("peer diagnostics")
+        .expect("configured peer")
+        .last_error
+        .is_some_and(|error| {
+            error.contains("configuration-blocked") && error.contains("FrameLimitRejected")
+        }));
 
     sender.join().expect("sender joins");
     receiver.join().expect("receiver joins");

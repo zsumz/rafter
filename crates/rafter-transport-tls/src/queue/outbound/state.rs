@@ -18,6 +18,7 @@ pub(super) struct OutboundState<G> {
     pub(super) control_streak: usize,
     pub(super) prefer_snapshot: bool,
     pub(super) closed: bool,
+    pub(super) sender_stopped: bool,
 }
 
 impl<G> Default for OutboundState<G> {
@@ -32,6 +33,7 @@ impl<G> Default for OutboundState<G> {
             control_streak: 0,
             prefer_snapshot: false,
             closed: false,
+            sender_stopped: false,
         }
     }
 }

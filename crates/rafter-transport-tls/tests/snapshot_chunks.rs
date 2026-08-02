@@ -136,6 +136,73 @@ fn synchronous_admission_never_waits_for_snapshot_resolution() {
 }
 
 #[test]
+fn paused_runtime_does_not_touch_snapshot_storage_before_activation() {
+    let fixture = RuntimeFixture::new(RuntimeLimits::default());
+    let receiver = fixture.start_b();
+    let payload = b"resolve only after activation".to_vec();
+    let snapshot = snapshot(&payload);
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let resolver = GatedResolver {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+        observed: Arc::new(Mutex::new(None)),
+        bytes: payload,
+    };
+    let _release_on_panic = ReleaseOnDrop(Arc::clone(&release));
+    let sender = fixture
+        .bind_paused_a_with_resolver(fixture.endpoints_to_b(receiver.local_addr()), resolver);
+
+    sender
+        .sender()
+        .send_snapshot_chunk(envelope(&snapshot))
+        .expect("snapshot directive");
+    thread::sleep(Duration::from_millis(100));
+    assert!(!entered.load(Ordering::Acquire));
+
+    sender.start().expect("activate sender");
+    assert!(wait_until(Duration::from_secs(3), || {
+        entered.load(Ordering::Acquire)
+    }));
+    release.store(true, Ordering::Release);
+    assert!(wait_until(Duration::from_secs(3), || {
+        receiver
+            .inbound()
+            .depth()
+            .is_ok_and(|(frames, _)| frames == 1)
+    }));
+
+    sender.join().expect("sender joins");
+    receiver.join().expect("receiver joins");
+}
+
+#[test]
+fn stopping_a_paused_runtime_discards_without_invoking_the_resolver() {
+    let fixture = RuntimeFixture::new(RuntimeLimits::default());
+    let receiver = fixture.start_b();
+    let payload = b"never resolve during paused shutdown".to_vec();
+    let snapshot = snapshot(&payload);
+    let entered = Arc::new(AtomicBool::new(false));
+    let resolver = GatedResolver {
+        entered: Arc::clone(&entered),
+        release: Arc::new(AtomicBool::new(true)),
+        observed: Arc::new(Mutex::new(None)),
+        bytes: payload,
+    };
+    let sender = fixture
+        .bind_paused_a_with_resolver(fixture.endpoints_to_b(receiver.local_addr()), resolver);
+
+    sender
+        .sender()
+        .send_snapshot_chunk(envelope(&snapshot))
+        .expect("snapshot directive");
+    sender.join().expect("paused sender joins");
+
+    assert!(!entered.load(Ordering::Acquire));
+    receiver.join().expect("receiver joins");
+}
+
+#[test]
 fn resolver_finishing_after_shutdown_grace_cannot_requeue_or_send() {
     let fixture = RuntimeFixture::new(RuntimeLimits::default());
     let receiver = fixture.start_b();

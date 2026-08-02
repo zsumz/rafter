@@ -141,14 +141,14 @@ pub enum TlsClientHandshakeError {
         /// Invalid selected version.
         selected: u16,
     },
-    /// The accepted complete-frame bound is outside the client's valid range.
+    /// The accepted complete-frame bound is not the client's exact requirement.
     FrameLimitInvalid {
         /// Invalid accepted bound.
         accepted: u32,
         /// Minimum structurally valid bound.
         minimum: u32,
-        /// Maximum the client offered.
-        maximum: u32,
+        /// Exact complete-frame bound the client required.
+        required: u32,
     },
 }
 
@@ -190,10 +190,11 @@ impl fmt::Display for TlsClientHandshakeError {
             Self::FrameLimitInvalid {
                 accepted,
                 minimum,
-                maximum,
+                required,
             } => write!(
                 formatter,
-                "server accepted frame bound {accepted}, valid range is {minimum}..={maximum}"
+                "server accepted frame bound {accepted}, but the client requires exact bound \
+                 {required} with structural minimum {minimum}"
             ),
         }
     }

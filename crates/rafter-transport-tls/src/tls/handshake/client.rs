@@ -102,7 +102,7 @@ impl TlsHandshakeConfig {
             return Err(TlsClientHandshakeError::FrameLimitInvalid {
                 accepted: frame_bytes.get(),
                 minimum: MIN_PEER_FRAME_BYTES,
-                maximum: self.max_frame_bytes().get(),
+                required: self.max_frame_bytes().get(),
             });
         }
 

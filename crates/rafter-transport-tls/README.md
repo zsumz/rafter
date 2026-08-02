@@ -80,7 +80,8 @@ snapshot directive rather than reading its payload synchronously. A dedicated
 per-peer resolver worker invokes `SnapshotChunkResolver<G>` outside the driver
 lock, checks that the returned bytes exactly match the directive, builds the
 `InstallSnapshotChunk` message, and returns the prepared work to sender
-scheduling. The sender assigns a live connection sequence only at transmission.
+scheduling. A paused runtime does not invoke the resolver before activation.
+The sender assigns a live connection sequence only at transmission.
 A source refusal or typed resolver error drops that attempt like a lost Raft
 message and remains visible in diagnostics. Without a resolver, snapshot
 admission fails synchronously with `SnapshotResolverUnavailable`.
@@ -176,6 +177,8 @@ one local `PeerId`, supported outer and peer-codec version ranges, and a finite
 complete-frame contract. Because version 1 has no fragmentation or adaptive
 batching, the client offer is its required send bound: the server either accepts
 that exact bound or returns `FrameLimitRejected` before session state changes.
+An accepted item exceeding that exact bound is treated as an internal invariant
+failure; it is never silently discarded while the connection remains healthy.
 
 On the client, `begin_client_hello` durably allocates the next outbound
 connection session before returning bytes that may be sent. On the server,
@@ -211,7 +214,9 @@ no removal operation, so `SessionStoreLimits` bounds the distinct physical
 principals seen over the state file's lifetime rather than only currently
 connected peers. Binding requires component limits to match `TransportLimits`
 and preflights aggregate capacity for every certificate-configured remote
-principal before the listener or workers become observable.
+principal before the listener or workers become observable. A recovered peer
+whose inbound or outbound session high-water is exhausted also fails that
+preflight rather than starting a permanently one-way runtime.
 
 Within one accepted connection, `OutboundSequence` and `InboundSequence`
 require exact progression from one. Sequence state is not durable because a
@@ -225,7 +230,9 @@ the file; unless freshness is guaranteed, recovery requires a new `PeerId`.
 
 `shutdown` immediately closes admission to new outbound and inbound work. Work
 already accepted by an outbound queue receives the configured bounded grace
-period to drain. Live inbound sockets are shut down to wake receiver workers,
+period to drain. Sender retirement atomically refuses any resolver result that
+returns too late, so no prepared snapshot can be stranded after its sender has
+exited. Live inbound sockets are shut down to wake receiver workers,
 and `join` reaps the acceptor, every sender, and every receiver. Worker panics
 are returned as a typed join error rather than disappearing silently.
 
