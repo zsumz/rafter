@@ -3,7 +3,7 @@ use std::io::{self, Read};
 use super::*;
 
 fn budget() -> ReceiveMemoryBudget {
-    ReceiveMemoryBudget::new(crate::ReceiveMemoryLimits::default())
+    ReceiveMemoryBudget::new(crate::ReceiveMemoryLimits::default(), 0)
 }
 
 #[test]

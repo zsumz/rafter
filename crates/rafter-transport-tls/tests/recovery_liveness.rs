@@ -122,8 +122,8 @@ fn one_locally_successful_frame_does_not_collapse_session_backoff() {
     let allocations = sessions.allocation_times();
     assert!(allocations.len() >= 4);
     assert!(
-        allocations[3].duration_since(allocations[2]) >= Duration::from_millis(190),
-        "the fourth durable session must remain on the exponential backoff curve"
+        allocations[3].duration_since(allocations[2]) >= Duration::from_millis(100),
+        "the fourth durable session must remain inside the third exponential retry window"
     );
 
     sender.join().expect("sender joins");

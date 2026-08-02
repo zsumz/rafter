@@ -49,7 +49,7 @@ pub use certificate::{
     MAX_CERTIFICATE_PEM_BYTES,
 };
 pub use config::{
-    TimeoutKind, TransportConfig, TransportIoTimeouts, TransportRuntimeTimeouts,
+    TimeoutConstraint, TimeoutKind, TransportConfig, TransportIoTimeouts, TransportRuntimeTimeouts,
     TransportTimeoutError, TransportTimeouts,
 };
 pub use diagnostics::{

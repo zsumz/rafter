@@ -176,7 +176,7 @@ fn transmit_current<G>(
         return WorkerStep::Retry;
     };
     if current.as_ref().is_some_and(|item| !item.is_authorized()) {
-        increment(&context.counters.retired_queued_frames);
+        increment(&context.counters.invalidated_queued_frames);
         drop_current(context, current);
         return WorkerStep::Retry;
     }
@@ -197,7 +197,7 @@ fn transmit_current<G>(
         return WorkerStep::Retry;
     };
     if current.as_ref().is_some_and(|item| !item.is_authorized()) {
-        increment(&context.counters.retired_queued_frames);
+        increment(&context.counters.invalidated_queued_frames);
         drop_current(context, current);
         return WorkerStep::Retry;
     }
@@ -221,7 +221,7 @@ fn transmit_current<G>(
         return WorkerStep::Retry;
     }
     if current.as_ref().is_some_and(|item| !item.is_authorized()) {
-        increment(&context.counters.retired_queued_frames);
+        increment(&context.counters.invalidated_queued_frames);
         *connection = None;
         drop_current(context, current);
         return WorkerStep::Retry;

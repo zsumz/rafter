@@ -48,9 +48,13 @@ pub struct TransportTimeoutError {
     constraint: TimeoutConstraint,
 }
 
+/// Supported-range constraint violated by a transport timeout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TimeoutConstraint {
+#[non_exhaustive]
+pub enum TimeoutConstraint {
+    /// The timeout must be greater than zero.
     NonZero,
+    /// The timeout must not exceed this duration.
     Maximum(Duration),
 }
 
@@ -59,6 +63,12 @@ impl TransportTimeoutError {
     #[must_use]
     pub const fn kind(self) -> TimeoutKind {
         self.kind
+    }
+
+    /// Supported-range constraint that was violated.
+    #[must_use]
+    pub const fn constraint(self) -> TimeoutConstraint {
+        self.constraint
     }
 }
 
@@ -168,10 +178,10 @@ impl TransportRuntimeTimeouts {
 
     /// Replaces the sparse recovery interval for an unchanged blocked endpoint.
     ///
-    /// The default base is five minutes. Each peer receives deterministic
-    /// jitter below 25 percent of this value. Discovery can recover immediately
-    /// with [`crate::EndpointBook::refresh`]; this interval is the fail-safe
-    /// when no local discovery event accompanies remote repair.
+    /// The default base is five minutes. Each local-to-remote peer pair receives
+    /// deterministic jitter below 25 percent of this value. Discovery can
+    /// recover immediately with [`crate::EndpointBook::refresh`]; this interval
+    /// is the fail-safe when no local discovery event accompanies remote repair.
     ///
     /// # Errors
     ///
@@ -247,7 +257,10 @@ impl TransportTimeouts {
         self.io.write
     }
 
-    /// Delay between failed endpoint rounds.
+    /// Initial exponential retry window after a failed endpoint round.
+    ///
+    /// Each local-to-remote pair receives deterministic equal jitter between
+    /// half and all of the current window, capped below 30 seconds.
     #[must_use]
     pub const fn redial(self) -> Duration {
         self.runtime.redial
@@ -255,7 +268,7 @@ impl TransportTimeouts {
 
     /// Sparse retry base for a configuration-blocked endpoint generation.
     ///
-    /// The runtime adds deterministic per-peer jitter below 25 percent.
+    /// The runtime adds deterministic local-to-remote pair jitter below 25 percent.
     #[must_use]
     pub const fn configuration_reprobe(self) -> Duration {
         self.runtime.configuration_reprobe

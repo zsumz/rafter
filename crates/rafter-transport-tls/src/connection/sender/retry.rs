@@ -50,7 +50,12 @@ pub(super) fn connect<G>(
 }
 
 pub(super) fn backoff_after_failure<G>(context: &SenderContext<G>, retry_attempt: &mut u32) {
-    let delay = retry_delay(&context.peer, *retry_attempt, context.timeouts.redial());
+    let delay = retry_delay(
+        context.handshake.local_peer_id(),
+        &context.peer,
+        *retry_attempt,
+        context.timeouts.redial(),
+    );
     *retry_attempt = (*retry_attempt).saturating_add(1);
     sleep_interruptibly(context, delay);
 }

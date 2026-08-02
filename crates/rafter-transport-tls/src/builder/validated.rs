@@ -49,7 +49,11 @@ where
         let sessions = sessions.ok_or(TlsTransportBuildError::MissingSessionStore)?;
 
         validate_dependency_limits(&config, &certificates, &directory, &endpoints, &sessions)?;
-        validate_receive_memory(&config)?;
+        let codec = Arc::new(
+            PeerFrameCodec::new(group_codec, config.limits().wire())
+                .map_err(|source| TlsTransportBuildError::FrameCodec { source })?,
+        );
+        validate_receive_memory(&config, codec.max_decoded_group_bytes())?;
 
         identity
             .validate_local_peer(config.local_peer_id(), &certificates)
@@ -67,10 +71,6 @@ where
             .preflight_peers(&session_peers)
             .map_err(|source| TlsTransportBuildError::SessionStore { source })?;
 
-        let codec = Arc::new(
-            PeerFrameCodec::new(group_codec, config.limits().wire())
-                .map_err(|source| TlsTransportBuildError::FrameCodec { source })?,
-        );
         let handshake = TlsHandshakeConfig::current(
             config.cluster_id().clone(),
             config.local_peer_id().clone(),
@@ -95,13 +95,13 @@ where
     }
 }
 
-fn validate_receive_memory(config: &TransportConfig) -> Result<(), TlsTransportBuildError> {
+fn validate_receive_memory(
+    config: &TransportConfig,
+    decoded_group_bytes: usize,
+) -> Result<(), TlsTransportBuildError> {
     let limits = config.limits();
     let memory = limits.runtime().receive_memory();
-    let required = limits
-        .wire()
-        .max_frame_bytes()
-        .saturating_mul(memory.decode_amplification());
+    let required = memory.charge(limits.wire().max_frame_bytes(), decoded_group_bytes);
     let maximum = memory.bytes_global();
     if required > maximum {
         return Err(TlsTransportBuildError::ReceiveMemoryTooSmall { required, maximum });

@@ -32,6 +32,10 @@ impl GroupIdCodec<u64> for FixedGroupCodec {
         8
     }
 
+    fn max_decoded_heap_bytes(&self) -> usize {
+        0
+    }
+
     fn encode(&self, group_id: &u64, output: &mut Vec<u8>) -> Result<(), Self::Error> {
         output.clear();
         output.extend_from_slice(&group_id.to_be_bytes());

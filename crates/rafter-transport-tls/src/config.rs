@@ -8,8 +8,8 @@ use crate::{ClusterId, PeerId, TransportLimits};
 
 pub(crate) use timeouts::MAX_REDIAL_DELAY;
 pub use timeouts::{
-    TimeoutKind, TransportIoTimeouts, TransportRuntimeTimeouts, TransportTimeoutError,
-    TransportTimeouts,
+    TimeoutConstraint, TimeoutKind, TransportIoTimeouts, TransportRuntimeTimeouts,
+    TransportTimeoutError, TransportTimeouts,
 };
 
 /// Immutable identity, listener, bound, and timeout configuration.

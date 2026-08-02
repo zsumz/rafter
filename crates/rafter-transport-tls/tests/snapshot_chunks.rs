@@ -274,7 +274,7 @@ fn committed_retirement_revokes_a_queued_snapshot_before_resolution() {
     sender.start().expect("activate sender");
 
     assert!(wait_until(Duration::from_secs(3), || {
-        sender.diagnostics().retired_queued_frames == 1
+        sender.diagnostics().invalidated_queued_frames == 1
     }));
     assert_eq!(sender.diagnostics().snapshot_chunks_resolved, 0);
     assert!(receiver

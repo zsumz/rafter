@@ -98,7 +98,9 @@ ambiguous write can be retried on a fresh stream without reusing the old
 stream's sequence space.
 
 Transient failures use capped exponential backoff with duration-precise,
-deterministic per-peer jitter. Redial bases above the 30-second ceiling are
+deterministic equal jitter keyed by the local-to-remote peer pair. Jitter stays
+inside the capped window, including at the 30-second plateau, so callers of one
+recovering peer do not synchronize. Redial bases above the ceiling are
 refused instead of silently shortened. Neither a completed handshake nor one
 locally successful frame clears retry history; a connection must remain
 established for 30 seconds and then complete a write. A peer that accepts one
@@ -128,9 +130,11 @@ Before delivery, every declared frame reserves a weighted runtime-wide memory
 permit before its read buffer is allocated. Cheap outer routing, identity,
 authorization, and retirement checks run before inner-message construction.
 The public decoder charge cannot be configured below the allocation-counted
-32x safe floor, and construction refuses a budget that cannot hold one
-configured maximum frame at that charge. Required CI executes the adversarial
-allocation checker rather than merely compiling it.
+32x safe floor. Every `GroupIdCodec` also declares the maximum transitive heap
+retained by one decoded group; the runtime adds that bound and the in-place
+group size to each frame's charge. Construction refuses a budget that cannot
+hold one configured maximum frame at the complete charge. Required CI executes
+the adversarial allocation checker rather than merely compiling it.
 The permit covers reading and decoding and moves with an accepted envelope into
 the count-and-byte-bounded inbound queue; every refusal releases it. Frame read
 buffers are frame-scoped, so idle connections retain no uncharged frame
@@ -256,10 +260,12 @@ stopped states without requiring a logging or metrics crate.
 
 ## Group routing
 
-The caller supplies `GroupIdCodec<G>`. Inbound group bytes are decoded and then
-re-encoded; the exact bytes must match. The transport therefore imposes no
-Serde or application schema while still requiring one canonical route
-representation.
+The caller supplies `GroupIdCodec<G>`. Inbound group bytes are decoded once,
+re-encoded, and retained through cheap route admission into full message
+decoding; the exact bytes must match. The codec's declared decoded-heap bound is
+included in the frame's receive-memory permit. The transport therefore imposes
+no Serde or application schema while still requiring one canonical, bounded
+route representation.
 
 ## Managed service integration
 

@@ -49,6 +49,10 @@ impl GroupIdCodec<String> for StringGroupCodec {
         self.maximum
     }
 
+    fn max_decoded_heap_bytes(&self) -> usize {
+        self.maximum
+    }
+
     fn encode(&self, group_id: &String, output: &mut Vec<u8>) -> Result<(), Self::Error> {
         output.clear();
         if group_id.len() > self.maximum {
@@ -89,6 +93,10 @@ impl GroupIdCodec<String> for LowercaseGroupCodec {
     type Error = StringGroupCodecError;
 
     fn max_encoded_len(&self) -> usize {
+        self.maximum
+    }
+
+    fn max_decoded_heap_bytes(&self) -> usize {
         self.maximum
     }
 

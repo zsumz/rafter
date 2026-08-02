@@ -15,6 +15,7 @@ pub(crate) struct ReceiveMemoryBudget {
 #[derive(Debug)]
 struct BudgetInner {
     limits: ReceiveMemoryLimits,
+    decoded_group_bytes: usize,
     used: AtomicUsize,
 }
 
@@ -31,10 +32,11 @@ pub(crate) struct ReceiveMemoryFull {
 }
 
 impl ReceiveMemoryBudget {
-    pub(crate) fn new(limits: ReceiveMemoryLimits) -> Self {
+    pub(crate) fn new(limits: ReceiveMemoryLimits, decoded_group_bytes: usize) -> Self {
         Self {
             inner: Arc::new(BudgetInner {
                 limits,
+                decoded_group_bytes,
                 used: AtomicUsize::new(0),
             }),
         }
@@ -44,7 +46,10 @@ impl ReceiveMemoryBudget {
         &self,
         frame_bytes: usize,
     ) -> Result<ReceiveMemoryPermit, ReceiveMemoryFull> {
-        let charged = self.inner.limits.charge(frame_bytes);
+        let charged = self
+            .inner
+            .limits
+            .charge(frame_bytes, self.inner.decoded_group_bytes);
         let maximum = self.inner.limits.bytes_global();
         let mut used = self.inner.used.load(Ordering::Relaxed);
         loop {
@@ -100,18 +105,18 @@ mod tests {
     #[test]
     fn declared_lengths_reserve_before_allocation_and_release_exactly() {
         let limits = ReceiveMemoryLimits::new(320, 32).expect("valid memory limits");
-        let budget = ReceiveMemoryBudget::new(limits);
-        let first = budget.try_acquire(6).expect("192 weighted bytes");
-        assert_eq!(budget.used(), 192);
+        let budget = ReceiveMemoryBudget::new(limits, 8);
+        let first = budget.try_acquire(6).expect("200 weighted bytes");
+        assert_eq!(budget.used(), 200);
         assert!(matches!(
-            budget.try_acquire(5),
+            budget.try_acquire(4),
             Err(ReceiveMemoryFull {
-                required: 160,
+                required: 136,
                 maximum: 320,
             })
         ));
         drop(first);
         assert_eq!(budget.used(), 0);
-        assert!(budget.try_acquire(10).is_ok());
+        assert!(budget.try_acquire(9).is_ok());
     }
 }

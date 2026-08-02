@@ -58,7 +58,7 @@ where
     mark_initial_degradation(&control, &queues);
 
     let inbound_queue = Arc::new(InboundQueue::new(runtime_limits));
-    let receive_memory = ReceiveMemoryBudget::new(runtime_limits.receive_memory());
+    let receive_memory = receive_memory_budget(runtime_limits, &codec);
     let inbound = TlsInbound {
         queue: Arc::clone(&inbound_queue),
     };
@@ -143,6 +143,16 @@ fn local_address(listener: &TcpListener) -> Result<SocketAddr, TlsTransportBuild
     listener
         .local_addr()
         .map_err(|source| TlsTransportBuildError::LocalAddress { source })
+}
+
+fn receive_memory_budget<G, C>(
+    limits: RuntimeLimits,
+    codec: &PeerFrameCodec<G, C>,
+) -> ReceiveMemoryBudget
+where
+    C: GroupIdCodec<G>,
+{
+    ReceiveMemoryBudget::new(limits.receive_memory(), codec.max_decoded_group_bytes())
 }
 
 type SenderInput<G> = (PeerId, Arc<OutboundQueue<G>>, Arc<PeerCounters>);

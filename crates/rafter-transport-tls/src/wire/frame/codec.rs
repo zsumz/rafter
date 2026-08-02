@@ -20,6 +20,7 @@ pub struct PeerFrameCodec<G, C> {
     pub(super) group_codec: C,
     pub(super) limits: WireLimits,
     pub(super) group_id_bound: usize,
+    decoded_group_bound: usize,
     marker: PhantomData<fn() -> G>,
 }
 
@@ -45,6 +46,8 @@ where
             });
         }
         Ok(Self {
+            decoded_group_bound: std::mem::size_of::<G>()
+                .saturating_add(group_codec.max_decoded_heap_bytes()),
             group_codec,
             limits,
             group_id_bound,
@@ -64,6 +67,15 @@ where
         &self.group_codec
     }
 
+    /// Maximum memory retained by one decoded group identity.
+    ///
+    /// This includes the in-place size of `G` and the codec's declared
+    /// transitive heap bound.
+    #[must_use]
+    pub const fn max_decoded_group_bytes(&self) -> usize {
+        self.decoded_group_bound
+    }
+
     /// Decodes exactly one complete length-prefixed peer frame.
     ///
     /// The declared body limit is checked before any caller-owned group decoder
@@ -81,6 +93,12 @@ where
         scratch: &mut PeerFrameScratch,
     ) -> Result<PeerFrame<G>, DecodePeerFrameError<C::Error>> {
         let outer = self.decode_outer(input, scratch)?;
+        Self::decode_validated_outer(outer)
+    }
+
+    fn decode_validated_outer(
+        outer: DecodedOuter<'_, G>,
+    ) -> Result<PeerFrame<G>, DecodePeerFrameError<C::Error>> {
         let message = decode_message(outer.message).map_err(DecodePeerFrameError::MessageDecode)?;
         let embedded = message_sender(&message);
         if embedded != outer.from {
@@ -104,17 +122,40 @@ where
     }
 
     /// Decodes only bounded outer routing fields and canonical group identity.
-    pub(crate) fn decode_route(
+    pub(crate) fn decode_route<'a>(
         &self,
-        input: &[u8],
+        input: &'a [u8],
         scratch: &mut PeerFrameScratch,
-    ) -> Result<PeerFrameRoute<G>, DecodePeerFrameError<C::Error>> {
+    ) -> Result<DecodedPeerFrameRoute<'a, G, C>, DecodePeerFrameError<C::Error>> {
         let outer = self.decode_outer(input, scratch)?;
-        Ok(PeerFrameRoute {
-            sequence: outer.sequence,
-            group_id: outer.group_id,
-            from: outer.from,
-            to: outer.to,
+        Ok(DecodedPeerFrameRoute {
+            route: PeerFrameRoute {
+                sequence: outer.sequence,
+                group_id: outer.group_id,
+                from: outer.from,
+                to: outer.to,
+            },
+            message: outer.message,
+            marker: PhantomData,
+        })
+    }
+
+    /// Completes a staged inbound decode without decoding its group again.
+    pub(crate) fn decode_routed(
+        routed: DecodedPeerFrameRoute<'_, G, C>,
+    ) -> Result<PeerFrame<G>, DecodePeerFrameError<C::Error>> {
+        let PeerFrameRoute {
+            sequence,
+            group_id,
+            from,
+            to,
+        } = routed.route;
+        Self::decode_validated_outer(DecodedOuter {
+            sequence,
+            group_id,
+            from,
+            to,
+            message: routed.message,
         })
     }
 
@@ -229,6 +270,18 @@ struct DecodedOuter<'a, G> {
     message: &'a [u8],
 }
 
+pub(crate) struct DecodedPeerFrameRoute<'a, G, C> {
+    route: PeerFrameRoute<G>,
+    message: &'a [u8],
+    marker: PhantomData<fn() -> C>,
+}
+
+impl<G, C> DecodedPeerFrameRoute<'_, G, C> {
+    pub(crate) const fn route(&self) -> &PeerFrameRoute<G> {
+        &self.route
+    }
+}
+
 fn validate_decoded_group_bound<E>(
     actual: usize,
     codec_maximum: usize,
@@ -263,3 +316,7 @@ fn read_u64<E>(reader: &mut Reader<'_>) -> Result<u64, DecodePeerFrameError<E>> 
 const fn map_body_end<E>(_: UnexpectedEnd) -> DecodePeerFrameError<E> {
     DecodePeerFrameError::TruncatedBody
 }
+
+#[cfg(test)]
+#[path = "codec_test.rs"]
+mod tests;

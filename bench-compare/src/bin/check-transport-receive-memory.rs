@@ -101,7 +101,10 @@ fn check(label: &str, message: Message) {
         .expect("valid adversarial frame decodes");
     COUNTING.store(false, Ordering::Release);
     let peak = PEAK.load(Ordering::Relaxed);
-    let charged = encoded.len().saturating_mul(MIN_SAFE_DECODE_AMPLIFICATION);
+    let charged = encoded
+        .len()
+        .saturating_mul(MIN_SAFE_DECODE_AMPLIFICATION)
+        .saturating_add(codec.max_decoded_group_bytes());
     assert!(
         peak <= charged,
         "decode peaked at {peak} bytes for {} wire bytes, above the {charged}-byte charge",
@@ -157,6 +160,10 @@ impl GroupIdCodec<String> for StringGroupCodec {
     type Error = GroupCodecError;
 
     fn max_encoded_len(&self) -> usize {
+        128
+    }
+
+    fn max_decoded_heap_bytes(&self) -> usize {
         128
     }
 

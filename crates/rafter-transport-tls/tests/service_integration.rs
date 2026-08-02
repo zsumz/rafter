@@ -150,7 +150,7 @@ fn committed_retirement_revokes_replication_queued_while_paused() {
     sender.start().expect("activate sender");
 
     assert!(wait_until(Duration::from_secs(3), || {
-        sender.diagnostics().retired_queued_frames == 1
+        sender.diagnostics().invalidated_queued_frames == 1
     }));
     assert!(receiver
         .inbound()
@@ -192,7 +192,7 @@ fn unbinding_the_local_source_revokes_work_queued_while_paused() {
     sender.start().expect("activate sender");
 
     assert!(wait_until(Duration::from_secs(3), || {
-        sender.diagnostics().retired_queued_frames == 1
+        sender.diagnostics().invalidated_queued_frames == 1
     }));
     assert!(receiver
         .inbound()

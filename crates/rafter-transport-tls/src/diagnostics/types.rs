@@ -100,8 +100,8 @@ pub struct TransportDiagnostics {
     pub unauthorized_frames: u64,
     /// Frames refused because a committed removal retired the sender.
     pub retired_peer_frames: u64,
-    /// Accepted outbound frames discarded after their target was retired.
-    pub retired_queued_frames: u64,
+    /// Accepted outbound frames discarded after a route authorization was revoked.
+    pub invalidated_queued_frames: u64,
     /// Bulk frames abandoned after the bounded ambiguous-write retry count.
     pub retry_exhausted_frames: u64,
     /// Durable connection sessions refused as stale.

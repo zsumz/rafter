@@ -166,6 +166,7 @@ pub(crate) fn dial<G>(
                     endpoint,
                     message.clone(),
                     configuration_reprobe_delay(
+                        context.handshake.local_peer_id(),
                         &context.peer,
                         context.timeouts.configuration_reprobe(),
                     ),

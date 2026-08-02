@@ -58,7 +58,7 @@ fn resolve_one<G, C>(
     C: GroupIdCodec<G>,
 {
     if !item.is_authorized() {
-        increment(&context.counters.retired_queued_frames);
+        increment(&context.counters.invalidated_queued_frames);
         return drop_item(context, &item);
     }
     let Some((group_id, chunk)) = item.snapshot_parts() else {
@@ -133,7 +133,7 @@ fn resolve_one<G, C>(
         return drop_item(context, &item);
     }
     if !item.is_authorized() {
-        increment(&context.counters.retired_queued_frames);
+        increment(&context.counters.invalidated_queued_frames);
         return drop_item(context, &item);
     }
     if context.control.terminal() || context.control.shutdown_grace_expired() {

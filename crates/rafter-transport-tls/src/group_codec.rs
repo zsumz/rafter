@@ -15,6 +15,15 @@ pub trait GroupIdCodec<G>: Send + Sync + 'static {
     /// Maximum number of bytes this codec can emit for one group identity.
     fn max_encoded_len(&self) -> usize;
 
+    /// Maximum transitive heap bytes retained by one decoded group identity.
+    ///
+    /// The transport adds this caller-declared bound, plus the in-place size of
+    /// `G`, to every inbound frame's receive-memory charge before reading its
+    /// body. Implementations must include all heap allocations reachable from a
+    /// successfully decoded value. Fixed-width, allocation-free identities may
+    /// return zero.
+    fn max_decoded_heap_bytes(&self) -> usize;
+
     /// Encodes `group_id` canonically into `output`.
     ///
     /// Implementations must clear `output` before writing and must not emit an

@@ -63,8 +63,10 @@ impl ReceiveMemoryLimits {
         self.decode_amplification
     }
 
-    pub(crate) const fn charge(self, frame_bytes: usize) -> usize {
-        frame_bytes.saturating_mul(self.decode_amplification)
+    pub(crate) const fn charge(self, frame_bytes: usize, decoded_group_bytes: usize) -> usize {
+        frame_bytes
+            .saturating_mul(self.decode_amplification)
+            .saturating_add(decoded_group_bytes)
     }
 }
 

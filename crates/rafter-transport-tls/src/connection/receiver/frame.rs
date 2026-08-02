@@ -5,7 +5,7 @@ use rafter_service::AuthenticatedPeerEnvelope;
 use crate::diagnostics::increment;
 use crate::queue::{InboundQueueError, InboundQueueFull, ReceiveMemoryPermit};
 use crate::runtime::InboundEpochGuard;
-use crate::{GroupIdCodec, InboundSequence, PeerFrameScratch, PeerId};
+use crate::{GroupIdCodec, InboundSequence, PeerFrameCodec, PeerFrameScratch, PeerId};
 
 use super::admission::{admit_frame, admit_route, AdmissionRefusal};
 use super::classify::classify_decode_error;
@@ -35,14 +35,14 @@ where
     G: Ord,
     C: GroupIdCodec<G>,
 {
-    let route = match template.codec.decode_route(input.encoded, scratch) {
+    let routed = match template.codec.decode_route(input.encoded, scratch) {
         Ok(route) => route,
         Err(error) => {
             classify_decode_error(&template.counters, &error);
             return FrameStep::Stop;
         }
     };
-    if expected.accept(route.sequence).is_err() {
+    if expected.accept(routed.route().sequence).is_err() {
         increment(&template.counters.sequence_violations);
         increment(&template.counters.frames_dropped);
         return FrameStep::Stop;
@@ -51,12 +51,12 @@ where
         &template.directory,
         template.handshake.local_peer_id(),
         input.peer,
-        &route,
+        routed.route(),
     ) {
         return handle_refusal(template, refusal);
     }
 
-    let frame = match template.codec.decode(input.encoded, scratch) {
+    let frame = match PeerFrameCodec::<G, C>::decode_routed(routed) {
         Ok(frame) => frame,
         Err(error) => {
             classify_decode_error(&template.counters, &error);

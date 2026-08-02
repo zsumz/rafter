@@ -211,7 +211,8 @@ fn timeout_groups_refuse_zero_before_aggregate_configuration() {
     use std::time::Duration;
 
     use rafter_transport_tls::{
-        TimeoutKind, TransportIoTimeouts, TransportRuntimeTimeouts, TransportTimeouts,
+        TimeoutConstraint, TimeoutKind, TransportIoTimeouts, TransportRuntimeTimeouts,
+        TransportTimeouts,
     };
 
     let second = Duration::from_secs(1);
@@ -238,18 +239,20 @@ fn timeout_groups_refuse_zero_before_aggregate_configuration() {
         ),
     ] {
         assert_eq!(error.kind(), expected);
+        assert_eq!(error.constraint(), TimeoutConstraint::NonZero);
     }
-    assert_eq!(
-        TransportRuntimeTimeouts::default()
-            .with_configuration_reprobe(Duration::ZERO)
-            .expect_err("zero configuration reprobe timeout")
-            .kind(),
-        TimeoutKind::ConfigurationReprobe
-    );
+    let zero_reprobe = TransportRuntimeTimeouts::default()
+        .with_configuration_reprobe(Duration::ZERO)
+        .expect_err("zero configuration reprobe timeout");
+    assert_eq!(zero_reprobe.kind(), TimeoutKind::ConfigurationReprobe);
+    assert_eq!(zero_reprobe.constraint(), TimeoutConstraint::NonZero);
     let excessive_redial = TransportRuntimeTimeouts::new(Duration::from_secs(60), second, second)
         .expect_err("redial above the retry ceiling");
     assert_eq!(excessive_redial.kind(), TimeoutKind::Redial);
-    assert!(excessive_redial.to_string().contains("30s"));
+    assert_eq!(
+        excessive_redial.constraint(),
+        TimeoutConstraint::Maximum(Duration::from_secs(30))
+    );
     for (error, expected) in [
         (
             TransportRuntimeTimeouts::new(Duration::ZERO, second, second)
@@ -268,6 +271,7 @@ fn timeout_groups_refuse_zero_before_aggregate_configuration() {
         ),
     ] {
         assert_eq!(error.kind(), expected);
+        assert_eq!(error.constraint(), TimeoutConstraint::NonZero);
     }
 
     let io = TransportIoTimeouts::new(second, second, second, second).expect("I/O timeouts");

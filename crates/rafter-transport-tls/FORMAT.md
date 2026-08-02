@@ -175,7 +175,7 @@ The body length excludes its own four-byte prefix and covers every following
 field. The inner-message length must consume exactly the rest of the body.
 Bytes after the declared body are rejected.
 
-The group ID is decoded with `GroupIdCodec<G>`, then re-encoded and compared
+The group ID is decoded once with `GroupIdCodec<G>`, then re-encoded and compared
 byte-for-byte with the route bytes. The sender encoded inside the
 `rafter-codec` message must equal the outer Raft sender.
 

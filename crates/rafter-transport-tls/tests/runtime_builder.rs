@@ -126,6 +126,33 @@ fn builder_refuses_a_memory_budget_that_cannot_hold_one_maximum_frame() {
 }
 
 #[test]
+fn builder_charges_the_declared_decoded_group_bound() {
+    use rafter_transport_tls::MIN_SAFE_DECODE_AMPLIFICATION;
+    use support::session_store::MemorySessionStore;
+
+    let base = TransportLimits::default()
+        .wire()
+        .max_frame_bytes()
+        .saturating_mul(MIN_SAFE_DECODE_AMPLIFICATION);
+    let memory = ReceiveMemoryLimits::new(base, MIN_SAFE_DECODE_AMPLIFICATION)
+        .expect("evidence-backed memory limits");
+    let runtime = RuntimeLimits::default().with_receive_memory(memory);
+    let limits = TransportLimits::default().with_runtime(runtime);
+    let fixture = RuntimeFixture::new(runtime).with_limits(limits);
+    let result = fixture.try_start_a_with_store(
+        fixture.endpoints_to_b("127.0.0.1:9".parse().expect("discard endpoint")),
+        MemorySessionStore::new(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(TlsTransportBuildError::ReceiveMemoryTooSmall { required, maximum })
+            if maximum == base
+                && required == base + size_of::<String>() + 128
+    ));
+}
+
+#[test]
 fn builder_refuses_a_peer_with_exhausted_inbound_sessions() {
     use rafter_transport_tls::{ConnectionSession, TransportSessionStore};
     use support::session_store::MemorySessionStore;

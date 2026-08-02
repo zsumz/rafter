@@ -63,6 +63,10 @@ impl GroupIdCodec<PeerGroupId> for PeerGroupCodec {
         8
     }
 
+    fn max_decoded_heap_bytes(&self) -> usize {
+        0
+    }
+
     fn encode(&self, group_id: &PeerGroupId, output: &mut Vec<u8>) -> Result<(), Self::Error> {
         output.clear();
         output.extend_from_slice(&group_id.group_id.get().to_be_bytes());
