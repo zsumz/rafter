@@ -4,6 +4,7 @@ mod frame;
 mod handshake;
 mod read;
 
+pub(crate) use frame::PeerFrameRoute;
 pub use frame::{
     DecodePeerFrameError, EncodePeerFrameError, PeerFrame, PeerFrameCodec,
     PeerFrameCodecConfigError, PeerFrameError, PeerFrameScratch, PEER_FRAME_FIXED_BODY_BYTES,

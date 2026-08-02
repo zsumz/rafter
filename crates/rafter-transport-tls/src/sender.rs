@@ -75,7 +75,7 @@ where
 {
     fn send_envelope(&self, envelope: PeerEnvelope<G>) -> Result<(), TlsTransportError> {
         self.require_accepting()?;
-        let peer = self.route(&envelope.group_id, envelope.from, envelope.to)?;
+        let (peer, authorization) = self.route(&envelope.group_id, envelope.from, envelope.to)?;
         let from = envelope.from;
         let to = envelope.to;
         let class = TrafficClass::for_message(&envelope.message);
@@ -93,7 +93,10 @@ where
             .codec
             .prepare(&frame, &mut scratch)
             .map_err(map_encode_error)?;
-        self.enqueue(peer, OutboundItem::message(from, to, class, prepared))
+        self.enqueue(
+            peer,
+            OutboundItem::message(from, to, class, prepared, authorization),
+        )
     }
 
     fn send_snapshot_envelope(
@@ -107,7 +110,7 @@ where
                 message_from: envelope.chunk.leader_id,
             });
         }
-        let peer = self.route(&envelope.group_id, envelope.from, envelope.to)?;
+        let (peer, authorization) = self.route(&envelope.group_id, envelope.from, envelope.to)?;
         if self.core.snapshot_resolver.is_none() {
             return Err(TlsTransportError::SnapshotResolverUnavailable);
         }
@@ -126,13 +129,19 @@ where
                 envelope.to,
                 reserved_bytes,
                 envelope.chunk,
+                authorization,
             ),
         )?;
         increment(&self.core.counters.snapshot_directives_enqueued);
         Ok(())
     }
 
-    fn route(&self, group_id: &G, from: NodeId, to: NodeId) -> Result<PeerId, TlsTransportError> {
+    fn route(
+        &self,
+        group_id: &G,
+        from: NodeId,
+        to: NodeId,
+    ) -> Result<(PeerId, crate::directory::AuthorizationLease), TlsTransportError> {
         match self
             .core
             .directory
@@ -146,7 +155,7 @@ where
             OutboundRoute::UnknownNode => Err(TlsTransportError::UnknownNode { node_id: to }),
             OutboundRoute::Unauthorized => Err(TlsTransportError::UnauthorizedPeer { node_id: to }),
             OutboundRoute::Retired => Err(TlsTransportError::RetiredPeer { node_id: to }),
-            OutboundRoute::Authorized(peer) => Ok(peer),
+            OutboundRoute::Authorized { peer, lease } => Ok((peer, lease)),
         }
     }
 

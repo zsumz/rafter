@@ -1,6 +1,9 @@
 mod support;
 
-use rafter_transport_tls::{RuntimeLimits, TlsPeerTransport, TlsTransportBuildError};
+use rafter_transport_tls::{
+    ReceiveMemoryLimits, RuntimeLimits, SessionStoreLimits, TlsPeerTransport,
+    TlsTransportBuildError, TransportLimits,
+};
 
 use support::runtime::RuntimeFixture;
 use support::StringGroupCodec;
@@ -74,5 +77,48 @@ fn builder_probes_the_session_store_even_without_outbound_peers() {
     assert!(matches!(
         result,
         Err(TlsTransportBuildError::SessionStore { .. })
+    ));
+}
+
+#[test]
+fn builder_preflights_aggregate_session_capacity_before_binding() {
+    use rafter_transport_tls::{PeerId, TransportSessionStore};
+    use support::session_store::MemorySessionStore;
+
+    let sessions = SessionStoreLimits::new(1).expect("one session record");
+    let limits = TransportLimits::default().with_sessions(sessions);
+    let fixture = RuntimeFixture::new(RuntimeLimits::default()).with_limits(limits);
+    let store = MemorySessionStore::with_limits(sessions);
+    store
+        .allocate_outbound_session(&PeerId::new("retired-peer").expect("peer ID"))
+        .expect("pre-existing durable record");
+    let result = fixture.try_start_a_with_store(
+        fixture.endpoints_to_b("127.0.0.1:9".parse().expect("discard endpoint")),
+        store.clone(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(TlsTransportBuildError::SessionStore { .. })
+    ));
+    assert_eq!(store.allocation_count(), 1);
+}
+
+#[test]
+fn builder_refuses_a_memory_budget_that_cannot_hold_one_maximum_frame() {
+    use support::session_store::MemorySessionStore;
+
+    let memory = ReceiveMemoryLimits::new(1, 1).expect("nonzero memory limits");
+    let runtime = RuntimeLimits::default().with_receive_memory(memory);
+    let limits = TransportLimits::default().with_runtime(runtime);
+    let fixture = RuntimeFixture::new(runtime).with_limits(limits);
+    let result = fixture.try_start_a_with_store(
+        fixture.endpoints_to_b("127.0.0.1:9".parse().expect("discard endpoint")),
+        MemorySessionStore::new(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(TlsTransportBuildError::ReceiveMemoryTooSmall { maximum: 1, .. })
     ));
 }

@@ -86,6 +86,20 @@ fn peer_bound_refuses_without_partly_mutating_state() {
 }
 
 #[test]
+fn aggregate_preflight_counts_every_absent_configured_peer_without_mutation() {
+    let state = TransportSessionState::new(SessionStoreLimits::new(2).expect("valid bound"));
+    let peers = vec![peer("node-a"), peer("node-b"), peer("node-c")];
+
+    assert_eq!(
+        state.preflight_peers(&peers),
+        Err(SessionStateError::PeerLimit { maximum: 2 })
+    );
+    assert_eq!(state.peer_count(), 0);
+    assert!(state.preflight_peers(&peers[..2]).is_ok());
+    assert_eq!(state.peer_count(), 0);
+}
+
+#[test]
 fn recovered_maximum_outbound_session_is_terminal_for_that_peer() {
     let peer = peer("node-b");
     let mut peers = BTreeMap::new();

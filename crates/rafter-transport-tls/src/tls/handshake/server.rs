@@ -48,10 +48,12 @@ impl TlsHandshakeConfig {
         else {
             return Ok(self.refusal(ServerRefusal::PeerCodecVersionMismatch));
         };
-        if hello.max_send_frame_bytes().get() < MIN_PEER_FRAME_BYTES {
+        if hello.max_send_frame_bytes().get() < MIN_PEER_FRAME_BYTES
+            || hello.max_send_frame_bytes() > self.max_frame_bytes()
+        {
             return Ok(self.refusal(ServerRefusal::FrameLimitRejected));
         }
-        let accepted_frame_bytes = hello.max_send_frame_bytes().min(self.max_frame_bytes());
+        let accepted_frame_bytes = hello.max_send_frame_bytes();
 
         let decision = sessions
             .accept_inbound_session(authenticated.peer_id(), hello.connection_session())

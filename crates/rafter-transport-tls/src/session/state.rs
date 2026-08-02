@@ -141,6 +141,49 @@ impl TransportSessionState {
         self.peers.iter().map(|(peer, state)| (peer, *state))
     }
 
+    /// Checks that a future outbound session for `peer` can be represented.
+    ///
+    /// The check is pure: an absent peer consumes no record until a session is
+    /// actually allocated or accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionStateError::PeerLimit`] for an absent peer at capacity,
+    /// or [`SessionStateError::OutboundExhausted`] when no next session exists.
+    pub fn preflight_peer(&self, peer: &PeerId) -> Result<(), SessionStateError> {
+        self.ensure_peer_capacity(peer)?;
+        if self
+            .peer_state(peer)
+            .highest_outbound()
+            .is_some_and(|session| session.get() == u64::MAX)
+        {
+            return Err(SessionStateError::OutboundExhausted { peer: peer.clone() });
+        }
+        Ok(())
+    }
+
+    /// Checks aggregate capacity for one runtime's complete peer set.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same capacity or exhaustion failures as [`Self::preflight_peer`].
+    pub fn preflight_peers(&self, peers: &[PeerId]) -> Result<(), SessionStateError> {
+        let mut absent = std::collections::BTreeSet::new();
+        for peer in peers {
+            if self.peers.contains_key(peer) {
+                self.preflight_peer(peer)?;
+            } else {
+                absent.insert(peer);
+            }
+        }
+        if self.peers.len().saturating_add(absent.len()) > self.limits.max_peer_records() {
+            return Err(SessionStateError::PeerLimit {
+                maximum: self.limits.max_peer_records(),
+            });
+        }
+        Ok(())
+    }
+
     /// Allocates the next outbound connection session for `peer`.
     ///
     /// The caller must durably publish the resulting state before putting the

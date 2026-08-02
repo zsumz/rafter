@@ -52,7 +52,9 @@ pub use config::{
     TimeoutKind, TransportConfig, TransportIoTimeouts, TransportRuntimeTimeouts,
     TransportTimeoutError, TransportTimeouts,
 };
-pub use diagnostics::{PeerDiagnostics, QueueDepths, TransportDiagnostics, TransportHealth};
+pub use diagnostics::{
+    PeerConnectionState, PeerDiagnostics, QueueDepths, TransportDiagnostics, TransportHealth,
+};
 pub use directory::{DirectoryError, InstalledPeerPolicy, PeerAuthorization, TlsPeerDirectory};
 pub use endpoint::{
     EndpointBook, EndpointBookError, EndpointGeneration, EndpointSnapshot, PeerEndpoint,
@@ -66,10 +68,10 @@ pub use group_codec::GroupIdCodec;
 pub use inbound::TlsInbound;
 pub use limits::{
     CertificateDirectoryLimits, DirectoryLimits, EndpointBookLimits, InboundQueueLimits,
-    LimitError, LimitKind, OutboundQueueLimits, RuntimeLimitError, RuntimeLimitKind, RuntimeLimits,
-    SessionStoreLimits, TransportLimits, WireLimits, DEFAULT_MAX_APPEND_ENTRIES_BYTES,
-    DEFAULT_MAX_FRAME_BODY_BYTES, DEFAULT_MAX_FRAME_BYTES, DEFAULT_MAX_GROUP_ID_BYTES,
-    DEFAULT_MAX_SESSION_PEER_RECORDS, MAX_SESSION_PEER_RECORDS,
+    LimitError, LimitKind, OutboundQueueLimits, ReceiveMemoryLimits, RuntimeLimitError,
+    RuntimeLimitKind, RuntimeLimits, SessionStoreLimits, TransportLimits, WireLimits,
+    DEFAULT_MAX_APPEND_ENTRIES_BYTES, DEFAULT_MAX_FRAME_BODY_BYTES, DEFAULT_MAX_FRAME_BYTES,
+    DEFAULT_MAX_GROUP_ID_BYTES, DEFAULT_MAX_SESSION_PEER_RECORDS, MAX_SESSION_PEER_RECORDS,
 };
 pub use principal::{ClusterId, IdentityError, IdentityKind, PeerId, MAX_ID_BYTES};
 pub use queue::TrafficClass;

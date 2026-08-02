@@ -1,6 +1,7 @@
 //! Per-group mapping from authenticated principals to Raft identities.
 
 mod error;
+mod lease;
 mod mutation;
 mod query;
 mod state;
@@ -13,6 +14,7 @@ use rafter::NodeId;
 use crate::{DirectoryLimits, PeerId};
 
 pub use error::DirectoryError;
+pub(crate) use lease::AuthorizationLease;
 pub use query::PeerAuthorization;
 pub(crate) use query::{InboundRoute, OutboundRoute};
 use state::DirectoryState;
@@ -74,5 +76,11 @@ where
                 groups: std::collections::BTreeMap::new(),
             })),
         }
+    }
+
+    /// Finite bounds enforced by this directory.
+    #[must_use]
+    pub const fn limits(&self) -> DirectoryLimits {
+        self.limits
     }
 }

@@ -26,6 +26,15 @@ pub struct PeerFrame<G> {
     message: Message,
 }
 
+/// Cheap outer route decoded before constructing an inner Raft message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PeerFrameRoute<G> {
+    pub(crate) sequence: ConnectionSequence,
+    pub(crate) group_id: G,
+    pub(crate) from: NodeId,
+    pub(crate) to: NodeId,
+}
+
 impl<G> PeerFrame<G> {
     /// Creates a frame after checking the outer and embedded senders agree.
     ///

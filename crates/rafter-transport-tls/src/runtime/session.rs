@@ -4,10 +4,16 @@ use std::{error::Error, fmt, sync::Arc};
 
 use crate::{
     BoxError, ConnectionSession, InboundSessionDecision, PeerId, PeerSessionState,
-    TransportSessionStore,
+    SessionStoreLimits, TransportSessionStore,
 };
 
 trait ErasedSessionStore: Send + Sync + 'static {
+    fn limits(&self) -> SessionStoreLimits;
+
+    fn preflight_peer(&self, peer: &PeerId) -> Result<(), BoxError>;
+
+    fn preflight_peers(&self, peers: &[PeerId]) -> Result<(), BoxError>;
+
     fn allocate_outbound_session(&self, peer: &PeerId) -> Result<ConnectionSession, BoxError>;
 
     fn accept_inbound_session(
@@ -23,6 +29,20 @@ impl<S> ErasedSessionStore for S
 where
     S: TransportSessionStore,
 {
+    fn limits(&self) -> SessionStoreLimits {
+        TransportSessionStore::limits(self)
+    }
+
+    fn preflight_peer(&self, peer: &PeerId) -> Result<(), BoxError> {
+        TransportSessionStore::preflight_peer(self, peer)
+            .map_err(|error| Box::new(error) as BoxError)
+    }
+
+    fn preflight_peers(&self, peers: &[PeerId]) -> Result<(), BoxError> {
+        TransportSessionStore::preflight_peers(self, peers)
+            .map_err(|error| Box::new(error) as BoxError)
+    }
+
     fn allocate_outbound_session(&self, peer: &PeerId) -> Result<ConnectionSession, BoxError> {
         TransportSessionStore::allocate_outbound_session(self, peer)
             .map_err(|error| Box::new(error) as BoxError)
@@ -66,8 +86,12 @@ impl SessionStoreHandle {
         }
     }
 
-    pub(crate) fn preflight(&self, peer: &PeerId) -> Result<(), BoxError> {
-        self.inner.peer_session_state(peer).map(|_| ())
+    pub(crate) fn preflight_peers(&self, peers: &[PeerId]) -> Result<(), BoxError> {
+        self.inner.preflight_peers(peers)
+    }
+
+    pub(crate) fn limits(&self) -> SessionStoreLimits {
+        self.inner.limits()
     }
 }
 
@@ -94,6 +118,22 @@ impl Error for RuntimeSessionStoreError {
 
 impl TransportSessionStore for SessionStoreHandle {
     type Error = RuntimeSessionStoreError;
+
+    fn limits(&self) -> SessionStoreLimits {
+        self.inner.limits()
+    }
+
+    fn preflight_peer(&self, peer: &PeerId) -> Result<(), Self::Error> {
+        self.inner
+            .preflight_peer(peer)
+            .map_err(|source| RuntimeSessionStoreError { source })
+    }
+
+    fn preflight_peers(&self, peers: &[PeerId]) -> Result<(), Self::Error> {
+        self.inner
+            .preflight_peers(peers)
+            .map_err(|source| RuntimeSessionStoreError { source })
+    }
 
     fn allocate_outbound_session(&self, peer: &PeerId) -> Result<ConnectionSession, Self::Error> {
         self.inner

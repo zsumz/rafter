@@ -1,7 +1,10 @@
 use std::{
     error::Error,
     fmt,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, PoisonError,
+    },
 };
 
 use rafter_transport_tls::{
@@ -12,6 +15,7 @@ use rafter_transport_tls::{
 #[derive(Clone, Debug)]
 pub struct MemorySessionStore {
     state: Arc<Mutex<TransportSessionState>>,
+    allocations: Arc<AtomicUsize>,
 }
 
 impl Default for MemorySessionStore {
@@ -22,11 +26,18 @@ impl Default for MemorySessionStore {
 
 impl MemorySessionStore {
     pub fn new() -> Self {
+        Self::with_limits(SessionStoreLimits::default())
+    }
+
+    pub fn with_limits(limits: SessionStoreLimits) -> Self {
         Self {
-            state: Arc::new(Mutex::new(TransportSessionState::new(
-                SessionStoreLimits::default(),
-            ))),
+            state: Arc::new(Mutex::new(TransportSessionState::new(limits))),
+            allocations: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    pub fn allocation_count(&self) -> usize {
+        self.allocations.load(Ordering::Relaxed)
     }
 
     pub fn peer_state(&self, peer: &PeerId) -> PeerSessionState {
@@ -51,12 +62,38 @@ impl Error for MemorySessionStoreError {}
 impl TransportSessionStore for MemorySessionStore {
     type Error = MemorySessionStoreError;
 
-    fn allocate_outbound_session(&self, peer: &PeerId) -> Result<ConnectionSession, Self::Error> {
+    fn limits(&self) -> SessionStoreLimits {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .limits()
+    }
+
+    fn preflight_peer(&self, peer: &PeerId) -> Result<(), Self::Error> {
         self.state
             .lock()
             .map_err(|_| MemorySessionStoreError)?
-            .allocate_outbound(peer)
+            .preflight_peer(peer)
             .map_err(|_| MemorySessionStoreError)
+    }
+
+    fn preflight_peers(&self, peers: &[PeerId]) -> Result<(), Self::Error> {
+        self.state
+            .lock()
+            .map_err(|_| MemorySessionStoreError)?
+            .preflight_peers(peers)
+            .map_err(|_| MemorySessionStoreError)
+    }
+
+    fn allocate_outbound_session(&self, peer: &PeerId) -> Result<ConnectionSession, Self::Error> {
+        let session = self
+            .state
+            .lock()
+            .map_err(|_| MemorySessionStoreError)?
+            .allocate_outbound(peer)
+            .map_err(|_| MemorySessionStoreError)?;
+        let _ = self.allocations.fetch_add(1, Ordering::Relaxed);
+        Ok(session)
     }
 
     fn accept_inbound_session(
@@ -82,6 +119,18 @@ pub struct AllocateFailingSessionStore;
 impl TransportSessionStore for AllocateFailingSessionStore {
     type Error = MemorySessionStoreError;
 
+    fn limits(&self) -> SessionStoreLimits {
+        SessionStoreLimits::default()
+    }
+
+    fn preflight_peer(&self, _peer: &PeerId) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn preflight_peers(&self, _peers: &[PeerId]) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     fn allocate_outbound_session(&self, _peer: &PeerId) -> Result<ConnectionSession, Self::Error> {
         Err(MemorySessionStoreError)
     }
@@ -104,6 +153,18 @@ pub struct FailingSessionStore;
 
 impl TransportSessionStore for FailingSessionStore {
     type Error = MemorySessionStoreError;
+
+    fn limits(&self) -> SessionStoreLimits {
+        SessionStoreLimits::default()
+    }
+
+    fn preflight_peer(&self, _peer: &PeerId) -> Result<(), Self::Error> {
+        Err(MemorySessionStoreError)
+    }
+
+    fn preflight_peers(&self, _peers: &[PeerId]) -> Result<(), Self::Error> {
+        Err(MemorySessionStoreError)
+    }
 
     fn allocate_outbound_session(&self, _peer: &PeerId) -> Result<ConnectionSession, Self::Error> {
         Err(MemorySessionStoreError)

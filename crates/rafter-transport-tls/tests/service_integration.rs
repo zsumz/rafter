@@ -128,6 +128,41 @@ fn peer_policy_update_is_atomic_when_a_principal_has_no_sender_worker() {
 }
 
 #[test]
+fn committed_retirement_revokes_replication_queued_while_paused() {
+    let fixture = RuntimeFixture::new(RuntimeLimits::default());
+    let receiver = fixture.start_b();
+    let sender = fixture.bind_paused_a_with_store(
+        fixture.endpoints_to_b(receiver.local_addr()),
+        support::session_store::MemorySessionStore::new(),
+    );
+
+    sender
+        .sender()
+        .send(RuntimeFixture::vote())
+        .expect("replication is queued while workers are paused");
+    sender
+        .sender()
+        .update_peers(
+            &GROUP_ID.to_owned(),
+            PeerPolicy::new(Vec::new(), Some(NODE_B)),
+        )
+        .expect("destination is retired before activation");
+    sender.start().expect("activate sender");
+
+    assert!(wait_until(Duration::from_secs(3), || {
+        sender.diagnostics().retired_queued_frames == 1
+    }));
+    assert!(receiver
+        .inbound()
+        .drain(1)
+        .expect("inbound queue")
+        .is_empty());
+
+    sender.join().expect("sender joins");
+    receiver.join().expect("receiver joins");
+}
+
+#[test]
 fn live_connection_rechecks_policy_and_refuses_a_retired_group_identity() {
     let fixture = RuntimeFixture::new(RuntimeLimits::default());
     let placeholder = "127.0.0.1:9".parse().expect("placeholder address");

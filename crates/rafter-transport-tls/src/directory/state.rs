@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::NodeId;
 
-use crate::PeerId;
+use crate::{directory::AuthorizationLease, PeerId};
 
 #[derive(Debug)]
 pub(super) struct DirectoryState<G> {
@@ -18,10 +18,11 @@ pub(super) struct GroupState {
     pub(super) policy: Option<GroupPolicy>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) struct GroupPolicy {
     pub(super) authorized_peers: BTreeSet<PeerId>,
     pub(super) authorized_nodes: BTreeSet<NodeId>,
+    pub(super) leases: BTreeMap<NodeId, AuthorizationLease>,
     pub(super) retirement_floor: Option<NodeId>,
 }
 

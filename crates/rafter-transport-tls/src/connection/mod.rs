@@ -13,3 +13,4 @@ pub(crate) use acceptor::{accept_loop, AcceptorContext};
 pub(crate) use receiver::ReceiverTemplate;
 pub(crate) use receiver_registry::ReceiverRegistry;
 pub(crate) use sender::{sender_loop, SenderContext};
+pub(crate) use snapshot::{snapshot_loop, SnapshotContext};

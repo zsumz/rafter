@@ -23,6 +23,10 @@ pub(super) fn classify_frame_io(counters: &Counters, error: &PeerFrameIoError) {
     match error {
         PeerFrameIoError::TooLarge { .. } => increment(&counters.frame_too_large),
         PeerFrameIoError::LengthUnsupported(_) => increment(&counters.malformed_frames),
+        PeerFrameIoError::ReceiveMemoryFull { .. } => {
+            increment(&counters.inbound_full);
+            increment(&counters.inbound_memory_full);
+        }
         PeerFrameIoError::Io(_) => increment(&counters.tls_failures),
     }
     increment(&counters.frames_dropped);

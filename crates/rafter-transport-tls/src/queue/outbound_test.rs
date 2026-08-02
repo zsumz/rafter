@@ -66,6 +66,47 @@ fn byte_reservation_is_independent_of_frame_reservation() {
     assert_eq!(queue.depth().expect("queue depth").bytes, 280);
 }
 
+#[test]
+fn failed_bulk_is_requeued_behind_later_control_work() {
+    let queue = OutboundQueue::new(limits());
+    queue
+        .try_push(item(TrafficClass::Replication, 80))
+        .expect("bulk frame");
+    let mut failed = queue
+        .pop_timeout(Duration::ZERO)
+        .expect("queue read")
+        .expect("bulk item");
+    assert!(failed.retry_bulk());
+
+    queue
+        .try_push(item(TrafficClass::Control, 80))
+        .expect("control frame");
+    queue.requeue_ready(failed).expect("requeue failed bulk");
+
+    let control = queue
+        .pop_timeout(Duration::ZERO)
+        .expect("queue read")
+        .expect("control item");
+    assert_eq!(control.class(), TrafficClass::Control);
+    queue.release(&control).expect("release control");
+
+    let replication = queue
+        .pop_timeout(Duration::ZERO)
+        .expect("queue read")
+        .expect("replication item");
+    assert_eq!(replication.class(), TrafficClass::Replication);
+    queue.release(&replication).expect("release replication");
+}
+
+#[test]
+fn bulk_retry_count_is_bounded() {
+    let mut failed = item(TrafficClass::Replication, 80);
+    for _ in 0..8 {
+        assert!(failed.retry_bulk());
+    }
+    assert!(!failed.retry_bulk());
+}
+
 fn item(class: TrafficClass, complete_len: usize) -> OutboundItem<()> {
     let body_len = u32::try_from(complete_len.saturating_sub(4)).expect("body length");
     let frame = PreparedPeerFrame::new(
@@ -80,7 +121,13 @@ fn item(class: TrafficClass, complete_len: usize) -> OutboundItem<()> {
             message: 1,
         },
     );
-    OutboundItem::message(NodeId(1), NodeId(2), class, frame)
+    OutboundItem::message(
+        NodeId(1),
+        NodeId(2),
+        class,
+        frame,
+        crate::directory::AuthorizationLease::new(),
+    )
 }
 
 fn runtime_limits(

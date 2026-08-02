@@ -1,12 +1,18 @@
 //! Validated runtime assembly and all-or-nothing worker startup.
 
-use std::{collections::BTreeMap, sync::Arc, thread};
+use std::{
+    collections::BTreeMap,
+    net::{SocketAddr, TcpListener},
+    sync::Arc,
+    thread,
+};
 
 use crate::connection::{
-    accept_loop, sender_loop, AcceptorContext, ReceiverRegistry, ReceiverTemplate, SenderContext,
+    accept_loop, sender_loop, snapshot_loop, AcceptorContext, ReceiverRegistry, ReceiverTemplate,
+    SenderContext, SnapshotContext,
 };
 use crate::diagnostics::{Counters, PeerCounterMap, PeerCounters};
-use crate::queue::{InboundQueue, OutboundQueue};
+use crate::queue::{InboundQueue, OutboundQueue, ReceiveMemoryBudget};
 use crate::runtime::{run_guarded, InboundEpochs, RuntimeControl, SessionStoreHandle};
 use crate::sender::{SenderCore, TlsSender};
 use crate::snapshot::SnapshotResolverHandle;
@@ -39,9 +45,7 @@ where
         listener,
         peers,
     } = ValidatedBuilder::new(builder)?;
-    let local_addr = listener
-        .local_addr()
-        .map_err(|source| TlsTransportBuildError::LocalAddress { source })?;
+    let local_addr = local_address(&listener)?;
 
     let runtime_limits = config.limits().runtime();
     let control = Arc::new(RuntimeControl::new(config.timeouts().shutdown_grace()));
@@ -54,6 +58,7 @@ where
     mark_initial_degradation(&control, &queues);
 
     let inbound_queue = Arc::new(InboundQueue::new(runtime_limits));
+    let receive_memory = ReceiveMemoryBudget::new(runtime_limits.receive_memory());
     let inbound = TlsInbound {
         queue: Arc::clone(&inbound_queue),
     };
@@ -78,6 +83,7 @@ where
         codec: Arc::clone(&codec),
         directory,
         inbound: Arc::clone(&inbound_queue),
+        receive_memory: receive_memory.clone(),
         epochs: Arc::clone(&epochs),
         control: Arc::clone(&control),
         counters: Arc::clone(&counters),
@@ -125,11 +131,18 @@ where
         queues,
         peer_counters,
         inbound_queue,
+        receive_memory,
         epochs,
         receivers,
         acceptor: Some(acceptor),
         senders: sender_workers,
     })
+}
+
+fn local_address(listener: &TcpListener) -> Result<SocketAddr, TlsTransportBuildError> {
+    listener
+        .local_addr()
+        .map_err(|source| TlsTransportBuildError::LocalAddress { source })
 }
 
 type SenderInput<G> = (PeerId, Arc<OutboundQueue<G>>, Arc<PeerCounters>);
@@ -190,7 +203,7 @@ where
     G: Send + 'static,
     C: GroupIdCodec<G>,
 {
-    let mut workers = Vec::with_capacity(inputs.len());
+    let mut workers = Vec::with_capacity(inputs.len().saturating_mul(2));
     for (peer, queue, peer_counters) in inputs {
         let context = SenderContext {
             peer: peer.clone(),
@@ -199,16 +212,34 @@ where
             certificates: dependencies.certificates.clone(),
             handshake: dependencies.handshake.clone(),
             sessions: dependencies.sessions.clone(),
-            codec: Arc::clone(&dependencies.codec),
-            snapshot_resolver: dependencies.snapshot_resolver.clone(),
-            queue,
+            queue: Arc::clone(&queue),
             control: Arc::clone(&dependencies.control),
             counters: Arc::clone(&dependencies.counters),
-            peer_counters,
+            peer_counters: Arc::clone(&peer_counters),
             timeouts: dependencies.timeouts,
         };
         let role = format!("rafter-tls-sender-{}-{peer}", dependencies.local_peer);
         match spawn_guarded(role, &dependencies.control, move || sender_loop(&context)) {
+            Ok(worker) => workers.push(worker),
+            Err(error) => {
+                stop_started(&dependencies.control, queues, &mut workers);
+                return Err(error);
+            }
+        }
+        let Some(resolver) = dependencies.snapshot_resolver.clone() else {
+            continue;
+        };
+        let context = SnapshotContext {
+            resolver,
+            codec: Arc::clone(&dependencies.codec),
+            queue,
+            control: Arc::clone(&dependencies.control),
+            counters: Arc::clone(&dependencies.counters),
+            peer_counters,
+            poll: dependencies.timeouts.poll(),
+        };
+        let role = format!("rafter-tls-snapshot-{}-{peer}", dependencies.local_peer);
+        match spawn_guarded(role, &dependencies.control, move || snapshot_loop(&context)) {
             Ok(worker) => workers.push(worker),
             Err(error) => {
                 stop_started(&dependencies.control, queues, &mut workers);

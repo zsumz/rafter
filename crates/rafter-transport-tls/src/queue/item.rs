@@ -2,8 +2,12 @@
 
 use rafter::{NodeId, SnapshotChunkSend};
 
+use crate::directory::AuthorizationLease;
 use crate::wire::PreparedPeerFrame;
 use crate::TrafficClass;
+
+/// Maximum retries retained after ambiguous bulk writes.
+const MAX_BULK_WRITE_RETRIES: u8 = 8;
 
 #[derive(Debug)]
 pub(crate) struct OutboundItem<G> {
@@ -11,6 +15,8 @@ pub(crate) struct OutboundItem<G> {
     to: NodeId,
     class: TrafficClass,
     reserved_bytes: usize,
+    authorization: AuthorizationLease,
+    failed_attempts: u8,
     payload: OutboundPayload<G>,
 }
 
@@ -29,6 +35,7 @@ impl<G> OutboundItem<G> {
         to: NodeId,
         class: TrafficClass,
         frame: PreparedPeerFrame,
+        authorization: AuthorizationLease,
     ) -> Self {
         let reserved_bytes = frame.wire_len();
         Self {
@@ -36,6 +43,8 @@ impl<G> OutboundItem<G> {
             to,
             class,
             reserved_bytes,
+            authorization,
+            failed_attempts: 0,
             payload: OutboundPayload::Prepared(frame),
         }
     }
@@ -46,12 +55,15 @@ impl<G> OutboundItem<G> {
         to: NodeId,
         reserved_bytes: usize,
         chunk: SnapshotChunkSend,
+        authorization: AuthorizationLease,
     ) -> Self {
         Self {
             from,
             to,
             class: TrafficClass::Snapshot,
             reserved_bytes,
+            authorization,
+            failed_attempts: 0,
             payload: OutboundPayload::Snapshot { group_id, chunk },
         }
     }
@@ -76,6 +88,17 @@ impl<G> OutboundItem<G> {
     /// rather than spare `Vec` capacity or Rust object size.
     pub(crate) fn bytes(&self) -> usize {
         self.reserved_bytes
+    }
+
+    pub(crate) fn is_authorized(&self) -> bool {
+        self.authorization.is_valid()
+    }
+
+    /// Records one ambiguous bulk write and returns whether another attempt is allowed.
+    pub(crate) fn retry_bulk(&mut self) -> bool {
+        debug_assert_ne!(self.class, TrafficClass::Control);
+        self.failed_attempts = self.failed_attempts.saturating_add(1);
+        self.failed_attempts <= MAX_BULK_WRITE_RETRIES
     }
 
     pub(crate) fn prepared(&self) -> Option<&PreparedPeerFrame> {

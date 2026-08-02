@@ -2,7 +2,7 @@
 
 use std::error::Error;
 
-use crate::PeerId;
+use crate::{PeerId, SessionStoreLimits};
 
 use super::{ConnectionSession, InboundSessionDecision, PeerSessionState};
 
@@ -14,6 +14,27 @@ use super::{ConnectionSession, InboundSessionDecision, PeerSessionState};
 pub trait TransportSessionStore: Send + Sync + 'static {
     /// Typed store failure.
     type Error: Error + Send + Sync + 'static;
+
+    /// Finite peer-record bound enforced by this store.
+    fn limits(&self) -> SessionStoreLimits;
+
+    /// Verifies that `peer` can participate without mutating durable state.
+    ///
+    /// This must check both readability and capacity for an absent peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation error when a first session for `peer` could
+    /// not be recorded or the store is no longer a valid recovery oracle.
+    fn preflight_peer(&self, peer: &PeerId) -> Result<(), Self::Error>;
+
+    /// Verifies aggregate capacity for every peer a runtime will configure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the implementation error when the complete distinct set could
+    /// not be retained without mutation.
+    fn preflight_peers(&self, peers: &[PeerId]) -> Result<(), Self::Error>;
 
     /// Durably allocates the next outbound connection session for `peer`.
     ///

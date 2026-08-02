@@ -141,7 +141,11 @@ impl ClientHello {
         self.connection_session
     }
 
-    /// Largest complete peer frame the client can send.
+    /// Complete peer-frame bound the client requires for this send direction.
+    ///
+    /// A server must accept this exact bound or refuse the connection. A lower
+    /// negotiated value would let locally valid queued work be discarded after
+    /// admission, violating the transport's accepted-work contract.
     #[must_use]
     pub const fn max_send_frame_bytes(&self) -> NonZeroU32 {
         self.max_send_frame_bytes

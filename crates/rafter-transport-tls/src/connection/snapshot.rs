@@ -1,44 +1,67 @@
-//! Sender-worker snapshot directive resolution and frame materialization.
+//! Dedicated snapshot-resolution lane for one physical peer.
+
+use std::{sync::Arc, time::Duration};
 
 use rafter::{InstallSnapshotChunk, Message};
 
-use crate::diagnostics::increment;
-use crate::queue::OutboundItem;
-use crate::snapshot::SnapshotChunkResolveRequest;
-use crate::{GroupIdCodec, PeerFrameScratch};
+use crate::diagnostics::{increment, Counters, PeerCounters};
+use crate::queue::{OutboundItem, OutboundQueue};
+use crate::runtime::RuntimeControl;
+use crate::snapshot::{SnapshotChunkResolveRequest, SnapshotResolverHandle};
+use crate::{GroupIdCodec, PeerFrameCodec, PeerFrameScratch};
 
-use super::sender::SenderContext;
-
-#[derive(Debug)]
-pub(crate) enum SnapshotPreparation {
-    Ready,
-    Drop,
-    Terminal(String),
+pub(crate) struct SnapshotContext<G, C> {
+    pub(crate) resolver: SnapshotResolverHandle<G>,
+    pub(crate) codec: Arc<PeerFrameCodec<G, C>>,
+    pub(crate) queue: Arc<OutboundQueue<G>>,
+    pub(crate) control: Arc<RuntimeControl>,
+    pub(crate) counters: Arc<Counters>,
+    pub(crate) peer_counters: Arc<PeerCounters>,
+    pub(crate) poll: Duration,
 }
 
-pub(crate) fn prepare_snapshot<G, C>(
-    context: &SenderContext<G, C>,
-    item: &mut OutboundItem<G>,
-    scratch: &mut PeerFrameScratch,
-) -> SnapshotPreparation
+pub(crate) fn snapshot_loop<G, C>(context: &SnapshotContext<G, C>)
 where
+    G: Send + 'static,
     C: GroupIdCodec<G>,
 {
-    if item.prepared().is_some() {
-        return SnapshotPreparation::Ready;
+    let mut scratch = PeerFrameScratch::new();
+    loop {
+        if context.control.terminal() || context.control.shutdown_grace_expired() {
+            break;
+        }
+        let item = match context.queue.pop_snapshot_timeout(context.poll) {
+            Ok(Some(item)) => item,
+            Ok(None) => match context.queue.snapshots_closed_and_empty() {
+                Ok(true) => break,
+                Ok(false) => continue,
+                Err(_) => return fail_queue(context),
+            },
+            Err(_) => return fail_queue(context),
+        };
+        resolve_one(context, item, &mut scratch);
     }
-    let Some(resolver) = context.snapshot_resolver.as_ref() else {
-        return SnapshotPreparation::Terminal(
-            "queued snapshot directive has no installed resolver".to_owned(),
-        );
-    };
+}
+
+fn resolve_one<G, C>(
+    context: &SnapshotContext<G, C>,
+    mut item: OutboundItem<G>,
+    scratch: &mut PeerFrameScratch,
+) where
+    C: GroupIdCodec<G>,
+{
+    if !item.is_authorized() {
+        increment(&context.counters.retired_queued_frames);
+        return drop_item(context, &item);
+    }
     let Some((group_id, chunk)) = item.snapshot_parts() else {
-        return SnapshotPreparation::Terminal(
-            "outbound item has neither a prepared frame nor a snapshot directive".to_owned(),
-        );
+        context
+            .control
+            .fail("snapshot resolver lane received a prepared outbound item");
+        return drop_item(context, &item);
     };
 
-    let bytes = match resolver.resolve(SnapshotChunkResolveRequest::new(
+    let bytes = match context.resolver.resolve(SnapshotChunkResolveRequest::new(
         group_id,
         item.from(),
         item.to(),
@@ -48,23 +71,24 @@ where
         Ok(None) => {
             increment(&context.counters.snapshot_source_refusals);
             context.peer_counters.snapshot_source_refused();
-            return SnapshotPreparation::Drop;
+            return drop_item(context, &item);
         }
         Err(_) => {
             increment(&context.counters.snapshot_resolve_failures);
             context.peer_counters.snapshot_resolve_failed();
-            return SnapshotPreparation::Drop;
+            return drop_item(context, &item);
         }
     };
     let Ok(expected_len) = usize::try_from(chunk.len) else {
-        return SnapshotPreparation::Terminal(
-            "snapshot chunk length cannot be represented by this target".to_owned(),
-        );
+        context
+            .control
+            .fail("snapshot chunk length cannot be represented by this target");
+        return drop_item(context, &item);
     };
     if bytes.len() != expected_len {
         increment(&context.counters.snapshot_resolution_mismatches);
         context.peer_counters.snapshot_resolution_mismatched();
-        return SnapshotPreparation::Drop;
+        return drop_item(context, &item);
     }
 
     let message = Message::InstallSnapshotChunk(InstallSnapshotChunk {
@@ -87,20 +111,43 @@ where
             Err(error) => {
                 increment(&context.counters.snapshot_resolution_mismatches);
                 context.peer_counters.snapshot_resolution_mismatched();
-                return SnapshotPreparation::Terminal(format!(
+                context.control.fail(format!(
                     "snapshot frame no longer encodes after bounded admission: {error}"
                 ));
+                return drop_item(context, &item);
             }
         };
     if !item.install_prepared(prepared) {
         increment(&context.counters.snapshot_resolution_mismatches);
         context.peer_counters.snapshot_resolution_mismatched();
-        return SnapshotPreparation::Terminal(
-            "resolved snapshot frame changed its admitted byte reservation".to_owned(),
-        );
+        context
+            .control
+            .fail("resolved snapshot frame changed its admitted byte reservation");
+        return drop_item(context, &item);
+    }
+    if !item.is_authorized() {
+        increment(&context.counters.retired_queued_frames);
+        return drop_item(context, &item);
+    }
+    if context.control.terminal() || context.control.shutdown_grace_expired() {
+        return drop_item(context, &item);
     }
 
     increment(&context.counters.snapshot_chunks_resolved);
     context.peer_counters.snapshot_resolved();
-    SnapshotPreparation::Ready
+    if context.queue.requeue_ready(item).is_err() {
+        fail_queue(context);
+    }
+}
+
+fn drop_item<G, C>(context: &SnapshotContext<G, C>, item: &OutboundItem<G>) {
+    increment(&context.counters.frames_dropped);
+    context.peer_counters.dropped();
+    if context.queue.release(item).is_err() {
+        fail_queue(context);
+    }
+}
+
+fn fail_queue<G, C>(context: &SnapshotContext<G, C>) {
+    context.control.fail("outbound queue state is poisoned");
 }

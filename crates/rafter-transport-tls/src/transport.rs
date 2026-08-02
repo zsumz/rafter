@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt, net::SocketAddr, sync::Arc, thread::JoinHa
 
 use crate::connection::ReceiverRegistry;
 use crate::diagnostics::{Counters, PeerCounterMap};
-use crate::queue::{InboundQueue, OutboundQueue};
+use crate::queue::{InboundQueue, OutboundQueue, ReceiveMemoryBudget};
 use crate::runtime::{InboundEpochs, RuntimeControl};
 use crate::{
     GroupIdCodec, PeerDiagnostics, PeerId, QueueDepths, TlsInbound, TlsInboundError,
@@ -66,6 +66,7 @@ pub struct TlsPeerTransport<G, C> {
     pub(crate) queues: Arc<BTreeMap<PeerId, Arc<OutboundQueue<G>>>>,
     pub(crate) peer_counters: Arc<PeerCounterMap>,
     pub(crate) inbound_queue: Arc<InboundQueue<G>>,
+    pub(crate) receive_memory: ReceiveMemoryBudget,
     pub(crate) epochs: Arc<InboundEpochs>,
     pub(crate) receivers: Arc<ReceiverRegistry>,
     pub(crate) acceptor: Option<NamedWorker>,
@@ -197,6 +198,7 @@ where
             outbound_bytes,
             inbound_frames: inbound.frames,
             inbound_bytes: inbound.bytes,
+            inbound_memory_bytes: self.receive_memory.used(),
         })
     }
 

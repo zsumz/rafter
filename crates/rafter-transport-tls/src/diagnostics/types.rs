@@ -20,6 +20,18 @@ pub enum TransportHealth {
     Stopped,
 }
 
+/// Current outbound connection state for one configured peer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PeerConnectionState {
+    /// No stream is established; the worker will retry with bounded backoff.
+    Disconnected,
+    /// A persistent mutually authenticated stream is established.
+    Connected,
+    /// A permanent handshake incompatibility blocks retries until endpoints change.
+    ConfigurationBlocked,
+}
+
 /// Aggregate count-and-byte queue occupancy.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QueueDepths {
@@ -31,6 +43,8 @@ pub struct QueueDepths {
     pub inbound_frames: usize,
     /// Inbound complete-frame bytes waiting for the caller.
     pub inbound_bytes: usize,
+    /// Weighted receive memory held by readers, decoders, and queued envelopes.
+    pub inbound_memory_bytes: usize,
 }
 
 /// Stable aggregate runtime counters.
@@ -68,6 +82,8 @@ pub struct TransportDiagnostics {
     pub inbound_peer_full: u64,
     /// Inbound frames refused by the aggregate count or byte bound.
     pub inbound_global_full: u64,
+    /// Frames refused before allocation by the runtime-wide receive-memory budget.
+    pub inbound_memory_full: u64,
     /// Completed mutual-TLS handshakes in either direction.
     pub tls_handshakes: u64,
     /// TLS setup, handshake, or stream failures.
@@ -84,6 +100,10 @@ pub struct TransportDiagnostics {
     pub unauthorized_frames: u64,
     /// Frames refused because a committed removal retired the sender.
     pub retired_peer_frames: u64,
+    /// Accepted outbound frames discarded after their target was retired.
+    pub retired_queued_frames: u64,
+    /// Bulk frames abandoned after the bounded ambiguous-write retry count.
+    pub retry_exhausted_frames: u64,
     /// Durable connection sessions refused as stale.
     pub stale_sessions: u64,
     /// Duplicate, skipped, reordered, superseded, or exhausted sequences.
@@ -102,6 +122,8 @@ pub struct TransportDiagnostics {
     pub listener_failures: u64,
     /// Connections refused because the configured concurrency bound was full.
     pub connection_full: u64,
+    /// Permanent peer-configuration incompatibilities observed by senders.
+    pub configuration_blocks: u64,
 }
 
 /// One physical peer's persistent sender state and counters.
@@ -111,6 +133,10 @@ pub struct PeerDiagnostics {
     pub peer_id: PeerId,
     /// Whether a persistent outbound TLS stream is established.
     pub connected: bool,
+    /// More precise connection and retry classification.
+    pub connection_state: PeerConnectionState,
+    /// Most recent connection failure, cleared after a successful handshake.
+    pub last_error: Option<String>,
     /// Frames retained by this peer's queue, including current in-flight work.
     pub queued_frames: usize,
     /// Complete-frame bytes retained by this peer's queue.

@@ -100,17 +100,20 @@ The server evaluates a mapped client hello in this order:
 2. `ClusterId` matches exactly;
 3. a common outer transport version exists;
 4. a common `rafter-codec` version exists;
-5. the declared complete-frame bound can hold a structurally valid frame;
+5. the declared required send bound can hold a structurally valid frame and
+   does not exceed the server's receive bound;
 6. the connection session is newer than the durable inbound high-water.
 
 Only the final step mutates session state. A newly accepted high-water is
 published durably before an accepted server hello is returned. The accepted
-frame bound is the smaller of the client offer and server receive bound.
+frame bound exactly equals the client's required send bound. Version 1 has no
+fragmentation or adaptive batching, so accepting a smaller value would make
+locally legal frames permanently undeliverable.
 
 The client independently requires the TLS-authenticated server principal to be
 the dial target, the server hello to claim that same principal and cluster, the
 selected versions to fall within its offered ranges, and the accepted frame
-bound to fall within its offer.
+bound to equal its offer.
 
 ## Durable session state
 
@@ -214,13 +217,18 @@ instead contain the kernel's bounded directive and caller-owned group route.
 Neither form carries a connection sequence. The worker assigns the next sequence
 only after TLS, the Rafter handshake, durable session allocation, and any
 snapshot payload resolution succeed. If a write fails ambiguously, the
-connection is discarded and prepared work may be retried on a newer session
-beginning again at sequence one.
+connection is discarded. Bulk work is returned to its traffic-class queue so
+later control work can run, and may be retried a finite number of times on a
+newer session beginning again at sequence one.
 
-Before every dial the worker reads the latest endpoint generation and cycles
-through its finite resolved socket-address list. `RaftTransport::send` never
-performs endpoint resolution, dial, handshake, sleep, disk I/O, or a blocking
-queue wait.
+Before every dial and send the worker reads the latest endpoint generation. A
+replacement or removal closes a stream established from a stale generation.
+Transient failures use capped exponential backoff and deterministic per-peer
+jitter. Permanent identity, cluster, version, or frame incompatibility blocks
+until the endpoint generation changes, without allocating another durable
+session. Stale-session and noncanonical accepted responses fail closed.
+`RaftTransport::send` never performs endpoint resolution, dial, handshake,
+sleep, disk I/O, or a blocking queue wait.
 
 ### Outbound queue admission and selection
 
@@ -234,6 +242,9 @@ an opportunity for non-control traffic, and replication and snapshot work
 alternate when both remain available. Queue capacity is retained while an item
 is in flight and released only after it is sent or explicitly dropped; moving a
 frame from queued to current work therefore cannot evade the configured bound.
+Every item carries a revocable authorization lease. Policy replacement revokes
+removed peers, and workers recheck the lease before snapshot resolution and
+again immediately before transmission.
 
 ### Snapshot directives
 
@@ -242,13 +253,13 @@ the route and sender, canonically encodes the group ID, computes the exact
 complete-frame bytes implied by the directive, and attempts one nonblocking
 snapshot-queue admission.
 
-The sender worker invokes the configured `SnapshotChunkResolver<G>` outside the
-managed driver lock. The resolver receives the caller-owned group route, outer
-Raft sender and recipient, and the kernel's `SnapshotChunkSend`. It returns only
-the opaque payload bytes. The worker requires exactly `chunk.len` bytes, builds
-the `InstallSnapshotChunk` message itself, and requires the materialized frame
-length to equal the bytes reserved at admission before assigning a connection
-sequence.
+A dedicated finite per-peer resolver lane invokes the configured
+`SnapshotChunkResolver<G>` outside the managed driver lock. The resolver
+receives the caller-owned group route, outer Raft sender and recipient, and the
+kernel's `SnapshotChunkSend`. It returns only the opaque payload bytes. The
+worker requires exactly `chunk.len` bytes, builds the `InstallSnapshotChunk`
+message itself, and requires the materialized frame length to equal the bytes
+reserved at admission before returning prepared work to sender scheduling.
 
 `Ok(None)` means the named snapshot is no longer available and drops this
 attempt like a lost Raft message. A typed resolver error likewise drops only
@@ -268,9 +279,20 @@ fences the previous socket. An equal or lower delayed session cannot replace a
 newer live epoch. Frame admission and live-epoch validation linearize under the
 same epoch lock.
 
-Inbound retention is bounded by count and bytes both per authenticated peer and
-globally. A frame admitted to neither bound is dropped and counted. Releasing a
-drained envelope releases both bounds exactly once.
+Before allocating a frame read buffer, the receiver reserves a runtime-wide
+weighted permit from the declared complete length. The default budget is 256
+MiB with a conservative 32x decode charge. The permit covers the wire buffer,
+outer-route validation, and inner-message decoding, then moves into the inbound
+queue with an accepted envelope. Read buffers are frame-scoped. Malformed,
+unauthorized, stale-epoch, and full-queue refusals release the permit
+immediately. Runtime construction refuses a budget that cannot admit one
+configured maximum frame.
+
+The receiver parses canonical group routing, sequence, sender, and recipient
+before constructing the inner Raft message. Inbound queue retention is also
+bounded by count and wire bytes both per authenticated peer and globally.
+Releasing a drained envelope releases its queue and weighted-memory bounds
+exactly once.
 
 A read timeout before any byte of the next frame is an idle polling event and
 preserves the connection. A timeout after a length prefix or body has begun is

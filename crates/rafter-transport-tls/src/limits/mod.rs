@@ -13,7 +13,8 @@ pub use aggregate::TransportLimits;
 pub use directory::{CertificateDirectoryLimits, DirectoryLimits, EndpointBookLimits};
 pub use error::{LimitError, LimitKind};
 pub use runtime::{
-    InboundQueueLimits, OutboundQueueLimits, RuntimeLimitError, RuntimeLimitKind, RuntimeLimits,
+    InboundQueueLimits, OutboundQueueLimits, ReceiveMemoryLimits, RuntimeLimitError,
+    RuntimeLimitKind, RuntimeLimits,
 };
 pub use session::{SessionStoreLimits, DEFAULT_MAX_SESSION_PEER_RECORDS, MAX_SESSION_PEER_RECORDS};
 pub use wire::{

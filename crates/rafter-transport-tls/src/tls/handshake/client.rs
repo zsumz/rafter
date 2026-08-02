@@ -98,7 +98,7 @@ impl TlsHandshakeConfig {
         let Some(frame_bytes) = hello.accepted_frame_bytes() else {
             return Err(TlsClientHandshakeError::NonCanonicalAccepted);
         };
-        if frame_bytes.get() < MIN_PEER_FRAME_BYTES || frame_bytes > self.max_frame_bytes() {
+        if frame_bytes.get() < MIN_PEER_FRAME_BYTES || frame_bytes != self.max_frame_bytes() {
             return Err(TlsClientHandshakeError::FrameLimitInvalid {
                 accepted: frame_bytes.get(),
                 minimum: MIN_PEER_FRAME_BYTES,

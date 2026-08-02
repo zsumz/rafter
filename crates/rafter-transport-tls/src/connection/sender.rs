@@ -1,31 +1,28 @@
 //! One persistent outbound connection worker per configured physical peer.
 
-use std::{sync::Arc, thread, time::Duration};
+mod retry;
+
+use std::{sync::Arc, thread};
 
 use crate::diagnostics::{add, increment, Counters, PeerCounters};
 use crate::queue::{OutboundItem, OutboundQueue, OutboundQueueError};
 use crate::runtime::{RuntimeControl, SessionStoreHandle};
-use crate::snapshot::SnapshotResolverHandle;
 use crate::{
-    CertificateDirectory, EndpointBook, GroupIdCodec, PeerFrameCodec, PeerFrameScratch, PeerId,
-    TlsHandshakeConfig, TlsIdentity, TransportTimeouts,
+    CertificateDirectory, EndpointBook, PeerId, TlsHandshakeConfig, TlsIdentity, TransportTimeouts,
 };
 
-use super::{
-    dial::{dial, DialError, OutboundConnection},
-    io::write_all_flush,
-    snapshot::{prepare_snapshot, SnapshotPreparation},
-};
+use super::{dial::OutboundConnection, io::write_all_flush};
 
-pub(crate) struct SenderContext<G, C> {
+use self::retry::connect;
+use super::dial::DialAttemptState;
+
+pub(crate) struct SenderContext<G> {
     pub(crate) peer: PeerId,
     pub(crate) endpoints: EndpointBook,
     pub(crate) identity: TlsIdentity,
     pub(crate) certificates: CertificateDirectory,
     pub(crate) handshake: TlsHandshakeConfig,
     pub(crate) sessions: SessionStoreHandle,
-    pub(crate) codec: Arc<PeerFrameCodec<G, C>>,
-    pub(crate) snapshot_resolver: Option<SnapshotResolverHandle<G>>,
     pub(crate) queue: Arc<OutboundQueue<G>>,
     pub(crate) control: Arc<RuntimeControl>,
     pub(crate) counters: Arc<Counters>,
@@ -33,16 +30,16 @@ pub(crate) struct SenderContext<G, C> {
     pub(crate) timeouts: TransportTimeouts,
 }
 
-pub(crate) fn sender_loop<G, C>(context: &SenderContext<G, C>)
+pub(crate) fn sender_loop<G>(context: &SenderContext<G>)
 where
     G: Send + 'static,
-    C: GroupIdCodec<G>,
 {
     let mut connection: Option<OutboundConnection> = None;
     let mut current: Option<OutboundItem<G>> = None;
     let mut encoded = Vec::new();
-    let mut scratch = PeerFrameScratch::new();
     let mut connected_once = false;
+    let mut retry_attempt = 0_u32;
+    let mut dial_attempts = DialAttemptState::default();
 
     loop {
         if should_stop(context) {
@@ -57,7 +54,13 @@ where
         // when no frame is queued. During shutdown, dial only to drain work
         // that was accepted before admission closed.
         if connection.is_none() && (!context.control.shutdown_requested() || current.is_some()) {
-            match connect(context, &mut connection, &mut connected_once) {
+            match connect(
+                context,
+                &mut connection,
+                &mut connected_once,
+                &mut retry_attempt,
+                &mut dial_attempts,
+            ) {
                 WorkerStep::Ready => {}
                 WorkerStep::Retry => continue,
                 WorkerStep::Stop => break,
@@ -75,20 +78,20 @@ where
         // A shutdown may have begun while this worker was waiting for work. An
         // accepted frame still gets its bounded drain opportunity.
         if connection.is_none() {
-            match connect(context, &mut connection, &mut connected_once) {
+            match connect(
+                context,
+                &mut connection,
+                &mut connected_once,
+                &mut retry_attempt,
+                &mut dial_attempts,
+            ) {
                 WorkerStep::Ready => {}
                 WorkerStep::Retry => continue,
                 WorkerStep::Stop => break,
             }
         }
         if matches!(
-            transmit_current(
-                context,
-                &mut connection,
-                &mut current,
-                &mut encoded,
-                &mut scratch,
-            ),
+            transmit_current(context, &mut connection, &mut current, &mut encoded,),
             WorkerStep::Stop
         ) {
             break;
@@ -109,44 +112,19 @@ where
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WorkerStep {
+pub(super) enum WorkerStep {
     Ready,
     Retry,
     Stop,
 }
 
-fn should_stop<G, C>(context: &SenderContext<G, C>) -> bool {
+pub(super) fn should_stop<G>(context: &SenderContext<G>) -> bool {
     context.control.terminal()
         || context.control.shutdown_grace_expired()
         || context.control.stopping_while_paused()
 }
 
-fn connect<G, C>(
-    context: &SenderContext<G, C>,
-    connection: &mut Option<OutboundConnection>,
-    connected_once: &mut bool,
-) -> WorkerStep {
-    match dial(context, *connected_once) {
-        Ok(open) => {
-            *connected_once = true;
-            *connection = Some(open);
-            WorkerStep::Ready
-        }
-        Err(DialError::Retry) => {
-            sleep_interruptibly(context, context.timeouts.redial());
-            WorkerStep::Retry
-        }
-        Err(DialError::Terminal(message)) => {
-            context.control.fail(message);
-            WorkerStep::Stop
-        }
-    }
-}
-
-fn poll_work<G, C>(
-    context: &SenderContext<G, C>,
-    current: &mut Option<OutboundItem<G>>,
-) -> WorkerStep {
+fn poll_work<G>(context: &SenderContext<G>, current: &mut Option<OutboundItem<G>>) -> WorkerStep {
     match context.queue.pop_timeout(context.timeouts.poll()) {
         Ok(item) => *current = item,
         Err(OutboundQueueError::Closed) => {}
@@ -174,19 +152,27 @@ fn poll_work<G, C>(
     }
 }
 
-fn transmit_current<G, C>(
-    context: &SenderContext<G, C>,
+fn transmit_current<G>(
+    context: &SenderContext<G>,
     connection: &mut Option<OutboundConnection>,
     current: &mut Option<OutboundItem<G>>,
     encoded: &mut Vec<u8>,
-    scratch: &mut PeerFrameScratch,
-) -> WorkerStep
-where
-    C: GroupIdCodec<G>,
-{
+) -> WorkerStep {
+    let Some(endpoint_current) = endpoint_is_current(context, connection.as_ref()) else {
+        return WorkerStep::Stop;
+    };
+    if !endpoint_current {
+        *connection = None;
+        return WorkerStep::Retry;
+    }
     let Some(item_bytes) = current.as_ref().map(OutboundItem::bytes) else {
         return WorkerStep::Retry;
     };
+    if current.as_ref().is_some_and(|item| !item.is_authorized()) {
+        increment(&context.counters.retired_queued_frames);
+        drop_current(context, current);
+        return WorkerStep::Retry;
+    }
     let Some(frame_bytes) = connection.as_ref().map(|open| open.frame_bytes) else {
         return WorkerStep::Retry;
     };
@@ -196,24 +182,14 @@ where
         return WorkerStep::Retry;
     }
 
-    let Some(item) = current.as_mut() else {
-        return WorkerStep::Retry;
-    };
-    match prepare_snapshot(context, item, scratch) {
-        SnapshotPreparation::Ready => {}
-        SnapshotPreparation::Drop => {
-            drop_current(context, current);
-            return WorkerStep::Retry;
-        }
-        SnapshotPreparation::Terminal(message) => {
-            context.control.fail(message);
-            return WorkerStep::Stop;
-        }
-    }
-
     let Some(open) = connection.as_mut() else {
         return WorkerStep::Retry;
     };
+    if current.as_ref().is_some_and(|item| !item.is_authorized()) {
+        increment(&context.counters.retired_queued_frames);
+        drop_current(context, current);
+        return WorkerStep::Retry;
+    }
     let Ok(sequence) = open.sequence.take_next() else {
         increment(&context.counters.sequence_violations);
         *connection = None;
@@ -226,12 +202,44 @@ where
         return WorkerStep::Stop;
     };
     frame.encode_into(sequence, encoded);
+    let Some(endpoint_current) = endpoint_is_current(context, connection.as_ref()) else {
+        return WorkerStep::Stop;
+    };
+    if !endpoint_current {
+        *connection = None;
+        return WorkerStep::Retry;
+    }
+    if current.as_ref().is_some_and(|item| !item.is_authorized()) {
+        increment(&context.counters.retired_queued_frames);
+        *connection = None;
+        drop_current(context, current);
+        return WorkerStep::Retry;
+    }
     let Some(open) = connection.as_mut() else {
         return WorkerStep::Retry;
     };
     if write_all_flush(&mut open.stream, encoded).is_err() {
         increment(&context.counters.tls_failures);
         *connection = None;
+        if current
+            .as_ref()
+            .is_some_and(|item| item.class() != crate::TrafficClass::Control)
+        {
+            let retry = current.as_mut().is_some_and(OutboundItem::retry_bulk);
+            if !retry {
+                increment(&context.counters.retry_exhausted_frames);
+                drop_current(context, current);
+                return WorkerStep::Retry;
+            }
+            let Some(item) = current.take() else {
+                context.control.fail("outbound retry lost its current item");
+                return WorkerStep::Stop;
+            };
+            if context.queue.requeue_ready(item).is_err() {
+                context.control.fail("outbound queue state is poisoned");
+                return WorkerStep::Stop;
+            }
+        }
         return WorkerStep::Retry;
     }
 
@@ -241,7 +249,27 @@ where
     WorkerStep::Ready
 }
 
-fn release_current<G, C>(context: &SenderContext<G, C>, current: &mut Option<OutboundItem<G>>) {
+fn endpoint_is_current<G>(
+    context: &SenderContext<G>,
+    connection: Option<&OutboundConnection>,
+) -> Option<bool> {
+    let Some(open) = connection else {
+        return Some(true);
+    };
+    match context.endpoints.snapshot(&context.peer) {
+        Ok(Some(snapshot)) => Some(snapshot.generation() == open.endpoint_generation),
+        Ok(None) => Some(false),
+        Err(error) => {
+            context.control.fail(format!(
+                "endpoint book failed for {}: {error}",
+                context.peer
+            ));
+            None
+        }
+    }
+}
+
+fn release_current<G>(context: &SenderContext<G>, current: &mut Option<OutboundItem<G>>) {
     let Some(item) = current.take() else {
         return;
     };
@@ -250,20 +278,8 @@ fn release_current<G, C>(context: &SenderContext<G, C>, current: &mut Option<Out
     }
 }
 
-fn drop_current<G, C>(context: &SenderContext<G, C>, current: &mut Option<OutboundItem<G>>) {
+fn drop_current<G>(context: &SenderContext<G>, current: &mut Option<OutboundItem<G>>) {
     increment(&context.counters.frames_dropped);
     context.peer_counters.dropped();
     release_current(context, current);
-}
-
-fn sleep_interruptibly<G, C>(context: &SenderContext<G, C>, duration: Duration) {
-    let mut remaining = duration;
-    while !remaining.is_zero()
-        && !context.control.terminal()
-        && !context.control.shutdown_grace_expired()
-    {
-        let step = remaining.min(context.timeouts.poll());
-        thread::sleep(step);
-        remaining = remaining.saturating_sub(step);
-    }
 }

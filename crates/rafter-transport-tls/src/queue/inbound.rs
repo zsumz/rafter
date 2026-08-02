@@ -10,12 +10,14 @@ use rafter_service::AuthenticatedPeerEnvelope;
 use crate::{PeerId, RuntimeLimits};
 
 use super::QueueUsage;
+use super::ReceiveMemoryPermit;
 
 #[derive(Debug)]
 struct InboundItem<G> {
     peer: PeerId,
     bytes: usize,
     envelope: AuthenticatedPeerEnvelope<G, PeerId>,
+    _memory: ReceiveMemoryPermit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +65,7 @@ impl<G> InboundQueue<G> {
         peer: PeerId,
         bytes: usize,
         envelope: AuthenticatedPeerEnvelope<G, PeerId>,
+        memory: ReceiveMemoryPermit,
     ) -> Result<(), InboundQueueError> {
         let mut state = self.state.lock().map_err(|_| InboundQueueError::Poisoned)?;
         if state.closed {
@@ -94,6 +97,7 @@ impl<G> InboundQueue<G> {
             peer,
             bytes,
             envelope,
+            _memory: memory,
         });
         Ok(())
     }

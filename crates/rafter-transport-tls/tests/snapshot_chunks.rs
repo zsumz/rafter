@@ -99,11 +99,20 @@ fn synchronous_admission_never_waits_for_snapshot_resolution() {
     assert!(wait_until(Duration::from_secs(3), || {
         entered.load(Ordering::Acquire)
     }));
-    assert!(receiver
-        .inbound()
-        .drain(1)
-        .expect("inbound queue")
-        .is_empty());
+    sender
+        .sender()
+        .send(RuntimeFixture::vote())
+        .expect("control work is admitted while snapshot resolution blocks");
+    let mut control = None;
+    assert!(wait_until(Duration::from_secs(3), || {
+        control = receiver.inbound().drain(1).expect("inbound queue").pop();
+        control.is_some()
+    }));
+    assert!(matches!(
+        control.expect("control frame").message,
+        Message::RequestVote(_)
+    ));
+    assert!(!release.load(Ordering::Acquire));
     assert_eq!(
         observed.lock().expect("observed request lock").as_ref(),
         Some(&ObservedRequest {
@@ -121,6 +130,91 @@ fn synchronous_admission_never_waits_for_snapshot_resolution() {
             .depth()
             .is_ok_and(|(frames, _)| frames == 1)
     }));
+
+    sender.join().expect("sender joins");
+    receiver.join().expect("receiver joins");
+}
+
+#[test]
+fn resolver_finishing_after_shutdown_grace_cannot_requeue_or_send() {
+    let fixture = RuntimeFixture::new(RuntimeLimits::default());
+    let receiver = fixture.start_b();
+    let payload = b"late snapshot resolution".to_vec();
+    let snapshot = snapshot(&payload);
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let resolver = GatedResolver {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+        observed: Arc::new(Mutex::new(None)),
+        bytes: payload,
+    };
+    let _release_on_panic = ReleaseOnDrop(Arc::clone(&release));
+    let sender =
+        fixture.start_a_with_resolver(fixture.endpoints_to_b(receiver.local_addr()), resolver);
+
+    sender
+        .sender()
+        .send_snapshot_chunk(envelope(&snapshot))
+        .expect("snapshot directive");
+    assert!(wait_until(Duration::from_secs(3), || {
+        entered.load(Ordering::Acquire)
+    }));
+    sender.shutdown();
+    thread::sleep(Duration::from_millis(300));
+    release.store(true, Ordering::Release);
+
+    assert!(wait_until(Duration::from_secs(3), || {
+        sender.diagnostics().frames_dropped == 1
+    }));
+    assert_eq!(sender.diagnostics().snapshot_chunks_resolved, 0);
+    assert!(receiver
+        .inbound()
+        .drain(1)
+        .expect("inbound queue")
+        .is_empty());
+
+    sender.join().expect("sender joins");
+    receiver.join().expect("receiver joins");
+}
+
+#[test]
+fn committed_retirement_revokes_a_queued_snapshot_before_resolution() {
+    let fixture = RuntimeFixture::new(RuntimeLimits::default());
+    let receiver = fixture.start_b();
+    let payload = b"retired before snapshot resolution".to_vec();
+    let snapshot = snapshot(&payload);
+    let mut source = InMemorySnapshotChunkSource::new();
+    source
+        .insert(&snapshot, payload)
+        .expect("snapshot payload matches its descriptor");
+    let sender = fixture.bind_paused_a_with_resolver(
+        fixture.endpoints_to_b(receiver.local_addr()),
+        SnapshotChunkSourceResolver::new(source),
+    );
+
+    sender
+        .sender()
+        .send_snapshot_chunk(envelope(&snapshot))
+        .expect("snapshot is queued while workers are paused");
+    sender
+        .sender()
+        .update_peers(
+            &GROUP_ID.to_owned(),
+            rafter_service::PeerPolicy::new(Vec::new(), Some(NODE_B)),
+        )
+        .expect("destination is retired before activation");
+    sender.start().expect("activate sender");
+
+    assert!(wait_until(Duration::from_secs(3), || {
+        sender.diagnostics().retired_queued_frames == 1
+    }));
+    assert_eq!(sender.diagnostics().snapshot_chunks_resolved, 0);
+    assert!(receiver
+        .inbound()
+        .drain(1)
+        .expect("inbound queue")
+        .is_empty());
 
     sender.join().expect("sender joins");
     receiver.join().expect("receiver joins");

@@ -2,11 +2,13 @@
 
 mod inbound;
 mod outbound;
+mod receive;
 
 use std::{error::Error, fmt};
 
 pub use inbound::InboundQueueLimits;
 pub use outbound::OutboundQueueLimits;
+pub use receive::ReceiveMemoryLimits;
 
 /// Runtime resource whose zero value was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +34,10 @@ pub enum RuntimeLimitKind {
     InboundGlobalBytes,
     /// Concurrent accepted or handshaking inbound connections.
     InboundConnections,
+    /// Weighted memory retained by inbound reads, decoders, and queued envelopes.
+    ReceiveMemoryBytes,
+    /// Conservative decoded-memory charge per wire byte.
+    DecodeAmplification,
 }
 
 impl fmt::Display for RuntimeLimitKind {
@@ -47,6 +53,8 @@ impl fmt::Display for RuntimeLimitKind {
             Self::InboundGlobalFrames => "global inbound frames",
             Self::InboundGlobalBytes => "global inbound bytes",
             Self::InboundConnections => "inbound connections",
+            Self::ReceiveMemoryBytes => "global receive memory bytes",
+            Self::DecodeAmplification => "decode amplification",
         })
     }
 }
@@ -141,6 +149,7 @@ pub struct RuntimeLimits {
     outbound: OutboundQueueLimits,
     inbound: InboundQueueLimits,
     max_inbound_connections: usize,
+    receive_memory: ReceiveMemoryLimits,
 }
 
 impl RuntimeLimits {
@@ -149,6 +158,7 @@ impl RuntimeLimits {
         outbound: OutboundQueueLimits::DEFAULT,
         inbound: InboundQueueLimits::DEFAULT,
         max_inbound_connections: 128,
+        receive_memory: ReceiveMemoryLimits::DEFAULT,
     };
 
     /// Creates complete runtime bounds from independently validated queues.
@@ -170,6 +180,7 @@ impl RuntimeLimits {
             outbound,
             inbound,
             max_inbound_connections,
+            receive_memory: ReceiveMemoryLimits::DEFAULT,
         })
     }
 
@@ -183,6 +194,19 @@ impl RuntimeLimits {
     #[must_use]
     pub const fn inbound(self) -> InboundQueueLimits {
         self.inbound
+    }
+
+    /// Replaces this transport runtime's shared receive/decode memory budget.
+    #[must_use]
+    pub const fn with_receive_memory(mut self, receive_memory: ReceiveMemoryLimits) -> Self {
+        self.receive_memory = receive_memory;
+        self
+    }
+
+    /// Process-wide receive/decode memory budget.
+    #[must_use]
+    pub const fn receive_memory(self) -> ReceiveMemoryLimits {
+        self.receive_memory
     }
 
     /// Maximum outbound frames retained for one physical peer.

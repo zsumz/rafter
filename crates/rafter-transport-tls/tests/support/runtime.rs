@@ -5,8 +5,8 @@ use rafter_service::{PeerEnvelope, PeerPolicy};
 use rafter_transport_tls::{
     CertificateDirectory, ClusterId, EndpointBook, PeerEndpoint, PeerId, RuntimeLimits,
     SnapshotChunkResolver, TlsIdentity, TlsPeerDirectory, TlsPeerTransport,
-    TlsPeerTransportBuilder, TransportConfig, TransportIoTimeouts, TransportLimits,
-    TransportRuntimeTimeouts, TransportSessionStore, TransportTimeouts,
+    TlsPeerTransportBuilder, TlsTransportBuildError, TransportConfig, TransportIoTimeouts,
+    TransportLimits, TransportRuntimeTimeouts, TransportSessionStore, TransportTimeouts,
 };
 
 use super::session_store::MemorySessionStore;
@@ -105,6 +105,11 @@ impl RuntimeFixture {
         self
     }
 
+    pub fn with_limits(mut self, limits: TransportLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
     pub fn start_a(&self, endpoints: EndpointBook) -> TestTransport {
         self.start_a_routes(endpoints, &[DEFAULT_ROUTE])
     }
@@ -123,6 +128,25 @@ impl RuntimeFixture {
         )
         .bind()
         .expect("start peer A transport")
+    }
+
+    pub fn try_start_a_with_store<S>(
+        &self,
+        endpoints: EndpointBook,
+        sessions: S,
+    ) -> Result<TestTransport, TlsTransportBuildError>
+    where
+        S: TransportSessionStore,
+    {
+        self.builder(
+            self.peer_a.clone(),
+            self.identity_a.clone(),
+            &self.peer_b,
+            endpoints,
+            &[DEFAULT_ROUTE],
+            sessions,
+        )
+        .bind()
     }
 
     pub fn bind_paused_a_with_store<S>(&self, endpoints: EndpointBook, sessions: S) -> TestTransport
@@ -156,6 +180,27 @@ impl RuntimeFixture {
         .snapshot_resolver(resolver)
         .bind()
         .expect("start peer A snapshot transport")
+    }
+
+    pub fn bind_paused_a_with_resolver<R>(
+        &self,
+        endpoints: EndpointBook,
+        resolver: R,
+    ) -> TestTransport
+    where
+        R: SnapshotChunkResolver<String>,
+    {
+        self.builder(
+            self.peer_a.clone(),
+            self.identity_a.clone(),
+            &self.peer_b,
+            endpoints,
+            &[DEFAULT_ROUTE],
+            MemorySessionStore::new(),
+        )
+        .snapshot_resolver(resolver)
+        .bind_paused()
+        .expect("bind paused peer A snapshot transport")
     }
 
     pub fn start_b(&self) -> TestTransport {

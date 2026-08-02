@@ -28,6 +28,7 @@ pub struct CertificateDirectory {
 
 #[derive(Debug)]
 pub(super) struct CertificateDirectoryState {
+    pub(super) limits: CertificateDirectoryLimits,
     pub(super) by_fingerprint: BTreeMap<CertificateFingerprint, PeerId>,
     pub(super) peers: BTreeSet<PeerId>,
 }
@@ -43,6 +44,12 @@ impl CertificateDirectory {
     #[must_use]
     pub fn builder_with_limits(limits: CertificateDirectoryLimits) -> CertificateDirectoryBuilder {
         CertificateDirectoryBuilder::new(limits)
+    }
+
+    /// Finite bounds enforced while this immutable directory was built.
+    #[must_use]
+    pub fn limits(&self) -> CertificateDirectoryLimits {
+        self.state.limits
     }
 
     /// Returns the principal explicitly mapped to `fingerprint`.
@@ -62,6 +69,12 @@ impl CertificateDirectory {
     #[must_use]
     pub fn contains_peer(&self, peer_id: &PeerId) -> bool {
         self.state.peers.contains(peer_id)
+    }
+
+    /// Iterates every configured principal in canonical order.
+    #[must_use]
+    pub fn peer_ids(&self) -> impl ExactSizeIterator<Item = &PeerId> {
+        self.state.peers.iter()
     }
 
     /// Number of configured leaf-certificate fingerprints.

@@ -3,6 +3,7 @@
 use rafter_service::AuthenticatedPeerEnvelope;
 
 use crate::directory::InboundRoute;
+use crate::wire::PeerFrameRoute;
 use crate::{PeerFrame, PeerId, TlsPeerDirectory};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,4 +49,47 @@ where
         raft_to: to,
         message,
     })
+}
+
+pub(super) fn admit_route<G>(
+    directory: &TlsPeerDirectory<G>,
+    local_peer: &PeerId,
+    authenticated_peer: &PeerId,
+    route: &PeerFrameRoute<G>,
+) -> Result<(), AdmissionRefusal>
+where
+    G: Ord,
+{
+    classify_route(
+        directory,
+        local_peer,
+        authenticated_peer,
+        &route.group_id,
+        route.from,
+        route.to,
+    )
+}
+
+fn classify_route<G>(
+    directory: &TlsPeerDirectory<G>,
+    local_peer: &PeerId,
+    authenticated_peer: &PeerId,
+    group_id: &G,
+    from: rafter::NodeId,
+    to: rafter::NodeId,
+) -> Result<(), AdmissionRefusal>
+where
+    G: Ord,
+{
+    match directory
+        .inbound_route(group_id, local_peer, authenticated_peer, from, to)
+        .map_err(|_| AdmissionRefusal::Terminal)?
+    {
+        InboundRoute::Authorized => Ok(()),
+        InboundRoute::UnknownGroup | InboundRoute::Unauthorized => {
+            Err(AdmissionRefusal::Unauthorized)
+        }
+        InboundRoute::IdentityMismatch => Err(AdmissionRefusal::Identity),
+        InboundRoute::Retired => Err(AdmissionRefusal::Retired),
+    }
 }

@@ -7,6 +7,7 @@ use std::{
     net::TcpStream,
 };
 
+use crate::queue::{ReceiveMemoryBudget, ReceiveMemoryPermit};
 use crate::{
     decode_client_hello, decode_server_hello, encode_client_hello_into, encode_server_hello_into,
     ClientHello, DecodeHandshakeError, ServerHello, HANDSHAKE_MAGIC, MAX_CLIENT_HELLO_BYTES,
@@ -44,6 +45,7 @@ pub(crate) enum PeerFrameIoError {
     Io(io::Error),
     LengthUnsupported(u32),
     TooLarge { actual: usize, maximum: usize },
+    ReceiveMemoryFull { required: usize, maximum: usize },
 }
 
 impl fmt::Display for PeerFrameIoError {
@@ -58,22 +60,46 @@ impl fmt::Display for PeerFrameIoError {
                 formatter,
                 "peer frame is {actual} bytes, exceeding negotiated maximum {maximum}"
             ),
+            Self::ReceiveMemoryFull { required, maximum } => write!(
+                formatter,
+                "peer frame requires {required} weighted receive bytes, exceeding the available \
+                 transport-runtime budget of {maximum} bytes"
+            ),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum PeerFrameRead {
     Closed,
     Idle,
-    Complete(usize),
+    Complete {
+        bytes: usize,
+        memory: ReceiveMemoryPermit,
+    },
 }
+
+impl PartialEq for PeerFrameRead {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Closed, Self::Closed) | (Self::Idle, Self::Idle) => true,
+            (Self::Complete { bytes: left, .. }, Self::Complete { bytes: right, .. }) => {
+                left == right
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for PeerFrameRead {}
 
 impl Error for PeerFrameIoError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::LengthUnsupported(_) | Self::TooLarge { .. } => None,
+            Self::LengthUnsupported(_) | Self::TooLarge { .. } | Self::ReceiveMemoryFull { .. } => {
+                None
+            }
         }
     }
 }
@@ -139,6 +165,7 @@ pub(crate) fn read_server_hello(
 pub(crate) fn read_peer_frame(
     reader: &mut impl Read,
     maximum: usize,
+    memory: &ReceiveMemoryBudget,
     output: &mut Vec<u8>,
 ) -> Result<PeerFrameRead, PeerFrameIoError> {
     let mut prefix = [0_u8; PEER_FRAME_LENGTH_PREFIX_BYTES];
@@ -178,6 +205,13 @@ pub(crate) fn read_peer_frame(
             maximum,
         });
     }
+    let permit =
+        memory
+            .try_acquire(complete)
+            .map_err(|full| PeerFrameIoError::ReceiveMemoryFull {
+                required: full.required,
+                maximum: full.maximum,
+            })?;
 
     output.clear();
     output.reserve(complete);
@@ -186,7 +220,10 @@ pub(crate) fn read_peer_frame(
     reader
         .read_exact(&mut output[PEER_FRAME_LENGTH_PREFIX_BYTES..])
         .map_err(PeerFrameIoError::Io)?;
-    Ok(PeerFrameRead::Complete(complete))
+    Ok(PeerFrameRead::Complete {
+        bytes: complete,
+        memory: permit,
+    })
 }
 
 pub(crate) fn write_all_flush(writer: &mut impl Write, bytes: &[u8]) -> io::Result<()> {

@@ -78,8 +78,8 @@ impl EndpointSnapshot {
 
 /// Bounded caller-managed `PeerId -> endpoints` configuration.
 ///
-/// Replacement is atomic. Sender workers can compare generations before each
-/// dial without retaining discovery state inside the transport.
+/// Replacement is atomic. Sender workers compare generations before each send,
+/// close a stale stream, and redial from the newly installed endpoint set.
 #[derive(Clone)]
 pub struct EndpointBook {
     limits: EndpointBookLimits,
@@ -106,6 +106,12 @@ impl EndpointBook {
             limits,
             state: Arc::new(RwLock::new(EndpointBookState::default())),
         }
+    }
+
+    /// Finite bounds enforced by this book.
+    #[must_use]
+    pub const fn limits(&self) -> EndpointBookLimits {
+        self.limits
     }
 
     /// Atomically replaces one peer's ordered endpoint set.

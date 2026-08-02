@@ -2,13 +2,17 @@ use std::io::{self, Read};
 
 use super::*;
 
+fn budget() -> ReceiveMemoryBudget {
+    ReceiveMemoryBudget::new(crate::ReceiveMemoryLimits::default())
+}
+
 #[test]
 fn an_idle_timeout_before_a_frame_preserves_the_connection() {
     let mut reader = ErrorReader::new(io::ErrorKind::TimedOut);
     let mut output = Vec::new();
 
     assert_eq!(
-        read_peer_frame(&mut reader, 128, &mut output).expect("idle read"),
+        read_peer_frame(&mut reader, 128, &budget(), &mut output).expect("idle read"),
         PeerFrameRead::Idle
     );
     assert!(output.is_empty());
@@ -20,7 +24,7 @@ fn a_timeout_after_the_length_prefix_starts_is_a_connection_error() {
     let mut output = Vec::new();
 
     assert!(matches!(
-        read_peer_frame(&mut reader, 128, &mut output),
+        read_peer_frame(&mut reader, 128, &budget(), &mut output),
         Err(PeerFrameIoError::Io(error)) if error.kind() == io::ErrorKind::TimedOut
     ));
 }

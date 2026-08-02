@@ -68,28 +68,40 @@ exact eventual complete-frame bytes before queue admission. `Ok(())` means
 accepted into the bounded queue; it does not mean delivered.
 
 Every outbound peer configured when the runtime binds owns one persistent
-sender worker and one finite queue. The queue is bounded by both frame count and
-retained bytes. Bulk replication cannot consume the reserved control budget,
-and bounded weighted selection prevents an unending control stream from
-permanently starving replication or snapshot work.
+sender worker, one finite queue, and, when enabled, one bounded snapshot
+resolver lane. The queue is bounded by both frame count and retained bytes.
+Bulk replication cannot consume the reserved control budget, bounded weighted
+selection prevents an unending control stream from permanently starving bulk
+work, and a failed bulk write is returned behind later control work. Bulk
+write retries are finite and exhaustion is observable.
 
 A runtime configured with `snapshot_resolver` enqueues the kernel's bounded
-snapshot directive rather than reading its payload synchronously. The persistent
-sender worker invokes `SnapshotChunkResolver<G>` outside the driver lock, checks
-that the returned bytes exactly match the directive, builds the
-`InstallSnapshotChunk` message, and only then assigns a live connection
-sequence. A source refusal or typed resolver error drops that attempt like a
-lost Raft message and remains visible in diagnostics. Without a resolver,
-snapshot admission fails synchronously with `SnapshotResolverUnavailable`.
+snapshot directive rather than reading its payload synchronously. A dedicated
+per-peer resolver worker invokes `SnapshotChunkResolver<G>` outside the driver
+lock, checks that the returned bytes exactly match the directive, builds the
+`InstallSnapshotChunk` message, and returns the prepared work to sender
+scheduling. The sender assigns a live connection sequence only at transmission.
+A source refusal or typed resolver error drops that attempt like a lost Raft
+message and remains visible in diagnostics. Without a resolver, snapshot
+admission fails synchronously with `SnapshotResolverUnavailable`.
 
 ## Connection runtime
 
 A sender worker reuses one mutually authenticated connection until it fails,
-then rereads the latest `EndpointBook` generation and redials the bounded
-endpoint list deterministically. Queued work is connection-independent. A
-connection sequence is assigned only after TLS, the Rafter handshake, and a
-newer durable connection session have succeeded, so an ambiguous write can be
-retried on a fresh stream without reusing the old stream's sequence space.
+and compares its endpoint generation before every send. Replacement or removal
+closes the stale stream; the worker then reads the latest generation and dials
+the bounded endpoint list deterministically. Queued work is
+connection-independent. A connection sequence is assigned only after TLS, the
+Rafter handshake, and a newer durable connection session have succeeded, so an
+ambiguous write can be retried on a fresh stream without reusing the old
+stream's sequence space.
+
+Transient failures use capped exponential backoff with deterministic per-peer
+jitter. Permanent identity, cluster, version, or frame incompatibility enters
+`ConfigurationBlocked` without allocating more durable sessions and waits for
+an endpoint-generation change. Stale sessions and noncanonical accepted
+responses fail the runtime closed. Per-peer diagnostics expose this state and
+the last connection error.
 
 The listener is nonblocking. Every accepted socket consumes one finite inbound
 connection permit before a receiver worker is spawned. Each receiver completes
@@ -103,11 +115,15 @@ exchange and the Rafter hello, not a renewable idle timeout. A client that
 trickles syntactically plausible bytes therefore cannot retain a bounded
 inbound connection permit indefinitely.
 
-Before delivery, every frame is checked for canonical group routing, embedded
-sender agreement, authenticated `PeerId -> NodeId` ownership, local recipient,
-authorization, and retirement. Accepted envelopes enter count-and-byte-bounded
-per-peer and global inbound queues. Queue pressure drops the frame and remains
-visible in diagnostics; it never grows memory without a configured bound.
+Before delivery, every declared frame reserves a weighted runtime-wide memory
+permit before its read buffer is allocated. Cheap outer routing, identity,
+authorization, and retirement checks run before inner-message construction.
+Construction refuses a budget that cannot hold one configured maximum frame.
+The permit covers reading and decoding and moves with an accepted envelope into
+the count-and-byte-bounded inbound queue; every refusal releases it. Frame read
+buffers are frame-scoped, so idle connections retain no uncharged frame
+allocation. Queue or memory pressure drops the frame and remains visible in
+diagnostics.
 
 Idle read timeouts are polling points, not forced reconnects. A timeout before
 any byte of the next frame preserves the persistent connection. A timeout after
@@ -157,7 +173,9 @@ crash-fault transport for Raft, not a Byzantine consensus layer.
 
 `TlsHandshakeConfig` binds the authenticated channel to one exact `ClusterId`,
 one local `PeerId`, supported outer and peer-codec version ranges, and a finite
-complete-frame bound.
+complete-frame contract. Because version 1 has no fragmentation or adaptive
+batching, the client offer is its required send bound: the server either accepts
+that exact bound or returns `FrameLimitRejected` before session state changes.
 
 On the client, `begin_client_hello` durably allocates the next outbound
 connection session before returning bytes that may be sent. On the server,
@@ -191,7 +209,9 @@ the handle until it is dropped and reopened.
 Peer records are replay high-water marks, not an evictable cache. The store has
 no removal operation, so `SessionStoreLimits` bounds the distinct physical
 principals seen over the state file's lifetime rather than only currently
-connected peers.
+connected peers. Binding requires component limits to match `TransportLimits`
+and preflights aggregate capacity for every certificate-configured remote
+principal before the listener or workers become observable.
 
 Within one accepted connection, `OutboundSequence` and `InboundSequence`
 require exact progression from one. Sequence state is not durable because a
@@ -211,9 +231,10 @@ are returned as a typed join error rather than disappearing silently.
 
 `diagnostics`, `peer_diagnostics`, `queue_depths`, `health`, and `local_addr`
 provide framework-neutral snapshots. Snapshot admission, successful resolution,
-source refusal, resolver failure, and byte mismatch have explicit counters. The
-runtime reports starting, ready, degraded, stopping, failed, and stopped states
-without requiring a logging or metrics crate.
+source refusal, resolver failure, byte mismatch, revoked queued work, exhausted
+bulk retries, receive-memory refusals, and configuration blocks have explicit
+counters. The runtime reports starting, ready, degraded, stopping, failed, and
+stopped states without requiring a logging or metrics crate.
 
 ## Group routing
 
@@ -266,6 +287,10 @@ compatibility in addition to the committed hello, frame, and state vectors.
 Every retained directory, queue, connection set, and wire field has an explicit
 finite bound. The default peer-frame receive bound is derived from
 `rafter_codec::max_receive_frame_bytes`, not from the append budget alone.
+The default weighted receive/decode budget is 256 MiB and charges 32 bytes per
+declared wire byte, above the allocation-counted hostile v1 decode peak. The
+standalone allocation harness checks minimum-size append entries and maximum
+joint-membership frames against that contract.
 
 See [`FORMAT.md`](FORMAT.md). Golden version-1 examples live under `format/`.
 

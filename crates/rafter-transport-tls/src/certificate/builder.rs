@@ -72,6 +72,7 @@ impl CertificateDirectoryBuilder {
     pub fn build(self) -> CertificateDirectory {
         CertificateDirectory {
             state: Arc::new(CertificateDirectoryState {
+                limits: self.limits,
                 by_fingerprint: self.by_fingerprint,
                 peers: self.peers,
             }),

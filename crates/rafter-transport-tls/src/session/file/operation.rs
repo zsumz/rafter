@@ -39,6 +39,24 @@ impl FileTransportSessionStore {
 impl TransportSessionStore for FileTransportSessionStore {
     type Error = FileTransportSessionStoreError;
 
+    fn limits(&self) -> crate::SessionStoreLimits {
+        self.limits()
+    }
+
+    fn preflight_peer(&self, peer: &PeerId) -> Result<(), Self::Error> {
+        self.healthy_inner()?
+            .state
+            .preflight_peer(peer)
+            .map_err(|source| FileTransportSessionStoreError::State { source })
+    }
+
+    fn preflight_peers(&self, peers: &[PeerId]) -> Result<(), Self::Error> {
+        self.healthy_inner()?
+            .state
+            .preflight_peers(peers)
+            .map_err(|source| FileTransportSessionStoreError::State { source })
+    }
+
     fn allocate_outbound_session(&self, peer: &PeerId) -> Result<ConnectionSession, Self::Error> {
         let mut inner = self.healthy_inner()?;
         let mut candidate = inner.state.clone();

@@ -8,6 +8,7 @@ use rafter_service::PeerPolicy;
 use crate::PeerId;
 
 use super::state::{maximum_floor, GroupPolicy, GroupState};
+use super::AuthorizationLease;
 use super::{DirectoryError, InstalledPeerPolicy, TlsPeerDirectory};
 
 impl<G> TlsPeerDirectory<G>
@@ -112,10 +113,12 @@ where
     ///
     /// Returns [`DirectoryError::Poisoned`] when shared state is poisoned.
     pub fn remove_group(&self, group_id: &G) -> Result<bool, DirectoryError> {
-        self.state
-            .write()
-            .map(|mut state| state.groups.remove(group_id).is_some())
-            .map_err(|_| DirectoryError::Poisoned)
+        let mut state = self.state.write().map_err(|_| DirectoryError::Poisoned)?;
+        let Some(group) = state.groups.remove(group_id) else {
+            return Ok(false);
+        };
+        revoke_all(&group);
+        Ok(true)
     }
 
     /// Atomically replaces one group's complete authorization policy.
@@ -150,9 +153,11 @@ where
                 .and_then(|current| current.retirement_floor),
             incoming_floor,
         );
+        let leases = authorization_leases(group, &authorized_nodes);
         group.policy = Some(GroupPolicy {
             authorized_peers,
             authorized_nodes,
+            leases,
             retirement_floor,
         });
         Ok(())
@@ -171,6 +176,38 @@ where
                 retirement_floor: policy.retirement_floor,
             })
         }))
+    }
+}
+
+fn authorization_leases(
+    group: &GroupState,
+    authorized_nodes: &BTreeSet<NodeId>,
+) -> std::collections::BTreeMap<NodeId, AuthorizationLease> {
+    let mut leases = std::collections::BTreeMap::new();
+    for node_id in authorized_nodes {
+        let lease = group
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.leases.get(node_id))
+            .cloned()
+            .unwrap_or_else(AuthorizationLease::new);
+        leases.insert(*node_id, lease);
+    }
+    if let Some(current) = &group.policy {
+        for (node_id, lease) in &current.leases {
+            if !authorized_nodes.contains(node_id) {
+                lease.revoke();
+            }
+        }
+    }
+    leases
+}
+
+fn revoke_all(group: &GroupState) {
+    if let Some(policy) = &group.policy {
+        for lease in policy.leases.values() {
+            lease.revoke();
+        }
     }
 }
 

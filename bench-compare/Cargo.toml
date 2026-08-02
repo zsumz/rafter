@@ -17,6 +17,7 @@ rafter-multiraft = { path = "../crates/rafter-multiraft" }
 rafter-runtime = { path = "../crates/rafter-runtime" }
 rafter-service = { path = "../crates/rafter-service" }
 rafter-storage = { path = "../crates/rafter-storage" }
+rafter-transport-tls = { path = "../crates/rafter-transport-tls" }
 
 # tikv/raft-rs. prost-codec instead of the default protobuf-codec: the
 # protobuf codec's build script rejects modern protoc (>= 21.x) and its
@@ -63,6 +64,10 @@ path = "src/bin/bench-rafter-multiraft.rs"
 [[bin]]
 name = "bench-rafter-profile"
 path = "src/bin/bench-rafter-profile.rs"
+
+[[bin]]
+name = "check-transport-receive-memory"
+path = "src/bin/check-transport-receive-memory.rs"
 
 [[bin]]
 name = "bench-raft-rs"

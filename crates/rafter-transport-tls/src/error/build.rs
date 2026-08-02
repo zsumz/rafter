@@ -21,6 +21,18 @@ pub enum TlsTransportBuildError {
     MissingEndpoints,
     /// The builder was not supplied a durable session store.
     MissingSessionStore,
+    /// A supplied bounded component disagrees with aggregate configuration.
+    DependencyLimitsMismatch {
+        /// Stable component name.
+        component: &'static str,
+    },
+    /// The shared receive-memory budget cannot admit one maximum frame.
+    ReceiveMemoryTooSmall {
+        /// Weighted bytes required by one maximum frame.
+        required: usize,
+        /// Configured runtime-wide weighted-byte budget.
+        maximum: usize,
+    },
     /// The local leaf certificate did not prove the configured local peer.
     LocalIdentity {
         /// Original identity mismatch.
@@ -51,10 +63,8 @@ pub enum TlsTransportBuildError {
         /// Physical peer missing a certificate mapping.
         peer: PeerId,
     },
-    /// The durable session store was already unreadable during startup.
+    /// The durable session store failed aggregate startup preflight.
     SessionStore {
-        /// Physical peer whose state could not be read.
-        peer: PeerId,
         /// Original store failure.
         source: BoxError,
     },
@@ -101,6 +111,15 @@ impl fmt::Display for TlsTransportBuildError {
             Self::MissingSessionStore => {
                 formatter.write_str("durable session store was not configured")
             }
+            Self::DependencyLimitsMismatch { component } => write!(
+                formatter,
+                "{component} limits do not match the aggregate transport configuration"
+            ),
+            Self::ReceiveMemoryTooSmall { required, maximum } => write!(
+                formatter,
+                "receive-memory budget is {maximum} bytes, below the {required} bytes required \
+                 for one maximum frame"
+            ),
             Self::LocalIdentity { source } => {
                 write!(formatter, "local TLS identity is invalid: {source}")
             }
@@ -121,10 +140,12 @@ impl fmt::Display for TlsTransportBuildError {
                 formatter,
                 "endpoint peer {peer} has no configured certificate fingerprint"
             ),
-            Self::SessionStore { peer, source } => write!(
-                formatter,
-                "durable session state for peer {peer} is unreadable: {source}"
-            ),
+            Self::SessionStore { source } => {
+                write!(
+                    formatter,
+                    "durable session-store preflight failed: {source}"
+                )
+            }
             Self::Bind { address, source } => {
                 write!(
                     formatter,
@@ -154,7 +175,7 @@ impl Error for TlsTransportBuildError {
             Self::HandshakeConfig { source } => Some(source),
             Self::FrameCodec { source } => Some(source),
             Self::EndpointBook { source } => Some(source),
-            Self::SessionStore { source, .. } => Some(source.as_ref()),
+            Self::SessionStore { source } => Some(source.as_ref()),
             Self::Bind { source, .. }
             | Self::ConfigureListener { source }
             | Self::LocalAddress { source }

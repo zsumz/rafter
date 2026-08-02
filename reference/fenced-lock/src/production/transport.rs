@@ -181,6 +181,18 @@ impl ReopeningTransportSessionStore {
 impl TransportSessionStore for ReopeningTransportSessionStore {
     type Error = TransportSessionStateError;
 
+    fn limits(&self) -> SessionStoreLimits {
+        SessionStoreLimits::DEFAULT
+    }
+
+    fn preflight_peer(&self, peer: &PeerId) -> Result<(), Self::Error> {
+        self.with_store(|store| store.preflight_peer(peer))
+    }
+
+    fn preflight_peers(&self, peers: &[PeerId]) -> Result<(), Self::Error> {
+        self.with_store(|store| store.preflight_peers(peers))
+    }
+
     fn allocate_outbound_session(&self, peer: &PeerId) -> Result<ConnectionSession, Self::Error> {
         self.with_store(|store| store.allocate_outbound_session(peer))
     }

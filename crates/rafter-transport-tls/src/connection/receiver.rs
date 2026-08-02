@@ -2,6 +2,7 @@
 
 mod admission;
 mod classify;
+mod frame;
 mod tls;
 
 use std::{
@@ -11,15 +12,15 @@ use std::{
 };
 
 use crate::diagnostics::{increment, Counters};
-use crate::queue::{InboundQueue, InboundQueueError, InboundQueueFull};
+use crate::queue::{InboundQueue, ReceiveMemoryBudget, ReceiveMemoryPermit};
 use crate::runtime::{InboundEpochs, RuntimeControl, SessionStoreHandle};
 use crate::{
     CertificateDirectory, GroupIdCodec, InboundSequence, PeerFrameCodec, PeerFrameScratch,
     TlsHandshakeConfig, TlsIdentity, TlsPeerDirectory, TransportTimeouts,
 };
 
-use self::admission::{admit_frame, AdmissionRefusal};
-use self::classify::{classify_decode_error, classify_frame_io};
+use self::classify::classify_frame_io;
+use self::frame::{process_frame, FrameInput, FrameStep};
 use super::io::{read_peer_frame, PeerFrameRead};
 
 pub(crate) struct ReceiverTemplate<G, C> {
@@ -30,6 +31,7 @@ pub(crate) struct ReceiverTemplate<G, C> {
     pub(crate) codec: Arc<PeerFrameCodec<G, C>>,
     pub(crate) directory: TlsPeerDirectory<G>,
     pub(crate) inbound: Arc<InboundQueue<G>>,
+    pub(crate) receive_memory: ReceiveMemoryBudget,
     pub(crate) epochs: Arc<InboundEpochs>,
     pub(crate) control: Arc<RuntimeControl>,
     pub(crate) counters: Arc<Counters>,
@@ -46,6 +48,7 @@ impl<G, C> Clone for ReceiverTemplate<G, C> {
             codec: Arc::clone(&self.codec),
             directory: self.directory.clone(),
             inbound: Arc::clone(&self.inbound),
+            receive_memory: self.receive_memory.clone(),
             epochs: Arc::clone(&self.epochs),
             control: Arc::clone(&self.control),
             counters: Arc::clone(&self.counters),
@@ -111,13 +114,16 @@ where
         return;
     };
     let mut expected = InboundSequence::new();
-    let mut encoded = Vec::new();
     let mut scratch = PeerFrameScratch::new();
 
     while !template.control.shutdown_requested() {
         if !epoch_is_current(&template, &established.epoch) {
             return;
         }
+        // The wire buffer is frame-scoped. Dropping it after admission keeps
+        // idle connections from retaining allocations outside the weighted
+        // receive-memory permit.
+        let mut encoded = Vec::new();
         let complete = match read_next_frame(
             &template,
             &established.epoch,
@@ -125,86 +131,37 @@ where
             established.frame_bytes,
             &mut encoded,
         ) {
-            FrameReadStep::Complete(complete) => complete,
+            FrameReadStep::Complete { bytes, memory } => (bytes, memory),
             FrameReadStep::Idle => continue,
             FrameReadStep::Stop => return,
         };
-        let frame = match template.codec.decode(&encoded, &mut scratch) {
-            Ok(frame) => frame,
-            Err(error) => {
-                classify_decode_error(&template.counters, &error);
-                return;
-            }
-        };
-        if expected.accept(frame.sequence()).is_err() {
-            increment(&template.counters.sequence_violations);
-            increment(&template.counters.frames_dropped);
-            return;
-        }
-        let envelope = match admit_frame(
-            &template.directory,
-            template.handshake.local_peer_id(),
-            &established.peer,
-            frame,
+        let (complete, memory) = complete;
+        if matches!(
+            process_frame(
+                &template,
+                &mut expected,
+                &mut scratch,
+                FrameInput {
+                    peer: &established.peer,
+                    epoch: &established.epoch,
+                    encoded: &encoded,
+                    complete,
+                    memory,
+                },
+            ),
+            FrameStep::Stop
         ) {
-            Ok(envelope) => envelope,
-            Err(AdmissionRefusal::Identity) => {
-                increment(&template.counters.identity_mismatches);
-                increment(&template.counters.frames_dropped);
-                return;
-            }
-            Err(AdmissionRefusal::Unauthorized) => {
-                increment(&template.counters.unauthorized_frames);
-                increment(&template.counters.frames_dropped);
-                continue;
-            }
-            Err(AdmissionRefusal::Retired) => {
-                increment(&template.counters.retired_peer_frames);
-                increment(&template.counters.frames_dropped);
-                continue;
-            }
-            Err(AdmissionRefusal::Terminal) => {
-                template.control.fail("peer directory state is poisoned");
-                return;
-            }
-        };
-        let admitted = established.epoch.while_current(|| {
-            template
-                .inbound
-                .try_push(established.peer.clone(), complete, envelope)
-        });
-        match admitted {
-            Ok(Some(Ok(()))) => increment(&template.counters.frames_received),
-            Ok(Some(Err(InboundQueueError::Full(InboundQueueFull::Peer)))) => {
-                increment(&template.counters.inbound_full);
-                increment(&template.counters.inbound_peer_full);
-                increment(&template.counters.frames_dropped);
-            }
-            Ok(Some(Err(InboundQueueError::Full(InboundQueueFull::Global)))) => {
-                increment(&template.counters.inbound_full);
-                increment(&template.counters.inbound_global_full);
-                increment(&template.counters.frames_dropped);
-            }
-            Ok(Some(Err(InboundQueueError::Closed))) => return,
-            Ok(Some(Err(InboundQueueError::Poisoned))) => {
-                template.control.fail("inbound queue state is poisoned");
-                return;
-            }
-            Ok(None) => {
-                increment(&template.counters.frames_dropped);
-                return;
-            }
-            Err(()) => {
-                template.control.fail("inbound epoch state is poisoned");
-                return;
-            }
+            return;
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum FrameReadStep {
-    Complete(usize),
+    Complete {
+        bytes: usize,
+        memory: ReceiveMemoryPermit,
+    },
     Idle,
     Stop,
 }
@@ -216,8 +173,8 @@ fn read_next_frame<G, C>(
     frame_bytes: usize,
     encoded: &mut Vec<u8>,
 ) -> FrameReadStep {
-    match read_peer_frame(stream, frame_bytes, encoded) {
-        Ok(PeerFrameRead::Complete(complete)) => FrameReadStep::Complete(complete),
+    match read_peer_frame(stream, frame_bytes, &template.receive_memory, encoded) {
+        Ok(PeerFrameRead::Complete { bytes, memory }) => FrameReadStep::Complete { bytes, memory },
         Ok(PeerFrameRead::Idle) => FrameReadStep::Idle,
         Ok(PeerFrameRead::Closed) => FrameReadStep::Stop,
         Err(error) => {

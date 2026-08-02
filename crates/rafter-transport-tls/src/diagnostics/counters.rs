@@ -4,11 +4,11 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
-use crate::{PeerDiagnostics, PeerId, TransportDiagnostics, TransportHealth};
+use crate::{PeerConnectionState, PeerDiagnostics, PeerId, TransportDiagnostics, TransportHealth};
 
 #[derive(Debug, Default)]
 pub(crate) struct Counters {
@@ -27,6 +27,7 @@ pub(crate) struct Counters {
     pub(crate) inbound_full: AtomicU64,
     pub(crate) inbound_peer_full: AtomicU64,
     pub(crate) inbound_global_full: AtomicU64,
+    pub(crate) inbound_memory_full: AtomicU64,
     pub(crate) tls_handshakes: AtomicU64,
     pub(crate) tls_failures: AtomicU64,
     pub(crate) unknown_certificates: AtomicU64,
@@ -35,6 +36,8 @@ pub(crate) struct Counters {
     pub(crate) version_mismatches: AtomicU64,
     pub(crate) unauthorized_frames: AtomicU64,
     pub(crate) retired_peer_frames: AtomicU64,
+    pub(crate) retired_queued_frames: AtomicU64,
+    pub(crate) retry_exhausted_frames: AtomicU64,
     pub(crate) stale_sessions: AtomicU64,
     pub(crate) sequence_violations: AtomicU64,
     pub(crate) reconnects: AtomicU64,
@@ -44,6 +47,7 @@ pub(crate) struct Counters {
     pub(crate) frame_too_large: AtomicU64,
     pub(crate) listener_failures: AtomicU64,
     pub(crate) connection_full: AtomicU64,
+    pub(crate) configuration_blocks: AtomicU64,
 }
 
 impl Counters {
@@ -65,6 +69,7 @@ impl Counters {
             inbound_full: load(&self.inbound_full),
             inbound_peer_full: load(&self.inbound_peer_full),
             inbound_global_full: load(&self.inbound_global_full),
+            inbound_memory_full: load(&self.inbound_memory_full),
             tls_handshakes: load(&self.tls_handshakes),
             tls_failures: load(&self.tls_failures),
             unknown_certificates: load(&self.unknown_certificates),
@@ -73,6 +78,8 @@ impl Counters {
             version_mismatches: load(&self.version_mismatches),
             unauthorized_frames: load(&self.unauthorized_frames),
             retired_peer_frames: load(&self.retired_peer_frames),
+            retired_queued_frames: load(&self.retired_queued_frames),
+            retry_exhausted_frames: load(&self.retry_exhausted_frames),
             stale_sessions: load(&self.stale_sessions),
             sequence_violations: load(&self.sequence_violations),
             reconnects: load(&self.reconnects),
@@ -82,13 +89,16 @@ impl Counters {
             frame_too_large: load(&self.frame_too_large),
             listener_failures: load(&self.listener_failures),
             connection_full: load(&self.connection_full),
+            configuration_blocks: load(&self.configuration_blocks),
         }
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct PeerCounters {
     connected: AtomicBool,
+    configuration_blocked: AtomicBool,
+    last_error: Mutex<Option<String>>,
     frames_sent: AtomicU64,
     frames_dropped: AtomicU64,
     snapshot_chunks_resolved: AtomicU64,
@@ -99,9 +109,43 @@ pub(crate) struct PeerCounters {
     endpoint_failures: AtomicU64,
 }
 
+impl Default for PeerCounters {
+    fn default() -> Self {
+        Self {
+            connected: AtomicBool::new(false),
+            configuration_blocked: AtomicBool::new(false),
+            last_error: Mutex::new(None),
+            frames_sent: AtomicU64::new(0),
+            frames_dropped: AtomicU64::new(0),
+            snapshot_chunks_resolved: AtomicU64::new(0),
+            snapshot_source_refusals: AtomicU64::new(0),
+            snapshot_resolve_failures: AtomicU64::new(0),
+            snapshot_resolution_mismatches: AtomicU64::new(0),
+            reconnects: AtomicU64::new(0),
+            endpoint_failures: AtomicU64::new(0),
+        }
+    }
+}
+
 impl PeerCounters {
     pub(crate) fn set_connected(&self, connected: bool) {
         self.connected.store(connected, Ordering::Relaxed);
+        if connected {
+            self.configuration_blocked.store(false, Ordering::Relaxed);
+            *self
+                .last_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
+
+    pub(crate) fn record_failure(&self, message: String, blocked: bool) {
+        self.connected.store(false, Ordering::Relaxed);
+        self.configuration_blocked.store(blocked, Ordering::Relaxed);
+        *self
+            .last_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
     }
 
     pub(crate) fn sent(&self) {
@@ -146,9 +190,22 @@ impl PeerCounters {
         queued_frames: usize,
         queued_bytes: usize,
     ) -> PeerDiagnostics {
+        let connected = self.connected.load(Ordering::Relaxed);
         PeerDiagnostics {
             peer_id,
-            connected: self.connected.load(Ordering::Relaxed),
+            connected,
+            connection_state: if connected {
+                PeerConnectionState::Connected
+            } else if self.configuration_blocked.load(Ordering::Relaxed) {
+                PeerConnectionState::ConfigurationBlocked
+            } else {
+                PeerConnectionState::Disconnected
+            },
+            last_error: self
+                .last_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
             queued_frames,
             queued_bytes,
             frames_sent: load(&self.frames_sent),

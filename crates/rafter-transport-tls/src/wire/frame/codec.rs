@@ -9,7 +9,7 @@ use rafter_service::transport::message_sender;
 use crate::{ConnectionSequence, GroupIdCodec, WireLimits};
 
 use super::{
-    DecodePeerFrameError, PeerFrame, PeerFrameCodecConfigError, PeerFrameScratch,
+    DecodePeerFrameError, PeerFrame, PeerFrameCodecConfigError, PeerFrameRoute, PeerFrameScratch,
     PEER_FRAME_KIND_MESSAGE, PEER_FRAME_LENGTH_PREFIX_BYTES,
 };
 use crate::wire::read::{Reader, UnexpectedEnd};
@@ -80,6 +80,49 @@ where
         input: &[u8],
         scratch: &mut PeerFrameScratch,
     ) -> Result<PeerFrame<G>, DecodePeerFrameError<C::Error>> {
+        let outer = self.decode_outer(input, scratch)?;
+        let message = decode_message(outer.message).map_err(DecodePeerFrameError::MessageDecode)?;
+        let embedded = message_sender(&message);
+        if embedded != outer.from {
+            return Err(DecodePeerFrameError::SenderMismatch {
+                envelope_from: outer.from,
+                message_from: embedded,
+            });
+        }
+
+        PeerFrame::new(
+            outer.sequence,
+            outer.group_id,
+            outer.from,
+            outer.to,
+            message,
+        )
+        .map_err(|_| DecodePeerFrameError::SenderMismatch {
+            envelope_from: outer.from,
+            message_from: embedded,
+        })
+    }
+
+    /// Decodes only bounded outer routing fields and canonical group identity.
+    pub(crate) fn decode_route(
+        &self,
+        input: &[u8],
+        scratch: &mut PeerFrameScratch,
+    ) -> Result<PeerFrameRoute<G>, DecodePeerFrameError<C::Error>> {
+        let outer = self.decode_outer(input, scratch)?;
+        Ok(PeerFrameRoute {
+            sequence: outer.sequence,
+            group_id: outer.group_id,
+            from: outer.from,
+            to: outer.to,
+        })
+    }
+
+    fn decode_outer<'a>(
+        &self,
+        input: &'a [u8],
+        scratch: &mut PeerFrameScratch,
+    ) -> Result<DecodedOuter<'a, G>, DecodePeerFrameError<C::Error>> {
         let body = self.read_bounded_body(input)?;
         let mut reader = Reader::new(body);
         let kind = read_u8(&mut reader)?;
@@ -106,23 +149,15 @@ where
                 remaining: reader.remaining(),
             });
         }
-        let message_bytes = reader.bytes(message_len).map_err(map_body_end)?;
+        let message = reader.bytes(message_len).map_err(map_body_end)?;
 
         let group_id = self.decode_canonical_group(group_bytes, scratch)?;
-        let message = decode_message(message_bytes).map_err(DecodePeerFrameError::MessageDecode)?;
-        let embedded = message_sender(&message);
-        if embedded != from {
-            return Err(DecodePeerFrameError::SenderMismatch {
-                envelope_from: from,
-                message_from: embedded,
-            });
-        }
-
-        PeerFrame::new(sequence, group_id, from, to, message).map_err(|_| {
-            DecodePeerFrameError::SenderMismatch {
-                envelope_from: from,
-                message_from: embedded,
-            }
+        Ok(DecodedOuter {
+            sequence,
+            group_id,
+            from,
+            to,
+            message,
         })
     }
 
@@ -184,6 +219,14 @@ where
         }
         Ok(group_id)
     }
+}
+
+struct DecodedOuter<'a, G> {
+    sequence: ConnectionSequence,
+    group_id: G,
+    from: NodeId,
+    to: NodeId,
+    message: &'a [u8],
 }
 
 fn validate_decoded_group_bound<E>(

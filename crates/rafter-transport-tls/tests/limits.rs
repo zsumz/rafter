@@ -178,6 +178,33 @@ fn aggregate_limits_allow_an_explicit_runtime_override() {
 }
 
 #[test]
+fn receive_memory_limits_are_finite_and_replaceable() {
+    use rafter_transport_tls::{
+        ReceiveMemoryLimits, RuntimeLimitError, RuntimeLimitKind, RuntimeLimits,
+    };
+
+    assert_eq!(
+        ReceiveMemoryLimits::new(0, 1),
+        Err(RuntimeLimitError::Zero {
+            kind: RuntimeLimitKind::ReceiveMemoryBytes,
+        })
+    );
+    assert_eq!(
+        ReceiveMemoryLimits::new(1, 0),
+        Err(RuntimeLimitError::Zero {
+            kind: RuntimeLimitKind::DecodeAmplification,
+        })
+    );
+    let memory = ReceiveMemoryLimits::new(64 * 1024 * 1024, 40).expect("memory limits");
+    assert_eq!(
+        RuntimeLimits::default()
+            .with_receive_memory(memory)
+            .receive_memory(),
+        memory
+    );
+}
+
+#[test]
 fn timeout_groups_refuse_zero_before_aggregate_configuration() {
     use std::time::Duration;
 

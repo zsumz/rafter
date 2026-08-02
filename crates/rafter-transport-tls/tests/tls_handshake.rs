@@ -86,6 +86,38 @@ fn stale_session_is_refused_after_the_first_durable_acceptance() {
 }
 
 #[test]
+fn receiver_refuses_a_sender_whose_required_frame_bound_is_larger() {
+    let peers = authenticated_peers();
+    let client = config("orders-us1", "node-a");
+    let smaller_wire = WireLimits::new(
+        WireLimits::default().max_frame_body_bytes() - 1,
+        WireLimits::default().max_group_id_bytes(),
+    )
+    .expect("one-byte-smaller receiver limit");
+    let server = TlsHandshakeConfig::current(
+        ClusterId::new("orders-us1").expect("valid cluster"),
+        peers.node_b.clone(),
+        smaller_wire,
+    )
+    .expect("valid server config");
+    let client_store = MemorySessionStore::new();
+    let server_store = MemorySessionStore::new();
+    let hello = client
+        .begin_client_hello(&peers.node_b, &client_store)
+        .expect("outbound session");
+
+    let response = server
+        .accept_client_hello(&peers.server_authenticated_client, &hello, &server_store)
+        .expect("typed refusal");
+
+    assert_eq!(
+        response.status(),
+        ServerHelloStatus::Refused(ServerRefusal::FrameLimitRejected)
+    );
+    assert!(server_store.peer_state(&peers.node_a).is_empty());
+}
+
+#[test]
 fn pre_session_refusals_do_not_advance_durable_replay_state() {
     let peers = authenticated_peers();
     let server_config = config("orders-us1", "node-b");
@@ -256,6 +288,15 @@ fn client_rechecks_tls_identity_cluster_versions_and_frame_bound() {
             &peers.node_b,
             &peers.client_authenticated_server,
             &accepted("orders-us1", peers.node_b.clone(), 1, 1, too_large),
+        ),
+        Err(TlsClientHandshakeError::FrameLimitInvalid { .. })
+    ));
+    let too_small = NonZeroU32::new(frame.get() - 1).expect("nonzero");
+    assert!(matches!(
+        client_config.validate_server_hello(
+            &peers.node_b,
+            &peers.client_authenticated_server,
+            &accepted("orders-us1", peers.node_b.clone(), 1, 1, too_small),
         ),
         Err(TlsClientHandshakeError::FrameLimitInvalid { .. })
     ));
