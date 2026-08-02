@@ -2,6 +2,9 @@
 
 use super::{RuntimeLimitError, RuntimeLimitKind};
 
+/// Smallest decoder charge backed by the allocation-counted v1 evidence gate.
+pub const MIN_SAFE_DECODE_AMPLIFICATION: usize = 32;
+
 /// Conservative weighted budget for encoded and decoded inbound frames.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReceiveMemoryLimits {
@@ -18,14 +21,15 @@ impl ReceiveMemoryLimits {
     /// rounding.
     pub const DEFAULT: Self = Self {
         bytes_global: 256 * 1024 * 1024,
-        decode_amplification: 32,
+        decode_amplification: MIN_SAFE_DECODE_AMPLIFICATION,
     };
 
     /// Validates the runtime-wide budget and conservative decode weight.
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeLimitError`] when either finite bound is zero.
+    /// Returns [`RuntimeLimitError`] when the byte bound is zero or the decoder
+    /// charge is below [`MIN_SAFE_DECODE_AMPLIFICATION`].
     pub fn new(
         bytes_global: usize,
         decode_amplification: usize,
@@ -35,9 +39,10 @@ impl ReceiveMemoryLimits {
                 kind: RuntimeLimitKind::ReceiveMemoryBytes,
             });
         }
-        if decode_amplification == 0 {
-            return Err(RuntimeLimitError::Zero {
-                kind: RuntimeLimitKind::DecodeAmplification,
+        if decode_amplification < MIN_SAFE_DECODE_AMPLIFICATION {
+            return Err(RuntimeLimitError::DecodeAmplificationTooSmall {
+                actual: decode_amplification,
+                minimum: MIN_SAFE_DECODE_AMPLIFICATION,
             });
         }
         Ok(Self {

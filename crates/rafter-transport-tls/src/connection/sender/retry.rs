@@ -1,6 +1,9 @@
 //! Retry pacing and configuration-block recovery for one sender worker.
 
-use std::{thread, time::Duration};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::PeerId;
 
@@ -17,15 +20,12 @@ pub(super) fn connect<G>(
     match dial(context, *connected_once, dial_attempts) {
         Ok(open) => {
             *connected_once = true;
-            *retry_attempt = 0;
             *connection = Some(open);
             WorkerStep::Ready
         }
         Err(DialError::Retry(message)) => {
             context.peer_counters.record_failure(message, false);
-            let delay = retry_delay(&context.peer, *retry_attempt, context.timeouts.redial());
-            *retry_attempt = (*retry_attempt).saturating_add(1);
-            sleep_interruptibly(context, delay);
+            backoff_after_failure(context, retry_attempt);
             WorkerStep::Retry
         }
         Err(DialError::ConfigurationBlocked {
@@ -34,10 +34,13 @@ pub(super) fn connect<G>(
         }) => {
             context.peer_counters.record_failure(message, true);
             *retry_attempt = 0;
-            if wait_for_endpoint_change(context, generation) {
-                WorkerStep::Retry
-            } else {
-                WorkerStep::Stop
+            match wait_for_endpoint_change(context, generation) {
+                ConfigurationWait::Changed => WorkerStep::Retry,
+                ConfigurationWait::Reprobe => {
+                    dial_attempts.reprobe();
+                    WorkerStep::Retry
+                }
+                ConfigurationWait::Stop => WorkerStep::Stop,
             }
         }
         Err(DialError::Terminal(message)) => {
@@ -45,6 +48,12 @@ pub(super) fn connect<G>(
             WorkerStep::Stop
         }
     }
+}
+
+pub(super) fn backoff_after_failure<G>(context: &SenderContext<G>, retry_attempt: &mut u32) {
+    let delay = retry_delay(&context.peer, *retry_attempt, context.timeouts.redial());
+    *retry_attempt = (*retry_attempt).saturating_add(1);
+    sleep_interruptibly(context, delay);
 }
 
 fn sleep_interruptibly<G>(context: &SenderContext<G>, duration: Duration) {
@@ -59,26 +68,38 @@ fn sleep_interruptibly<G>(context: &SenderContext<G>, duration: Duration) {
     }
 }
 
+enum ConfigurationWait {
+    Changed,
+    Reprobe,
+    Stop,
+}
+
 fn wait_for_endpoint_change<G>(
     context: &SenderContext<G>,
     blocked_generation: crate::EndpointGeneration,
-) -> bool {
+) -> ConfigurationWait {
+    let blocked_at = Instant::now();
+    let reprobe = context.timeouts.configuration_reprobe();
     loop {
         if should_stop(context) || context.control.shutdown_requested() {
-            return false;
+            return ConfigurationWait::Stop;
         }
         match context.endpoints.snapshot(&context.peer) {
             Ok(Some(snapshot)) if snapshot.generation() == blocked_generation => {}
-            Ok(_) => return true,
+            Ok(_) => return ConfigurationWait::Changed,
             Err(error) => {
                 context.control.fail(format!(
                     "endpoint book failed for {}: {error}",
                     context.peer
                 ));
-                return false;
+                return ConfigurationWait::Stop;
             }
         }
-        thread::sleep(context.timeouts.poll());
+        let remaining = reprobe.saturating_sub(blocked_at.elapsed());
+        if remaining.is_zero() {
+            return ConfigurationWait::Reprobe;
+        }
+        thread::sleep(context.timeouts.poll().min(remaining));
     }
 }
 

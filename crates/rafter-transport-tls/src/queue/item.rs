@@ -2,7 +2,7 @@
 
 use rafter::{NodeId, SnapshotChunkSend};
 
-use crate::directory::AuthorizationLease;
+use crate::directory::RouteAuthorization;
 use crate::wire::PreparedPeerFrame;
 use crate::TrafficClass;
 
@@ -15,7 +15,7 @@ pub(crate) struct OutboundItem<G> {
     to: NodeId,
     class: TrafficClass,
     reserved_bytes: usize,
-    authorization: AuthorizationLease,
+    authorization: RouteAuthorization,
     failed_attempts: u8,
     payload: OutboundPayload<G>,
 }
@@ -35,7 +35,7 @@ impl<G> OutboundItem<G> {
         to: NodeId,
         class: TrafficClass,
         frame: PreparedPeerFrame,
-        authorization: AuthorizationLease,
+        authorization: RouteAuthorization,
     ) -> Self {
         let reserved_bytes = frame.wire_len();
         Self {
@@ -55,7 +55,7 @@ impl<G> OutboundItem<G> {
         to: NodeId,
         reserved_bytes: usize,
         chunk: SnapshotChunkSend,
-        authorization: AuthorizationLease,
+        authorization: RouteAuthorization,
     ) -> Self {
         Self {
             from,

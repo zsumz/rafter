@@ -8,7 +8,7 @@ use std::{error::Error, fmt};
 
 pub use inbound::InboundQueueLimits;
 pub use outbound::OutboundQueueLimits;
-pub use receive::ReceiveMemoryLimits;
+pub use receive::{ReceiveMemoryLimits, MIN_SAFE_DECODE_AMPLIFICATION};
 
 /// Runtime resource whose zero value was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,6 +101,13 @@ pub enum RuntimeLimitError {
         /// Global bytes.
         global_bytes: usize,
     },
+    /// The receive-memory charge is below the allocation-counted safe floor.
+    DecodeAmplificationTooSmall {
+        /// Requested charge per declared wire byte.
+        actual: usize,
+        /// Smallest evidence-backed charge.
+        minimum: usize,
+    },
 }
 
 impl fmt::Display for RuntimeLimitError {
@@ -136,6 +143,10 @@ impl fmt::Display for RuntimeLimitError {
                 formatter,
                 "per-peer inbound capacity {peer_frames} frames/{peer_bytes} bytes exceeds global \
                  capacity {global_frames} frames/{global_bytes} bytes"
+            ),
+            Self::DecodeAmplificationTooSmall { actual, minimum } => write!(
+                formatter,
+                "decode amplification {actual} is below evidence-backed minimum {minimum}"
             ),
         }
     }

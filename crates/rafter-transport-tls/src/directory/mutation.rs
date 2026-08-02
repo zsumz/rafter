@@ -72,6 +72,10 @@ where
             &peer_id,
             self.limits.max_bindings_per_group(),
         )?;
+        group
+            .binding_leases
+            .entry(node_id)
+            .or_insert_with(AuthorizationLease::new);
         group.node_to_peer.insert(node_id, peer_id.clone());
         group.peer_to_node.insert(peer_id, node_id);
         Ok(())
@@ -100,9 +104,17 @@ where
             return Err(DirectoryError::AuthorizedNodeUnbind { node_id });
         }
 
-        let Some(peer_id) = group.node_to_peer.remove(&node_id) else {
+        let Some(peer_id) = group.node_to_peer.get(&node_id).cloned() else {
             return Ok(None);
         };
+        let lease = group
+            .binding_leases
+            .get(&node_id)
+            .cloned()
+            .ok_or(DirectoryError::Poisoned)?;
+        group.node_to_peer.remove(&node_id);
+        group.binding_leases.remove(&node_id);
+        lease.revoke();
         group.peer_to_node.remove(&peer_id);
         Ok(Some(peer_id))
     }
@@ -204,6 +216,9 @@ fn authorization_leases(
 }
 
 fn revoke_all(group: &GroupState) {
+    for lease in group.binding_leases.values() {
+        lease.revoke();
+    }
     if let Some(policy) = &group.policy {
         for lease in policy.leases.values() {
             lease.revoke();

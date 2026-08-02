@@ -58,6 +58,30 @@ fn replacement_is_atomic_versioned_and_idempotent() {
 }
 
 #[test]
+fn refresh_advances_generation_without_changing_endpoint_values() {
+    let book = EndpointBook::new(EndpointBookLimits::default());
+    let peer = PeerId::new("node-a").expect("valid peer");
+    let values = vec![endpoint(7400, "node-a.raft.internal")];
+    let installed = book
+        .replace(peer.clone(), values.clone())
+        .expect("install endpoints");
+
+    let refreshed = book
+        .refresh(&peer)
+        .expect("refresh endpoints")
+        .expect("configured peer");
+    let snapshot = book.snapshot(&peer).expect("read book").expect("peer");
+
+    assert!(refreshed > installed);
+    assert_eq!(snapshot.generation(), refreshed);
+    assert_eq!(snapshot.endpoints(), values);
+    assert_eq!(
+        book.refresh(&PeerId::new("absent").expect("valid absent peer")),
+        Ok(None)
+    );
+}
+
+#[test]
 fn endpoint_replacement_rejects_duplicates_and_preserves_old_value() {
     let book = EndpointBook::new(EndpointBookLimits::default());
     let peer = PeerId::new("node-a").expect("valid peer");

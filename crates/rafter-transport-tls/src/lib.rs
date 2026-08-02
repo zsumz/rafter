@@ -72,6 +72,7 @@ pub use limits::{
     RuntimeLimitKind, RuntimeLimits, SessionStoreLimits, TransportLimits, WireLimits,
     DEFAULT_MAX_APPEND_ENTRIES_BYTES, DEFAULT_MAX_FRAME_BODY_BYTES, DEFAULT_MAX_FRAME_BYTES,
     DEFAULT_MAX_GROUP_ID_BYTES, DEFAULT_MAX_SESSION_PEER_RECORDS, MAX_SESSION_PEER_RECORDS,
+    MIN_SAFE_DECODE_AMPLIFICATION,
 };
 pub use principal::{ClusterId, IdentityError, IdentityKind, PeerId, MAX_ID_BYTES};
 pub use queue::TrafficClass;

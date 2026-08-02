@@ -15,6 +15,7 @@ pub(super) struct DirectoryState<G> {
 pub(super) struct GroupState {
     pub(super) node_to_peer: BTreeMap<NodeId, PeerId>,
     pub(super) peer_to_node: BTreeMap<PeerId, NodeId>,
+    pub(super) binding_leases: BTreeMap<NodeId, AuthorizationLease>,
     pub(super) policy: Option<GroupPolicy>,
 }
 

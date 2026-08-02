@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, time::Duration};
 
-use rafter::NodeId;
+use rafter::{AppendEntries, LogEntry, LogIndex, Message, NodeId, SharedEntries, Term};
 use rafter_service::{PeerEnvelope, PeerPolicy};
 use rafter_transport_tls::{
     CertificateDirectory, ClusterId, EndpointBook, PeerEndpoint, PeerId, RuntimeLimits,
@@ -165,6 +165,22 @@ impl RuntimeFixture {
         .expect("bind paused peer A transport")
     }
 
+    pub fn bind_paused_a_with_directory(
+        &self,
+        endpoints: EndpointBook,
+        directory: TlsPeerDirectory<String>,
+    ) -> TestTransport {
+        self.builder_with_directory(
+            self.peer_a.clone(),
+            self.identity_a.clone(),
+            endpoints,
+            directory,
+            MemorySessionStore::new(),
+        )
+        .bind_paused()
+        .expect("bind paused peer A transport with caller directory")
+    }
+
     pub fn start_a_with_resolver<R>(&self, endpoints: EndpointBook, resolver: R) -> TestTransport
     where
         R: SnapshotChunkResolver<String>,
@@ -295,6 +311,27 @@ impl RuntimeFixture {
             from: route.node_a,
             to: route.node_b,
             message: request_vote(route.node_a),
+        }
+    }
+
+    pub fn replication() -> PeerEnvelope<String> {
+        Self::replication_with_payload(b"replicated value".to_vec())
+    }
+
+    pub fn replication_with_payload(payload: Vec<u8>) -> PeerEnvelope<String> {
+        PeerEnvelope {
+            group_id: GROUP_ID.to_owned(),
+            from: NODE_A,
+            to: NODE_B,
+            message: Message::AppendEntries(AppendEntries {
+                term: Term(3),
+                leader_id: NODE_A,
+                prev_log_index: LogIndex(41),
+                prev_log_term: Term(2),
+                sequence: 7,
+                entries: SharedEntries::from(vec![LogEntry::application(Term(3), payload)]),
+                leader_commit: LogIndex(41),
+            }),
         }
     }
 

@@ -14,7 +14,7 @@ pub use directory::{CertificateDirectoryLimits, DirectoryLimits, EndpointBookLim
 pub use error::{LimitError, LimitKind};
 pub use runtime::{
     InboundQueueLimits, OutboundQueueLimits, ReceiveMemoryLimits, RuntimeLimitError,
-    RuntimeLimitKind, RuntimeLimits,
+    RuntimeLimitKind, RuntimeLimits, MIN_SAFE_DECODE_AMPLIFICATION,
 };
 pub use session::{SessionStoreLimits, DEFAULT_MAX_SESSION_PEER_RECORDS, MAX_SESSION_PEER_RECORDS};
 pub use wire::{

@@ -13,7 +13,7 @@ use crate::{
 
 use super::{dial::OutboundConnection, io::write_all_flush};
 
-use self::retry::connect;
+use self::retry::{backoff_after_failure, connect};
 use super::dial::DialAttemptState;
 
 pub(crate) struct SenderContext<G> {
@@ -91,7 +91,13 @@ where
             }
         }
         if matches!(
-            transmit_current(context, &mut connection, &mut current, &mut encoded,),
+            transmit_current(
+                context,
+                &mut connection,
+                &mut current,
+                &mut encoded,
+                &mut retry_attempt,
+            ),
             WorkerStep::Stop
         ) {
             break;
@@ -157,6 +163,7 @@ fn transmit_current<G>(
     connection: &mut Option<OutboundConnection>,
     current: &mut Option<OutboundItem<G>>,
     encoded: &mut Vec<u8>,
+    retry_attempt: &mut u32,
 ) -> WorkerStep {
     let Some(endpoint_current) = endpoint_is_current(context, connection.as_ref()) else {
         return WorkerStep::Stop;
@@ -223,42 +230,53 @@ fn transmit_current<G>(
         return WorkerStep::Retry;
     };
     if write_all_flush(&mut open.stream, encoded).is_err() {
-        increment(&context.counters.tls_failures);
-        *connection = None;
-        if current
-            .as_ref()
-            .is_some_and(|item| item.class() != crate::TrafficClass::Control)
-        {
-            let retry = current.as_mut().is_some_and(OutboundItem::retry_bulk);
-            if !retry {
-                increment(&context.counters.retry_exhausted_frames);
-                drop_current(context, current);
-                return WorkerStep::Retry;
-            }
-            let Some(item) = current.take() else {
-                context.control.fail("outbound retry lost its current item");
-                return WorkerStep::Stop;
-            };
-            match context.queue.requeue_ready(item) {
-                Ok(RequeueOutcome::Queued) => {}
-                Ok(RequeueOutcome::SenderStopped) => {
-                    increment(&context.counters.frames_dropped);
-                    context.peer_counters.dropped();
-                    return WorkerStep::Stop;
-                }
-                Err(_) => {
-                    context.control.fail("outbound queue state is poisoned");
-                    return WorkerStep::Stop;
-                }
-            }
-        }
-        return WorkerStep::Retry;
+        return handle_write_failure(context, connection, current, retry_attempt);
     }
 
+    *retry_attempt = 0;
     increment(&context.counters.frames_sent);
     context.peer_counters.sent();
     release_current(context, current);
     WorkerStep::Ready
+}
+
+fn handle_write_failure<G>(
+    context: &SenderContext<G>,
+    connection: &mut Option<OutboundConnection>,
+    current: &mut Option<OutboundItem<G>>,
+    retry_attempt: &mut u32,
+) -> WorkerStep {
+    increment(&context.counters.tls_failures);
+    *connection = None;
+    if current
+        .as_ref()
+        .is_some_and(|item| item.class() != crate::TrafficClass::Control)
+    {
+        if !current.as_mut().is_some_and(OutboundItem::retry_bulk) {
+            increment(&context.counters.retry_exhausted_frames);
+            drop_current(context, current);
+            backoff_after_failure(context, retry_attempt);
+            return WorkerStep::Retry;
+        }
+        let Some(item) = current.take() else {
+            context.control.fail("outbound retry lost its current item");
+            return WorkerStep::Stop;
+        };
+        match context.queue.requeue_ready(item) {
+            Ok(RequeueOutcome::Queued) => {}
+            Ok(RequeueOutcome::SenderStopped) => {
+                increment(&context.counters.frames_dropped);
+                context.peer_counters.dropped();
+                return WorkerStep::Stop;
+            }
+            Err(_) => {
+                context.control.fail("outbound queue state is poisoned");
+                return WorkerStep::Stop;
+            }
+        }
+    }
+    backoff_after_failure(context, retry_attempt);
+    WorkerStep::Retry
 }
 
 fn endpoint_is_current<G>(

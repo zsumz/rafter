@@ -181,18 +181,20 @@ fn aggregate_limits_allow_an_explicit_runtime_override() {
 fn receive_memory_limits_are_finite_and_replaceable() {
     use rafter_transport_tls::{
         ReceiveMemoryLimits, RuntimeLimitError, RuntimeLimitKind, RuntimeLimits,
+        MIN_SAFE_DECODE_AMPLIFICATION,
     };
 
     assert_eq!(
-        ReceiveMemoryLimits::new(0, 1),
+        ReceiveMemoryLimits::new(0, MIN_SAFE_DECODE_AMPLIFICATION),
         Err(RuntimeLimitError::Zero {
             kind: RuntimeLimitKind::ReceiveMemoryBytes,
         })
     );
     assert_eq!(
-        ReceiveMemoryLimits::new(1, 0),
-        Err(RuntimeLimitError::Zero {
-            kind: RuntimeLimitKind::DecodeAmplification,
+        ReceiveMemoryLimits::new(1, MIN_SAFE_DECODE_AMPLIFICATION - 1),
+        Err(RuntimeLimitError::DecodeAmplificationTooSmall {
+            actual: MIN_SAFE_DECODE_AMPLIFICATION - 1,
+            minimum: MIN_SAFE_DECODE_AMPLIFICATION,
         })
     );
     let memory = ReceiveMemoryLimits::new(64 * 1024 * 1024, 40).expect("memory limits");
@@ -237,6 +239,13 @@ fn timeout_groups_refuse_zero_before_aggregate_configuration() {
     ] {
         assert_eq!(error.kind(), expected);
     }
+    assert_eq!(
+        TransportRuntimeTimeouts::default()
+            .with_configuration_reprobe(Duration::ZERO)
+            .expect_err("zero configuration reprobe timeout")
+            .kind(),
+        TimeoutKind::ConfigurationReprobe
+    );
     for (error, expected) in [
         (
             TransportRuntimeTimeouts::new(Duration::ZERO, second, second)
@@ -262,4 +271,12 @@ fn timeout_groups_refuse_zero_before_aggregate_configuration() {
     let aggregate = TransportTimeouts::new(io, runtime);
     assert_eq!(aggregate.io(), io);
     assert_eq!(aggregate.runtime(), runtime);
+    assert_eq!(
+        TransportRuntimeTimeouts::default()
+            .with_configuration_reprobe(second)
+            .expect("configuration reprobe timeout"),
+        TransportRuntimeTimeouts::default()
+            .with_configuration_reprobe(second)
+            .expect("same configuration reprobe timeout")
+    );
 }

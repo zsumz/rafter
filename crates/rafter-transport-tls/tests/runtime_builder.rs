@@ -106,9 +106,11 @@ fn builder_preflights_aggregate_session_capacity_before_binding() {
 
 #[test]
 fn builder_refuses_a_memory_budget_that_cannot_hold_one_maximum_frame() {
+    use rafter_transport_tls::MIN_SAFE_DECODE_AMPLIFICATION;
     use support::session_store::MemorySessionStore;
 
-    let memory = ReceiveMemoryLimits::new(1, 1).expect("nonzero memory limits");
+    let memory = ReceiveMemoryLimits::new(1, MIN_SAFE_DECODE_AMPLIFICATION)
+        .expect("evidence-backed memory limits");
     let runtime = RuntimeLimits::default().with_receive_memory(memory);
     let limits = TransportLimits::default().with_runtime(runtime);
     let fixture = RuntimeFixture::new(runtime).with_limits(limits);

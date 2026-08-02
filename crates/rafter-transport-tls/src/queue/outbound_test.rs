@@ -160,7 +160,10 @@ fn item(class: TrafficClass, complete_len: usize) -> OutboundItem<()> {
         NodeId(2),
         class,
         frame,
-        crate::directory::AuthorizationLease::new(),
+        crate::directory::RouteAuthorization::new(
+            crate::directory::AuthorizationLease::new(),
+            crate::directory::AuthorizationLease::new(),
+        ),
     )
 }
 

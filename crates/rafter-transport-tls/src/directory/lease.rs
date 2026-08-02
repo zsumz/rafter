@@ -5,10 +5,30 @@ use std::sync::{
     Arc,
 };
 
-/// A cheap, lock-free proof that one destination remains authorized.
+/// A cheap, lock-free proof that one binding or policy grant remains valid.
 #[derive(Clone, Debug)]
 pub(crate) struct AuthorizationLease {
     valid: Arc<AtomicBool>,
+}
+
+/// Lock-free proof that an accepted outbound route remains valid end to end.
+#[derive(Clone, Debug)]
+pub(crate) struct RouteAuthorization {
+    source: AuthorizationLease,
+    destination: AuthorizationLease,
+}
+
+impl RouteAuthorization {
+    pub(crate) fn new(source: AuthorizationLease, destination: AuthorizationLease) -> Self {
+        Self {
+            source,
+            destination,
+        }
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        self.source.is_valid() && self.destination.is_valid()
+    }
 }
 
 impl AuthorizationLease {

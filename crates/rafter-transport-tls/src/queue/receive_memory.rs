@@ -99,15 +99,15 @@ mod tests {
 
     #[test]
     fn declared_lengths_reserve_before_allocation_and_release_exactly() {
-        let limits = ReceiveMemoryLimits::new(100, 10).expect("valid memory limits");
+        let limits = ReceiveMemoryLimits::new(320, 32).expect("valid memory limits");
         let budget = ReceiveMemoryBudget::new(limits);
-        let first = budget.try_acquire(6).expect("60 weighted bytes");
-        assert_eq!(budget.used(), 60);
+        let first = budget.try_acquire(6).expect("192 weighted bytes");
+        assert_eq!(budget.used(), 192);
         assert!(matches!(
             budget.try_acquire(5),
             Err(ReceiveMemoryFull {
-                required: 50,
-                maximum: 100,
+                required: 160,
+                maximum: 320,
             })
         ));
         drop(first);

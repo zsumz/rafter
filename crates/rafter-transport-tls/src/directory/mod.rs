@@ -14,7 +14,7 @@ use rafter::NodeId;
 use crate::{DirectoryLimits, PeerId};
 
 pub use error::DirectoryError;
-pub(crate) use lease::AuthorizationLease;
+pub(crate) use lease::{AuthorizationLease, RouteAuthorization};
 pub use query::PeerAuthorization;
 pub(crate) use query::{InboundRoute, OutboundRoute};
 use state::DirectoryState;

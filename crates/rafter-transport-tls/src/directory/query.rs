@@ -4,7 +4,7 @@ use rafter::NodeId;
 
 use crate::PeerId;
 
-use super::{AuthorizationLease, DirectoryError, TlsPeerDirectory};
+use super::{DirectoryError, RouteAuthorization, TlsPeerDirectory};
 
 /// Current per-group admission classification for one Raft identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,7 +27,7 @@ pub(crate) enum OutboundRoute {
     Retired,
     Authorized {
         peer: PeerId,
-        lease: AuthorizationLease,
+        authorization: RouteAuthorization,
     },
 }
 
@@ -108,15 +108,23 @@ where
             return Ok(OutboundRoute::UnknownNode);
         };
         Ok(match authorization_for(group, to) {
-            PeerAuthorization::Authorized => OutboundRoute::Authorized {
-                peer: peer.clone(),
-                lease: group
+            PeerAuthorization::Authorized => {
+                let source = group
+                    .binding_leases
+                    .get(&from)
+                    .cloned()
+                    .ok_or(DirectoryError::Poisoned)?;
+                let destination = group
                     .policy
                     .as_ref()
                     .and_then(|policy| policy.leases.get(&to))
                     .cloned()
-                    .ok_or(DirectoryError::Poisoned)?,
-            },
+                    .ok_or(DirectoryError::Poisoned)?;
+                OutboundRoute::Authorized {
+                    peer: peer.clone(),
+                    authorization: RouteAuthorization::new(source, destination),
+                }
+            }
             PeerAuthorization::Unauthorized => OutboundRoute::Unauthorized,
             PeerAuthorization::Retired => OutboundRoute::Retired,
         })

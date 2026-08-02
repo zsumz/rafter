@@ -138,7 +138,7 @@ fn committed_retirement_revokes_replication_queued_while_paused() {
 
     sender
         .sender()
-        .send(RuntimeFixture::vote())
+        .send(RuntimeFixture::replication())
         .expect("replication is queued while workers are paused");
     sender
         .sender()
@@ -147,6 +147,48 @@ fn committed_retirement_revokes_replication_queued_while_paused() {
             PeerPolicy::new(Vec::new(), Some(NODE_B)),
         )
         .expect("destination is retired before activation");
+    sender.start().expect("activate sender");
+
+    assert!(wait_until(Duration::from_secs(3), || {
+        sender.diagnostics().retired_queued_frames == 1
+    }));
+    assert!(receiver
+        .inbound()
+        .drain(1)
+        .expect("inbound queue")
+        .is_empty());
+
+    sender.join().expect("sender joins");
+    receiver.join().expect("receiver joins");
+}
+
+#[test]
+fn unbinding_the_local_source_revokes_work_queued_while_paused() {
+    let fixture = RuntimeFixture::new(RuntimeLimits::default());
+    let receiver = fixture.start_b();
+    let group_id = GROUP_ID.to_owned();
+    let directory = fixture.bound_directory(&[DEFAULT_ROUTE]);
+    directory
+        .replace_policy(
+            &group_id,
+            PeerPolicy::new(vec![fixture.peer_b().clone()], Some(NODE_B)),
+        )
+        .expect("authorize destination");
+    let sender = fixture.bind_paused_a_with_directory(
+        fixture.endpoints_to_b(receiver.local_addr()),
+        directory.clone(),
+    );
+
+    sender
+        .sender()
+        .send(RuntimeFixture::replication())
+        .expect("route is valid at admission");
+    assert_eq!(
+        directory
+            .unbind(&group_id, NODE_A)
+            .expect("unbind local source"),
+        Some(fixture.peer_a().clone())
+    );
     sender.start().expect("activate sender");
 
     assert!(wait_until(Duration::from_secs(3), || {

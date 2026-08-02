@@ -141,7 +141,7 @@ where
         group_id: &G,
         from: NodeId,
         to: NodeId,
-    ) -> Result<(PeerId, crate::directory::AuthorizationLease), TlsTransportError> {
+    ) -> Result<(PeerId, crate::directory::RouteAuthorization), TlsTransportError> {
         match self
             .core
             .directory
@@ -155,7 +155,10 @@ where
             OutboundRoute::UnknownNode => Err(TlsTransportError::UnknownNode { node_id: to }),
             OutboundRoute::Unauthorized => Err(TlsTransportError::UnauthorizedPeer { node_id: to }),
             OutboundRoute::Retired => Err(TlsTransportError::RetiredPeer { node_id: to }),
-            OutboundRoute::Authorized { peer, lease } => Ok((peer, lease)),
+            OutboundRoute::Authorized {
+                peer,
+                authorization,
+            } => Ok((peer, authorization)),
         }
     }
 

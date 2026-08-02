@@ -43,7 +43,7 @@ impl PeerEndpoint {
     }
 }
 
-/// Monotonic endpoint-book generation.
+/// Monotonic endpoint-book mutation or refresh generation.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EndpointGeneration(u64);
 
@@ -63,7 +63,7 @@ pub struct EndpointSnapshot {
 }
 
 impl EndpointSnapshot {
-    /// Generation at which this exact endpoint set was installed.
+    /// Generation at which this endpoint set was installed or refreshed.
     #[must_use]
     pub const fn generation(&self) -> EndpointGeneration {
         self.generation
@@ -180,6 +180,40 @@ impl EndpointBook {
 
         let generation = next_generation(state.generation)?;
         state.by_peer.remove(peer_id);
+        state.generation = generation;
+        Ok(Some(generation))
+    }
+
+    /// Signals that one unchanged endpoint set should be tried again.
+    ///
+    /// This advances the peer and global generations without changing endpoint
+    /// values. Discovery and operators use it after repairing a remote service
+    /// in place so a configuration-blocked sender recovers deterministically.
+    ///
+    /// Returns `None` when the peer is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EndpointBookError`] when the generation is exhausted or shared
+    /// state is poisoned.
+    pub fn refresh(
+        &self,
+        peer_id: &PeerId,
+    ) -> Result<Option<EndpointGeneration>, EndpointBookError> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| EndpointBookError::Poisoned)?;
+        if !state.by_peer.contains_key(peer_id) {
+            return Ok(None);
+        }
+
+        let generation = next_generation(state.generation)?;
+        let entry = state
+            .by_peer
+            .get_mut(peer_id)
+            .ok_or(EndpointBookError::Poisoned)?;
+        entry.generation = generation;
         state.generation = generation;
         Ok(Some(generation))
     }

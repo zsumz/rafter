@@ -16,6 +16,8 @@ pub enum TimeoutKind {
     Write,
     /// Delay before another endpoint dial round.
     Redial,
+    /// Delay before sparsely probing an unchanged configuration-blocked endpoint.
+    ConfigurationReprobe,
     /// Sender and listener shutdown polling interval.
     Poll,
     /// Grace period for draining accepted outbound work.
@@ -30,6 +32,7 @@ impl fmt::Display for TimeoutKind {
             Self::Read => "read",
             Self::Write => "write",
             Self::Redial => "redial",
+            Self::ConfigurationReprobe => "configuration reprobe",
             Self::Poll => "poll",
             Self::ShutdownGrace => "shutdown grace",
         })
@@ -109,6 +112,7 @@ impl Default for TransportIoTimeouts {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransportRuntimeTimeouts {
     redial: Duration,
+    configuration_reprobe: Duration,
     poll: Duration,
     shutdown_grace: Duration,
 }
@@ -131,9 +135,28 @@ impl TransportRuntimeTimeouts {
         ])?;
         Ok(Self {
             redial,
+            configuration_reprobe: Duration::from_secs(5 * 60),
             poll,
             shutdown_grace,
         })
+    }
+
+    /// Replaces the sparse recovery interval for an unchanged blocked endpoint.
+    ///
+    /// The default is five minutes. Discovery can recover immediately with
+    /// [`crate::EndpointBook::refresh`]; this interval is the fail-safe when no
+    /// local discovery event accompanies remote repair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportTimeoutError`] when `configuration_reprobe` is zero.
+    pub fn with_configuration_reprobe(
+        mut self,
+        configuration_reprobe: Duration,
+    ) -> Result<Self, TransportTimeoutError> {
+        validate([(TimeoutKind::ConfigurationReprobe, configuration_reprobe)])?;
+        self.configuration_reprobe = configuration_reprobe;
+        Ok(self)
     }
 }
 
@@ -141,6 +164,7 @@ impl Default for TransportRuntimeTimeouts {
     fn default() -> Self {
         Self {
             redial: Duration::from_millis(100),
+            configuration_reprobe: Duration::from_secs(5 * 60),
             poll: Duration::from_millis(25),
             shutdown_grace: Duration::from_secs(3),
         }
@@ -201,6 +225,12 @@ impl TransportTimeouts {
     #[must_use]
     pub const fn redial(self) -> Duration {
         self.runtime.redial
+    }
+
+    /// Sparse retry interval for a configuration-blocked endpoint generation.
+    #[must_use]
+    pub const fn configuration_reprobe(self) -> Duration {
+        self.runtime.configuration_reprobe
     }
 
     /// Runtime polling interval used for shutdown responsiveness.

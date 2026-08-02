@@ -57,6 +57,11 @@ impl DialAttemptState {
         let _ = self.blocked.insert(endpoint.clone());
         self.last_blocked_error = Some(message);
     }
+
+    pub(super) fn reprobe(&mut self) {
+        self.blocked.clear();
+        self.last_blocked_error = None;
+    }
 }
 
 impl std::fmt::Debug for OutboundConnection {

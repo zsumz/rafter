@@ -25,8 +25,8 @@ The implemented surface now includes:
 - a blocking runtime with persistent per-`PeerId` senders, authenticated
   receivers, finite worker ownership, endpoint redial, diagnostics, and
   graceful shutdown;
-- count-and-byte-bounded outbound and inbound queues with capacity reserved for
-  Raft control traffic;
+- count-and-byte-bounded outbound and inbound queues, with outbound capacity
+  reserved for Raft control traffic;
 - `TlsSender<G, C>` implementing `rafter_service::RaftTransport<G>`;
 - queued caller-owned snapshot resolution outside the managed driver lock;
 - direct composition with `TransportRaftDriver` through the concrete sender and
@@ -98,11 +98,15 @@ ambiguous write can be retried on a fresh stream without reusing the old
 stream's sequence space.
 
 Transient failures use capped exponential backoff with deterministic per-peer
-jitter. Permanent identity, cluster, version, or frame incompatibility enters
-`ConfigurationBlocked` without allocating more durable sessions and waits for
-an endpoint-generation change. Stale sessions and noncanonical accepted
-responses fail the runtime closed. Per-peer diagnostics expose this state and
-the last connection error.
+jitter. A completed handshake does not clear that backoff; the connection must
+successfully write a frame first, so a peer that accepts handshakes and then
+closes cannot create a durable-session publication storm. Permanent identity,
+cluster, version, or frame incompatibility enters `ConfigurationBlocked`
+without a rapid durable-redial loop. `EndpointBook::refresh` provides immediate
+recovery after same-address remote repair, and a five-minute default sparse
+reprobe prevents an unchanged endpoint generation from remaining wedged
+forever. Stale sessions and noncanonical accepted responses fail the runtime
+closed. Per-peer diagnostics expose this state and the last connection error.
 
 The listener is nonblocking. Every accepted socket consumes one finite inbound
 connection permit before a receiver worker is spawned. Each receiver completes
@@ -119,7 +123,9 @@ inbound connection permit indefinitely.
 Before delivery, every declared frame reserves a weighted runtime-wide memory
 permit before its read buffer is allocated. Cheap outer routing, identity,
 authorization, and retirement checks run before inner-message construction.
-Construction refuses a budget that cannot hold one configured maximum frame.
+The public decoder charge cannot be configured below the allocation-counted
+32x safe floor, and construction refuses a budget that cannot hold one
+configured maximum frame at that charge.
 The permit covers reading and decoding and moves with an accepted envelope into
 the count-and-byte-bounded inbound queue; every refusal releases it. Frame read
 buffers are frame-scoped, so idle connections retain no uncharged frame
@@ -257,8 +263,9 @@ They compose directly with `TransportRaftDriver`: the sender owns bounded
 outbound admission, while the directory implements
 `AuthenticatedPeerValidator<G, PeerId>` for inbound validation and complete
 peer-policy publication. Policy replacement is atomic, retirement floors remain
-monotonic, and a live multiplexed connection rechecks authorization for every
-group frame.
+monotonic, and accepted outbound work carries revocable proofs for both its
+local-source binding and destination authorization. A live multiplexed
+connection rechecks authorization for every group frame.
 
 ## Reference adoption
 
