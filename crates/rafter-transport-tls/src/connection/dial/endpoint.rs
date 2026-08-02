@@ -4,6 +4,7 @@ use std::{
     net::{SocketAddr, TcpStream},
     sync::atomic::Ordering,
     sync::Arc,
+    time::Instant,
 };
 
 use rustls::{ClientConnection, StreamOwned};
@@ -56,6 +57,7 @@ pub(super) fn dial_endpoint<G>(
         sequence: crate::OutboundSequence::new(),
         frame_bytes,
         endpoint_generation,
+        established_at: Instant::now(),
         _presence: OutboundPresence {
             peer: context.peer.clone(),
             counters: Arc::clone(&context.counters),

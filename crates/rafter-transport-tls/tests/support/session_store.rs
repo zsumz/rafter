@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex, PoisonError,
     },
+    time::Instant,
 };
 
 use rafter_transport_tls::{
@@ -16,6 +17,7 @@ use rafter_transport_tls::{
 pub struct MemorySessionStore {
     state: Arc<Mutex<TransportSessionState>>,
     allocations: Arc<AtomicUsize>,
+    allocation_times: Arc<Mutex<Vec<Instant>>>,
 }
 
 impl Default for MemorySessionStore {
@@ -33,11 +35,19 @@ impl MemorySessionStore {
         Self {
             state: Arc::new(Mutex::new(TransportSessionState::new(limits))),
             allocations: Arc::new(AtomicUsize::new(0)),
+            allocation_times: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn allocation_count(&self) -> usize {
-        self.allocations.load(Ordering::Relaxed)
+        self.allocations.load(Ordering::Acquire)
+    }
+
+    pub fn allocation_times(&self) -> Vec<Instant> {
+        self.allocation_times
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn peer_state(&self, peer: &PeerId) -> PeerSessionState {
@@ -92,7 +102,11 @@ impl TransportSessionStore for MemorySessionStore {
             .map_err(|_| MemorySessionStoreError)?
             .allocate_outbound(peer)
             .map_err(|_| MemorySessionStoreError)?;
-        let _ = self.allocations.fetch_add(1, Ordering::Relaxed);
+        self.allocation_times
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Instant::now());
+        let _ = self.allocations.fetch_add(1, Ordering::Release);
         Ok(session)
     }
 

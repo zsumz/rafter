@@ -12,8 +12,8 @@ use rafter::{
     MembershipSet, Message, NodeId, Term,
 };
 use rafter_transport_tls::{
-    ConnectionSequence, GroupIdCodec, PeerFrame, PeerFrameCodec, PeerFrameScratch,
-    ReceiveMemoryLimits, WireLimits,
+    ConnectionSequence, GroupIdCodec, PeerFrame, PeerFrameCodec, PeerFrameScratch, WireLimits,
+    MIN_SAFE_DECODE_AMPLIFICATION,
 };
 
 struct CountingAllocator;
@@ -101,9 +101,7 @@ fn check(label: &str, message: Message) {
         .expect("valid adversarial frame decodes");
     COUNTING.store(false, Ordering::Release);
     let peak = PEAK.load(Ordering::Relaxed);
-    let charged = encoded
-        .len()
-        .saturating_mul(ReceiveMemoryLimits::default().decode_amplification());
+    let charged = encoded.len().saturating_mul(MIN_SAFE_DECODE_AMPLIFICATION);
     assert!(
         peak <= charged,
         "decode peaked at {peak} bytes for {} wire bytes, above the {charged}-byte charge",

@@ -29,6 +29,7 @@ pub enum PeerBehavior {
     RejectFrameLimit = 0,
     AcceptThenClose = 1,
     CaptureFrames = 2,
+    CaptureOneThenClose = 3,
 }
 
 #[derive(Debug)]
@@ -229,7 +230,9 @@ fn serve_one(
     let hello = read_client_hello(&mut stream)?;
     let handshake = match behavior {
         PeerBehavior::RejectFrameLimit => incompatible,
-        PeerBehavior::AcceptThenClose | PeerBehavior::CaptureFrames => compatible,
+        PeerBehavior::AcceptThenClose
+        | PeerBehavior::CaptureFrames
+        | PeerBehavior::CaptureOneThenClose => compatible,
     };
     let response = handshake
         .accept_client_hello(&authenticated, &hello, sessions)
@@ -248,16 +251,34 @@ fn serve_one(
         }
         PeerBehavior::AcceptThenClose => {
             debug_assert!(accepted);
-            stream.conn.send_close_notify();
-            while stream.conn.wants_write() {
-                stream.conn.write_tls(&mut stream.sock)?;
-            }
-            stream.sock.shutdown(Shutdown::Both)
+            close(&mut stream)
         }
         PeerBehavior::CaptureFrames => {
             debug_assert!(accepted);
             capture_frames(&mut stream, codec, classes)
         }
+        PeerBehavior::CaptureOneThenClose => {
+            debug_assert!(accepted);
+            if !capture_frame(&mut stream, codec, classes)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "fault peer expected one frame",
+                ));
+            }
+            close(&mut stream)
+        }
+    }
+}
+
+fn close(stream: &mut StreamOwned<rustls::ServerConnection, TcpStream>) -> io::Result<()> {
+    stream.conn.send_close_notify();
+    while stream.conn.wants_write() {
+        stream.conn.write_tls(&mut stream.sock)?;
+    }
+    match stream.sock.shutdown(Shutdown::Both) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -297,40 +318,46 @@ fn capture_frames(
     codec: &PeerFrameCodec<String, StringGroupCodec>,
     classes: &Mutex<Vec<TrafficClass>>,
 ) -> io::Result<()> {
+    while capture_frame(reader, codec, classes)? {}
+    Ok(())
+}
+
+fn capture_frame(
+    reader: &mut impl Read,
+    codec: &PeerFrameCodec<String, StringGroupCodec>,
+    classes: &Mutex<Vec<TrafficClass>>,
+) -> io::Result<bool> {
     let mut scratch = PeerFrameScratch::new();
-    loop {
-        let mut prefix = [0_u8; PEER_FRAME_LENGTH_PREFIX_BYTES];
-        match reader.read_exact(&mut prefix) {
-            Ok(()) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::UnexpectedEof
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::WouldBlock
-                ) =>
-            {
-                return Ok(());
-            }
-            Err(error) => return Err(error),
+    let mut prefix = [0_u8; PEER_FRAME_LENGTH_PREFIX_BYTES];
+    match reader.read_exact(&mut prefix) {
+        Ok(()) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ) =>
+        {
+            return Ok(false);
         }
-        let body = usize::try_from(u32::from_be_bytes(prefix))
-            .map_err(|_| io::Error::other("frame length does not fit target"))?;
-        let complete = body
-            .checked_add(PEER_FRAME_LENGTH_PREFIX_BYTES)
-            .ok_or_else(|| io::Error::other("frame length overflow"))?;
-        let mut frame = Vec::with_capacity(complete);
-        frame.extend_from_slice(&prefix);
-        frame.resize(complete, 0);
-        reader.read_exact(&mut frame[PEER_FRAME_LENGTH_PREFIX_BYTES..])?;
-        let decoded = codec
-            .decode(&frame, &mut scratch)
-            .map_err(io::Error::other)?;
-        classes
-            .lock()
-            .map_err(|_| io::Error::other("captured frame state is poisoned"))?
-            .push(TrafficClass::for_message(decoded.message()));
+        Err(error) => return Err(error),
     }
+    let body = usize::try_from(u32::from_be_bytes(prefix))
+        .map_err(|_| io::Error::other("frame length does not fit target"))?;
+    let complete = body
+        .checked_add(PEER_FRAME_LENGTH_PREFIX_BYTES)
+        .ok_or_else(|| io::Error::other("frame length overflow"))?;
+    let mut frame = Vec::with_capacity(complete);
+    frame.extend_from_slice(&prefix);
+    frame.resize(complete, 0);
+    reader.read_exact(&mut frame[PEER_FRAME_LENGTH_PREFIX_BYTES..])?;
+    let decoded = codec
+        .decode(&frame, &mut scratch)
+        .map_err(io::Error::other)?;
+    classes
+        .lock()
+        .map_err(|_| io::Error::other("captured frame state is poisoned"))?
+        .push(TrafficClass::for_message(decoded.message()));
+    Ok(true)
 }
 
 impl PeerBehavior {
@@ -338,6 +365,7 @@ impl PeerBehavior {
         match value {
             1 => Self::AcceptThenClose,
             2 => Self::CaptureFrames,
+            3 => Self::CaptureOneThenClose,
             _ => Self::RejectFrameLimit,
         }
     }

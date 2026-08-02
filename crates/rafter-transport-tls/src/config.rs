@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 
 use crate::{ClusterId, PeerId, TransportLimits};
 
+pub(crate) use timeouts::MAX_REDIAL_DELAY;
 pub use timeouts::{
     TimeoutKind, TransportIoTimeouts, TransportRuntimeTimeouts, TransportTimeoutError,
     TransportTimeouts,

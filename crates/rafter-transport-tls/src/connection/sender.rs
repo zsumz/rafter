@@ -233,7 +233,9 @@ fn transmit_current<G>(
         return handle_write_failure(context, connection, current, retry_attempt);
     }
 
-    *retry_attempt = 0;
+    if open.stability_proven() {
+        *retry_attempt = 0;
+    }
     increment(&context.counters.frames_sent);
     context.peer_counters.sent();
     release_current(context, current);

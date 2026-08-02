@@ -97,16 +97,20 @@ Rafter handshake, and a newer durable connection session have succeeded, so an
 ambiguous write can be retried on a fresh stream without reusing the old
 stream's sequence space.
 
-Transient failures use capped exponential backoff with deterministic per-peer
-jitter. A completed handshake does not clear that backoff; the connection must
-successfully write a frame first, so a peer that accepts handshakes and then
-closes cannot create a durable-session publication storm. Permanent identity,
-cluster, version, or frame incompatibility enters `ConfigurationBlocked`
-without a rapid durable-redial loop. `EndpointBook::refresh` provides immediate
-recovery after same-address remote repair, and a five-minute default sparse
-reprobe prevents an unchanged endpoint generation from remaining wedged
-forever. Stale sessions and noncanonical accepted responses fail the runtime
-closed. Per-peer diagnostics expose this state and the last connection error.
+Transient failures use capped exponential backoff with duration-precise,
+deterministic per-peer jitter. Redial bases above the 30-second ceiling are
+refused instead of silently shortened. Neither a completed handshake nor one
+locally successful frame clears retry history; a connection must remain
+established for 30 seconds and then complete a write. A peer that accepts one
+frame before closing therefore cannot create a durable-session publication
+storm. Permanent identity, cluster, version, or frame incompatibility enters
+`ConfigurationBlocked` without a rapid durable-redial loop.
+`EndpointBook::refresh` provides immediate recovery after same-address remote
+repair. A five-minute default sparse-reprobe base, with deterministic per-peer
+jitter, expires even while another endpoint remains transient so an unchanged
+endpoint generation cannot remain wedged forever. Stale sessions and
+noncanonical accepted responses fail the runtime closed. Per-peer diagnostics
+expose this state and the last connection error.
 
 The listener is nonblocking. Every accepted socket consumes one finite inbound
 connection permit before a receiver worker is spawned. Each receiver completes
@@ -125,7 +129,8 @@ permit before its read buffer is allocated. Cheap outer routing, identity,
 authorization, and retirement checks run before inner-message construction.
 The public decoder charge cannot be configured below the allocation-counted
 32x safe floor, and construction refuses a budget that cannot hold one
-configured maximum frame at that charge.
+configured maximum frame at that charge. Required CI executes the adversarial
+allocation checker rather than merely compiling it.
 The permit covers reading and decoding and moves with an accepted envelope into
 the count-and-byte-bounded inbound queue; every refusal releases it. Frame read
 buffers are frame-scoped, so idle connections retain no uncharged frame

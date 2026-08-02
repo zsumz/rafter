@@ -246,6 +246,10 @@ fn timeout_groups_refuse_zero_before_aggregate_configuration() {
             .kind(),
         TimeoutKind::ConfigurationReprobe
     );
+    let excessive_redial = TransportRuntimeTimeouts::new(Duration::from_secs(60), second, second)
+        .expect_err("redial above the retry ceiling");
+    assert_eq!(excessive_redial.kind(), TimeoutKind::Redial);
+    assert!(excessive_redial.to_string().contains("30s"));
     for (error, expected) in [
         (
             TransportRuntimeTimeouts::new(Duration::ZERO, second, second)

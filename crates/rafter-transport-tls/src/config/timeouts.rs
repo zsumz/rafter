@@ -2,7 +2,9 @@
 
 use std::{error::Error, fmt, time::Duration};
 
-/// Which runtime timeout was configured as zero.
+pub(crate) const MAX_REDIAL_DELAY: Duration = Duration::from_secs(30);
+
+/// Which runtime timeout violated its supported range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum TimeoutKind {
@@ -43,10 +45,17 @@ impl fmt::Display for TimeoutKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransportTimeoutError {
     kind: TimeoutKind,
+    constraint: TimeoutConstraint,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TimeoutConstraint {
+    NonZero,
+    Maximum(Duration),
 }
 
 impl TransportTimeoutError {
-    /// Timeout whose zero duration was refused.
+    /// Timeout whose supported range was violated.
     #[must_use]
     pub const fn kind(self) -> TimeoutKind {
         self.kind
@@ -55,7 +64,16 @@ impl TransportTimeoutError {
 
 impl fmt::Display for TransportTimeoutError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "transport {} timeout must be nonzero", self.kind)
+        match self.constraint {
+            TimeoutConstraint::NonZero => {
+                write!(formatter, "transport {} timeout must be nonzero", self.kind)
+            }
+            TimeoutConstraint::Maximum(maximum) => write!(
+                formatter,
+                "transport {} timeout must not exceed {maximum:?}",
+                self.kind
+            ),
+        }
     }
 }
 
@@ -122,7 +140,8 @@ impl TransportRuntimeTimeouts {
     ///
     /// # Errors
     ///
-    /// Returns [`TransportTimeoutError`] when any duration is zero.
+    /// Returns [`TransportTimeoutError`] when any duration is zero or `redial`
+    /// exceeds the 30-second retry ceiling.
     pub fn new(
         redial: Duration,
         poll: Duration,
@@ -133,6 +152,12 @@ impl TransportRuntimeTimeouts {
             (TimeoutKind::Poll, poll),
             (TimeoutKind::ShutdownGrace, shutdown_grace),
         ])?;
+        if redial > MAX_REDIAL_DELAY {
+            return Err(TransportTimeoutError {
+                kind: TimeoutKind::Redial,
+                constraint: TimeoutConstraint::Maximum(MAX_REDIAL_DELAY),
+            });
+        }
         Ok(Self {
             redial,
             configuration_reprobe: Duration::from_secs(5 * 60),
@@ -143,9 +168,10 @@ impl TransportRuntimeTimeouts {
 
     /// Replaces the sparse recovery interval for an unchanged blocked endpoint.
     ///
-    /// The default is five minutes. Discovery can recover immediately with
-    /// [`crate::EndpointBook::refresh`]; this interval is the fail-safe when no
-    /// local discovery event accompanies remote repair.
+    /// The default base is five minutes. Each peer receives deterministic
+    /// jitter below 25 percent of this value. Discovery can recover immediately
+    /// with [`crate::EndpointBook::refresh`]; this interval is the fail-safe
+    /// when no local discovery event accompanies remote repair.
     ///
     /// # Errors
     ///
@@ -227,7 +253,9 @@ impl TransportTimeouts {
         self.runtime.redial
     }
 
-    /// Sparse retry interval for a configuration-blocked endpoint generation.
+    /// Sparse retry base for a configuration-blocked endpoint generation.
+    ///
+    /// The runtime adds deterministic per-peer jitter below 25 percent.
     #[must_use]
     pub const fn configuration_reprobe(self) -> Duration {
         self.runtime.configuration_reprobe
@@ -251,7 +279,10 @@ fn validate<const N: usize>(
 ) -> Result<(), TransportTimeoutError> {
     for (kind, value) in values {
         if value.is_zero() {
-            return Err(TransportTimeoutError { kind });
+            return Err(TransportTimeoutError {
+                kind,
+                constraint: TimeoutConstraint::NonZero,
+            });
         }
     }
     Ok(())
