@@ -278,6 +278,21 @@ fn allowed_normal_workspace_deps(crate_name: &str) -> BTreeSet<String> {
     })
 }
 
+const RAFTER_TRANSPORT_TLS_DEV_DEPS: &[(&str, &str)] = &[
+    (
+        "rafter-app",
+        "transport integration tests exercise the public application adapter",
+    ),
+    (
+        "rafter-runtime",
+        "transport integration tests instantiate durable runtimes",
+    ),
+    (
+        "rafter-storage",
+        "transport integration tests use public durable stores",
+    ),
+];
+
 fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str> {
     let entries: &[(&str, &str)] = match crate_name {
         "rafter-app" => &[
@@ -354,20 +369,7 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
             "rafter-invariant-test",
             "registered storage tests emit typed invariant-oracle verdicts",
         )],
-        "rafter-transport-tls" => &[
-            (
-                "rafter-app",
-                "transport integration tests exercise the public application adapter",
-            ),
-            (
-                "rafter-runtime",
-                "transport integration tests instantiate durable runtimes",
-            ),
-            (
-                "rafter-storage",
-                "transport integration tests use public durable stores",
-            ),
-        ],
+        "rafter-transport-tls" => RAFTER_TRANSPORT_TLS_DEV_DEPS,
         "rafter-codec"
         | "rafter-crc32"
         | "rafter-invariant-test"
