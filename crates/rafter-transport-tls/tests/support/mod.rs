@@ -97,7 +97,7 @@ impl GroupIdCodec<String> for LowercaseGroupCodec {
     }
 
     fn max_decoded_heap_bytes(&self) -> usize {
-        self.maximum
+        self.maximum.saturating_mul(2)
     }
 
     fn encode(&self, group_id: &String, output: &mut Vec<u8>) -> Result<(), Self::Error> {

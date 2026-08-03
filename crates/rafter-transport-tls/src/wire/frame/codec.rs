@@ -67,10 +67,10 @@ where
         &self.group_codec
     }
 
-    /// Maximum memory retained by one decoded group identity.
+    /// Maximum in-place and codec-controlled heap memory for group decoding.
     ///
-    /// This includes the in-place size of `G` and the codec's declared
-    /// transitive heap bound.
+    /// This includes `size_of::<G>()` and the codec's declared peak across
+    /// decoding, error construction, and canonical re-encoding.
     #[must_use]
     pub const fn max_decoded_group_bytes(&self) -> usize {
         self.decoded_group_bound

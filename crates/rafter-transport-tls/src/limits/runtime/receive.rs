@@ -18,7 +18,8 @@ impl ReceiveMemoryLimits {
     /// The 32x charge clears the allocation-counted 24.88x hostile
     /// minimum-entry peak, including the temporary `Vec` to shared-slice
     /// conversion, while leaving headroom for outer routing and allocator
-    /// rounding.
+    /// rounding. The group codec's declared peak is charged separately for each
+    /// frame.
     pub const DEFAULT: Self = Self {
         bytes_global: 256 * 1024 * 1024,
         decode_amplification: MIN_SAFE_DECODE_AMPLIFICATION,
@@ -58,6 +59,8 @@ impl ReceiveMemoryLimits {
     }
 
     /// Conservative memory charge per declared wire byte.
+    ///
+    /// The group codec's fixed peak charge is added separately.
     #[must_use]
     pub const fn decode_amplification(self) -> usize {
         self.decode_amplification

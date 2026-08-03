@@ -179,6 +179,10 @@ The group ID is decoded once with `GroupIdCodec<G>`, then re-encoded and compare
 byte-for-byte with the route bytes. The sender encoded inside the
 `rafter-codec` message must equal the outer Raft sender.
 
+The group codec declares the peak heap it controls across decode, returned
+values or errors, and canonical re-encoding. That bound is charged before the
+frame body is read.
+
 The outer frame has no checksum. It is carried only inside authenticated TLS;
 the inner `rafter-codec` frame retains its own CRC32 accidental-corruption
 check.

@@ -85,6 +85,19 @@ fn decoder_rejects_noncanonical_group_route_bytes() {
 }
 
 #[test]
+fn decoded_group_bound_includes_canonicalization_temporaries() {
+    let maximum = 128;
+    let codec =
+        PeerFrameCodec::<String, _>::new(LowercaseGroupCodec::new(maximum), WireLimits::default())
+            .expect("compatible codec");
+
+    assert_eq!(
+        codec.max_decoded_group_bytes(),
+        size_of::<String>() + maximum * 2
+    );
+}
+
+#[test]
 fn declared_frame_bound_is_checked_before_body_parsing() {
     let mut bytes = decode_hex(include_str!("../format/peer-frame-v1.hex"));
     let oversized = u32::try_from(DEFAULT_MAX_FRAME_BODY_BYTES + 1).expect("default fits");

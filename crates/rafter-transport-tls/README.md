@@ -130,11 +130,12 @@ Before delivery, every declared frame reserves a weighted runtime-wide memory
 permit before its read buffer is allocated. Cheap outer routing, identity,
 authorization, and retirement checks run before inner-message construction.
 The public decoder charge cannot be configured below the allocation-counted
-32x safe floor. Every `GroupIdCodec` also declares the maximum transitive heap
-retained by one decoded group; the runtime adds that bound and the in-place
-group size to each frame's charge. Construction refuses a budget that cannot
-hold one configured maximum frame at the complete charge. Required CI executes
-the adversarial allocation checker rather than merely compiling it.
+32x safe floor. Every `GroupIdCodec` also declares its maximum peak
+codec-controlled heap across decoding, error construction, the returned group,
+and canonical re-encoding. The runtime adds that bound and the in-place group
+size to each frame's charge. Construction refuses a budget that cannot hold one
+configured maximum frame at the complete charge. Required CI executes the
+adversarial allocation checker rather than merely compiling it.
 The permit covers reading and decoding and moves with an accepted envelope into
 the count-and-byte-bounded inbound queue; every refusal releases it. Frame read
 buffers are frame-scoped, so idle connections retain no uncharged frame
@@ -262,7 +263,8 @@ stopped states without requiring a logging or metrics crate.
 
 The caller supplies `GroupIdCodec<G>`. Inbound group bytes are decoded once,
 re-encoded, and retained through cheap route admission into full message
-decoding; the exact bytes must match. The codec's declared decoded-heap bound is
+decoding; the exact bytes must match. The codec's declared peak covers returned
+values, errors, and temporaries used by decode and canonical re-encoding, and is
 included in the frame's receive-memory permit. The transport therefore imposes
 no Serde or application schema while still requiring one canonical, bounded
 route representation.
