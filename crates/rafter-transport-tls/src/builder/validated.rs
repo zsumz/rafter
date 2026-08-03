@@ -53,7 +53,11 @@ where
             PeerFrameCodec::new(group_codec, config.limits().wire())
                 .map_err(|source| TlsTransportBuildError::FrameCodec { source })?,
         );
-        validate_receive_memory(&config, codec.max_decoded_group_bytes())?;
+        validate_receive_memory(
+            &config,
+            codec.max_decoded_group_bytes(),
+            codec.max_encoded_group_bytes(),
+        )?;
 
         identity
             .validate_local_peer(config.local_peer_id(), &certificates)
@@ -98,10 +102,13 @@ where
 fn validate_receive_memory(
     config: &TransportConfig,
     decoded_group_bytes: usize,
+    canonical_scratch_bytes: usize,
 ) -> Result<(), TlsTransportBuildError> {
     let limits = config.limits();
     let memory = limits.runtime().receive_memory();
-    let required = memory.charge(limits.wire().max_frame_bytes(), decoded_group_bytes);
+    let required = memory
+        .charge(limits.wire().max_frame_bytes(), decoded_group_bytes)
+        .saturating_add(canonical_scratch_bytes);
     let maximum = memory.bytes_global();
     if required > maximum {
         return Err(TlsTransportBuildError::ReceiveMemoryTooSmall { required, maximum });

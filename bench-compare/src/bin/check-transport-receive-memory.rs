@@ -81,7 +81,7 @@ fn check(label: &str, message: Message) {
     let codec = PeerFrameCodec::new(StringGroupCodec, WireLimits::default()).expect("valid codec");
     let frame = PeerFrame::new(
         ConnectionSequence::FIRST,
-        "orders".to_owned(),
+        "g".repeat(128),
         NodeId(1),
         NodeId(2),
         message,
@@ -95,24 +95,28 @@ fn check(label: &str, message: Message) {
 
     LIVE.store(0, Ordering::Relaxed);
     PEAK.store(0, Ordering::Relaxed);
+    let mut scratch = PeerFrameScratch::new();
     COUNTING.store(true, Ordering::Release);
     let decoded = codec
-        .decode(&encoded, &mut PeerFrameScratch::new())
+        .decode(&encoded, &mut scratch)
         .expect("valid adversarial frame decodes");
     COUNTING.store(false, Ordering::Release);
     let peak = PEAK.load(Ordering::Relaxed);
     let charged = encoded
         .len()
         .saturating_mul(MIN_SAFE_DECODE_AMPLIFICATION)
-        .saturating_add(codec.max_decoded_group_bytes());
+        .saturating_add(codec.max_decoded_group_bytes())
+        .saturating_add(codec.max_encoded_group_bytes());
     assert!(
         peak <= charged,
         "decode peaked at {peak} bytes for {} wire bytes, above the {charged}-byte charge",
         encoded.len()
     );
     println!(
-        "{label}: {} wire bytes, {peak} peak decoded bytes, {charged} charged bytes",
-        encoded.len()
+        "{label}: {} wire bytes, {peak} peak decoded bytes, {charged} charged bytes ({} retained \
+         scratch bytes)",
+        encoded.len(),
+        codec.max_encoded_group_bytes()
     );
     drop(decoded);
 }

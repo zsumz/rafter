@@ -181,7 +181,9 @@ byte-for-byte with the route bytes. The sender encoded inside the
 
 The group codec declares the peak heap it controls across decode, returned
 values or errors, and canonical re-encoding. That bound is charged before the
-frame body is read.
+frame body is read. Each authenticated receiver also holds a connection-lifetime
+reservation for its preallocated maximum canonical group output, so idle
+connections cannot retain uncharged decoder scratch.
 
 The outer frame has no checksum. It is carried only inside authenticated TLS;
 the inner `rafter-codec` frame retains its own CRC32 accidental-corruption
@@ -283,14 +285,17 @@ fences the previous socket. An equal or lower delayed session cannot replace a
 newer live epoch. Frame admission and live-epoch validation linearize under the
 same epoch lock.
 
-Before allocating a frame read buffer, the receiver reserves a runtime-wide
-weighted permit from the declared complete length. The default budget is 256
-MiB with a conservative 32x decode charge. The permit covers the wire buffer,
-outer-route validation, and inner-message decoding, then moves into the inbound
-queue with an accepted envelope. Read buffers are frame-scoped. Malformed,
-unauthorized, stale-epoch, and full-queue refusals release the permit
-immediately. Runtime construction refuses a budget that cannot admit one
-configured maximum frame.
+After authentication, each receiver reserves and preallocates its maximum
+canonical group scratch. That permit remains live until the receiver and its
+retained scratch exit. Before allocating a frame read buffer, the receiver also
+reserves a runtime-wide weighted permit from the declared complete length. The
+default budget is 256 MiB with a conservative 32x decode charge. The frame
+permit covers the wire buffer, outer-route validation, and inner-message
+decoding, then moves into the inbound queue with an accepted envelope. Read
+buffers are frame-scoped. Malformed, unauthorized, stale-epoch, and full-queue
+refusals release the frame permit immediately. Runtime construction refuses a
+budget that cannot admit one receiver scratch plus one configured maximum
+frame.
 
 The receiver parses canonical group routing, sequence, sender, and recipient
 before constructing the inner Raft message. Inbound queue retention is also

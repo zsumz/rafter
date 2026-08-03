@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rafter::NodeId;
 use rafter_service::RaftTransport;
-use rafter_transport_tls::{RuntimeLimits, TransportHealth};
+use rafter_transport_tls::{RuntimeLimits, TransportHealth, DEFAULT_MAX_GROUP_ID_BYTES};
 
 use support::runtime::{wait_until, GroupRoute, RuntimeFixture};
 
@@ -42,6 +42,11 @@ fn one_authenticated_connection_multiplexes_independently_numbered_groups() {
     assert_eq!(delivered[1].raft_to, NodeId(4));
     assert_eq!(sender.diagnostics().active_outbound_connections, 1);
     assert_eq!(receiver.diagnostics().active_inbound_connections, 1);
+    assert!(wait_until(Duration::from_secs(1), || {
+        receiver
+            .queue_depths()
+            .is_ok_and(|depths| depths.inbound_memory_bytes == DEFAULT_MAX_GROUP_ID_BYTES)
+    }));
 
     sender.join().expect("join sender runtime");
     receiver.join().expect("join receiver runtime");

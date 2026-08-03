@@ -207,7 +207,7 @@ pub(crate) fn read_peer_frame(
     }
     let permit =
         memory
-            .try_acquire(complete)
+            .try_acquire_frame(complete)
             .map_err(|full| PeerFrameIoError::ReceiveMemoryFull {
                 required: full.required,
                 maximum: full.maximum,

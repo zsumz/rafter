@@ -43,7 +43,8 @@ pub struct QueueDepths {
     pub inbound_frames: usize,
     /// Inbound complete-frame bytes waiting for the caller.
     pub inbound_bytes: usize,
-    /// Weighted receive memory held by readers, decoders, and queued envelopes.
+    /// Weighted receive memory held by receiver scratch, readers, decoders, and
+    /// queued envelopes.
     pub inbound_memory_bytes: usize,
 }
 
@@ -76,13 +77,14 @@ pub struct TransportDiagnostics {
     pub snapshot_resolution_mismatches: u64,
     /// Synchronous outbound queue refusals.
     pub queue_full: u64,
-    /// Inbound per-peer or global queue refusals.
+    /// Aggregate inbound queue or receive-memory refusals.
     pub inbound_full: u64,
     /// Inbound frames refused by one authenticated peer's count or byte bound.
     pub inbound_peer_full: u64,
     /// Inbound frames refused by the aggregate count or byte bound.
     pub inbound_global_full: u64,
-    /// Frames refused before allocation by the runtime-wide receive-memory budget.
+    /// Frames or authenticated receivers refused before decode by the
+    /// runtime-wide receive-memory budget.
     pub inbound_memory_full: u64,
     /// Completed mutual-TLS handshakes in either direction.
     pub tls_handshakes: u64,

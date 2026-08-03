@@ -3,6 +3,7 @@
 mod admission;
 mod classify;
 mod frame;
+mod scratch;
 mod tls;
 
 use std::{
@@ -15,12 +16,13 @@ use crate::diagnostics::{increment, Counters};
 use crate::queue::{InboundQueue, ReceiveMemoryBudget, ReceiveMemoryPermit};
 use crate::runtime::{InboundEpochs, RuntimeControl, SessionStoreHandle};
 use crate::{
-    CertificateDirectory, GroupIdCodec, InboundSequence, PeerFrameCodec, PeerFrameScratch,
-    TlsHandshakeConfig, TlsIdentity, TlsPeerDirectory, TransportTimeouts,
+    CertificateDirectory, GroupIdCodec, InboundSequence, PeerFrameCodec, TlsHandshakeConfig,
+    TlsIdentity, TlsPeerDirectory, TransportTimeouts,
 };
 
 use self::classify::classify_frame_io;
 use self::frame::{process_frame, FrameInput, FrameStep};
+use self::scratch::{ReceiverScratch, ReceiverScratchError};
 use super::io::{read_peer_frame, PeerFrameRead};
 
 pub(crate) struct ReceiverTemplate<G, C> {
@@ -113,8 +115,21 @@ where
     let Some(mut established) = tls::establish(&template, socket, shutdown_socket) else {
         return;
     };
+    let mut scratch = match ReceiverScratch::acquire(&template.receive_memory, &template.codec) {
+        Ok(scratch) => scratch,
+        Err(ReceiverScratchError::MemoryFull) => {
+            increment(&template.counters.inbound_full);
+            increment(&template.counters.inbound_memory_full);
+            return;
+        }
+        Err(ReceiverScratchError::Allocation(error)) => {
+            template.control.fail(format!(
+                "could not allocate canonical group scratch for an authenticated receiver: {error}"
+            ));
+            return;
+        }
+    };
     let mut expected = InboundSequence::new();
-    let mut scratch = PeerFrameScratch::new();
 
     while !template.control.shutdown_requested() {
         if !epoch_is_current(&template, &established.epoch) {
@@ -140,7 +155,7 @@ where
             process_frame(
                 &template,
                 &mut expected,
-                &mut scratch,
+                scratch.frame_mut(),
                 FrameInput {
                     peer: &established.peer,
                     epoch: &established.epoch,

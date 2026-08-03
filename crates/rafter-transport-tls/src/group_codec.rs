@@ -13,17 +13,21 @@ pub trait GroupIdCodec<G>: Send + Sync + 'static {
     type Error: Error + Send + Sync + 'static;
 
     /// Maximum number of bytes this codec can emit for one group identity.
+    ///
+    /// This must remain a stable upper bound for the codec's lifetime; the
+    /// transport captures it during codec construction.
     fn max_encoded_len(&self) -> usize;
 
     /// Maximum codec-controlled heap bytes live during inbound group decoding.
     ///
-    /// This is a peak-live bound, not only the heap retained by a successful
-    /// `G`. It must cover every allocation reachable from the returned group or
-    /// error plus any temporary allocation that can overlap it while
+    /// This is a stable peak-live bound, not only the heap retained by a
+    /// successful `G`. It must cover every allocation reachable from the
+    /// returned group or error plus any temporary allocation that can overlap it while
     /// [`Self::decode`] runs or [`Self::encode`] re-encodes that group for the
     /// canonical-form check. Implementations may exclude the borrowed input and
-    /// the caller-owned output `Vec`; the transport charges those bounded
-    /// buffers separately.
+    /// the caller-owned output `Vec`; the blocking runtime charges those bounded
+    /// buffers separately, including a connection-lifetime reservation for the
+    /// canonical output.
     ///
     /// The transport adds this bound and `size_of::<G>()` to every inbound
     /// frame's receive-memory charge before reading its body. Fixed-width codecs
@@ -33,9 +37,11 @@ pub trait GroupIdCodec<G>: Send + Sync + 'static {
     /// Encodes `group_id` canonically into `output`.
     ///
     /// Implementations must clear `output` before writing and must not emit an
-    /// empty representation. They must not deliberately reserve output capacity
-    /// beyond [`Self::max_encoded_len`]; allocator rounding for that bounded
-    /// output is covered by the transport's wire-weighted charge.
+    /// empty representation. They must not deliberately grow output capacity
+    /// beyond [`Self::max_encoded_len`]. The blocking runtime supplies every
+    /// authenticated receiver with a preallocated canonical buffer of at least
+    /// that capacity and holds its receive-memory reservation for the receiver's
+    /// lifetime.
     ///
     /// # Errors
     ///

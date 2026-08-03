@@ -133,9 +133,11 @@ The public decoder charge cannot be configured below the allocation-counted
 32x safe floor. Every `GroupIdCodec` also declares its maximum peak
 codec-controlled heap across decoding, error construction, the returned group,
 and canonical re-encoding. The runtime adds that bound and the in-place group
-size to each frame's charge. Construction refuses a budget that cannot hold one
-configured maximum frame at the complete charge. Required CI executes the
-adversarial allocation checker rather than merely compiling it.
+size to each frame's charge. Every authenticated receiver separately holds a
+connection-lifetime reservation for its preallocated canonical group scratch.
+Construction refuses a budget that cannot hold one such scratch reservation and
+one configured maximum frame at their complete charges. Required CI executes
+the adversarial allocation checker rather than merely compiling it.
 The permit covers reading and decoding and moves with an accepted envelope into
 the count-and-byte-bounded inbound queue; every refusal releases it. Frame read
 buffers are frame-scoped, so idle connections retain no uncharged frame
@@ -265,9 +267,10 @@ The caller supplies `GroupIdCodec<G>`. Inbound group bytes are decoded once,
 re-encoded, and retained through cheap route admission into full message
 decoding; the exact bytes must match. The codec's declared peak covers returned
 values, errors, and temporaries used by decode and canonical re-encoding, and is
-included in the frame's receive-memory permit. The transport therefore imposes
-no Serde or application schema while still requiring one canonical, bounded
-route representation.
+included in the frame's receive-memory permit. The reusable canonical output
+buffer is preallocated and charged to a separate permit held for the inbound
+connection's lifetime. The transport therefore imposes no Serde or application
+schema while still requiring one canonical, bounded route representation.
 
 ## Managed service integration
 

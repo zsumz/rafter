@@ -105,7 +105,7 @@ fn builder_preflights_aggregate_session_capacity_before_binding() {
 }
 
 #[test]
-fn builder_refuses_a_memory_budget_that_cannot_hold_one_maximum_frame() {
+fn builder_refuses_a_budget_that_cannot_hold_one_receiver_and_maximum_frame() {
     use rafter_transport_tls::MIN_SAFE_DECODE_AMPLIFICATION;
     use support::session_store::MemorySessionStore;
 
@@ -126,7 +126,7 @@ fn builder_refuses_a_memory_budget_that_cannot_hold_one_maximum_frame() {
 }
 
 #[test]
-fn builder_charges_the_declared_decoded_group_bound() {
+fn builder_charges_decoded_group_and_connection_scratch_bounds() {
     use rafter_transport_tls::MIN_SAFE_DECODE_AMPLIFICATION;
     use support::session_store::MemorySessionStore;
 
@@ -148,7 +148,7 @@ fn builder_charges_the_declared_decoded_group_bound() {
         result,
         Err(TlsTransportBuildError::ReceiveMemoryTooSmall { required, maximum })
             if maximum == base
-                && required == base + size_of::<String>() + 128
+                && required == base + size_of::<String>() + 128 + 128
     ));
 }
 

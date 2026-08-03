@@ -19,7 +19,8 @@ impl ReceiveMemoryLimits {
     /// minimum-entry peak, including the temporary `Vec` to shared-slice
     /// conversion, while leaving headroom for outer routing and allocator
     /// rounding. The group codec's declared peak is charged separately for each
-    /// frame.
+    /// frame, and every authenticated receiver holds a lifetime reservation for
+    /// canonical group scratch.
     pub const DEFAULT: Self = Self {
         bytes_global: 256 * 1024 * 1024,
         decode_amplification: MIN_SAFE_DECODE_AMPLIFICATION,
@@ -60,7 +61,8 @@ impl ReceiveMemoryLimits {
 
     /// Conservative memory charge per declared wire byte.
     ///
-    /// The group codec's fixed peak charge is added separately.
+    /// The group codec's fixed per-frame peak and connection-lifetime canonical
+    /// scratch charges are added separately.
     #[must_use]
     pub const fn decode_amplification(self) -> usize {
         self.decode_amplification

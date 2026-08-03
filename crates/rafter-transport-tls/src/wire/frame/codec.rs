@@ -76,6 +76,15 @@ where
         self.decoded_group_bound
     }
 
+    /// Maximum canonical group bytes emitted into reusable scratch storage.
+    ///
+    /// The blocking runtime reserves at least this many receive-memory bytes
+    /// for the lifetime of every authenticated inbound receiver.
+    #[must_use]
+    pub const fn max_encoded_group_bytes(&self) -> usize {
+        self.group_id_bound
+    }
+
     /// Decodes exactly one complete length-prefixed peer frame.
     ///
     /// The declared body limit is checked before any caller-owned group decoder

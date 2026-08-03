@@ -42,7 +42,7 @@ fn peer_and_global_capacity_release_exactly_on_drain() {
 
 fn permit(frame_bytes: usize) -> ReceiveMemoryPermit {
     ReceiveMemoryBudget::new(crate::ReceiveMemoryLimits::default(), 0)
-        .try_acquire(frame_bytes)
+        .try_acquire_frame(frame_bytes)
         .expect("test receive-memory permit")
 }
 

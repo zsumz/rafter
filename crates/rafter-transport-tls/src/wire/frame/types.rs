@@ -1,5 +1,7 @@
 //! Peer-frame value types and reusable storage.
 
+use std::collections::TryReserveError;
+
 use rafter::{Message, NodeId};
 use rafter_service::transport::message_sender;
 
@@ -123,6 +125,15 @@ impl PeerFrameScratch {
             group_id: Vec::new(),
             message: Vec::new(),
         }
+    }
+
+    pub(crate) fn try_with_group_id_capacity(capacity: usize) -> Result<Self, TryReserveError> {
+        let mut group_id = Vec::new();
+        group_id.try_reserve_exact(capacity)?;
+        Ok(Self {
+            group_id,
+            message: Vec::new(),
+        })
     }
 
     /// Retained capacity of the canonical group-ID buffer.

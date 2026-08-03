@@ -26,9 +26,9 @@ pub enum TlsTransportBuildError {
         /// Stable component name.
         component: &'static str,
     },
-    /// The shared receive-memory budget cannot admit one maximum frame.
+    /// The shared receive-memory budget cannot admit one receiver and maximum frame.
     ReceiveMemoryTooSmall {
-        /// Weighted bytes required by one maximum frame.
+        /// Weighted bytes required by one receiver scratch and maximum frame.
         required: usize,
         /// Configured runtime-wide weighted-byte budget.
         maximum: usize,
@@ -118,7 +118,7 @@ impl fmt::Display for TlsTransportBuildError {
             Self::ReceiveMemoryTooSmall { required, maximum } => write!(
                 formatter,
                 "receive-memory budget is {maximum} bytes, below the {required} bytes required \
-                 for one maximum frame"
+                 for one receiver scratch and maximum frame"
             ),
             Self::LocalIdentity { source } => {
                 write!(formatter, "local TLS identity is invalid: {source}")
