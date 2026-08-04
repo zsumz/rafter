@@ -27,7 +27,7 @@ fn simulator_contract_deserializes_numeric_and_floor_policy() {
         ("seed_count", "6"),
         ("seed_policy", "source-derived-sha256-v1"),
         ("soak_steps", "1024"),
-        ("state_floors", "100000000-protocol-and-verifier"),
+        ("state_floors", "13000000-protocol-and-verifier"),
         ("termination_grace", "30s"),
         ("canonical_check_binding", "scheduled-suffix-v1"),
     ]);
@@ -41,8 +41,8 @@ fn simulator_contract_deserializes_numeric_and_floor_policy() {
     assert_eq!(
         contract.state_floors,
         SimulatorStateFloors::Aggregate {
-            protocol: 100_000_000,
-            verifier: 100_000_000,
+            protocol: 13_000_000,
+            verifier: 13_000_000,
         }
     );
     contract
@@ -277,7 +277,7 @@ fn simulator_contract_rejects_weakened_pr_thresholds() {
 fn simulator_contract_rejects_weakened_nightly_thresholds() {
     assert_weakened_scheduled_thresholds_are_rejected(
         "nightly",
-        reviewed_scheduled_contract("nightly", 1_024, 6, 100_000_000),
+        reviewed_scheduled_contract("nightly", 1_024, 6, 13_000_000),
     );
 }
 

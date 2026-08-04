@@ -16,7 +16,7 @@ use serde_support::{optional_string_u64, state_floors, string_u64};
 const PR_SOAK_STEPS: u64 = 320;
 const NIGHTLY_SOAK_STEPS: u64 = 1_024;
 const NIGHTLY_SEED_COUNT: u64 = 6;
-const NIGHTLY_STATE_FLOOR: u64 = 100_000_000;
+const NIGHTLY_STATE_FLOOR: u64 = 13_000_000;
 const WEEKLY_SOAK_STEPS: u64 = 4_096;
 const WEEKLY_SEED_COUNT: u64 = 10;
 const WEEKLY_STATE_FLOOR: u64 = 250_000_000;

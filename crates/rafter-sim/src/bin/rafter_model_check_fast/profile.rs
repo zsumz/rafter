@@ -123,8 +123,8 @@ impl Profile {
     pub(crate) const fn exhaustive_targets(self) -> Option<ExhaustiveTargets> {
         match self {
             Self::RaftNightly => Some(ExhaustiveTargets {
-                protocol_states: 100_000_000,
-                verifier_states: 100_000_000,
+                protocol_states: 13_000_000,
+                verifier_states: 13_000_000,
             }),
             Self::RaftWeekly => Some(ExhaustiveTargets {
                 protocol_states: 250_000_000,

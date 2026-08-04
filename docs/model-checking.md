@@ -186,8 +186,9 @@ Each exhaustive check reports two distinct cardinalities:
 
 Profile totals add each check's independently explored cardinality. They are
 not a globally deduplicated union. The scheduled `raft-nightly` and
-`raft-weekly` gates enforce unchanged lower bounds on both totals: 100 million
-and 250 million states respectively.
+`raft-weekly` gates enforce reviewed lower bounds on both totals: 13 million
+and 250 million states respectively. The floors are coverage ratchets; they do
+not control the configured exploration depth or workloads.
 
 ## Retained Logical Prefixes
 

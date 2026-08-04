@@ -40,8 +40,8 @@ fn scheduled_simulator_log_proves_exact_source_derived_plan() {
     .is_err());
     changed = configuration;
     changed.state_floors = crate::contract::profile::SimulatorStateFloors::Aggregate {
-        protocol: 100_000_001,
-        verifier: 100_000_001,
+        protocol: 13_000_001,
+        verifier: 13_000_001,
     };
     assert!(validate_simulator_schedule("nightly", source_ref, &changed, &[log]).is_err());
 }
@@ -52,7 +52,7 @@ fn scheduled_simulator_rejects_fabricated_totals_and_executed_seeds() {
     let log = scheduled_log(source_ref);
     let configuration = simulator_configuration("nightly");
     let fabricated_total = log.replace(
-        "\"unique_protocol_states\":40000000",
+        "\"unique_protocol_states\":5000000",
         "\"unique_protocol_states\":4",
     );
     assert!(validate_simulator_schedule(

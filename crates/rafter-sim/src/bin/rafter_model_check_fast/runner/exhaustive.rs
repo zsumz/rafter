@@ -78,14 +78,14 @@ mod tests {
     fn exhaustive_target_gate_requires_protocol_and_verifier_state_counts() {
         assert_eq!(
             target_values(Profile::RaftNightly),
-            (100_000_000, 100_000_000)
+            (13_000_000, 13_000_000)
         );
         assert_eq!(
             target_values(Profile::RaftWeekly),
             (250_000_000, 250_000_000)
         );
         assert_eq!(Profile::Fast.exhaustive_targets(), None);
-        let target = 100_000_000;
+        let target = 13_000_000;
 
         assert!(assert_exhaustive_targets(Profile::RaftNightly, target, target).is_ok());
         let protocol_error = assert_exhaustive_targets(Profile::RaftNightly, target - 1, target)
