@@ -92,7 +92,7 @@ fn scheduled_profiles_share_a_bounded_execution_deadline() {
     let budget = ExecutionBudget::at(
         "weekly",
         &BTreeMap::from([
-            (TOTAL_TIMEOUT_KEY.to_owned(), "350m".to_owned()),
+            (TOTAL_TIMEOUT_KEY.to_owned(), "320m".to_owned()),
             (FINALIZATION_RESERVE_KEY.to_owned(), "10m".to_owned()),
         ]),
         started,
@@ -100,14 +100,14 @@ fn scheduled_profiles_share_a_bounded_execution_deadline() {
     .expect("weekly profile has a bounded shared deadline");
     assert_eq!(
         budget.phase_timeout_at(
-            started + Duration::from_secs(339 * 60),
+            started + Duration::from_secs(309 * 60),
             probe_timeout("weekly"),
         ),
         Some(Duration::from_secs(60))
     );
     assert_eq!(
         budget.phase_timeout_at(
-            started + Duration::from_secs(340 * 60),
+            started + Duration::from_secs(310 * 60),
             probe_timeout("weekly"),
         ),
         None
@@ -175,27 +175,53 @@ fn workflow_caps_cover_the_exact_tla_phase_inventory() {
 }
 
 #[test]
-fn weekly_tla_job_uses_a_runner_that_can_exceed_the_hosted_six_hour_cap() {
+fn scheduled_invariant_jobs_use_github_hosted_linux() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let workflow = fs::read_to_string(root.join(".github/workflows/weekly.yml"))
-        .expect("read weekly workflow");
-    let job_cap = workflow_timeout_after(&workflow, "  invariants-tla:", "    timeout-minutes: ");
-    assert!(job_cap > Duration::from_secs(6 * 60 * 60));
-    assert!(workflow_job_block(&workflow, "  invariants-tla:")
-        .lines()
-        .any(|line| line == "    runs-on: [self-hosted, linux, X64]"));
+    for (workflow_path, aggregate_job) in [
+        (".github/workflows/nightly.yml", "  invariants-nightly:"),
+        (".github/workflows/weekly.yml", "  invariants-weekly:"),
+    ] {
+        let workflow =
+            fs::read_to_string(root.join(workflow_path)).expect("read scheduled workflow");
+        for job in [
+            "  invariants-tests:",
+            "  invariants-simulator:",
+            "  invariants-tla:",
+            "  invariants-maelstrom:",
+            aggregate_job,
+        ] {
+            assert!(
+                workflow_job_block(&workflow, job)
+                    .lines()
+                    .any(|line| line == "    runs-on: ubuntu-24.04"),
+                "{workflow_path} job {job} does not use GitHub-hosted Linux"
+            );
+        }
+    }
 }
 
 #[test]
-fn nightly_tla_job_uses_exact_compatible_checkpointing_on_self_hosted_linux() {
+fn scheduled_tla_jobs_fit_the_github_hosted_six_hour_cap() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for workflow_path in [
+        ".github/workflows/nightly.yml",
+        ".github/workflows/weekly.yml",
+    ] {
+        let workflow =
+            fs::read_to_string(root.join(workflow_path)).expect("read scheduled workflow");
+        let job_cap =
+            workflow_timeout_after(&workflow, "  invariants-tla:", "    timeout-minutes: ");
+        assert!(job_cap <= Duration::from_secs(6 * 60 * 60));
+    }
+}
+
+#[test]
+fn nightly_tla_job_uses_exact_compatible_checkpointing() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workflow = fs::read_to_string(root.join(".github/workflows/nightly.yml"))
         .expect("read nightly workflow");
     let job = workflow_job_block(&workflow, "  invariants-tla:");
 
-    assert!(job
-        .lines()
-        .any(|line| line == "    runs-on: [self-hosted, linux, X64]"));
     for required in [
         "Restore exact-compatible nightly TLC checkpoint",
         "target/rafter-invariants/tla-checkpoint/nightly",

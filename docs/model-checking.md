@@ -438,12 +438,12 @@ exact reviewed Temurin build. Scheduled invariant jobs use fresh run-, job-, and
 attempt-specific Cargo homes and target directories, restore neither compiled
 targets nor Cargo binaries, and reject stale Maelstrom extraction roots. Every
 external Action is locked to one reviewed full commit, and every aggregate step
-has a timeout inside a mechanically checked job budget. Graphviz and gnuplot must
-already be present in the runner image and are preflighted instead of installed
-into a persistent host. Repository code cannot attest the self-hosted image or
-runner-group policy: operators must bind `[self-hosted, linux, X64]` to a
-dedicated immutable invariant-runner pool and restrict that pool to protected
-default-branch workflows.
+has a timeout inside a mechanically checked job budget. Nightly and weekly
+invariant jobs run on fresh `ubuntu-24.04` GitHub-hosted VMs. Their TLA+ layer
+uses a 320-minute internal deadline inside a 330-minute step and six-hour job,
+leaving 30 minutes for setup, exact-compatible checkpoint handling, and evidence
+upload. The Maelstrom setup installs Graphviz and gnuplot into the ephemeral VM,
+then preflights both tools before execution.
 A fixture failure or incomplete qualification turns only its bound evidence
 into a harness error; an existing invariant violation remains an invariant
 violation. Missing or mismatched replay coverage fails closed for every required

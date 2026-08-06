@@ -17,6 +17,13 @@ runs:
         java-version: "21.0.11+10"
         architecture: x64
         check-latest: false
+    - name: Install Maelstrom analysis tools
+      if: inputs.maelstrom == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends graphviz gnuplot-nox
     - name: Preflight Maelstrom analysis tools
       if: inputs.maelstrom == 'true'
       shell: bash

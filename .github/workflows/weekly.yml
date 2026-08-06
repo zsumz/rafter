@@ -24,7 +24,7 @@ defaults:
 jobs:
   invariants-tests:
     name: invariants-tests-weekly
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -64,7 +64,7 @@ jobs:
 
   invariants-simulator:
     name: invariants-simulator-weekly
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -105,9 +105,10 @@ jobs:
 
   invariants-tla:
     name: invariants-tla-weekly
-    # The self-hosted job may exceed six hours; each individual step remains capped at six.
-    runs-on: [self-hosted, linux, X64]
-    timeout-minutes: 400
+    # Standard GitHub-hosted jobs hard-cap at six hours. The internal layer
+    # deadline leaves 30 minutes for setup, checkpointing, and evidence upload.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -136,7 +137,7 @@ jobs:
           restore-keys: |
             tla-weekly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.toml', 'Cargo.lock', 'crates/rafter-invariants/Cargo.toml', 'crates/rafter-invariants/src/**/*.rs') }}-
       - name: Produce source-bound weekly TLA+ evidence
-        timeout-minutes: 360
+        timeout-minutes: 330
         run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer tla
       - name: Save exact-compatible weekly TLC checkpoint
         if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/weekly/CACHE_VALID') != '' }}
@@ -167,7 +168,7 @@ jobs:
 
   invariants-maelstrom:
     name: invariants-maelstrom-weekly
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -221,7 +222,7 @@ jobs:
       - invariants-tla
       - invariants-maelstrom
     if: always()
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 110
     env:
       INVARIANT_EVIDENCE_DIR: rafter-invariants-weekly-evidence-${{ github.run_id }}-${{ github.run_attempt }}

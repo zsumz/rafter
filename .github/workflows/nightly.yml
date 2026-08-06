@@ -71,7 +71,7 @@ jobs:
 
   invariants-tests:
     name: invariants-tests-nightly
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -111,7 +111,7 @@ jobs:
 
   invariants-simulator:
     name: invariants-simulator-nightly
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -152,10 +152,10 @@ jobs:
 
   invariants-tla:
     name: invariants-tla-nightly
-    # The source-bound nightly graph is larger than the PR graph; use the same
-    # checkpoint-capable runner class as weekly while keeping the step capped.
-    runs-on: [self-hosted, linux, X64]
-    timeout-minutes: 400
+    # Standard GitHub-hosted jobs hard-cap at six hours. The internal layer
+    # deadline leaves 30 minutes for setup, checkpointing, and evidence upload.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -187,7 +187,7 @@ jobs:
           restore-keys: |
             tla-nightly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.toml', 'Cargo.lock', 'crates/rafter-invariants/Cargo.toml', 'crates/rafter-invariants/src/**/*.rs') }}-
       - name: Produce source-bound nightly TLA+ evidence
-        timeout-minutes: 360
+        timeout-minutes: 330
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla
       - name: Save exact-compatible nightly TLC checkpoint
         if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/nightly/CACHE_VALID') != '' }}
@@ -246,7 +246,7 @@ jobs:
 
   invariants-maelstrom:
     name: invariants-maelstrom-nightly
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -305,7 +305,7 @@ jobs:
       - invariants-tla
       - invariants-maelstrom
     if: always()
-    runs-on: [self-hosted, linux, X64]
+    runs-on: ubuntu-24.04
     timeout-minutes: 110
     env:
       INVARIANT_EVIDENCE_DIR: rafter-invariants-nightly-evidence-${{ github.run_id }}-${{ github.run_attempt }}

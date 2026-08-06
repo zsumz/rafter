@@ -97,7 +97,7 @@ fn valid_pr(contract: &Configuration) -> bool {
 fn valid_nightly(contract: &Configuration) -> bool {
     contract.config == "RaftNightly.cfg"
         && contract.seed == "2026071102"
-        && contract.soft_timeout == "295m"
+        && contract.soft_timeout == "265m"
         && contract.workers == "auto"
         && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
         && contract.checkpoint_gzip.as_deref() == Some("required")
@@ -106,14 +106,14 @@ fn valid_nightly(contract: &Configuration) -> bool {
         && contract.max_heap.as_deref() == Some("8g")
         && contract.fp_mem.as_deref() == Some("0.45")
         && contract.finalization_reserve.as_deref() == Some("10m")
-        && contract.total_timeout.as_deref() == Some("350m")
+        && contract.total_timeout.as_deref() == Some("320m")
         && contract.unsymmetrized_exploration.is_none()
 }
 
 fn valid_weekly(contract: &Configuration) -> bool {
     contract.config == "Raft.cfg"
         && contract.seed == "2026071103"
-        && contract.soft_timeout == "295m"
+        && contract.soft_timeout == "265m"
         && contract.workers == "auto"
         && contract.checkpoint_gzip.as_deref() == Some("required")
         && contract.checkpoint_minutes.as_deref() == Some("30")
@@ -123,7 +123,7 @@ fn valid_weekly(contract: &Configuration) -> bool {
         && contract.unsymmetrized_exploration.as_deref() == Some("required")
         && contract.finalization_reserve.as_deref() == Some("10m")
         && contract.symmetry.is_none()
-        && contract.total_timeout.as_deref() == Some("350m")
+        && contract.total_timeout.as_deref() == Some("320m")
 }
 
 fn no_checkpoint_configuration(contract: &Configuration) -> bool {
