@@ -1,6 +1,10 @@
 //! Producer integration stories for execution-filesystem deadline enforcement.
 
-use std::{fs, path::PathBuf, time::Instant};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use crate::{execution::filesystem::HeldDirectory, ArtifactRef};
 
@@ -74,4 +78,48 @@ fn maelstrom_discovery_and_evidence_traversal_obey_expired_deadlines() {
     assert!(!output.exists());
 
     fs::remove_dir_all(root).expect("remove Maelstrom traversal fixture");
+}
+
+#[test]
+fn maelstrom_scratch_cleanup_removes_generated_tree_before_source_revalidation() {
+    let root = test_path("maelstrom-source-revalidation");
+    let output = test_path("maelstrom-source-revalidation-evidence");
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&output);
+    fs::create_dir_all(root.join("store/lin-kv/run"))
+        .expect("create Maelstrom retained store fixture");
+    fs::write(root.join("store/lin-kv/run/results.edn"), b"{}")
+        .expect("write retained Maelstrom result");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("lin-kv/run", root.join("store/current"))
+        .expect("create Maelstrom current-store symlink");
+
+    let state_dir = HeldDirectory::open(&root).expect("hold Maelstrom scratch fixture");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let store = maelstrom_exec::discover_store(&state_dir, deadline)
+        .expect("discover retained Maelstrom store");
+    let mut artifacts = Vec::<ArtifactRef>::new();
+    maelstrom_exec::capture_tree(
+        &output,
+        std::path::Path::new("fixture"),
+        &store,
+        &mut artifacts,
+        deadline,
+    )
+    .expect("capture Maelstrom evidence before cleanup");
+    assert_eq!(artifacts.len(), 1, "fixture emits one captured artifact");
+    drop(store);
+    maelstrom_exec::cleanup_state_directory(state_dir, deadline)
+        .expect("clean captured Maelstrom scratch state");
+
+    assert!(
+        !root.exists(),
+        "Maelstrom scratch must not reach source revalidation"
+    );
+    assert_eq!(
+        fs::read(output.join("fixture/results.edn")).expect("read retained evidence"),
+        b"{}",
+        "scratch cleanup must preserve captured evidence"
+    );
+    fs::remove_dir_all(output).expect("remove captured Maelstrom evidence fixture");
 }

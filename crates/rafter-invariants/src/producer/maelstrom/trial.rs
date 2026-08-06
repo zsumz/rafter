@@ -5,6 +5,7 @@ mod lease;
 mod model;
 mod runner;
 
+pub(in crate::producer) use artifacts::cleanup_state_directory;
 #[cfg(test)]
 pub(in crate::producer) use artifacts::{capture_tree, discover_store, reset_state_directory};
 #[cfg(test)]

@@ -20,6 +20,17 @@ pub(in crate::producer) fn reset_state_directory(
     )
 }
 
+pub(in crate::producer) fn cleanup_state_directory(
+    state_dir: HeldDirectory,
+    deadline: Instant,
+) -> Result<(), Box<dyn Error>> {
+    state_dir.remove_contents(
+        TREE_LIMITS,
+        OperationDeadline::at(deadline, "Maelstrom scratch cleanup"),
+    )?;
+    state_dir.remove_self()
+}
+
 pub(super) fn capture_binary(
     output_dir: &Path,
     namespace: &Path,

@@ -18,7 +18,9 @@ pub(super) use trial::{
     LeaseMarker, LeaseTranscriptStatus, ScenarioMarkers,
 };
 #[cfg(test)]
-pub(super) use trial::{capture_tree, discover_store, reset_state_directory};
+pub(super) use trial::{
+    capture_tree, cleanup_state_directory, discover_store, reset_state_directory,
+};
 #[cfg(test)]
 pub(super) use trial::{probe_completion_count, MAX_LINE_BYTES};
 

@@ -17,6 +17,7 @@ use super::super::{
 };
 use super::{
     artifacts::{capture_binary, capture_tree, discover_store, reset_state_directory},
+    cleanup_state_directory,
     lease::read_markers,
     model::{ScenarioMarkers, TrialOutcome},
 };
@@ -50,46 +51,66 @@ pub(in crate::producer::maelstrom) fn run_trial(
             .join(format!("trial-{trial}")),
         execution_deadline,
     )?;
-    let durable = state_dir.create_dir_all(Path::new("durable"))?;
-    let script = fs::canonicalize(scenario.script())?;
-    let script_handle = producer_fs::hold_file(&script)?;
-    let script_dir = script
-        .parent()
-        .ok_or("Maelstrom scenario script omitted its parent directory")?;
-    let durable_path = durable.external_path();
-    let environment = trial_environment(configuration, &durable_path, script_dir, scenario)?;
-    let timeout = trial_process_timeout(configuration)?;
-    state_dir.verify_path_binding()?;
-    durable.verify_path_binding()?;
-    script_handle.verify_path_binding()?;
-    let state_path = state_dir.path().to_path_buf();
-    let output = process::timed_for_with_cap(
-        process::ProcessKind::MaelstromTrial,
-        script
-            .to_str()
-            .ok_or("Maelstrom script path is not UTF-8")?,
-        &["--test-count".into(), "1".into()],
-        &environment,
-        &state_path,
-        Some(timeout),
-    )?;
-    let namespace = Path::new(&format!(
-        "{profile}-maelstrom/{source_prefix}/{}/trial-{trial}",
-        scenario.name()
-    ))
-    .to_path_buf();
-    collect_trial_evidence(
-        &TrialEvidence {
-            scenario,
-            output_dir,
-            namespace: &namespace,
-            script: &script,
-            state_dir: &state_dir,
-            durable: &durable,
-            deadline: total_deadline,
-        },
-        &output,
-    )
+    let outcome = (|| {
+        let durable = state_dir.create_dir_all(Path::new("durable"))?;
+        let script = fs::canonicalize(scenario.script())?;
+        let script_handle = producer_fs::hold_file(&script)?;
+        let script_dir = script
+            .parent()
+            .ok_or("Maelstrom scenario script omitted its parent directory")?;
+        let durable_path = durable.external_path();
+        let environment = trial_environment(configuration, &durable_path, script_dir, scenario)?;
+        let timeout = trial_process_timeout(configuration)?;
+        state_dir.verify_path_binding()?;
+        durable.verify_path_binding()?;
+        script_handle.verify_path_binding()?;
+        let state_path = state_dir.path().to_path_buf();
+        let output = process::timed_for_with_cap(
+            process::ProcessKind::MaelstromTrial,
+            script
+                .to_str()
+                .ok_or("Maelstrom script path is not UTF-8")?,
+            &["--test-count".into(), "1".into()],
+            &environment,
+            &state_path,
+            Some(timeout),
+        )?;
+        let namespace = Path::new(&format!(
+            "{profile}-maelstrom/{source_prefix}/{}/trial-{trial}",
+            scenario.name()
+        ))
+        .to_path_buf();
+        collect_trial_evidence(
+            &TrialEvidence {
+                scenario,
+                output_dir,
+                namespace: &namespace,
+                script: &script,
+                state_dir: &state_dir,
+                durable: &durable,
+                deadline: total_deadline,
+            },
+            &output,
+        )
+    })();
+    let cleanup = cleanup_state_directory(state_dir, total_deadline);
+    finish_trial(outcome, cleanup)
+}
+
+fn finish_trial(
+    outcome: Result<TrialOutcome, Box<dyn Error>>,
+    cleanup: Result<(), Box<dyn Error>>,
+) -> Result<TrialOutcome, Box<dyn Error>> {
+    match (outcome, cleanup) {
+        (Ok(outcome), Ok(())) => Ok(outcome),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup_error)) => {
+            Err(format!("clean Maelstrom scratch state: {cleanup_error}").into())
+        }
+        (Err(error), Err(cleanup_error)) => {
+            Err(format!("{error}; Maelstrom scratch cleanup failed: {cleanup_error}").into())
+        }
+    }
 }
 
 fn collect_trial_evidence(

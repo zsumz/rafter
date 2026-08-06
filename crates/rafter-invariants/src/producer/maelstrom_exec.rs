@@ -6,7 +6,9 @@ pub(super) use super::maelstrom::{
     LeaseMarker, LeaseTranscriptStatus, ScenarioMarkers,
 };
 #[cfg(test)]
-pub(super) use super::maelstrom::{capture_tree, discover_store, reset_state_directory};
+pub(super) use super::maelstrom::{
+    capture_tree, cleanup_state_directory, discover_store, reset_state_directory,
+};
 
 #[cfg(test)]
 mod lease_history;
