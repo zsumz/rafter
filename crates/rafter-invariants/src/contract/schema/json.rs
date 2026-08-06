@@ -12,7 +12,13 @@ pub(crate) fn validate(instance: &Value, source: &str, label: &str) -> Result<()
     let Some(error) = validator.iter_errors(instance).next() else {
         return Ok(());
     };
-    let mut diagnostic = error.to_string();
+    let instance_path = error.instance_path.to_string();
+    let instance_path = if instance_path.is_empty() {
+        "/"
+    } else {
+        &instance_path
+    };
+    let mut diagnostic = format!("at {instance_path}: {error}");
     if diagnostic.len() > MAX_SCHEMA_DIAGNOSTIC_BYTES {
         let mut boundary = MAX_SCHEMA_DIAGNOSTIC_BYTES;
         while !diagnostic.is_char_boundary(boundary) {

@@ -63,7 +63,7 @@ fn every_tla_runtime_uses_the_exact_reviewed_jdk_build() {
         for line in source.lines().filter(|line| line.contains("java-version:")) {
             assert_eq!(
                 line.trim(),
-                "java-version: \"21.0.11+10\"",
+                "java-version: \"21.0.11+10.0.LTS\"",
                 "{relative} contains an unreviewed JDK identity"
             );
         }
@@ -328,6 +328,8 @@ fn maelstrom_setup_preflights_tools_and_uses_a_fresh_extraction_root() {
     let root = workspace_root();
     let action = read(&root.join(".github/actions/setup-invariant-verifier/action.yml"));
     for required in [
+        "sudo apt-get update",
+        "sudo apt-get install -y --no-install-recommends graphviz gnuplot-nox",
         "command -v dot",
         "command -v gnuplot",
         "dot -V",
@@ -343,12 +345,11 @@ fn maelstrom_setup_preflights_tools_and_uses_a_fresh_extraction_root() {
             "Maelstrom setup omitted {required}"
         );
     }
-    for forbidden in ["apt-get", "sudo ", "-C \"$RUNNER_TEMP\""] {
-        assert!(
-            !action.contains(forbidden),
-            "Maelstrom setup must not contain {forbidden}"
-        );
-    }
+    let forbidden = "-C \"$RUNNER_TEMP\"";
+    assert!(
+        !action.contains(forbidden),
+        "Maelstrom setup must not contain {forbidden}"
+    );
 }
 
 fn action_steps<'a>(source: &'a str, action: &str) -> Vec<(usize, &'a str)> {

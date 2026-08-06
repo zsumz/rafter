@@ -90,6 +90,8 @@ fn maelstrom_scratch_cleanup_removes_generated_tree_before_source_revalidation()
         .expect("create Maelstrom retained store fixture");
     fs::write(root.join("store/lin-kv/run/results.edn"), b"{}")
         .expect("write retained Maelstrom result");
+    fs::write(root.join("store/lin-kv/run/empty-diagnostic.log"), b"")
+        .expect("write empty Maelstrom diagnostic");
     #[cfg(unix)]
     std::os::unix::fs::symlink("lin-kv/run", root.join("store/current"))
         .expect("create Maelstrom current-store symlink");
@@ -107,7 +109,11 @@ fn maelstrom_scratch_cleanup_removes_generated_tree_before_source_revalidation()
         deadline,
     )
     .expect("capture Maelstrom evidence before cleanup");
-    assert_eq!(artifacts.len(), 1, "fixture emits one captured artifact");
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "empty files cannot become zero-byte evidence references"
+    );
     drop(store);
     maelstrom_exec::cleanup_state_directory(state_dir, deadline)
         .expect("clean captured Maelstrom scratch state");

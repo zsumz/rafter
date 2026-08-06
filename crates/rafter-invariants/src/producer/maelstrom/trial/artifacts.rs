@@ -104,6 +104,9 @@ pub(in crate::producer) fn capture_tree(
             read_deadline,
             crate::evidence::limits::MAX_ARTIFACT_BYTES,
         )?;
+        if bytes.is_empty() {
+            continue;
+        }
         artifacts.push(artifact::write(
             output_dir,
             &namespace.join(&relative),

@@ -11,9 +11,9 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
 
     let tla = job_block(&workflow, "invariants-tla");
     for required in [
-        "timeout-minutes: 400",
         "timeout-minutes: 360",
-        "runs-on: [self-hosted, linux, X64]",
+        "timeout-minutes: 330",
+        "runs-on: ubuntu-24.04",
         "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Restore exact-compatible weekly TLC checkpoint",
         "target/rafter-invariants/tla-checkpoint/weekly",
@@ -33,8 +33,8 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
     for required in [
         "\"config\": \"Raft.cfg\"",
-        "\"soft_timeout\": \"295m\"",
-        "\"total_timeout\": \"350m\"",
+        "\"soft_timeout\": \"265m\"",
+        "\"total_timeout\": \"320m\"",
         "\"finalization_reserve\": \"10m\"",
         "\"workers\": \"auto\"",
         "\"checkpoint_minutes\": \"30\"",

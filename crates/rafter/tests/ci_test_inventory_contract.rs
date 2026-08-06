@@ -37,7 +37,7 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
         "scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1",
         "scripts/cargo-test-exact 34 producer::tla_exec::mutation_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
         "scripts/cargo-test-exact 4 artifact_verify_tla::full_bundle_tests::serialized_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
-        "scripts/cargo-test-exact 47 maelstrom --inventory verification/maelstrom-test-inventory.txt --locked -p rafter-invariants",
+        "scripts/cargo-test-exact 48 maelstrom --inventory verification/maelstrom-test-inventory.txt --locked -p rafter-invariants",
     ] {
         assert!(ci.contains(selection), "CI omitted exact inventory: {selection}");
     }
@@ -124,7 +124,7 @@ fn verifier_jobs_share_runtime_class_and_provision_profile_tools() {
     for required in [
         "uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9",
         "distribution: temurin",
-        "java-version: \"21.0.11+10\"",
+        "java-version: \"21.0.11+10.0.LTS\"",
         "architecture: x64",
         "check-latest: false",
         "command -v dot",
@@ -158,7 +158,7 @@ fn verifier_jobs_share_runtime_class_and_provision_profile_tools() {
             &format!("invariants-{profile}"),
         ] {
             assert!(
-                workflow_job(&contents, job).contains("runs-on: [self-hosted, linux, X64]"),
+                workflow_job(&contents, job).contains("runs-on: ubuntu-24.04"),
                 "{workflow} job {job} crosses the reviewed runtime identity class"
             );
         }

@@ -18,7 +18,7 @@ pub(in crate::producer) use runner::{canonical_check_id, execute};
 pub(in crate::producer) use types::SimulatorExecution;
 
 #[cfg(test)]
-use runner::execution_plan;
+use runner::{collect_events, execution_plan};
 
 #[cfg(test)]
 #[path = "../simulator_model_tests.rs"]

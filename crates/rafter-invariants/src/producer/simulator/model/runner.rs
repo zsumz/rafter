@@ -188,7 +188,7 @@ pub(crate) fn expected_scheduled_seeds(profile: &str, source_ref: &str) -> Optio
     expected_scheduled_seeds_with_count(profile, source_ref, count)
 }
 
-fn collect_events(
+pub(super) fn collect_events(
     profile: &str,
     stdout: &[u8],
     events: &mut BTreeMap<String, Vec<Value>>,
@@ -206,7 +206,9 @@ fn collect_events(
             .or_default()
             .push(event.clone());
         if let Some(canonical) = canonical_check_id(profile, check_id) {
-            events.entry(canonical).or_default().push(event);
+            let mut canonical_event = event;
+            canonical_event["check_id"] = Value::String(canonical.clone());
+            events.entry(canonical).or_default().push(canonical_event);
         }
     }
     Ok(())

@@ -87,6 +87,20 @@ fn schema_validation_diagnostic_is_bounded_under_many_independent_errors() {
 }
 
 #[test]
+fn schema_validation_diagnostic_identifies_the_invalid_field() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let mut value = passing_bundle_value(&catalog, &manifest);
+    value["execution"]["source"]["materialization"]["tracked_entries"] = serde_json::json!(0);
+
+    let error = validate_result_value(&value).expect_err("zero tracked entries are rejected");
+
+    assert!(
+        error.contains("/execution/source/materialization/tracked_entries"),
+        "schema diagnostic omitted the invalid field: {error}"
+    );
+}
+
+#[test]
 fn result_schema_rejects_invalid_profile_owned_simulator_check_contracts() {
     let (catalog, manifest) = crate::tests::loaded();
     let bundle = crate::tests::passing_bundles(&catalog, &manifest)

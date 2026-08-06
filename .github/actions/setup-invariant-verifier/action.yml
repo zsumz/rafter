@@ -14,7 +14,7 @@ runs:
       uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9
       with:
         distribution: temurin
-        java-version: "21.0.11+10"
+        java-version: "21.0.11+10.0.LTS"
         architecture: x64
         check-latest: false
     - name: Install Maelstrom analysis tools

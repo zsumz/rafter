@@ -10,7 +10,7 @@ fn leader_batches_lagging_follower_suffix_by_replication_byte_budget() {
 
     // While the leadership probe is unanswered, proposals reach follower 2
     // as empty heartbeats only: the suffix accumulates on the leader.
-    for byte in [b'a', b'b', b'c'] {
+    for byte in *b"abc" {
         let outputs = leader.step(Input::ClientProposal {
             payload: vec![byte; 100],
         });
@@ -44,7 +44,7 @@ fn leader_batches_lagging_follower_suffix_by_replication_byte_budget() {
         3,
         "the byte budget splits the three-entry application suffix into three batches"
     );
-    for (offset, (batch, byte)) in batches.iter().zip([b'a', b'b', b'c']).enumerate() {
+    for (offset, (batch, byte)) in batches.iter().zip(*b"abc").enumerate() {
         assert_eq!(batch.prev_log_index, LogIndex(offset as u64 + 1));
         assert_eq!(batch.entries.len(), 1);
         assert_eq!(

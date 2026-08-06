@@ -1,6 +1,9 @@
 //! Scenarios for deterministic simulator plans and canonical scheduled identities.
 
-use super::{canonical_check_id, execution_plan};
+use std::collections::BTreeMap;
+
+use super::{canonical_check_id, collect_events, execution_plan};
+use crate::producer::simulator::events::passing_simulator_event_contract;
 
 #[test]
 fn scheduled_plans_use_stable_source_derived_seed_counts() {
@@ -34,6 +37,32 @@ fn scheduled_check_ids_bind_to_canonical_registry_checks() {
         Some("raft-soak-membership")
     );
     assert_eq!(canonical_check_id("pr", "raft-commit"), None);
+}
+
+#[test]
+fn scheduled_events_are_canonicalized_before_contract_validation() {
+    let source = serde_json::json!({
+        "event": "exhaustive-check",
+        "check_id": "raft-commit-nightly",
+        "status": "pass",
+        "classification": null,
+        "observations": {"commit_floor_advances": 1},
+        "unique_protocol_states": 10,
+        "unique_verifier_states": 11
+    });
+    let stdout = format!("RAFTER_EVENT {source}\n");
+    let mut events = BTreeMap::new();
+
+    collect_events("nightly", stdout.as_bytes(), &mut events).expect("collect scheduled event");
+
+    assert_eq!(
+        events["raft-commit-nightly"][0]["check_id"],
+        "raft-commit-nightly"
+    );
+    let canonical = &events["raft-commit"][0];
+    assert_eq!(canonical["check_id"], "raft-commit");
+    passing_simulator_event_contract("raft-commit", canonical)
+        .expect("canonical event satisfies the passing contract");
 }
 
 #[test]

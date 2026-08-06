@@ -218,7 +218,7 @@ fn reviewed_domain_import_exceptions_are_narrow_current_and_tracked() {
     let root = workspace_root();
     let mut identities = BTreeSet::new();
     for exception in REVIEWED_DOMAIN_IMPORT_EXCEPTIONS {
-        assert!(domain(exception.owner_domain).name == exception.owner_domain);
+        assert_eq!(domain(exception.owner_domain).name, exception.owner_domain);
         assert!(
             root.join(exception.source).is_file(),
             "{} points to missing source {}",
