@@ -198,6 +198,35 @@ fn artifact_reference_budget_accepts_its_boundary_and_rejects_the_next_reference
 }
 
 #[test]
+fn nightly_maelstrom_budget_accepts_the_observed_shared_reference_shape() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "tests")
+        .expect("tests bundle");
+    bundle.runner = "maelstrom".to_owned();
+    bundle.profile = "nightly".to_owned();
+    bundle.results.clear();
+    bundle.execution.checks.truncate(1);
+    let artifacts = (0..821)
+        .map(|index| ArtifactRef {
+            kind: "summary".to_owned(),
+            path: format!("artifacts/maelstrom-reference-{index}"),
+            sha256: format!("{index:064x}"),
+            size_bytes: 1,
+        })
+        .collect::<Vec<_>>();
+    bundle.execution.artifacts.clone_from(&artifacts);
+    bundle.execution.checks[0].artifacts = artifacts[..820].to_vec();
+    let budget =
+        BundleBudget::for_trusted("nightly", "maelstrom").expect("nightly Maelstrom budget");
+
+    let accepted = preflight_artifacts(&bundle, budget, "maelstrom")
+        .expect("the observed 1,642-declaration receipt shape is bounded");
+    assert_eq!(accepted.len(), 822);
+}
+
+#[test]
 fn noncanonical_and_hard_link_alias_paths_are_rejected() {
     let (catalog, manifest) = crate::tests::loaded();
     let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)

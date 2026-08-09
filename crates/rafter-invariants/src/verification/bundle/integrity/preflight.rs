@@ -82,12 +82,12 @@ pub(super) fn artifacts<'a>(
                 .flat_map(|result| result.artifacts.iter()),
         )
         .collect::<Vec<_>>();
-    if declarations.len() > budget.artifact_refs {
+    if declarations.len() > budget.declarations {
         return Err(AggregateError::new(format!(
-            "{} receipt declares {} artifact references, exceeding the {}-reference limit",
+            "{} receipt declares {} artifact references, exceeding the {}-declaration limit",
             bundle.runner,
             declarations.len(),
-            budget.artifact_refs
+            budget.declarations
         )));
     }
 
@@ -104,14 +104,22 @@ pub(super) fn artifacts<'a>(
             }
         }
     }
+    if artifacts.len() > budget.references {
+        return Err(AggregateError::new(format!(
+            "{} receipt declares {} distinct artifact references, exceeding the {}-reference limit",
+            bundle.runner,
+            artifacts.len(),
+            budget.references
+        )));
+    }
     let artifact_bytes = checked_sum(
         artifacts.values().map(|artifact| artifact.size_bytes),
         "artifact bundle size",
     )?;
-    if artifact_bytes > budget.artifact_bytes {
+    if artifact_bytes > budget.bytes {
         return Err(AggregateError::new(format!(
             "{} artifact bundle declares {artifact_bytes} bytes, exceeding the {}-byte limit",
-            bundle.runner, budget.artifact_bytes
+            bundle.runner, budget.bytes
         )));
     }
 

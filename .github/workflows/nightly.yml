@@ -183,9 +183,11 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: target/rafter-invariants/tla-checkpoint/nightly
-          key: tla-nightly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.toml', 'Cargo.lock', 'crates/rafter-invariants/Cargo.toml', 'crates/rafter-invariants/src/**/*.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: tla-nightly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          # The final key is an exact one-time bridge from the last compatible v1 checkpoint.
           restore-keys: |
-            tla-nightly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.toml', 'Cargo.lock', 'crates/rafter-invariants/Cargo.toml', 'crates/rafter-invariants/src/**/*.rs') }}-
+            tla-nightly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-
+            tla-nightly-checkpoint-v1-d4d58ccf520c9f3dd1f7fb27fcd7f1a99ad3b54d2d83ffb5eeb983c48420c3d4-31306738996-1
       - name: Produce source-bound nightly TLA+ evidence
         timeout-minutes: 330
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla
@@ -194,7 +196,7 @@ jobs:
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: target/rafter-invariants/tla-checkpoint/nightly
-          key: tla-nightly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.toml', 'Cargo.lock', 'crates/rafter-invariants/Cargo.toml', 'crates/rafter-invariants/src/**/*.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: tla-nightly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload nightly TLA+ evidence and counterexamples
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

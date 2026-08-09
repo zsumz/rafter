@@ -10,20 +10,38 @@ pub(crate) const MAX_RETAINED_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 pub(crate) const MAX_PLAN_INPUT_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) const MAX_PLAN_INPUT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 
+const MAX_MAELSTROM_NIGHTLY_ARTIFACT_REFS: usize = 1_024;
+const MAX_MAELSTROM_WEEKLY_ARTIFACT_REFS: usize = MAX_VERDICT_ARTIFACT_REFS;
+const MAX_MAELSTROM_NIGHTLY_ARTIFACT_DECLARATIONS: usize = 2_048;
+const MAX_MAELSTROM_WEEKLY_ARTIFACT_DECLARATIONS: usize = 8_192;
+
 const GIB: u64 = 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BundleBudget {
-    pub(super) artifact_refs: usize,
-    pub(super) artifact_bytes: u64,
+    pub(super) declarations: usize,
+    pub(super) references: usize,
+    pub(super) bytes: u64,
 }
 
 impl BundleBudget {
     pub(crate) fn for_trusted(profile: &str, runner: &str) -> Result<Self, AggregateError> {
-        let artifact_bytes = match runner {
-            "tests" | "simulator" | "tla" => GIB,
-            "maelstrom" if profile == "weekly" => 4 * GIB,
-            "maelstrom" if profile == "nightly" => 2 * GIB,
+        let (artifact_declarations, artifact_refs, artifact_bytes) = match runner {
+            "tests" | "simulator" | "tla" => (
+                MAX_ARTIFACT_REFS_PER_BUNDLE,
+                MAX_ARTIFACT_REFS_PER_BUNDLE,
+                GIB,
+            ),
+            "maelstrom" if profile == "weekly" => (
+                MAX_MAELSTROM_WEEKLY_ARTIFACT_DECLARATIONS,
+                MAX_MAELSTROM_WEEKLY_ARTIFACT_REFS,
+                4 * GIB,
+            ),
+            "maelstrom" if profile == "nightly" => (
+                MAX_MAELSTROM_NIGHTLY_ARTIFACT_DECLARATIONS,
+                MAX_MAELSTROM_NIGHTLY_ARTIFACT_REFS,
+                2 * GIB,
+            ),
             "maelstrom" => {
                 return Err(AggregateError::new(
                     "Maelstrom evidence is not permitted in the PR profile".to_owned(),
@@ -36,9 +54,20 @@ impl BundleBudget {
             }
         };
         Ok(Self {
-            artifact_refs: MAX_ARTIFACT_REFS_PER_BUNDLE,
-            artifact_bytes,
+            declarations: artifact_declarations,
+            references: artifact_refs,
+            bytes: artifact_bytes,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn artifact_declarations(self) -> usize {
+        self.declarations
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn artifact_refs(self) -> usize {
+        self.references
     }
 }
 

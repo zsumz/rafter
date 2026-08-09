@@ -10,6 +10,12 @@ pub(crate) fn canonical_simulator_check_id(profile: &str, check_id: &str) -> Opt
         "weekly" => "weekly",
         _ => return None,
     };
+    if check_id == format!("raft-profile-total-{suffix}") {
+        return None;
+    }
+    if check_id == format!("raft-commit-prevote-{suffix}") {
+        return Some("raft-commit".to_owned());
+    }
     let scheduled_soak = format!("raft-{suffix}-soak");
     if let Some(rest) = check_id.strip_prefix(&scheduled_soak) {
         return Some(format!("raft-soak{rest}"));

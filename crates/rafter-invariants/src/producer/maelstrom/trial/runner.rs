@@ -26,6 +26,7 @@ struct TrialEvidence<'a> {
     scenario: Scenario,
     output_dir: &'a Path,
     namespace: &'a Path,
+    shared_namespace: &'a Path,
     script: &'a Path,
     state_dir: &'a HeldDirectory,
     durable: &'a HeldDirectory,
@@ -80,11 +81,14 @@ pub(in crate::producer::maelstrom) fn run_trial(
             scenario.name()
         ))
         .to_path_buf();
+        let shared_namespace =
+            Path::new(&format!("{profile}-maelstrom/{source_prefix}")).to_path_buf();
         collect_trial_evidence(
             &TrialEvidence {
                 scenario,
                 output_dir,
                 namespace: &namespace,
+                shared_namespace: &shared_namespace,
                 script: &script,
                 state_dir: &state_dir,
                 durable: &durable,
@@ -125,14 +129,17 @@ fn collect_trial_evidence(
     )?];
     artifacts.push(artifact::capture(
         evidence.output_dir,
-        &evidence.namespace.join("inputs"),
+        &evidence.shared_namespace.join("inputs"),
         evidence.script,
         "maelstrom-runner",
     )?);
-    artifacts.push(tool::capture_jar(evidence.output_dir, evidence.namespace)?);
+    artifacts.push(tool::capture_jar(
+        evidence.output_dir,
+        evidence.shared_namespace,
+    )?);
     capture_binary(
         evidence.output_dir,
-        evidence.namespace,
+        evidence.shared_namespace,
         Path::new("target/debug/rafter-maelstrom"),
         "maelstrom-binary",
         &mut artifacts,
@@ -143,7 +150,7 @@ fn collect_trial_evidence(
     ) {
         capture_binary(
             evidence.output_dir,
-            evidence.namespace,
+            evidence.shared_namespace,
             Path::new("target/debug/rafter-maelstrom-leader-restart-proxy"),
             "maelstrom-proxy-binary",
             &mut artifacts,

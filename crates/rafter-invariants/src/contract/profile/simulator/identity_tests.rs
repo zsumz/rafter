@@ -12,6 +12,14 @@ fn canonical_ids_preserve_scheduled_soak_suffixes() {
         canonical_simulator_check_id("weekly", "raft-commit-weekly").as_deref(),
         Some("raft-commit")
     );
+    assert_eq!(
+        canonical_simulator_check_id("nightly", "raft-commit-prevote-nightly").as_deref(),
+        Some("raft-commit")
+    );
+    assert_eq!(
+        canonical_simulator_check_id("nightly", "raft-profile-total-nightly"),
+        None
+    );
     assert_eq!(canonical_simulator_check_id("pr", "raft-commit"), None);
 }
 
