@@ -21,17 +21,17 @@ fn serialized_counterexample_fixture(
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
     write(
         &root,
-        "artifacts/invariants/evidence/trial-0/runner",
+        "artifacts/invariants/evidence/inputs/runner",
         "runner",
     )?;
     write(
         &root,
-        "artifacts/invariants/evidence/trial-0/binary",
+        "artifacts/invariants/evidence/inputs/binary",
         "binary",
     )?;
     write(
         &root,
-        "artifacts/invariants/evidence/trial-0/maelstrom.jar",
+        "artifacts/invariants/evidence/inputs/maelstrom.jar",
         "jar",
     )?;
     write(

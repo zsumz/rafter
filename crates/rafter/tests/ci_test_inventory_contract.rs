@@ -37,7 +37,7 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
         "scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1",
         "scripts/cargo-test-exact 34 producer::tla_exec::mutation_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
         "scripts/cargo-test-exact 4 artifact_verify_tla::full_bundle_tests::serialized_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
-        "scripts/cargo-test-exact 48 maelstrom --inventory verification/maelstrom-test-inventory.txt --locked -p rafter-invariants",
+        "scripts/cargo-test-exact 50 maelstrom --inventory verification/maelstrom-test-inventory.txt --locked -p rafter-invariants",
     ] {
         assert!(ci.contains(selection), "CI omitted exact inventory: {selection}");
     }

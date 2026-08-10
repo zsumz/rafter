@@ -11,6 +11,19 @@ use rafter_sim::{
 use super::fixture::fixture;
 
 #[test]
+fn scheduled_soak_runs_bind_under_their_canonical_check_id() {
+    for profile in ["nightly", "weekly"] {
+        let (identity, contracts, events) = super::fixture::scheduled_fixture(profile);
+        crate::verification::simulator::derive_verified_liveness_binding(
+            profile, &identity, &contracts, &events,
+        )
+        .unwrap_or_else(|error| {
+            panic!("{profile} canonical soak run must bind: {}", error.message)
+        });
+    }
+}
+
+#[test]
 fn canonical_binding_bytes_have_stable_digests() {
     let (identity, contracts, events) = fixture();
     let binding = super::fixture::derive(&identity, &contracts, &events)

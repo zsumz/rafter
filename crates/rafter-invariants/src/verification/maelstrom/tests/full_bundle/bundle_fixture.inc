@@ -96,20 +96,15 @@ fn maelstrom_check(execution_id: &str) -> CheckReceipt {
         duration_ms: 1,
         peak_rss_kib: 1,
         artifacts: [
-            ("runner", "maelstrom-runner"),
-            ("binary", "maelstrom-binary"),
-            ("maelstrom.jar", "maelstrom-tool-jar"),
-            ("results.edn", "maelstrom-results"),
-            ("process.json", "maelstrom-process-log"),
-            ("node.log", "maelstrom-node-log"),
+            ("inputs/runner", "maelstrom-runner"),
+            ("inputs/binary", "maelstrom-binary"),
+            ("inputs/maelstrom.jar", "maelstrom-tool-jar"),
+            ("trial-0/results.edn", "maelstrom-results"),
+            ("trial-0/process.json", "maelstrom-process-log"),
+            ("trial-0/node.log", "maelstrom-node-log"),
         ]
         .into_iter()
-        .map(|(path, kind)| {
-            artifact(
-                &format!("artifacts/invariants/evidence/trial-0/{path}"),
-                kind,
-            )
-        })
+        .map(|(path, kind)| artifact(&format!("artifacts/invariants/evidence/{path}"), kind))
         .collect(),
     }
 }
@@ -169,7 +164,7 @@ fn prepare_state(root: &std::path::Path) -> Result<(), std::io::Error> {
     )?;
     write(
         root,
-        "artifacts/invariants/evidence/trial-0/maelstrom.jar",
+        "artifacts/invariants/evidence/inputs/maelstrom.jar",
         "jar",
     )
 }

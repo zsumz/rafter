@@ -53,9 +53,18 @@ fn verify_check(
     let scenario = Scenario::from_check_id(&check.check_id)?;
     let grouped = group_trials(check)?;
     let expected = (0..trials).collect::<BTreeSet<_>>();
-    if grouped.keys().copied().collect::<BTreeSet<_>>() != expected {
+    if grouped.trials.keys().copied().collect::<BTreeSet<_>>() != expected {
         return Err(error("Maelstrom artifacts disagree with configured trials"));
     }
+    invocation::verify_shared_inputs(
+        bundle,
+        scenario,
+        &grouped.shared,
+        root,
+        source_root,
+        authenticated,
+    )?;
+    let runner = unique(&grouped.shared, "maelstrom-runner")?;
 
     let mut observations = ObservationLedger::new(trials);
     let mut summaries = Vec::<Option<MaelstromSummary>>::new();
@@ -63,15 +72,7 @@ fn verify_check(
     let mut process_successes = Vec::new();
     let mut coverage = Vec::new();
     let mut lease_statuses = Vec::new();
-    for (trial, artifacts) in &grouped {
-        invocation::verify_trial_inputs(
-            bundle,
-            scenario,
-            artifacts,
-            root,
-            source_root,
-            authenticated,
-        )?;
+    for (trial, artifacts) in &grouped.trials {
         let summary = parse_results(unique(artifacts, "maelstrom-results")?, authenticated).ok();
         let process = parse_process(unique(artifacts, "maelstrom-process-log")?, authenticated)?;
         if process.label != scenario.name() {
@@ -79,14 +80,7 @@ fn verify_check(
                 "Maelstrom process log has wrong schema, label, or exact invocation",
             ));
         }
-        invocation::verify_process(
-            bundle,
-            scenario,
-            *trial,
-            artifacts,
-            &process.invocation,
-            root,
-        )?;
+        invocation::verify_process(bundle, scenario, *trial, runner, &process.invocation, root)?;
         process_successes.push(process.exit_code == Some(0) && !process.timed_out);
         if let Some(summary) = &summary {
             observations.add_summary(summary);

@@ -1,4 +1,4 @@
-//! Checkpoint scenarios: scheduled TLC state is complete, source-bound, and fail-closed.
+//! Checkpoint scenarios: scheduled TLC state is complete, spec-bound, and fail-closed.
 
 use super::support::*;
 
@@ -17,7 +17,6 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
         "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Restore exact-compatible weekly TLC checkpoint",
         "target/rafter-invariants/tla-checkpoint/weekly",
-        "tla-weekly-checkpoint-v1-",
         "cargo run --locked -p rafter-invariants -- run --profile weekly --layer tla",
         "actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Save exact-compatible weekly TLC checkpoint",
@@ -28,7 +27,7 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
             "weekly source-bound TLA job omitted: {required}"
         );
     }
-    verify_checkpoint_source_inputs(tla, "weekly");
+    verify_checkpoint_tlc_inputs(tla, "weekly", "'specs/tla/raft/Raft.cfg'");
 
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
     for required in [
@@ -52,7 +51,7 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
 }
 
 #[test]
-fn nightly_tlc_checkpoint_hashes_complete_invariant_sources() {
+fn nightly_tlc_checkpoint_hashes_complete_tlc_model_inputs() {
     let root = workspace_root();
     let workflow = read(&root.join(".github/workflows/nightly.yml"));
     let tla = job_block(&workflow, "invariants-tla");
@@ -60,7 +59,6 @@ fn nightly_tlc_checkpoint_hashes_complete_invariant_sources() {
         "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Restore exact-compatible nightly TLC checkpoint",
         "target/rafter-invariants/tla-checkpoint/nightly",
-        "tla-nightly-checkpoint-v1-",
         "actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Save exact-compatible nightly TLC checkpoint",
     ] {
@@ -69,23 +67,48 @@ fn nightly_tlc_checkpoint_hashes_complete_invariant_sources() {
             "nightly source-bound TLA job omitted: {required}"
         );
     }
-    verify_checkpoint_source_inputs(tla, "nightly");
+    verify_checkpoint_tlc_inputs(tla, "nightly", "'specs/tla/raft/RaftNightly.cfg'");
 }
 
-fn verify_checkpoint_source_inputs(tla_job: &str, profile: &str) {
-    for source_input in [
+/// Checkpoint reuse is sound exactly when every input TLC state depends on is
+/// part of the cache key: the profile pins (seed, fp, symmetry, heap), the
+/// specification and model configuration, the launcher script, and the pinned
+/// tool. Workspace sources deliberately stay out of the key — reusing TLC
+/// state across producer-code changes is what lets scheduled exploration
+/// accumulate to a drained queue, and `strict-compatible-if-present` recovery
+/// still fails closed if a restored checkpoint is not exactly compatible.
+fn verify_checkpoint_tlc_inputs(tla_job: &str, profile: &str, config: &str) {
+    for (tlc_input, occurrences) in [
+        ("'verification/raft-invariant-profiles.json'", 3),
+        ("'specs/tla/raft/Raft.tla'", 3),
+        (config, 3),
+        ("'specs/tla/raft/RaftMembershipTraceSample.tla'", 3),
+        ("'specs/tla/raft/RaftMembershipTraceSample.cfg'", 3),
+        ("'specs/tla/raft/RafterInvariantDetectorNegative.tla'", 3),
+        ("'specs/tla/raft/RafterInvariantDetectorNegative.cfg'", 3),
+        ("'scripts/tla-model-check'", 3),
+        // The tool pins also key the tla2tools.jar download cache.
+        ("'tools/tla/ASSET_ID'", 4),
+        ("'tools/tla/SHA256SUMS'", 4),
+    ] {
+        assert_eq!(
+            tla_job.matches(tlc_input).count(),
+            occurrences,
+            "{profile} checkpoint restore/save keys must all hash {tlc_input}"
+        );
+    }
+    assert_eq!(
+        tla_job
+            .matches(&format!("tla-{profile}-checkpoint-v2-"))
+            .count(),
+        3,
+        "{profile} checkpoint restore/save keys must all use the spec-bound v2 namespace"
+    );
+    for retired_input in [
         "'Cargo.toml'",
         "'Cargo.lock'",
         "'crates/rafter-invariants/Cargo.toml'",
         "'crates/rafter-invariants/src/**/*.rs'",
-    ] {
-        assert_eq!(
-            tla_job.matches(source_input).count(),
-            3,
-            "{profile} checkpoint restore/save keys must all hash {source_input}"
-        );
-    }
-    for retired_glob in [
         "'crates/rafter-invariants/src/producer/*.rs'",
         "'crates/rafter-invariants/src/producer/filesystem/**/*.rs'",
         "'crates/rafter-invariants/src/producer/process/**/*.rs'",
@@ -94,8 +117,9 @@ fn verify_checkpoint_source_inputs(tla_job: &str, profile: &str) {
         "'crates/rafter-invariants/src/artifact_verify_tla.rs'",
     ] {
         assert!(
-            !tla_job.contains(retired_glob),
-            "{profile} checkpoint hash still uses brittle input {retired_glob}"
+            !tla_job.contains(retired_input),
+            "{profile} checkpoint hash reintroduced retired input {retired_input}: \
+             hashing workspace sources resets TLC accumulation on every push"
         );
     }
 }

@@ -22,6 +22,18 @@ pub(crate) fn fixture() -> (
     Vec<SimulatorLivenessContract>,
     BTreeMap<String, Vec<Value>>,
 ) {
+    scheduled_fixture("pr")
+}
+
+// Scheduled runs are indexed under their canonical registry id with the
+// canonical id written back onto the event, exactly as event indexing does.
+pub(crate) fn scheduled_fixture(
+    profile: &str,
+) -> (
+    SimulatorIdentity,
+    Vec<SimulatorLivenessContract>,
+    BTreeMap<String, Vec<Value>>,
+) {
     let (catalog, _) = crate::tests::loaded();
     let contracts = catalog
         .evidence
@@ -42,7 +54,8 @@ pub(crate) fn fixture() -> (
         .expect("proposal progress identity");
     identity.checks = vec!["raft-soak".to_owned()];
     identity.minimum_runs_per_check = Some(1);
-    let execution = expected_execution_contract("pr", "raft-soak").expect("PR execution contract");
+    let execution =
+        expected_execution_contract(profile, "raft-soak").expect("profile execution contract");
     let reports = contracts
         .iter()
         .map(|contract| valid_report(contract, &execution))
@@ -60,7 +73,7 @@ pub(crate) fn fixture() -> (
             "classification": null,
             "message": null,
             "seed": 1,
-            "steps": 320,
+            "steps": execution.steps,
             "duration_ms": 1,
             "execution_contract": execution,
             "observed_actions": ["tick", "deliver"],

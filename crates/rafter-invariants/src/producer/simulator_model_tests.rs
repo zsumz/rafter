@@ -40,6 +40,20 @@ fn scheduled_check_ids_bind_to_canonical_registry_checks() {
 }
 
 #[test]
+fn scheduled_soak_runs_bind_liveness_under_their_canonical_check_id() {
+    for profile in ["nightly", "weekly"] {
+        let (identity, contracts, events) =
+            crate::verification::simulator::liveness_report_tests::scheduled_fixture(profile);
+        crate::producer::simulator::liveness::derive_liveness_binding(
+            profile, &identity, &contracts, &events,
+        )
+        .unwrap_or_else(|error| {
+            panic!("{profile} canonical soak run must bind: {}", error.message)
+        });
+    }
+}
+
+#[test]
 fn scheduled_events_are_canonicalized_before_contract_validation() {
     let source = serde_json::json!({
         "event": "exhaustive-check",

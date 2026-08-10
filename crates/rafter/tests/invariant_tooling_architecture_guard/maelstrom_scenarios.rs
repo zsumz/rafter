@@ -119,7 +119,7 @@ fn maelstrom_compatibility_mounts_preserve_ci_test_identities() {
 
     let inventory = read(&root.join("verification/maelstrom-test-inventory.txt"));
     let names = inventory.lines().collect::<Vec<_>>();
-    assert_eq!(names.len(), 48, "Maelstrom inventory must pin 48 names");
+    assert_eq!(names.len(), 50, "Maelstrom inventory must pin 50 names");
     let mut canonical = names.clone();
     canonical.sort_unstable();
     canonical.dedup();

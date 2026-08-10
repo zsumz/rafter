@@ -13,7 +13,7 @@ pub(super) fn verify_process(
     bundle: &ResultBundle,
     scenario: Scenario,
     trial: u64,
-    artifacts: &[&ArtifactRef],
+    runner: &ArtifactRef,
     observed: &InvocationReceipt,
     root: &Path,
 ) -> Result<(), AggregateError> {
@@ -36,7 +36,6 @@ pub(super) fn verify_process(
     remove_trial_environment(&mut base_environment);
     let expected_environment =
         expected_environment(bundle, scenario, &repository, &state_dir, &base_environment)?;
-    let runner = unique(artifacts, "maelstrom-runner")?;
     let expected_program = std::fs::canonicalize(repository.join(scenario.script())).map_err(
         |canonicalize_error| {
             error(format!(
@@ -77,7 +76,7 @@ pub(super) fn verify_process(
     Ok(())
 }
 
-pub(super) fn verify_trial_inputs(
+pub(super) fn verify_shared_inputs(
     bundle: &ResultBundle,
     scenario: Scenario,
     artifacts: &[&ArtifactRef],
@@ -100,12 +99,20 @@ pub(super) fn verify_trial_inputs(
     {
         return Err(error("Maelstrom tool jar does not match the profile pin"));
     }
+    let proxies = artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "maelstrom-proxy-binary")
+        .count();
     if scenario.requires_proxy() {
         super::artifact::verify_matches_file(
             unique(artifacts, "maelstrom-proxy-binary")?,
             root.join("target/debug/rafter-maelstrom-leader-restart-proxy"),
             authenticated,
         )?;
+    } else if proxies != 0 {
+        return Err(error(
+            "Maelstrom proxy binary is not an input of this scenario",
+        ));
     }
     Ok(())
 }

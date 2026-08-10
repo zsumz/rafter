@@ -30,15 +30,38 @@ pub(super) fn verify_matches_file(
     }
 }
 
-pub(super) fn group_trials(
-    check: &CheckReceipt,
-) -> Result<BTreeMap<u64, Vec<&ArtifactRef>>, AggregateError> {
-    let mut grouped = BTreeMap::<u64, Vec<&ArtifactRef>>::new();
+/// Tool inputs are captured once per source tree and shared by every trial;
+/// all other evidence must stay bound to exactly one trial.
+const SHARED_INPUT_KINDS: [&str; 4] = [
+    "maelstrom-runner",
+    "maelstrom-tool-jar",
+    "maelstrom-binary",
+    "maelstrom-proxy-binary",
+];
+
+pub(super) struct CheckArtifacts<'a> {
+    pub(super) shared: Vec<&'a ArtifactRef>,
+    pub(super) trials: BTreeMap<u64, Vec<&'a ArtifactRef>>,
+}
+
+pub(super) fn group_trials(check: &CheckReceipt) -> Result<CheckArtifacts<'_>, AggregateError> {
+    let mut grouped = CheckArtifacts {
+        shared: Vec::new(),
+        trials: BTreeMap::new(),
+    };
     for artifact in &check.artifacts {
-        let Some(trial) = trial_number(Path::new(&artifact.path))? else {
-            return Err(error("Maelstrom artifact lacks a trial path"));
-        };
-        grouped.entry(trial).or_default().push(artifact);
+        let shared_kind = SHARED_INPUT_KINDS.contains(&artifact.kind.as_str());
+        match trial_number(Path::new(&artifact.path))? {
+            Some(_) if shared_kind => {
+                return Err(error(format!(
+                    "Maelstrom shared {} input carries a trial path",
+                    artifact.kind
+                )));
+            }
+            Some(trial) => grouped.trials.entry(trial).or_default().push(artifact),
+            None if shared_kind => grouped.shared.push(artifact),
+            None => return Err(error("Maelstrom artifact lacks a trial path")),
+        }
     }
     Ok(grouped)
 }

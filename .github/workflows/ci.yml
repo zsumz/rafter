@@ -437,7 +437,7 @@ jobs:
       - name: Prefetch locked registry for offline source identity
         run: cargo fetch --locked
       - name: Validate scheduled Maelstrom evidence contract
-        run: scripts/cargo-test-exact 48 maelstrom --inventory verification/maelstrom-test-inventory.txt --locked -p rafter-invariants
+        run: scripts/cargo-test-exact 50 maelstrom --inventory verification/maelstrom-test-inventory.txt --locked -p rafter-invariants
       - name: Validate Maelstrom runner scripts
         run: |
           for script in \

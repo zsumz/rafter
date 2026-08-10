@@ -7,12 +7,12 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
     write(
         &root,
-        "artifacts/invariants/evidence/trial-0/runner",
+        "artifacts/invariants/evidence/inputs/runner",
         "runner",
     )?;
     write(
         &root,
-        "artifacts/invariants/evidence/trial-0/binary",
+        "artifacts/invariants/evidence/inputs/binary",
         "binary",
     )?;
     write(
@@ -175,6 +175,46 @@ fn assert_script_launcher_chain_rejected(
 }
 
 #[test]
+fn misplaced_tool_inputs_and_unscoped_trial_evidence_are_rejected(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = temporary_root()?;
+    write(&root, "scripts/maelstrom-lin-kv", "runner")?;
+    prepare_state(&root)?;
+    write(&root, "target/debug/rafter-maelstrom", "binary")?;
+
+    let mut trial_scoped_input = bundle();
+    let runner = trial_scoped_input.execution.checks[0]
+        .artifacts
+        .iter_mut()
+        .find(|artifact| artifact.kind == "maelstrom-runner")
+        .ok_or("fixture omitted runner")?;
+    runner.path = "artifacts/invariants/evidence/trial-0/runner".to_owned();
+    assert!(
+        crate::artifact_verify_maelstrom::verify(&trial_scoped_input, &root)
+            .expect_err("trial-scoped tool input is rejected")
+            .to_string()
+            .contains("carries a trial path")
+    );
+
+    let mut unscoped_evidence = bundle();
+    let results = unscoped_evidence.execution.checks[0]
+        .artifacts
+        .iter_mut()
+        .find(|artifact| artifact.kind == "maelstrom-results")
+        .ok_or("fixture omitted results")?;
+    results.path = "artifacts/invariants/evidence/results.edn".to_owned();
+    assert!(
+        crate::artifact_verify_maelstrom::verify(&unscoped_evidence, &root)
+            .expect_err("trial evidence without a trial path is rejected")
+            .to_string()
+            .contains("lacks a trial path")
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = temporary_root()?;
@@ -183,12 +223,12 @@ fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn 
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
     write(
         &root,
-        "artifacts/invariants/evidence/trial-0/runner",
+        "artifacts/invariants/evidence/inputs/runner",
         "runner",
     )?;
     write(
         &root,
-        "artifacts/invariants/evidence/trial-0/binary",
+        "artifacts/invariants/evidence/inputs/binary",
         "binary",
     )?;
     write(
@@ -245,12 +285,12 @@ fn nonzero_process_exit_is_always_a_harness_error() -> Result<(), Box<dyn std::e
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
     write(
         &root,
-        "artifacts/invariants/evidence/trial-0/runner",
+        "artifacts/invariants/evidence/inputs/runner",
         "runner",
     )?;
     write(
         &root,
-        "artifacts/invariants/evidence/trial-0/binary",
+        "artifacts/invariants/evidence/inputs/binary",
         "binary",
     )?;
     write(

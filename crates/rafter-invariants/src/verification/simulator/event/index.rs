@@ -38,7 +38,9 @@ pub(crate) fn index_simulator_event(
     let canonical = crate::contract::profile::canonical_simulator_check_id(profile, &check_id);
     events.entry(check_id).or_default().push(event.clone());
     if let Some(canonical) = canonical {
-        events.entry(canonical).or_default().push(event);
+        let mut canonical_event = event;
+        canonical_event["check_id"] = Value::String(canonical.clone());
+        events.entry(canonical).or_default().push(canonical_event);
     }
     Ok(())
 }

@@ -469,26 +469,28 @@ fn synthetic_maelstrom_artifacts(
         .parse::<u64>()
         .expect("reviewed Maelstrom trial count");
     let mut artifacts = Vec::new();
+    // Tool inputs are captured once per source tree and shared across trials.
+    let inputs = format!("artifacts/maelstrom/{scenario}/inputs");
+    for kind in ["maelstrom-runner", "maelstrom-binary", "maelstrom-tool-jar"] {
+        artifacts.push(artifact_kind(&format!("{inputs}/{kind}"), kind));
+    }
+    if matches!(
+        scenario,
+        "restart" | "app-crash" | "snapshot" | "lease-isolation"
+    ) {
+        artifacts.push(artifact_kind(
+            &format!("{inputs}/maelstrom-proxy-binary"),
+            "maelstrom-proxy-binary",
+        ));
+    }
     for trial in 0..trials {
         let root = format!("artifacts/maelstrom/{scenario}/trial-{trial}");
         for kind in [
             "maelstrom-results",
             "maelstrom-process-log",
-            "maelstrom-runner",
-            "maelstrom-binary",
-            "maelstrom-tool-jar",
             "maelstrom-node-log",
         ] {
             artifacts.push(artifact_kind(&format!("{root}/{kind}"), kind));
-        }
-        if matches!(
-            scenario,
-            "restart" | "app-crash" | "snapshot" | "lease-isolation"
-        ) {
-            artifacts.push(artifact_kind(
-                &format!("{root}/maelstrom-proxy-binary"),
-                "maelstrom-proxy-binary",
-            ));
         }
         if matches!(scenario, "restart" | "app-crash" | "snapshot") {
             artifacts.push(artifact_kind(

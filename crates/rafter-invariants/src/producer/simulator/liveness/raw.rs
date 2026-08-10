@@ -59,7 +59,9 @@ fn validate_run_execution(
             "liveness run `{check_id}` is not a passing soak-check"
         )));
     }
-    if event.get("check_id").and_then(Value::as_str) != Some(expected.check_id.as_str())
+    // Indexed runs carry their canonical registry id; the profile-specific
+    // identity stays pinned by the exact execution-contract comparison below.
+    if event.get("check_id").and_then(Value::as_str) != Some(check_id)
         || event.get("steps").and_then(Value::as_u64) != Some(expected.steps)
     {
         return Err(malformed(format!(
