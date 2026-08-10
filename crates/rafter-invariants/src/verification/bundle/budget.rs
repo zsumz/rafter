@@ -14,6 +14,7 @@ const MAX_MAELSTROM_NIGHTLY_ARTIFACT_REFS: usize = 1_024;
 const MAX_MAELSTROM_WEEKLY_ARTIFACT_REFS: usize = MAX_VERDICT_ARTIFACT_REFS;
 const MAX_MAELSTROM_NIGHTLY_ARTIFACT_DECLARATIONS: usize = 2_048;
 const MAX_MAELSTROM_WEEKLY_ARTIFACT_DECLARATIONS: usize = 8_192;
+const MAX_TLA_ARTIFACT_DECLARATIONS: usize = 1_024;
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -27,8 +28,13 @@ pub(crate) struct BundleBudget {
 impl BundleBudget {
     pub(crate) fn for_trusted(profile: &str, runner: &str) -> Result<Self, AggregateError> {
         let (artifact_declarations, artifact_refs, artifact_bytes) = match runner {
-            "tests" | "simulator" | "tla" => (
+            "tests" | "simulator" => (
                 MAX_ARTIFACT_REFS_PER_BUNDLE,
+                MAX_ARTIFACT_REFS_PER_BUNDLE,
+                GIB,
+            ),
+            "tla" => (
+                MAX_TLA_ARTIFACT_DECLARATIONS,
                 MAX_ARTIFACT_REFS_PER_BUNDLE,
                 GIB,
             ),

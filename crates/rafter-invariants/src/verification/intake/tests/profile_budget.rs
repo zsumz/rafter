@@ -29,4 +29,10 @@ fn every_supported_profile_fits_the_verdict_artifact_schema() {
     let weekly = BundleBudget::for_trusted("weekly", "maelstrom").expect("weekly Maelstrom budget");
     assert_eq!(weekly.artifact_refs(), MAX_VERDICT_ARTIFACT_REFS);
     assert_eq!(weekly.artifact_declarations(), 8_192);
+
+    for profile in ["pr", "nightly", "weekly"] {
+        let tla = BundleBudget::for_trusted(profile, "tla").expect("TLA budget");
+        assert_eq!(tla.artifact_refs(), MAX_ARTIFACT_REFS_PER_BUNDLE);
+        assert_eq!(tla.artifact_declarations(), 1_024);
+    }
 }

@@ -182,6 +182,7 @@ fn expected_raw_process_accesses() -> BTreeMap<(&'static str, PathContext, &'sta
     expected_checkout_process_accesses()
         .into_iter()
         .chain(expected_producer_process_accesses())
+        .chain(expected_producer_adapter_process_accesses())
         .chain(expected_replay_process_accesses())
         .collect()
 }
@@ -197,7 +198,7 @@ fn expected_checkout_process_accesses() -> [RawProcessAccess; 1] {
     )]
 }
 
-fn expected_producer_process_accesses() -> [RawProcessAccess; 12] {
+fn expected_producer_process_accesses() -> [RawProcessAccess; 11] {
     [
         (
             (
@@ -228,14 +229,6 @@ fn expected_producer_process_accesses() -> [RawProcessAccess; 12] {
                 "crates/rafter-invariants/src/producer/process/mod.rs",
                 PathContext::Import,
                 "crate::execution::process::duration_ms",
-            ),
-            1,
-        ),
-        (
-            (
-                "crates/rafter-invariants/src/producer/process/adapter.rs",
-                PathContext::Import,
-                "crate::execution::process::ProcessDeadlines",
             ),
             1,
         ),
@@ -292,6 +285,27 @@ fn expected_producer_process_accesses() -> [RawProcessAccess; 12] {
                 "crates/rafter-invariants/src/producer/process/output.rs",
                 PathContext::Import,
                 "crate::execution::process::ProcessOutput",
+            ),
+            1,
+        ),
+    ]
+}
+
+fn expected_producer_adapter_process_accesses() -> [RawProcessAccess; 2] {
+    [
+        (
+            (
+                "crates/rafter-invariants/src/producer/process/adapter.rs",
+                PathContext::Import,
+                "crate::execution::process::ProcessDeadlines",
+            ),
+            1,
+        ),
+        (
+            (
+                "crates/rafter-invariants/src/producer/process/adapter.rs",
+                PathContext::Expression,
+                "crate::execution::process::await_next_target_stdout_prefix",
             ),
             1,
         ),

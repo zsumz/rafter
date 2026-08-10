@@ -10,7 +10,37 @@ use super::{
     authenticate_artifact, authenticate_artifact_at, preflight_artifacts, retain_semantic_bytes,
     ArtifactRef, AuthenticatedArtifacts, BundleBudget, VerificationRoot,
 };
-use crate::evidence::limits::MAX_ARTIFACT_BYTES;
+use crate::evidence::{limits::MAX_ARTIFACT_BYTES, ResultBundle};
+
+fn tla_bundle_with_observed_shared_references() -> ResultBundle {
+    let (catalog, manifest) = crate::tests::loaded();
+    let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "tla")
+        .expect("TLA bundle");
+    bundle.profile = "nightly".to_owned();
+    bundle.execution.checks.truncate(1);
+
+    let shared = (0..40)
+        .map(|index| ArtifactRef {
+            kind: "summary".to_owned(),
+            path: format!("artifacts/tla-reference-{index}"),
+            sha256: format!("{index:064x}"),
+            size_bytes: 1,
+        })
+        .collect::<Vec<_>>();
+    bundle.execution.artifacts.clone_from(&shared);
+    bundle
+        .execution
+        .artifacts
+        .push(bundle.execution.producer.executable.clone());
+    bundle.execution.checks[0].artifacts.clone_from(&shared);
+
+    let mut result = bundle.results[0].clone();
+    result.artifacts = shared;
+    bundle.results = vec![result; 13];
+    bundle
+}
 
 #[cfg(unix)]
 #[test]
@@ -224,6 +254,73 @@ fn nightly_maelstrom_budget_accepts_the_observed_shared_reference_shape() {
     let accepted = preflight_artifacts(&bundle, budget, "maelstrom")
         .expect("the observed 1,642-declaration receipt shape is bounded");
     assert_eq!(accepted.len(), 822);
+}
+
+#[test]
+fn tla_budget_accepts_the_observed_shared_reference_shape() {
+    let bundle = tla_bundle_with_observed_shared_references();
+    let budget = BundleBudget::for_trusted("nightly", "tla").expect("nightly TLA budget");
+
+    let accepted = preflight_artifacts(&bundle, budget, "tla")
+        .expect("the observed 602-declaration receipt shape is bounded");
+    assert_eq!(accepted.len(), 41);
+}
+
+#[test]
+fn tla_declaration_budget_accepts_its_boundary_and_rejects_the_next_declaration() {
+    let mut bundle = tla_bundle_with_observed_shared_references();
+    let budget = BundleBudget::for_trusted("nightly", "tla").expect("nightly TLA budget");
+    let shared = bundle.results[0].artifacts[0].clone();
+    bundle.results[0]
+        .artifacts
+        .extend(std::iter::repeat_n(shared.clone(), 422));
+
+    preflight_artifacts(&bundle, budget, "tla")
+        .expect("1,024 shared artifact declarations are accepted");
+    bundle.results[0].artifacts.push(shared);
+
+    let error = preflight_artifacts(&bundle, budget, "tla")
+        .expect_err("the 1,025th artifact declaration is rejected");
+    assert!(
+        error.to_string().contains("1024-declaration limit"),
+        "{error}"
+    );
+}
+
+#[test]
+fn tla_distinct_reference_budget_remains_bounded() {
+    let mut bundle = tla_bundle_with_observed_shared_references();
+    bundle.execution.checks.clear();
+    bundle.results.clear();
+    bundle.execution.artifacts = (0..crate::evidence::limits::MAX_ARTIFACT_REFS_PER_BUNDLE)
+        .map(|index| ArtifactRef {
+            kind: "summary".to_owned(),
+            path: format!("artifacts/tla-distinct-reference-{index}"),
+            sha256: format!("{index:064x}"),
+            size_bytes: 1,
+        })
+        .collect();
+    let budget = BundleBudget::for_trusted("nightly", "tla").expect("nightly TLA budget");
+
+    let error = preflight_artifacts(&bundle, budget, "tla")
+        .expect_err("513 distinct artifact references are rejected");
+    assert!(error.to_string().contains("512-reference limit"), "{error}");
+}
+
+#[test]
+fn tla_shared_references_still_reject_conflicting_declarations() {
+    let mut bundle = tla_bundle_with_observed_shared_references();
+    let mut conflicting = bundle.results[0].artifacts[0].clone();
+    conflicting.sha256 = "f".repeat(64);
+    bundle.results[0].artifacts.push(conflicting);
+    let budget = BundleBudget::for_trusted("nightly", "tla").expect("nightly TLA budget");
+
+    let error = preflight_artifacts(&bundle, budget, "tla")
+        .expect_err("conflicting shared artifact declarations are rejected");
+    assert!(
+        error.to_string().contains("conflicting declarations"),
+        "{error}"
+    );
 }
 
 #[test]
