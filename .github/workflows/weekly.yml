@@ -109,6 +109,10 @@ jobs:
     # deadline leaves 30 minutes for setup, checkpointing, and evidence upload.
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    # actions: write lets the job prune superseded TLC checkpoint caches.
+    permissions:
+      actions: write
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -147,6 +151,30 @@ jobs:
         with:
           path: target/rafter-invariants/tla-checkpoint/weekly
           key: tla-weekly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # Every checkpoint generation is a separate immutable cache evicted
+      # under the shared 10 GiB repository budget, so superseded multi-GiB
+      # generations crowd out the successor they seeded. Once this run's save
+      # is the newest generation, older generations (including the one-time
+      # v1 bridge) are pruned; on any doubt the step retains everything and
+      # the next restore falls back through its ordered keys.
+      - name: Prune superseded weekly TLC checkpoints
+        if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/weekly/CACHE_VALID') != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          inventory="$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=tla-weekly-checkpoint-&sort=created_at&direction=desc&per_page=100" --jq '[.actions_caches[] | {id, key}]')"
+          newest="$(printf '%s' "$inventory" | jq -r '.[0].key // empty')"
+          case "$newest" in
+            *"-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
+              printf '%s' "$inventory" | jq -r '.[1:][] | "\(.id) \(.key)"' | while read -r id key; do
+                echo "pruning superseded checkpoint ${key}"
+                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}"
+              done
+              ;;
+            *)
+              echo "newest checkpoint is ${newest:-absent}, not this run's save; retaining all generations"
+              ;;
+          esac
       - name: Upload weekly TLA+ evidence and counterexamples
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

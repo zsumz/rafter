@@ -21,6 +21,9 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
         "actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Save exact-compatible weekly TLC checkpoint",
         "if: always()",
+        "Prune superseded weekly TLC checkpoints",
+        "actions/caches?key=tla-weekly-checkpoint-&sort=created_at&direction=desc",
+        "actions: write",
     ] {
         assert!(
             tla.contains(required),
@@ -61,6 +64,9 @@ fn nightly_tlc_checkpoint_hashes_complete_tlc_model_inputs() {
         "target/rafter-invariants/tla-checkpoint/nightly",
         "actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Save exact-compatible nightly TLC checkpoint",
+        "Prune superseded nightly TLC checkpoints",
+        "actions/caches?key=tla-nightly-checkpoint-&sort=created_at&direction=desc",
+        "actions: write",
     ] {
         assert!(
             tla.contains(required),
