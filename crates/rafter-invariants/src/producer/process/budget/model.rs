@@ -43,8 +43,27 @@ impl ProcessSchedule {
         execution_timeout: Duration,
         policy: ProcessPolicy,
     ) -> Result<Self, &'static str> {
+        Self::standalone_with_startup_allowance(execution_timeout, Duration::ZERO, policy)
+    }
+
+    #[cfg(test)]
+    pub(in crate::producer::process) fn standalone_after_readiness(
+        execution_timeout: Duration,
+        startup_allowance: Duration,
+        policy: ProcessPolicy,
+    ) -> Result<Self, &'static str> {
+        Self::standalone_with_startup_allowance(execution_timeout, startup_allowance, policy)
+    }
+
+    fn standalone_with_startup_allowance(
+        execution_timeout: Duration,
+        startup_allowance: Duration,
+        policy: ProcessPolicy,
+    ) -> Result<Self, &'static str> {
         let execution_allowance = policy
             .kill_confirmation_timeout
+            .checked_add(startup_allowance)
+            .ok_or("standalone process startup allowance overflow")?
             .checked_add(execution_timeout)
             .ok_or("standalone process execution allowance overflow")?;
         let termination_allowance = policy

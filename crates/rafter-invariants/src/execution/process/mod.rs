@@ -77,6 +77,8 @@ use model::{
     ProcessAnchorState, ProcessCompletion, ProcessGroupObservation, ProcessSignal,
     ProcessTermination, SignalDelivery, TargetMemberState, PROCESS_POLL_INTERVAL,
 };
+#[cfg(test)]
+pub(crate) use output::await_next_target_stdout_prefix;
 use process_group::await_target_process_group;
 #[cfg(test)]
 use process_group::{

@@ -26,6 +26,38 @@ pub(in crate::producer) fn timed_with_timeout(
     )
 }
 
+#[cfg(test)]
+pub(in crate::producer) fn timed_with_timeout_after_stdout_ready(
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    execution_timeout: Duration,
+    readiness_prefix: &[u8],
+    startup_timeout: Duration,
+) -> Result<ProcessOutput, Box<dyn Error>> {
+    let readiness = crate::execution::process::await_next_target_stdout_prefix(
+        readiness_prefix,
+        startup_timeout,
+    );
+    let result = timed_with_timeout_and_policy_and_descriptors_after_bind(
+        program,
+        arguments,
+        environment,
+        current_dir,
+        ProcessSchedule::standalone_after_readiness(
+            execution_timeout,
+            startup_timeout,
+            ProcessPolicy::default(),
+        )?,
+        &[],
+        || {},
+        || {},
+    );
+    drop(readiness);
+    result
+}
+
 pub(super) fn timed_with_timeout_and_policy(
     program: &str,
     arguments: &[OsString],

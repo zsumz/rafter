@@ -20,6 +20,8 @@ use crate::execution::process::{FinalizationPolicy, TerminationPolicy};
 
 pub(super) use adapter::timed_with_timeout;
 #[cfg(test)]
+pub(in crate::producer) use adapter::timed_with_timeout_after_stdout_ready;
+#[cfg(test)]
 use adapter::timed_with_timeout_and_policy_and_descriptors;
 #[cfg(test)]
 use adapter::{

@@ -2,6 +2,9 @@
 
 use std::{error::Error, path::Path, time::Instant};
 
+#[cfg(test)]
+use std::{cell::RefCell, time::Duration};
+
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
@@ -11,6 +14,57 @@ use super::{
     PendingProcessOutput, ProcessArtifacts, ProcessCompletion, ProcessDeadlines, TerminationPolicy,
     PROCESS_POLL_INTERVAL,
 };
+
+#[cfg(test)]
+thread_local! {
+    static NEXT_TARGET_STDOUT_READINESS: RefCell<Option<TargetStdoutReadiness>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct TargetStdoutReadiness {
+    prefix: Vec<u8>,
+    timeout: Duration,
+}
+
+#[cfg(test)]
+pub(crate) struct TargetStdoutReadinessGuard;
+
+#[cfg(test)]
+pub(crate) fn await_next_target_stdout_prefix(
+    prefix: &[u8],
+    timeout: Duration,
+) -> TargetStdoutReadinessGuard {
+    assert!(
+        !prefix.is_empty(),
+        "target readiness prefix must not be empty"
+    );
+    assert!(
+        !timeout.is_zero(),
+        "target readiness timeout must be positive"
+    );
+    NEXT_TARGET_STDOUT_READINESS.with(|next| {
+        assert!(
+            next.borrow_mut()
+                .replace(TargetStdoutReadiness {
+                    prefix: prefix.to_vec(),
+                    timeout,
+                })
+                .is_none(),
+            "target stdout readiness hook was already armed"
+        );
+    });
+    TargetStdoutReadinessGuard
+}
+
+#[cfg(test)]
+impl Drop for TargetStdoutReadinessGuard {
+    fn drop(&mut self) {
+        NEXT_TARGET_STDOUT_READINESS.with(|next| {
+            next.borrow_mut().take();
+        });
+    }
+}
 
 pub(super) fn finish_managed_process(
     mut process: ManagedProcess,
@@ -81,6 +135,9 @@ pub(super) fn collect_process_output(
         .ok_or("process-group publication deadline overflow")?
         .min(deadlines.execution_window);
     await_target_process_group(process, artifacts, target_group_ack, publication_deadline)?;
+    #[cfg(test)]
+    await_target_stdout_readiness(artifacts, deadlines.execution_window)
+        .map_err(|error| retained_error(error, &stdout_path, &stderr_path, Some(&resource_path)))?;
     let target_deadline = Instant::now()
         .checked_add(deadlines.target_timeout)
         .ok_or("target process deadline overflow")?
@@ -145,4 +202,38 @@ pub(super) fn collect_process_output(
         deadlines.lifecycle,
         artifacts,
     )
+}
+
+#[cfg(test)]
+fn await_target_stdout_readiness(
+    artifacts: &ProcessArtifacts,
+    execution_window: Instant,
+) -> Result<(), Box<dyn Error>> {
+    const MAX_READINESS_STDOUT_BYTES: u64 = 64 * 1024 * 1024;
+
+    let readiness = NEXT_TARGET_STDOUT_READINESS.with(|next| next.borrow_mut().take());
+    let Some(readiness) = readiness else {
+        return Ok(());
+    };
+    let deadline = Instant::now()
+        .checked_add(readiness.timeout)
+        .ok_or("target stdout readiness deadline overflow")?
+        .min(execution_window);
+    let operation_deadline =
+        crate::execution::filesystem::OperationDeadline::at(deadline, "target stdout readiness");
+    loop {
+        let stdout = artifacts.read_stdout(operation_deadline, MAX_READINESS_STDOUT_BYTES)?;
+        if stdout.starts_with(&readiness.prefix) {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "target did not publish its stdout readiness prefix within {} ms",
+                readiness.timeout.as_millis()
+            )
+            .into());
+        }
+        std::thread::sleep(PROCESS_POLL_INTERVAL.min(deadline.duration_since(now)));
+    }
 }

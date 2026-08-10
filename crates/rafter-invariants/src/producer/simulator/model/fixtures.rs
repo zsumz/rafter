@@ -55,33 +55,14 @@ done
     )
 }
 
-/// Smallest execution timeout the timeout fixture will use.
-///
-/// A fixture that is signalled before it installs its TERM handler dies of the
-/// default action instead of trapping, and the run reduces to a signal death
-/// rather than the timed-out zero exit the scenario is about. Keeping the floor
-/// at the historical value means an idle machine behaves exactly as before.
 #[cfg(all(test, unix))]
-const TIMEOUT_FIXTURE_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// Measures what launching one trivial process through this harness costs on
-/// this machine right now, so the fixture's execution timeout can be derived
-/// from the host's real process-launch latency instead of from a constant that
-/// only held on an idle one.
+const FIXTURE_READINESS_PREFIX: &[u8] = b"RAFTER_FIXTURE_READY\n";
 #[cfg(all(test, unix))]
-fn timeout_fixture_execution_timeout(
-    environment: &BTreeMap<String, String>,
-    current_dir: &Path,
-) -> Result<std::time::Duration, Box<dyn Error>> {
-    let probe = process::timed_with_timeout(
-        "/bin/sh",
-        &[OsString::from("-c"), OsString::from("exit 0")],
-        environment,
-        current_dir,
-        std::time::Duration::from_secs(30),
-    )?;
-    Ok((probe.duration * 4).max(TIMEOUT_FIXTURE_FLOOR))
-}
+const FIXTURE_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(all(test, unix))]
+const TIMEOUT_FIXTURE_EXECUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+#[cfg(all(test, unix))]
+const COMPLETION_FIXTURE_EXECUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(all(test, unix))]
 pub(crate) fn timed_out_zero_exit_fixture_at(
@@ -89,24 +70,17 @@ pub(crate) fn timed_out_zero_exit_fixture_at(
     source_ref: &str,
     invocation: &SimulatorFixtureInvocation<'_>,
 ) -> Result<(SimulatorExecution, LabeledProcess), Box<dyn Error>> {
-    let execution_timeout =
-        timeout_fixture_execution_timeout(invocation.environment, invocation.current_dir)?;
-    let output = process::timed_with_timeout(
+    let output = process::timed_with_timeout_after_stdout_ready(
         invocation.program,
         invocation.arguments,
         invocation.environment,
         invocation.current_dir,
-        execution_timeout,
+        TIMEOUT_FIXTURE_EXECUTION_TIMEOUT,
+        FIXTURE_READINESS_PREFIX,
+        FIXTURE_STARTUP_TIMEOUT,
     )?;
-    // Check readiness first: when the fixture is signalled before its handler is
-    // installed, the missing marker is the accurate diagnosis and the odd exit
-    // status is only its consequence.
-    if !output.stdout.starts_with(b"RAFTER_FIXTURE_READY\n") {
-        return Err(format!(
-            "simulator timeout fixture was terminated before installing its TERM trap ({} ms allowed)",
-            execution_timeout.as_millis()
-        )
-        .into());
+    if !output.stdout.starts_with(FIXTURE_READINESS_PREFIX) {
+        return Err("simulator timeout fixture lost its observed readiness marker".into());
     }
     if !output.status.success() || !output.timed_out {
         return Err(format!(
@@ -179,12 +153,14 @@ pub(crate) fn later_launch_error_fixture_at(
         |_| {
             if first {
                 first = false;
-                process::timed_with_timeout(
+                process::timed_with_timeout_after_stdout_ready(
                     invocation.program,
                     invocation.arguments,
                     invocation.environment,
                     invocation.current_dir,
-                    std::time::Duration::from_secs(5),
+                    COMPLETION_FIXTURE_EXECUTION_TIMEOUT,
+                    FIXTURE_READINESS_PREFIX,
+                    FIXTURE_STARTUP_TIMEOUT,
                 )
             } else {
                 Err("injected raft-soak launch failure".into())
