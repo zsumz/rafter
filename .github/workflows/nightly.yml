@@ -18,7 +18,17 @@ name: Nightly
 
 on:
   schedule:
-    - cron: "0 9 * * *" # 09:00 UTC daily
+    # Sunday through Friday, deliberately skipping Saturday. weekly.yml runs at
+    # 07:00 UTC Saturday and its TLA+ leg is still going at 09:00, so a daily
+    # cron put two multi-gigabyte TLC continuations on the same day: two
+    # checkpoint restores, two saves, and two cache prunes contending for one
+    # repository cache allowance. They are in separate concurrency groups, so
+    # nothing serializes them -- each evicts the other's checkpoint generation
+    # and both lineages degrade. Skipping the day is the only fix that needs no
+    # cross-workflow coordination.
+    #
+    # Invariant: scheduled TLA+ continuation jobs must not overlap.
+    - cron: "0 9 * * 0-5" # 09:00 UTC Sunday-Friday
   workflow_dispatch:
 
 # One nightly at a time; a manual dispatch queues behind a running one
@@ -192,6 +202,14 @@ jobs:
           restore-keys: |
             tla-nightly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-
             tla-nightly-checkpoint-v1-d4d58ccf520c9f3dd1f7fb27fcd7f1a99ad3b54d2d83ffb5eeb983c48420c3d4-31306738996-1
+      # TLC writes its successor checkpoint beside the recovered one before
+      # retiring it, so peak disk is the restored bytes plus a full successor
+      # plus that successor's growth. A restore that already fills the runner
+      # cannot finish, and failing mid-run breaks the lineage -- no new
+      # generation is saved and the successor the pruning step expects never
+      # exists. Decide it here, in seconds, against measured bytes.
+      - name: Gate restored checkpoint against runner disk
+        run: scripts/tla-checkpoint-disk-gate target/rafter-invariants/tla-checkpoint/nightly
       - name: Produce source-bound nightly TLA+ evidence
         timeout-minutes: 330
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla
@@ -202,11 +220,16 @@ jobs:
           path: target/rafter-invariants/tla-checkpoint/nightly
           key: tla-nightly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}-${{ github.run_attempt }}
       # Every checkpoint generation is a separate immutable cache evicted
-      # under the shared 10 GiB repository budget, so superseded multi-GiB
-      # generations crowd out the successor they seeded. Once this run's save
-      # is the newest generation, older generations (including the one-time
-      # v1 bridge) are pruned; on any doubt the step retains everything and
-      # the next restore falls back through its ordered keys.
+      # under one shared repository cache allowance, so superseded multi-GiB
+      # generations crowd out the successor they seeded. GitHub's default
+      # allowance for this repository is 10 GiB and the checkpoint alone is
+      # most of it; raising it is a repository setting, not something a
+      # workflow can assert, and the REST cache usage-policy endpoint does not
+      # exist for user-owned repositories on github.com. Treat the allowance as
+      # unknown and keep pruning. Once this run's save is the newest
+      # generation, older generations (including the one-time v1 bridge) are
+      # pruned; on any doubt the step retains everything and the next restore
+      # falls back through its ordered keys.
       - name: Prune superseded nightly TLC checkpoints
         if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/nightly/CACHE_VALID') != '' }}
         env:

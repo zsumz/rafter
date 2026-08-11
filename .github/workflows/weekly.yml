@@ -142,6 +142,14 @@ jobs:
           restore-keys: |
             tla-weekly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-
             tla-weekly-checkpoint-v1-29a3f0314bb9f76fd5b185b22bc614eeb0823ab58c4bae4ff7fe8e60eade1d79-31246803259-1
+      # TLC writes its successor checkpoint beside the recovered one before
+      # retiring it, so peak disk is the restored bytes plus a full successor
+      # plus that successor's growth. A restore that already fills the runner
+      # cannot finish, and failing mid-run breaks the lineage -- no new
+      # generation is saved and the successor the pruning step expects never
+      # exists. Decide it here, in seconds, against measured bytes.
+      - name: Gate restored checkpoint against runner disk
+        run: scripts/tla-checkpoint-disk-gate target/rafter-invariants/tla-checkpoint/weekly
       - name: Produce source-bound weekly TLA+ evidence
         timeout-minutes: 330
         run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer tla
@@ -152,11 +160,16 @@ jobs:
           path: target/rafter-invariants/tla-checkpoint/weekly
           key: tla-weekly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}-${{ github.run_attempt }}
       # Every checkpoint generation is a separate immutable cache evicted
-      # under the shared 10 GiB repository budget, so superseded multi-GiB
-      # generations crowd out the successor they seeded. Once this run's save
-      # is the newest generation, older generations (including the one-time
-      # v1 bridge) are pruned; on any doubt the step retains everything and
-      # the next restore falls back through its ordered keys.
+      # under one shared repository cache allowance, so superseded multi-GiB
+      # generations crowd out the successor they seeded. GitHub's default
+      # allowance for this repository is 10 GiB and the checkpoint alone is
+      # most of it; raising it is a repository setting, not something a
+      # workflow can assert, and the REST cache usage-policy endpoint does not
+      # exist for user-owned repositories on github.com. Treat the allowance as
+      # unknown and keep pruning. Once this run's save is the newest
+      # generation, older generations (including the one-time v1 bridge) are
+      # pruned; on any doubt the step retains everything and the next restore
+      # falls back through its ordered keys.
       - name: Prune superseded weekly TLC checkpoints
         if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/weekly/CACHE_VALID') != '' }}
         env:
