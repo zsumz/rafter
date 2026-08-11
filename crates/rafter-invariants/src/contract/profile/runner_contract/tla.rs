@@ -8,7 +8,7 @@ use super::super::{ObligationCompletion, ProofObligationContract, RunnerContract
 use super::validate::decode_configuration;
 
 const TLA_TOOL_SHA256: &str = "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f";
-const TLA_TOOL_ASSET_ID: &str = "510140106";
+const TLA_TOOL_ASSET_ID: &str = "510788686";
 
 /// Configurations that are the profile-owned monolith for some profile. An
 /// obligation may never name one: obligations exist to state theorems the

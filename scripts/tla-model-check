@@ -150,7 +150,7 @@ if [[ ! -f "$jar" ]] || ! verify; then
     curl -fsSL \
         -H "Accept: application/octet-stream" \
         -o "$download" \
-        "https://api.github.com/repos/tlaplus/tlaplus/releases/assets/${asset_id}"
+        "https://api.github.com/repos/zsumz/tla-tools/releases/assets/${asset_id}"
     if ! verify "$download"; then
         echo "error: tla2tools.jar sha256 mismatch against tools/tla/SHA256SUMS" >&2
         exit 1
