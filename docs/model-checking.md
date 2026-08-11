@@ -165,6 +165,13 @@ the thing that cannot be added.
 independent of machine load; the wall times below were taken while the host was
 heavily contended and should be read as upper bounds.
 
+These rows were measured before the state-space reductions described in
+"Exact state-space reductions" below, and are left as they were taken. The
+two-voter row in particular no longer reproduces: the same model now exhausts
+at 127,112 generated and 24,995 distinct. The three- and four-voter rows are
+readings from runs that never exhausted, so the reductions do not give them a
+corrected value either — they would still be readings, just different ones.
+
 | Model | Generated | Distinct | Queue | Depth | Wall | Peak RSS | Exhausted |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | 2 voters, `MaxTerm=1`, `MaxLogLen=1` | 137,480 | 35,363 | 0 | 28 | 44 s | 1.71 GiB | yes |
@@ -188,22 +195,22 @@ that; the measurements are in the next section.
 ### Focused proof obligations
 
 `Spec` checks all nine invariants against all of `Next`. `Raft.tla` also defines
-four narrower transition relations, each a strict disjunct-subset of
-`ProtocolNext` composed from the same action operators under unmodified guards,
-so every behavior of a focused spec is a behavior of `Spec`:
+four narrower transition relations, each a strict disjunct-subset of `Next`
+composed from the same action operators under unmodified guards, so every
+behavior of a focused spec is a behavior of `Spec`:
 
 | Relation | Spec operator | Action families |
 | --- | --- | --- |
 | `CoreNext` | `CoreSpec` | `Timeout`, `SendRequestVote`, `DeliverRequestVote`, `BecomeLeader`, `ClientAppend`, `SendAppend`, `DeliverAppend`, `Commit`, `Apply` |
 | `MembershipNext` | `MembershipSpec` | core minus `ClientAppend`, plus `EnterJoint`, `LeaveJoint` |
-| `SnapshotNext` | `SnapshotSpec` | core plus `ApplicationStateLoss`, `Restart`, `CreateSnapshot`, `TransferSnapshot`, `InstallSnapshot`, `CompactSnapshot` |
+| `SnapshotNext` | `SnapshotSpec` | core plus `ApplicationStateLoss`, `Restart`, `CreateSnapshot`, `TransferSnapshot`, `InstallSnapshot` |
 | `ReadNext` | `ReadSpec` | core plus `RegisterRead`, `GrantRead` |
 
-`SnapshotNext` is the one subset of `Next` rather than of `ProtocolNext`:
-`CompactSnapshot` is reachable only through `Next`'s compaction-first branch, so
-`SnapshotNext` reproduces that branch. The other three contain no
-`CreateSnapshot`, the only action that sets `compactionPending`, so along their
-behaviors `Next` and `ProtocolNext` coincide.
+All four are plain disjunct-subsets. `SnapshotNext` used to need an IF wrapper
+reproducing `Next`'s compaction-first branch, because `CompactSnapshot` was
+reachable only through it; folding creation and compaction into one action
+removed the branch, the wrapper, and the separate `ProtocolNext` name that
+existed to denote the disjunction without the branch.
 
 `JointQuorumInit` is a focused initial state for the joint-quorum obligation: the
 exact post-state of `Timeout(L)`, three `SendRequestVote`/`DeliverRequestVote`
@@ -290,6 +297,105 @@ bounds are already tractable. Making four voters tractable needs a different
 lever than action-family selection: a smaller `messages` representation, a state
 constraint bounding in-flight messages, or a symmetry-preserving focused initial
 state. None of those is implemented here.
+
+### Exact state-space reductions
+
+Two changes to `Raft.tla` remove state the model was carrying without using.
+Both are exact: they change no reachable behavior, and each has an argument for
+why, stated at its definition in the spec and repeated here.
+
+#### Snapshot creation and compaction are one action
+
+`CreateSnapshot(n)` used to set `compactionPending[n]`, `Next` carried a
+compaction-first branch that disabled every protocol action while any flag was
+set, and `CompactSnapshot(n)` cleared the flag and wrote nothing else.
+
+**Why it is sound.** The intermediate state was unobservable. No protocol action
+was enabled in it; the only action that was, `CompactSnapshot`, agreed with its
+own successor on every variable except the flag; and no predicate outside the
+flag's own `TypeOK` conjunct read the flag. So for any old behavior, deleting
+the flag from every state turns the intermediate state into a stuttering step of
+the folded spec, which `[][Next]_vars` already admits, and leaves every other
+state unchanged. The two specs are therefore stuttering-equivalent for every
+property over the remaining variables, and no invariant loses a state it used to
+be checked on: the intermediate state and its successor agreed everywhere an
+invariant could look.
+
+This one reduces the state count, because the intermediate state was a distinct
+state.
+
+#### The snapshot prefix is derived, not stored
+
+`snapshotPrefix[n]` used to be a variable holding a copy of the log up to the
+snapshot floor. It is now `SnapshotPrefix(n) == Prefix(log[n], snapshotIndex[n])`.
+
+**Why it is sound.** `SnapshotIdentitySoundFor` asserted exactly that equality,
+and `LogMatching` checked it on every reachable state, so on every state the
+model reaches the derived value and the stored value were already the same
+sequence. The step that needs more than "the invariant held" is a recorder
+called with a primed log against an unprimed snapshot floor —
+`RecordLogicalPrefixes(log', snapshotIndex, ...)` in `ClientAppend` and
+`DeliverAppend` — where the derived form reads the successor log while the
+stored form still held the predecessor's prefix. These agree because no action
+rewrites a log at or below its own snapshot floor. `ClientAppend`, `EnterJoint`
+and `LeaveJoint` only append. `DeliverAppend` replaces the receiver's log
+wholesale, but only under `CanAdoptLog`, which requires every index up to
+`commitIndex[n]` to match what the receiver already has, and
+`snapshotIndex[n] <= commitIndex[n]` holds throughout: `CreateSnapshot` snapshots
+at `AppliedThrough(n)`, which `TypeOK` bounds by `commitIndex[n]`, and
+`InstallSnapshot` raises `commitIndex` to the transfer index in the same step.
+That bound is now a `TypeOK` conjunct, so the argument is machine-checked rather
+than asserted.
+
+The exception is deliberate and stayed materialized: a snapshot in flight
+carries `snapshotTransfer.prefix`, a copy frozen at send time. The sender's log
+may change before the receiver installs, so that field is a value and not a
+view, and it remains a stored field of the transfer record.
+
+**This one does not reduce the state count, and is not claimed to.** The removed
+variable was a function of two others, so no two reachable states ever differed
+in it alone; the distinct-state counts below are identical across it, which is
+the point rather than a disappointment — a component that cannot distinguish two
+states was not carrying verification. Peak RSS was also unchanged within noise
+(2.90–2.97 GiB across four runs of the `SnapshotSpec` model at `-Xmx8g`, with
+the two variants' wall times interleaving). What it buys is an obligation
+retired: three of the four conjuncts `SnapshotIdentitySoundFor` used to check
+are now definitional, and the way to violate them — writing the wrong prefix —
+no longer exists.
+
+#### Measurements
+
+Same host and flags as above: 14 cores, `-workers 4 -Xmx8g -seed 2026081101
+-fp 0 -fpmem 0.45`. Every run below exhausted on both sides. "Old" is the spec
+before both reductions; "new" is after both. Reported search depth is not
+deterministic under `-workers 4` — the `MembershipSpec` row read 23 and 24 on
+different runs of the *same* spec — so only the state counts are load-bearing.
+
+| Model | Old generated | Old distinct | New generated | New distinct | Distinct change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2 voters, full `Spec`, `MaxTerm=1`, `MaxLogLen=1` | 137,480 | 35,363 | 127,112 | 24,995 | −29.3% |
+| 2 voters, `SnapshotSpec`, `MaxLogLen=2` | 1,407,838 | 305,787 | 1,312,094 | 210,043 | −31.3% |
+| 2 voters, `SnapshotSpec`, `MaxLogLen=1` | 13,966 | 3,963 | 12,814 | 2,811 | −29.1% |
+| 2 voters, `CoreSpec` | 387 | 124 | 387 | 124 | none |
+| 3 voters, `CoreSpec` | 357,423 | 52,247 | 357,423 | 52,247 | none |
+| 2 voters, `ReadSpec` | 1,405 | 336 | 1,405 | 336 | none |
+| 3 voters, `ReadSpec` | 1,213,423 | 154,409 | 1,213,423 | 154,409 | none |
+| 2 voters, `MembershipSpec`, `MaxLogLen=2` | 7,215 | 1,708 | 7,215 | 1,708 | none |
+
+The four unchanged relations exclude the snapshot lifecycle entirely, so a
+reduction to snapshot machinery must leave them alone to the state. It does, on
+models up to 1.2 million generated states. That identity is the evidence the
+reductions touched only what they claim.
+
+Two smaller fixtures move by construction rather than by measurement.
+`RaftTraceSample` is unchanged at 5 generated and 4 distinct, and the negative
+detector still exits 12 naming `ElectionSafety` at the same 6 and 4. The
+detector's snapshot lifecycle fixture goes from 7 distinct states at depth 7 to
+6 at depth 6 — exactly the one intermediate state the fold removes, which is the
+fold's claim stated as a number. `RaftMembershipTraceSample` drops from 46
+states to 45 because it executed `CompactSnapshot` as a step and that step no
+longer exists; it still executes every transition the contract requires, and the
+producer's trace floors moved from 46 to 45 with it.
 
 #### How an obligation is wired
 
