@@ -149,8 +149,36 @@
           "minProperties": 1,
           "additionalProperties": { "$ref": "#/$defs/simulator_check_contract" }
         },
+        "obligations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/proof_obligation_contract" }
+        },
         "minimum_observed_checks": { "type": "integer", "minimum": 1 },
         "require_peak_rss": { "type": "boolean" }
+      }
+    },
+    "proof_obligation_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "config",
+        "completion",
+        "minimum_generated_states",
+        "minimum_distinct_states",
+        "soft_timeout",
+        "seed"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "config": { "type": "string", "pattern": "^[A-Za-z0-9._-]+\\.cfg$" },
+        "completion": { "const": "frontier-exhausted" },
+        "minimum_generated_states": { "type": "integer", "minimum": 1 },
+        "minimum_distinct_states": { "type": "integer", "minimum": 1 },
+        "soft_timeout": { "type": "string", "pattern": "^[1-9][0-9]*m$" },
+        "seed": { "type": "string", "pattern": "^[0-9]+$" }
       }
     },
     "simulator_check_contract": {

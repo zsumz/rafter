@@ -71,12 +71,17 @@ pub(super) fn verify_completion(
     bundle: &ResultBundle,
     trace_passed: bool,
     detectors_passed: bool,
+    obligations_passed: bool,
     checkpoint: Option<&RecoveryReport>,
     main: Option<&ProcessLog>,
     summary: Option<&TlcSummary>,
 ) -> Result<(), AggregateError> {
+    // An undischarged obligation is a harness-level failure of the layer, in
+    // the same class as a broken detector: it means the primary run was never
+    // entitled to start, so no completion it might have claimed is admissible.
     let expected = if !trace_passed
         || !detectors_passed
+        || !obligations_passed
         || checkpoint.is_some_and(|report| report.status == RecoveryStatus::Incompatible)
     {
         CheckCompletion::HarnessError

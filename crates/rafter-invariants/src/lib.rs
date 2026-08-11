@@ -33,9 +33,9 @@ pub use contract::catalog::{
     DetectorReplayBuild, DetectorReplayChallenge, DetectorReplayContract,
     DetectorReplayFixtureInventory, DetectorReplayPolicy, DetectorReplaySource,
     DetectorReplayTargetDirectory, EvidenceDescriptor, EvidenceLayer, EvidencePolicy,
-    EvidenceStrength, InvariantDescriptor, ProfileContract, ProfileManifest,
-    RequiredClauseStrength, RunnerContract, SimulatorCheckContract, SimulatorIdentity,
-    TestIdentity, VerifierContract,
+    EvidenceStrength, InvariantDescriptor, ObligationCompletion, ProfileContract, ProfileManifest,
+    ProofObligationContract, RequiredClauseStrength, RunnerContract, SimulatorCheckContract,
+    SimulatorIdentity, TestIdentity, VerifierContract,
 };
 pub use contract::registry::render_registry_markdown;
 pub use contract::registry::{

@@ -3,16 +3,19 @@
 mod budget;
 mod command;
 mod model;
+mod obligation;
 mod outcome;
 mod probes;
 mod runner;
 
 pub(in crate::producer) use model::{MainStatus, ProbeStatus, TlaExecution};
 #[cfg(test)]
+pub(in crate::producer) use model::ObligationOutcome;
+#[cfg(test)]
 pub(in crate::producer) use outcome::parse_main_summary;
 #[cfg(test)]
 pub(in crate::producer) use probes::detector_qualified;
-pub(super) use runner::execute;
+pub(super) use runner::{execute, ExecutionRequest};
 
 #[cfg(test)]
 pub(super) use super::process;

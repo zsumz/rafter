@@ -36,6 +36,7 @@ pub(super) fn derive(
     symbols: &[String],
     trace_passed: bool,
     detector_observations: BTreeMap<String, u64>,
+    obligation_observations: BTreeMap<String, u64>,
     checkpoint: Option<&RecoveryReport>,
     main_progress: Option<TlcProgress>,
     main: Option<&ProcessLog>,
@@ -54,6 +55,7 @@ pub(super) fn derive(
         );
     }
     derived.extend(detector_observations);
+    derived.extend(obligation_observations);
     if let Some(checkpoint) = checkpoint {
         derived.extend([
             ("checkpoint_enabled".to_owned(), 1),

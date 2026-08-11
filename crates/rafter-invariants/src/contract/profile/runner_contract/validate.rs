@@ -40,7 +40,7 @@ pub(in crate::contract::profile) fn validate_runner(
     match layer {
         "tests" => super::tests_runner::validate(profile, &runner.configuration),
         "simulator" => super::simulator::validate(&runner.configuration),
-        "tla" => super::tla::validate(profile, &runner.configuration),
+        "tla" => super::tla::validate(profile, runner),
         "maelstrom" => super::maelstrom::validate(profile, &runner.configuration),
         _ => unreachable!("layer was matched above"),
     }
@@ -50,7 +50,7 @@ fn expected_identity(layer: &str) -> Result<(&'static str, usize), String> {
     match layer {
         "tests" => Ok(("rafter-invariants-tests-v14", 82)),
         "simulator" => Ok(("rafter-invariants-simulator-v19", 79)),
-        "tla" => Ok(("rafter-invariants-tla-v15", 1)),
+        "tla" => Ok(("rafter-invariants-tla-v16", 1)),
         "maelstrom" => Ok(("rafter-invariants-maelstrom-v10", 6)),
         _ => Err(format!("unsupported runner layer {layer}")),
     }

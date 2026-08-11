@@ -5,6 +5,7 @@ mod checkpoint;
 mod completion;
 mod detector;
 mod invocation;
+mod obligation;
 mod observation;
 mod receipt;
 mod source;

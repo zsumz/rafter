@@ -78,6 +78,7 @@ fn maelstrom_contract() -> ProfileContract {
                 command: vec!["test".to_owned()],
                 configuration,
                 simulator_checks: BTreeMap::new(),
+                obligations: Vec::new(),
                 minimum_observed_checks: 1,
                 require_peak_rss: true,
             },

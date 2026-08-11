@@ -12,7 +12,8 @@ mod validate;
 pub(crate) use liveness::expected_execution_contract;
 pub use liveness::{SimulatorExecutionContract, SimulatorLivenessContract};
 pub use model::{
-    ProfileContract, ProfileManifest, RunnerContract, SimulatorCheckContract, VerifierContract,
+    ObligationCompletion, ProfileContract, ProfileManifest, ProofObligationContract,
+    RunnerContract, SimulatorCheckContract, VerifierContract,
 };
 pub use policy::{
     ClausePolicy, EvidenceLayer, EvidencePolicy, EvidenceStrength, RequiredClauseStrength,

@@ -16,6 +16,15 @@ pub(super) struct InvocationTarget<'a> {
     pub(super) config: String,
     pub(super) module: &'a str,
     pub(super) workers: &'a str,
+    /// Seed this run was launched with. The primary run takes the profile's
+    /// seed; an obligation takes its own, so it cannot be silently satisfied by
+    /// replaying the primary run's exploration order.
+    pub(super) seed: String,
+    /// Whether the run inherits the profile's heap and fingerprint-memory
+    /// profile. True for the primary configuration and for obligations, which
+    /// are a different model on the same machine; false for the single-worker
+    /// qualification probes.
+    pub(super) memory_profile: bool,
 }
 
 pub(super) fn expected(
@@ -44,7 +53,7 @@ pub(super) fn expected(
             .join(label)
     };
     let mut arguments = Vec::new();
-    if label == "model-check" {
+    if target.memory_profile {
         if let Some(max_heap) = bundle.execution.plan.contract.runners["tla"]
             .configuration
             .get("max_heap")
@@ -64,11 +73,11 @@ pub(super) fn expected(
         "-workers".to_owned(),
         target.workers.to_owned(),
         "-seed".to_owned(),
-        configuration(bundle, "seed")?.to_owned(),
+        target.seed,
         "-fp".to_owned(),
         "0".to_owned(),
     ]);
-    if label == "model-check" {
+    if target.memory_profile {
         if let Some(fp_mem) = bundle.execution.plan.contract.runners["tla"]
             .configuration
             .get("fp_mem")

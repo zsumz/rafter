@@ -10,6 +10,7 @@ use crate::{
 use super::super::checkpoint;
 
 pub(in crate::producer) struct TlaExecution {
+    pub(in crate::producer) obligations: ObligationOutcome,
     pub(in crate::producer) main: Option<tla_output::TlcSummary>,
     pub(in crate::producer) main_progress: Option<tla_output::TlcProgress>,
     pub(in crate::producer) main_parse_error: Option<String>,
@@ -42,6 +43,34 @@ pub(in crate::producer) enum ProbeStatus {
 pub(super) struct TlcRun {
     pub(super) output: process::ProcessOutput,
     pub(super) artifact: ArtifactRef,
+}
+
+/// Aggregate result of the profile's focused proof obligations.
+///
+/// Obligations are sequential and fail fast, so a `Failed` outcome describes
+/// the first obligation that did not discharge and carries observations only
+/// for the obligations that actually ran. That prefix shape is deliberate and
+/// is what the verifier independently reconstructs.
+pub(in crate::producer) struct ObligationOutcome {
+    pub(in crate::producer) status: ProbeStatus,
+    pub(in crate::producer) failure: Option<String>,
+    pub(in crate::producer) observations: BTreeMap<String, u64>,
+    pub(super) peak_rss_kib: u64,
+    pub(super) duration_ms: u64,
+    pub(super) artifacts: Vec<ArtifactRef>,
+}
+
+impl Default for ObligationOutcome {
+    fn default() -> Self {
+        Self {
+            status: ProbeStatus::NotRun,
+            failure: None,
+            observations: BTreeMap::new(),
+            peak_rss_kib: 0,
+            duration_ms: 0,
+            artifacts: Vec::new(),
+        }
+    }
 }
 
 pub(super) struct DetectorRun {

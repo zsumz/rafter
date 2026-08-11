@@ -7,13 +7,14 @@ use crate::evidence::ArtifactRef;
 use super::{
     super::{checkpoint, process, tla_output},
     budget::ExecutionBudget,
-    model::{DetectorProbes, MainStatus, ProbeStatus, TlaExecution, TlcRun},
+    model::{DetectorProbes, MainStatus, ObligationOutcome, ProbeStatus, TlaExecution, TlcRun},
     probes::empty_detector_qualifications,
 };
 
 pub(super) struct MainCompletion<'a> {
     pub(super) trace: &'a TlcRun,
     pub(super) detectors: DetectorProbes,
+    pub(super) obligations: ObligationOutcome,
     pub(super) artifacts: Vec<ArtifactRef>,
     pub(super) checkpoint: Option<checkpoint::Preparation>,
     pub(super) checkpoint_report: Option<checkpoint::RecoveryReport>,
@@ -40,6 +41,7 @@ pub(super) fn complete_main_execution(
     let MainCompletion {
         trace,
         detectors,
+        obligations,
         mut artifacts,
         checkpoint,
         checkpoint_report,
@@ -60,9 +62,11 @@ pub(super) fn complete_main_execution(
         .output
         .peak_rss_kib
         .max(detectors.peak_rss_kib)
+        .max(obligations.peak_rss_kib)
         .max(main.output.peak_rss_kib);
     let duration_ms = process::duration_ms(trace.output.duration)
         .saturating_add(detectors.duration_ms)
+        .saturating_add(obligations.duration_ms)
         .saturating_add(process::duration_ms(main.output.duration));
     let main_status = classify_main_status(&main.output);
     artifacts.push(main.artifact);
@@ -78,6 +82,7 @@ pub(super) fn complete_main_execution(
         }
     }
     Ok(TlaExecution {
+        obligations,
         main: summary,
         main_progress,
         main_parse_error,
@@ -91,6 +96,41 @@ pub(super) fn complete_main_execution(
         checkpoint_report,
         checkpoint_error: None,
     })
+}
+
+/// Terminal frame for the first obligation that did not discharge. The primary
+/// configuration never ran, so there is no main summary to report and no
+/// checkpoint to finalize -- obligations precede checkpoint preparation
+/// precisely so that this path costs nothing but the obligations themselves.
+pub(super) fn obligation_failure(
+    trace: &TlcRun,
+    detectors: DetectorProbes,
+    obligations: ObligationOutcome,
+    artifacts: Vec<ArtifactRef>,
+) -> TlaExecution {
+    let peak_rss_kib = trace
+        .output
+        .peak_rss_kib
+        .max(detectors.peak_rss_kib)
+        .max(obligations.peak_rss_kib);
+    let duration_ms = process::duration_ms(trace.output.duration)
+        .saturating_add(detectors.duration_ms)
+        .saturating_add(obligations.duration_ms);
+    TlaExecution {
+        obligations,
+        main: None,
+        main_progress: None,
+        main_parse_error: None,
+        main_status: MainStatus::NotRun,
+        trace_status: ProbeStatus::Passed,
+        detector_status: ProbeStatus::Passed,
+        detector_qualifications: detectors.qualifications,
+        peak_rss_kib,
+        duration_ms,
+        artifacts,
+        checkpoint_report: None,
+        checkpoint_error: None,
+    }
 }
 
 fn classify_main_status(output: &process::ProcessOutput) -> MainStatus {
@@ -127,6 +167,7 @@ pub(super) fn prepare_checkpoint(
 
 pub(super) fn trace_failure(trace: &TlcRun, artifacts: Vec<ArtifactRef>) -> TlaExecution {
     TlaExecution {
+        obligations: ObligationOutcome::default(),
         main: None,
         main_progress: None,
         main_parse_error: None,
@@ -144,6 +185,7 @@ pub(super) fn trace_failure(trace: &TlcRun, artifacts: Vec<ArtifactRef>) -> TlaE
 
 pub(super) fn trace_budget_failure(artifacts: Vec<ArtifactRef>) -> TlaExecution {
     TlaExecution {
+        obligations: ObligationOutcome::default(),
         main: None,
         main_progress: None,
         main_parse_error: None,
@@ -165,6 +207,7 @@ pub(super) fn detector_failure(
     artifacts: Vec<ArtifactRef>,
 ) -> TlaExecution {
     TlaExecution {
+        obligations: ObligationOutcome::default(),
         main: None,
         main_progress: None,
         main_parse_error: None,
@@ -184,11 +227,21 @@ pub(super) fn detector_failure(
 pub(super) fn checkpoint_failure(
     trace: &TlcRun,
     detectors: DetectorProbes,
+    obligations: ObligationOutcome,
     artifacts: Vec<ArtifactRef>,
     checkpoint_report: Option<checkpoint::RecoveryReport>,
     error: String,
 ) -> TlaExecution {
+    let peak_rss_kib = trace
+        .output
+        .peak_rss_kib
+        .max(detectors.peak_rss_kib)
+        .max(obligations.peak_rss_kib);
+    let duration_ms = process::duration_ms(trace.output.duration)
+        .saturating_add(detectors.duration_ms)
+        .saturating_add(obligations.duration_ms);
     TlaExecution {
+        obligations,
         main: None,
         main_progress: None,
         main_parse_error: None,
@@ -196,9 +249,8 @@ pub(super) fn checkpoint_failure(
         trace_status: ProbeStatus::Passed,
         detector_status: ProbeStatus::Passed,
         detector_qualifications: detectors.qualifications,
-        peak_rss_kib: trace.output.peak_rss_kib.max(detectors.peak_rss_kib),
-        duration_ms: process::duration_ms(trace.output.duration)
-            .saturating_add(detectors.duration_ms),
+        peak_rss_kib,
+        duration_ms,
         artifacts,
         checkpoint_report,
         checkpoint_error: Some(error),
@@ -208,10 +260,20 @@ pub(super) fn checkpoint_failure(
 pub(super) fn main_budget_failure(
     trace: &TlcRun,
     detectors: DetectorProbes,
+    obligations: ObligationOutcome,
     artifacts: Vec<ArtifactRef>,
     checkpoint_report: Option<checkpoint::RecoveryReport>,
 ) -> TlaExecution {
+    let peak_rss_kib = trace
+        .output
+        .peak_rss_kib
+        .max(detectors.peak_rss_kib)
+        .max(obligations.peak_rss_kib);
+    let duration_ms = process::duration_ms(trace.output.duration)
+        .saturating_add(detectors.duration_ms)
+        .saturating_add(obligations.duration_ms);
     TlaExecution {
+        obligations,
         main: None,
         main_progress: None,
         main_parse_error: None,
@@ -219,9 +281,8 @@ pub(super) fn main_budget_failure(
         trace_status: ProbeStatus::Passed,
         detector_status: ProbeStatus::Passed,
         detector_qualifications: detectors.qualifications,
-        peak_rss_kib: trace.output.peak_rss_kib.max(detectors.peak_rss_kib),
-        duration_ms: process::duration_ms(trace.output.duration)
-            .saturating_add(detectors.duration_ms),
+        peak_rss_kib,
+        duration_ms,
         artifacts,
         checkpoint_report,
         checkpoint_error: None,

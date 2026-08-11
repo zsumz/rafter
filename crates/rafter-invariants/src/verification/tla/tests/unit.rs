@@ -8,7 +8,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
-const SHA: &str = "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3";
+const SHA: &str = "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f";
 
 #[test]
 fn tool_checksum_binding_is_exact_and_unique() {
@@ -24,6 +24,34 @@ fn tool_checksum_binding_is_exact_and_unique() {
         &format!("{}  tla2tools.jar\n", "0".repeat(64)),
         SHA
     ));
+}
+
+/// Upstream v1.8.0 is a rolling channel whose assets are replaced and deleted,
+/// so the checked-in checksum manifest and the profile contract are the only
+/// things that pin an identity. They must agree exactly, and the manifest must
+/// declare that digest once -- a second `tla2tools.jar` line would let a run
+/// accept either jar.
+#[test]
+fn the_checked_in_tool_manifest_matches_every_profile_pin() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let checksums =
+        std::fs::read_to_string(root.join("tools/tla/SHA256SUMS")).expect("read SHA256SUMS");
+    let asset_id = std::fs::read_to_string(root.join("tools/tla/ASSET_ID")).expect("read ASSET_ID");
+    let manifest = crate::ProfileManifest::load(&root.join("verification/raft-invariant-profiles.json"))
+        .expect("load profile manifest");
+
+    for profile in ["pr", "nightly", "weekly"] {
+        let configuration = &manifest.profiles[profile].runners["tla"].configuration;
+        assert!(
+            checksum_matches(&checksums, &configuration["tool_sha256"]),
+            "{profile} tool_sha256 is not the unique tla2tools.jar digest in SHA256SUMS"
+        );
+        assert_eq!(
+            asset_id.trim(),
+            configuration["tool_asset_id"],
+            "{profile} tool_asset_id drifted from tools/tla/ASSET_ID"
+        );
+    }
 }
 
 #[test]

@@ -28,6 +28,59 @@ Three tiers are wired, each pinned to one config by
 | Nightly | `RaftNightly.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | yes |
 | Weekly | `Raft.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | no |
 
+Each tier also carries a list of [focused proof
+obligations](#how-an-obligation-is-wired), currently empty for all three.
+
+### Pinning the TLC tool
+
+Upstream `tlaplus/tlaplus` tag `v1.8.0` is a rolling nightly channel, not an
+immutable release: the tag stays fixed while its assets are rebuilt, uploaded
+under fresh IDs, and their predecessors deleted. Three distinct `tla2tools.jar`
+digests were observed in five weeks, and the asset ID pinned before this
+contract now 404s. `tools/tla/ASSET_ID` is therefore a liveness pin only.
+
+The identity pin is the SHA-256 in `tools/tla/SHA256SUMS`, which
+`scripts/tla-model-check` verifies before every run and which the profile
+contract repeats independently as `tool_sha256`, so a silently swapped upstream
+asset fails closed rather than being accepted. `tools/tla/VERSION` records the
+channel and the TLC build string it reported. A repo-controlled mirror of the
+reviewed jar is the durable fix for the liveness half; it is a maintainer
+decision and is not made here.
+
+#### TLA+ contract migration: v15 to v16
+
+`verification/model-check-contract-migrations.json` is the simulator's ledger,
+not this one: its entries pin `rafter-model-check-fast` profiles and require at
+least one monotone `configured_depth` increase measured from that binary's
+telemetry, so a TLA+ entry cannot be written there without breaking the
+simulator's overhead gate. The TLA+ runner contract records its migrations as a
+profile-manifest schema bump plus a producer identity bump, guarded by negative
+fixtures in `crates/rafter-invariants/src/contract/profile/tests.rs`.
+
+The v9/`rafter-invariants-tla-v15` to v10/`rafter-invariants-tla-v16` migration
+introduces the obligation vocabulary and re-pins the TLC tool. Because the
+checkpoint contract digests the runner's `configuration` map, and the tool pin
+lives in that map, this migration resets the accumulated TLC checkpoint lineage
+for every profile once. The affected `runner_contract_sha256` values are:
+
+| Profile | From | To |
+| --- | --- | --- |
+| PR | `84f4980f5963064f…` | `15e3d0ca1c38e17a…` |
+| Nightly | `4ca7833d8f558e44…` | `d1528483c9acc98d…` |
+| Weekly | `8d09c27585de34fa…` | `a14088eca2efbe5d…` |
+
+Scheduled continuations restart from an empty queue at the next run and
+reaccumulate. Obligations themselves are outside that map by design, so future
+obligation edits do not repeat this reset.
+
+TLC's `-coverage` is deliberately not part of the contract. Measured on this
+repository's own trace-sample model, one coverage report costs about 790 KB of
+additional framed stdout (3,849 bytes without, 793,379 with). At the PR tier's
+325-minute budget, `-coverage 5` would emit roughly 65 reports — on the order
+of 50 MB against the producer's 64 MiB per-process stdout cap, all of it inside
+the receipt-bound, hashed, uploaded, and re-parsed `tla-log` artifact. It
+destabilizes more than it informs at these run lengths.
+
 ### What the ladder does not prove
 
 Nightly and weekly have **identical constants**. Only `SYMMETRY
@@ -237,6 +290,55 @@ bounds are already tractable. Making four voters tractable needs a different
 lever than action-family selection: a smaller `messages` representation, a state
 constraint bounding in-flight messages, or a symmetry-preserving focused initial
 state. None of those is implemented here.
+
+#### How an obligation is wired
+
+The TLA+ runner contract is one primary configuration plus a list of proof
+obligations. Each profile's `tla` runner in
+`verification/raft-invariant-profiles.json` carries an `obligations` array whose
+entries pin an `id`, a `config` under `specs/tla/raft/`, a `completion` (only
+`frontier-exhausted` is legal), per-obligation `minimum_generated_states` and
+`minimum_distinct_states` floors, a whole-minute `soft_timeout`, and a `seed`.
+Workers, heap, and fingerprint memory are inherited from the parent
+configuration; an obligation is a different model on the same machine, not a
+different machine budget.
+
+Three rules make the vocabulary mean something.
+
+**Obligations run before the primary configuration**, after the trace and
+detector qualification probes. A broken theorem is then red in minutes rather
+than after a five-hour continuation, and the primary run inherits whatever
+remains of the shared execution window. The contract refuses an obligation set
+whose budgets plus the primary `soft_timeout` exceed `total_timeout` less
+`finalization_reserve`, so the ordering cannot silently truncate the monolith.
+
+**Obligations never checkpoint.** Each runs from scratch into an ephemeral
+state directory, writes no checkpoint, recovers none, and contributes to no
+cache key. An obligation that cannot exhaust its frontier in one bounded run is
+not an obligation but a second monolith, and belongs in the primary
+configuration's continuation instead. Keeping obligations out of the serialized
+`configuration` map is what enforces this: the checkpoint contract digests only
+that map, so adding, retuning, or removing an obligation cannot invalidate the
+primary configuration's accumulated TLC state.
+
+**An obligation passes only on frontier exhaustion** with zero invariant
+violations and both floors met. Any other outcome fails the layer red. The
+floors are per-obligation ratchets calibrated against the obligation's own
+measured state space; they are unrelated to the primary configuration's
+120M/16M monolith floors. Each obligation binds the same nine invariants as the
+primary configuration and is held to the same safety-only boundary, so a
+configuration that checks nothing cannot discharge by exiting cleanly.
+
+The negative-detector qualification stays bound once per layer, to the primary
+configuration. Obligations strengthen the layer; they do not add registry
+evidence rows, and a refutation inside one is reported as a red harness-level
+failure for a human to read rather than attached to a predicate the primary run
+never falsified.
+
+No profile declares an obligation yet: all three `obligations` arrays are
+empty, and an empty array is exactly the identity — the receipt, artifact set,
+and observation frame are byte-identical to the contract before the vocabulary
+existed. Adding a measured obligation is a profiles-manifest edit.
 
 ### Correspondence to the implementation
 

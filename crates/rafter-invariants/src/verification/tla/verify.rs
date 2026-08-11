@@ -16,7 +16,7 @@ use super::{
     completion::{verify_completion, verify_counterexample_binding},
     detector,
     invocation::{optional_process_log, read_initial_process_log},
-    observation,
+    obligation, observation,
     source::{verify_source_binding, verify_tool_pin},
 };
 
@@ -63,6 +63,15 @@ pub(crate) fn verify_authenticated(
             "TLA main log exists after a failed trace probe".to_owned(),
         ));
     }
+    let (obligation_observations, obligations_passed) =
+        obligation::verify(bundle, check, root, &producer_repository, authenticated)?;
+    // Obligations gate the primary run, so a main log after an undischarged
+    // obligation is evidence the producer ignored its own ordering.
+    if !obligations_passed && super::artifact::has_kind(check, "tla-log")? {
+        return Err(AggregateError::new(
+            "TLA main log exists after an undischarged proof obligation".to_owned(),
+        ));
+    }
     let main = optional_process_log(
         bundle,
         check,
@@ -85,6 +94,7 @@ pub(crate) fn verify_authenticated(
         &symbols,
         trace_passed,
         detector_observations,
+        obligation_observations,
         checkpoint.as_ref(),
         main_progress,
         main.as_ref(),
@@ -103,6 +113,7 @@ pub(crate) fn verify_authenticated(
         bundle,
         trace_passed,
         detectors_passed,
+        obligations_passed,
         checkpoint.as_ref(),
         main.as_ref(),
         main_summary.as_ref(),

@@ -13,6 +13,7 @@ use serde_json::Value;
 use super::{
     complete_main_execution, configured_budget_duration, maximum_qualification_time,
     mutation_suite_timeout, probe_timeout, process, DetectorProbes, ExecutionBudget,
+    ObligationOutcome,
     MainCompletion, TlcRun, FINALIZATION_RESERVE_KEY, QUALIFICATION_PHASE_COUNT, TOTAL_TIMEOUT_KEY,
 };
 
@@ -293,6 +294,7 @@ fn main_counterexample_abandons_checkpoint_before_expired_finalization() {
         MainCompletion {
             trace: &trace,
             detectors: DetectorProbes::default(),
+            obligations: ObligationOutcome::default(),
             artifacts: inputs,
             checkpoint: Some(preparation),
             checkpoint_report: None,

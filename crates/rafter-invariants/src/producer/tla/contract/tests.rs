@@ -8,9 +8,11 @@ use super::super::tla_output::{
 };
 use super::{
     configured_invariants, fetch_tool_with, java_major, tool_fetch_environment,
-    validate_runner_options, validate_safety_only_boundary, validate_symmetry_contract,
-    validate_trace_contract_sources, TRACE_CONFIG, TRACE_SPEC,
+    validate_obligation_config_sources, validate_obligation_options, validate_runner_options,
+    validate_safety_only_boundary, validate_symmetry_contract, validate_trace_contract_sources,
+    SPEC, TRACE_CONFIG, TRACE_SPEC,
 };
+use crate::contract::profile::{ObligationCompletion, ProofObligationContract};
 
 #[test]
 fn java_major_is_parsed_exactly() {
@@ -230,6 +232,92 @@ fn membership_trace_contract_rejects_any_reviewed_source_drift() {
         &symbols,
         &spec,
         &config.replace("  MaxLogLen = 6", "  MaxLogLen = 5")
+    )
+    .is_err());
+}
+
+fn obligation(id: &str, config: &str) -> ProofObligationContract {
+    ProofObligationContract {
+        id: id.to_owned(),
+        config: config.to_owned(),
+        completion: ObligationCompletion::FrontierExhausted,
+        minimum_generated_states: 1_000,
+        minimum_distinct_states: 100,
+        soft_timeout: "5m".to_owned(),
+        seed: "2026081101".to_owned(),
+    }
+}
+
+/// The producer keeps its own gate on the obligation list rather than trusting
+/// the profile contract's. Both must independently refuse an obligation that
+/// re-runs a profile's primary model or names an unusable configuration.
+#[test]
+fn producer_refuses_primary_and_duplicate_obligations() {
+    validate_obligation_options(&[]).expect("an empty obligation list is legal");
+    validate_obligation_options(&[
+        obligation("joint-quorum-focused-init", "RaftJointQuorumFocusedInit.cfg"),
+        obligation("joint-quorum-focused-next", "RaftJointQuorumFocusedNext.cfg"),
+    ])
+    .expect("distinct focused obligations are legal");
+
+    for config in ["RaftCi.cfg", "RaftNightly.cfg", "Raft.cfg", "sub/dir.cfg"] {
+        assert!(validate_obligation_options(&[obligation("focused", config)]).is_err());
+    }
+
+    let duplicate = [
+        obligation("focused", "RaftJointQuorumFocusedInit.cfg"),
+        obligation("focused", "RaftJointQuorumFocusedNext.cfg"),
+    ];
+    assert!(validate_obligation_options(&duplicate).is_err());
+
+    let mut vacuous = obligation("focused", "RaftJointQuorumFocusedInit.cfg");
+    vacuous.minimum_generated_states = 0;
+    assert!(validate_obligation_options(&[vacuous]).is_err());
+}
+
+/// Discharging an obligation must mean something. A configuration that binds
+/// no invariants would exit cleanly and clear any state floor, so every
+/// obligation is held to the same registry as the primary configuration.
+#[test]
+fn obligation_specs_must_bind_the_registry_predicates() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let spec = std::fs::read_to_string(root.join(SPEC)).expect("read production spec");
+    let symbols = REGISTERED_PREDICATES
+        .iter()
+        .map(|predicate| (*predicate).to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let read = |name: &str| {
+        std::fs::read_to_string(root.join("specs/tla/raft").join(name)).expect("read config")
+    };
+
+    for name in [
+        "RaftJointQuorumFocusedInit.cfg",
+        "RaftJointQuorumFocusedNext.cfg",
+    ] {
+        validate_obligation_config_sources("focused", name, &spec, &read(name), &symbols)
+            .unwrap_or_else(|error| panic!("{name} must bind the whole registry: {error}"));
+    }
+
+    // The trace-sample config is a real file that configures the registry but
+    // also declares a liveness PROPERTY, so it must be refused by the
+    // safety-only boundary rather than silently accepted.
+    assert!(validate_obligation_config_sources(
+        "trace",
+        TRACE_CONFIG,
+        &spec,
+        &read("RaftMembershipTraceSample.cfg"),
+        &symbols,
+    )
+    .is_err());
+
+    // A configuration that binds nothing exits cleanly and would otherwise
+    // "discharge" while proving nothing at all.
+    assert!(validate_obligation_config_sources(
+        "empty",
+        "RaftEmpty.cfg",
+        &spec,
+        "SPECIFICATION MembershipSpec\n",
+        &symbols,
     )
     .is_err());
 }

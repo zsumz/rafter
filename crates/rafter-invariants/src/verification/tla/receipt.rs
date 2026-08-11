@@ -152,6 +152,7 @@ fn validate_pass(
             .map(|transition| format!("transition_covered:{transition}")),
     );
     expected_observations.extend(required.values().map(|symbol| format!("checked:{symbol}")));
+    expected_observations.extend(super::obligation::expected_observations(contract));
     let checkpoint_enabled = contract.configuration.contains_key("checkpoint_minutes");
     if checkpoint_enabled {
         expected_observations.extend([
@@ -180,6 +181,7 @@ fn validate_pass(
         || required
             .values()
             .any(|symbol| observed(check, &format!("checked:{symbol}")) != 1)
+        || !super::obligation::floors_cleared(contract, &|name| observed(check, name))
     {
         return Err("passing TLA receipt lacks exact terminal frames or configured coverage");
     }
@@ -196,6 +198,7 @@ fn validate_pass(
     let required_artifacts = required_proof_artifact_kinds(
         checkpoint_enabled,
         observed(check, "checkpoint_candidate_present") == 1,
+        contract,
     );
     let actual_artifacts = check
         .artifacts
@@ -211,6 +214,7 @@ fn validate_pass(
 fn required_proof_artifact_kinds(
     checkpoint_enabled: bool,
     checkpoint_candidate_present: bool,
+    contract: &RunnerContract,
 ) -> BTreeSet<String> {
     let mut kinds = [
         "tla-log",
@@ -244,6 +248,7 @@ fn required_proof_artifact_kinds(
             )
         }));
     }
+    kinds.extend(super::obligation::artifact_kinds(contract));
     if checkpoint_enabled {
         kinds.extend([
             CONTRACT_KIND.to_owned(),

@@ -21,6 +21,31 @@ use super::{
 mod arguments;
 mod repository;
 
+pub(super) fn obligation_id(label: &str) -> Option<&str> {
+    label.strip_prefix("obligation-").filter(|id| !id.is_empty())
+}
+
+fn contract_obligation<'a>(
+    bundle: &'a ResultBundle,
+    id: &str,
+) -> Result<&'a crate::contract::profile::ProofObligationContract, AggregateError> {
+    bundle
+        .execution
+        .plan
+        .contract
+        .runners
+        .get(&bundle.runner)
+        .ok_or_else(|| {
+            AggregateError::new(format!("execution plan omitted runner {}", bundle.runner))
+        })?
+        .obligations
+        .iter()
+        .find(|obligation| obligation.id == id)
+        .ok_or_else(|| {
+            AggregateError::new(format!("TLA log names unpinned proof obligation {id}"))
+        })
+}
+
 pub(super) fn read_process_log(
     bundle: &ResultBundle,
     check: &CheckReceipt,
@@ -136,12 +161,33 @@ fn verify_tla_invocation(
             config: configuration(bundle, "config")?.to_owned(),
             module: "Raft.tla",
             workers: configuration(bundle, "workers")?,
+            seed: configuration(bundle, "seed")?.to_owned(),
+            memory_profile: true,
         },
         "trace-sample" => arguments::InvocationTarget {
             config: "RaftMembershipTraceSample.cfg".to_owned(),
             module: "RaftMembershipTraceSample.tla",
             workers: "1",
+            seed: configuration(bundle, "seed")?.to_owned(),
+            memory_profile: false,
         },
+        // The obligation's own configuration, seed, and inherited worker and
+        // memory profile are read back from the pinned profile contract, never
+        // from the observed argv. A receipt cannot vouch for an obligation the
+        // profile never asked for.
+        _ if obligation_id(label).is_some() => {
+            let obligation = obligation_id(label)
+                .map(|id| contract_obligation(bundle, id))
+                .transpose()?
+                .ok_or_else(|| AggregateError::new("TLA obligation label vanished".to_owned()))?;
+            arguments::InvocationTarget {
+                config: obligation.config.clone(),
+                module: "Raft.tla",
+                workers: configuration(bundle, "workers")?,
+                seed: obligation.seed.clone(),
+                memory_profile: true,
+            }
+        }
         _ => {
             let probe = DETECTOR_PROBES
                 .iter()
@@ -173,6 +219,8 @@ fn verify_tla_invocation(
                 config,
                 module: "RafterInvariantDetectorNegative.tla",
                 workers: "1",
+                seed: configuration(bundle, "seed")?.to_owned(),
+                memory_profile: false,
             }
         }
     };

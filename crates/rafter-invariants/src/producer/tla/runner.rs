@@ -13,10 +13,11 @@ use super::{
     artifact,
     contract::{
         fetch_tool, parse_timeout, required_configuration, source_artifacts, validate_java,
-        validate_runner_options, validate_spec_contract,
+        validate_obligation_options, validate_obligation_specs, validate_runner_options,
+        validate_spec_contract,
     },
     evaluation::{evaluate, observations},
-    execution::execute,
+    execution::{execute, ExecutionRequest},
     process,
     result::evidence_result,
     source, ProducerContext,
@@ -33,10 +34,17 @@ pub(in crate::producer) fn run(
     let runner = contract.runners.get("tla").ok_or("TLA runner missing")?;
     process::ensure_execution_deadline(profile, "tla", "TLA runner validation")?;
     validate_runner_options(&runner.configuration)?;
+    validate_obligation_options(&runner.obligations)?;
     validate_java(&source, &runner.configuration)?;
     fetch_tool()?;
     process::ensure_execution_deadline(profile, "tla", "TLA tool preparation")?;
-    let artifacts = source_artifacts(&runner.configuration, output_dir, profile, &source.commit)?;
+    let artifacts = source_artifacts(
+        &runner.configuration,
+        &runner.obligations,
+        output_dir,
+        profile,
+        &source.commit,
+    )?;
     process::ensure_execution_deadline(profile, "tla", "TLA input capture")?;
     let descriptors = catalog
         .required_evidence(contract)
@@ -50,18 +58,22 @@ pub(in crate::producer) fn run(
         .collect::<BTreeSet<_>>();
     let config_name = required_configuration(&runner.configuration, "config")?;
     let configured = validate_spec_contract(config_name, &symbols)?;
+    validate_obligation_specs(&runner.obligations, &symbols)?;
     process::ensure_execution_deadline(profile, "tla", "TLA specification validation")?;
     let timeout = parse_timeout(required_configuration(
         &runner.configuration,
         "soft_timeout",
     )?)?;
     let execution = execute(
-        profile,
-        &source.commit,
-        config_name,
-        &runner.configuration,
-        timeout,
-        output_dir,
+        ExecutionRequest {
+            profile,
+            source_ref: &source.commit,
+            config: config_name,
+            configuration: &runner.configuration,
+            obligations: &runner.obligations,
+            timeout,
+            output_dir,
+        },
         artifacts,
     )?;
     let verdict = evaluate(&execution, &symbols, &runner.configuration);

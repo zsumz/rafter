@@ -2,29 +2,44 @@
 
 use std::{collections::BTreeMap, error::Error, path::Path, time::Duration};
 
-use crate::evidence::ArtifactRef;
+use crate::{contract::profile::ProofObligationContract, evidence::ArtifactRef};
 
 use super::{
     super::contract::required_configuration,
     budget::{probe_timeout, ExecutionBudget},
     command::{run_tlc, TlcRequest, TlcState},
-    model::TlaExecution,
+    model::{ProbeStatus, TlaExecution},
+    obligation::run_obligations,
     outcome::{
         checkpoint_failure, complete_main_execution, detector_failure, main_budget_failure,
-        prepare_checkpoint, trace_budget_failure, trace_failure, MainCompletion,
+        obligation_failure, prepare_checkpoint, trace_budget_failure, trace_failure, MainCompletion,
     },
     probes::{run_detector_probes, run_trace_probe, trace_succeeded},
 };
 
+pub(in crate::producer::tla) struct ExecutionRequest<'a> {
+    pub(in crate::producer::tla) profile: &'a str,
+    pub(in crate::producer::tla) source_ref: &'a str,
+    pub(in crate::producer::tla) config: &'a str,
+    pub(in crate::producer::tla) configuration: &'a BTreeMap<String, String>,
+    pub(in crate::producer::tla) obligations: &'a [ProofObligationContract],
+    pub(in crate::producer::tla) timeout: Duration,
+    pub(in crate::producer::tla) output_dir: &'a Path,
+}
+
 pub(in crate::producer::tla) fn execute(
-    profile: &str,
-    source_ref: &str,
-    config: &str,
-    configuration: &BTreeMap<String, String>,
-    timeout: Duration,
-    output_dir: &Path,
+    request: ExecutionRequest<'_>,
     mut artifacts: Vec<ArtifactRef>,
 ) -> Result<TlaExecution, Box<dyn Error>> {
+    let ExecutionRequest {
+        profile,
+        source_ref,
+        config,
+        configuration,
+        obligations,
+        timeout,
+        output_dir,
+    } = request;
     let budget = ExecutionBudget::from_configuration(profile, configuration)?;
     let Some(trace_timeout) = budget.phase_timeout(probe_timeout(profile)) else {
         return Ok(trace_budget_failure(artifacts));
@@ -45,6 +60,27 @@ pub(in crate::producer::tla) fn execute(
     artifacts.append(&mut detectors.artifacts);
     if !detectors.succeeded {
         return Ok(detector_failure(&trace, detectors, artifacts));
+    }
+    // Obligations run after harness qualification and before the primary
+    // configuration: the trace and detector probes prove the harness can still
+    // see a counterexample, and only then is an obligation's silence worth
+    // anything. See `obligation.rs` for the ordering and checkpoint rationale.
+    let mut obligation_outcome = run_obligations(
+        profile,
+        source_ref,
+        configuration,
+        obligations,
+        output_dir,
+        budget,
+    )?;
+    artifacts.append(&mut obligation_outcome.artifacts);
+    if obligation_outcome.status == ProbeStatus::Failed {
+        return Ok(obligation_failure(
+            &trace,
+            detectors,
+            obligation_outcome,
+            artifacts,
+        ));
     }
     let mut checkpoint = prepare_checkpoint(
         profile,
@@ -68,6 +104,7 @@ pub(in crate::producer::tla) fn execute(
         return Ok(checkpoint_failure(
             &trace,
             detectors,
+            obligation_outcome,
             artifacts,
             checkpoint_report,
             error,
@@ -80,6 +117,7 @@ pub(in crate::producer::tla) fn execute(
         return Ok(main_budget_failure(
             &trace,
             detectors,
+            obligation_outcome,
             artifacts,
             checkpoint_report,
         ));
@@ -115,6 +153,7 @@ pub(in crate::producer::tla) fn execute(
         MainCompletion {
             trace: &trace,
             detectors,
+            obligations: obligation_outcome,
             artifacts,
             checkpoint,
             checkpoint_report,
