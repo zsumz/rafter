@@ -370,6 +370,12 @@ fn semantic_snapshot_budget_counts_unique_content_without_retaining_replay_binar
     assert!(!retain_semantic_bytes("maelstrom", "maelstrom-durable-file").unwrap());
     assert!(retain_semantic_bytes("tests", "test-log").unwrap());
     assert!(retain_semantic_bytes("tests", "unknown-kind").is_err());
+    // Obligation logs and configurations are dynamically named, so intake has
+    // to admit them by prefix. Missing them made every receipt carrying a real
+    // obligation unreviewable, which only surfaced once obligations were wired.
+    assert!(retain_semantic_bytes("tla", "tla-obligation-log:core-replication").unwrap());
+    assert!(retain_semantic_bytes("tla", "tla-obligation-config:core-replication").unwrap());
+    assert!(retain_semantic_bytes("tla", "tla-obligation-summary:core").is_err());
 
     let (catalog, manifest) = crate::tests::loaded();
     let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)

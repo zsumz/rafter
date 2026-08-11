@@ -14,9 +14,9 @@ use super::verify;
 use crate::{
     evidence::format::process::{ProcessLog, TerminationReceipt},
     evidence::format::tla::{
-        detector_config_kind, detector_label, detector_log_kind, render_detector_config,
-        DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES, MUTATION_SUITE_ARTIFACT_KIND,
-        MUTATION_SUITE_LABEL,
+        detector_config_kind, detector_label, detector_log_kind, obligation_config_kind,
+        obligation_label, obligation_log_kind, render_detector_config, DetectorProbe,
+        DEFAULT_FIXTURE_MODE, DETECTOR_PROBES, MUTATION_SUITE_ARTIFACT_KIND, MUTATION_SUITE_LABEL,
     },
     provenance::invocation::digest_environment,
     verification::tla::REQUIRED_MUTATION_TESTS,
@@ -337,17 +337,28 @@ impl Fixture {
             artifact.path = format!("artifacts/{}", safe_name(&artifact.kind));
         }
         let mut fixture = Self { root, bundle };
+        // The obligation configurations are bound sources like any other, so
+        // the fixture checkout must carry the exact bytes the receipt claims
+        // TLC read. Which ones those are is whatever the profile declares.
+        let obligation_configs = fixture
+            .obligations()
+            .iter()
+            .map(|obligation| obligation.config.clone())
+            .collect::<Vec<_>>();
         for source in [
-            "Raft.tla",
-            "RafterInvariantDetectorNegative.tla",
-            "RafterInvariantDetectorNegative.cfg",
-            "RaftMembershipTraceSample.tla",
-            "RaftMembershipTraceSample.cfg",
-            "RaftCi.cfg",
-        ] {
+            "Raft.tla".to_owned(),
+            "RafterInvariantDetectorNegative.tla".to_owned(),
+            "RafterInvariantDetectorNegative.cfg".to_owned(),
+            "RaftMembershipTraceSample.tla".to_owned(),
+            "RaftMembershipTraceSample.cfg".to_owned(),
+            "RaftCi.cfg".to_owned(),
+        ]
+        .into_iter()
+        .chain(obligation_configs)
+        {
             fs::copy(
-                workspace.join("specs/tla/raft").join(source),
-                fixture.root.join("specs/tla/raft").join(source),
+                workspace.join("specs/tla/raft").join(&source),
+                fixture.root.join("specs/tla/raft").join(&source),
             )
             .expect("copy bound TLA source");
         }
@@ -433,7 +444,35 @@ impl Fixture {
                 12,
             );
         }
+        self.write_obligation_evidence(workspace);
         self.write_mutation_log();
+    }
+
+    /// Models one discharged obligation per reviewed entry: the configuration
+    /// bytes TLC read, and a log whose terminal frames drain the queue and meet
+    /// that obligation's own calibrated floors exactly.
+    fn write_obligation_evidence(&mut self, workspace: &Path) {
+        for obligation in self.obligations().to_vec() {
+            let config = fs::read(workspace.join("specs/tla/raft").join(&obligation.config))
+                .expect("read bound TLA obligation config");
+            self.write_kind(&obligation_config_kind(&obligation.id), &config);
+            let summary = crate::tests::synthetic_obligation_summary(&obligation);
+            self.write_process_log(
+                &obligation_log_kind(&obligation.id),
+                &obligation_label(&obligation.id),
+                None,
+                success_output(
+                    summary.generated_states,
+                    summary.distinct_states,
+                    summary.search_depth,
+                ),
+                0,
+            );
+        }
+    }
+
+    fn obligations(&self) -> &[crate::ProofObligationContract] {
+        &self.bundle.execution.plan.contract.runners["tla"].obligations
     }
 
     fn set_counterexample(&mut self, predicate: &str) {
@@ -659,27 +698,44 @@ impl Fixture {
     }
 
     fn invocation(&self, label: &str, probe: Option<DetectorProbe>) -> InvocationReceipt {
-        let (config, module, workers) = match probe {
-            Some(probe) => (
+        // An obligation runs its own config under its own seed, and inherits
+        // the profile's worker and memory profile. Reconstructing that here
+        // from the pinned contract is what makes the fixture model the real
+        // argv rather than whatever the verifier happens to accept.
+        let obligation = self
+            .obligations()
+            .iter()
+            .find(|obligation| obligation_label(&obligation.id) == label);
+        let (config, module, workers, seed) = match (probe, obligation) {
+            (Some(probe), _) => (
                 self.canonical_kind(&detector_config_kind(probe).expect("registered probe")),
                 "RafterInvariantDetectorNegative.tla",
                 "1",
+                self.configuration("seed").to_owned(),
             ),
-            None if label == "trace-sample" => (
+            (None, Some(obligation)) => (
+                obligation.config.clone(),
+                "Raft.tla",
+                self.configuration("workers"),
+                obligation.seed.clone(),
+            ),
+            (None, None) if label == "trace-sample" => (
                 "RaftMembershipTraceSample.cfg".to_owned(),
                 "RaftMembershipTraceSample.tla",
                 "1",
+                self.configuration("seed").to_owned(),
             ),
-            None => (
+            (None, None) => (
                 self.configuration("config").to_owned(),
                 "Raft.tla",
                 self.configuration("workers"),
+                self.configuration("seed").to_owned(),
             ),
         };
         let configuration = &self.bundle.execution.plan.contract.runners["tla"].configuration;
-        let main_model_check = probe.is_none() && label != "trace-sample";
+        let memory_profile = probe.is_none() && label != "trace-sample";
         let mut arguments = Vec::new();
-        if main_model_check {
+        if memory_profile {
             if let Some(max_heap) = configuration.get("max_heap") {
                 arguments.push(format!("-Xmx{max_heap}"));
             }
@@ -696,11 +752,11 @@ impl Fixture {
             "-workers".to_owned(),
             workers.to_owned(),
             "-seed".to_owned(),
-            self.configuration("seed").to_owned(),
+            seed,
             "-fp".to_owned(),
             "0".to_owned(),
         ]);
-        if main_model_check {
+        if memory_profile {
             if let Some(fp_mem) = configuration.get("fp_mem") {
                 arguments.extend(["-fpmem".to_owned(), fp_mem.clone()]);
             }
@@ -749,6 +805,9 @@ impl Fixture {
                     artifact.kind.as_str(),
                     "tla-log" | "tla-trace-log" | MUTATION_SUITE_ARTIFACT_KIND
                 ) || artifact.kind.starts_with("tla-detector-log")
+                    // Obligations are TLC processes too: they run in the same
+                    // producer checkout and must rebase with everything else.
+                    || artifact.kind.starts_with("tla-obligation-log")
             })
             .map(|artifact| artifact.kind.clone())
             .collect::<Vec<_>>();

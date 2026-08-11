@@ -104,26 +104,47 @@ fn profile_v10_migration_rejects_every_retired_v9_identity() {
 /// every receipt that embeds a runner contract.
 #[test]
 fn an_absent_obligation_list_round_trips_as_empty() {
-    let manifest = load_manifest();
+    // Deliberately a synthetic obligation-free document rather than the live
+    // manifest: the property under test is what the *absence* of the key
+    // means, which stops being observable once real obligations are wired.
+    let mut obligation_free = load_manifest();
     for profile in ["pr", "nightly", "weekly"] {
-        assert!(manifest.profiles[profile].runners["tla"]
+        obligation_free
+            .profiles
+            .get_mut(profile)
+            .unwrap()
+            .runners
+            .get_mut("tla")
+            .unwrap()
+            .obligations
+            .clear();
+    }
+
+    let mut absent = serde_json::to_value(&obligation_free).unwrap();
+    for profile in ["pr", "nightly", "weekly"] {
+        assert!(
+            absent["profiles"][profile]["runners"]["tla"]
+                .get("obligations")
+                .is_none(),
+            "an empty obligation list must not serialize at all"
+        );
+        absent["profiles"][profile]["runners"]["tla"]
+            .as_object_mut()
+            .unwrap()
+            .insert("obligations".to_owned(), serde_json::json!([]));
+    }
+
+    let decoded: ProfileManifest = serde_json::from_value(absent).unwrap();
+    for profile in ["pr", "nightly", "weekly"] {
+        assert!(decoded.profiles[profile].runners["tla"]
             .obligations
             .is_empty());
     }
-
-    let mut absent = serde_json::to_value(&manifest).unwrap();
-    absent["profiles"]["pr"]["runners"]["tla"]
-        .as_object_mut()
-        .unwrap()
-        .remove("obligations");
-    let decoded: ProfileManifest = serde_json::from_value(absent).unwrap();
-    assert!(decoded.profiles["pr"].runners["tla"].obligations.is_empty());
-    assert!(
-        serde_json::to_value(&decoded).unwrap()["profiles"]["pr"]["runners"]["tla"]
-            .get("obligations")
-            .is_none()
+    assert_eq!(decoded, obligation_free);
+    assert_eq!(
+        serde_json::to_value(&decoded).unwrap(),
+        serde_json::to_value(&obligation_free).unwrap()
     );
-    assert_eq!(decoded, manifest);
 }
 
 #[test]

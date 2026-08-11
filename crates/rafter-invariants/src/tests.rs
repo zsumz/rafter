@@ -19,6 +19,40 @@ pub(crate) fn loaded() -> (Catalog, ProfileManifest) {
     (catalog, manifest)
 }
 
+/// Proof obligations the profile actually declares.
+///
+/// Synthetic TLA+ evidence is built from whatever the reviewed manifest asks
+/// for rather than from a list frozen into the fixtures, so wiring a new
+/// obligation cannot silently leave the fixtures modelling the old contract.
+pub(crate) fn tla_obligations<'a>(
+    manifest: &'a ProfileManifest,
+    profile: &str,
+) -> &'a [ProofObligationContract] {
+    manifest.profiles[profile]
+        .runners
+        .get("tla")
+        .map_or(&[], |runner| runner.obligations.as_slice())
+}
+
+/// The terminal frame an obligation reports when it discharges.
+///
+/// The queue is drained and both calibrated ratchets are met exactly. That is
+/// the weakest run the contract accepts, so it is the honest fixture: anything
+/// larger would let a floor regression pass unnoticed.
+pub(crate) fn synthetic_obligation_summary(
+    obligation: &ProofObligationContract,
+) -> crate::producer::tla_output::TlcSummary {
+    crate::producer::tla_output::TlcSummary {
+        generated_states: obligation.minimum_generated_states,
+        distinct_states: obligation.minimum_distinct_states,
+        states_left: 0,
+        search_depth: 1,
+        completed_without_error: true,
+        process_finished: true,
+        violated_invariant: None,
+    }
+}
+
 pub(crate) fn aggregate_unverified(
     catalog: &Catalog,
     manifest: &ProfileManifest,
@@ -226,6 +260,13 @@ fn synthetic_observations(
                     .into_iter()
                     .map(|transition| (format!("transition_covered:{transition}"), 1)),
             );
+            for obligation in tla_obligations(manifest, profile) {
+                observations.extend(crate::producer::tla_output::obligation_observations(
+                    &obligation.id,
+                    &synthetic_obligation_summary(obligation),
+                    true,
+                ));
+            }
             return observations;
         }
         return std::collections::BTreeMap::new();
@@ -371,6 +412,17 @@ fn synthetic_artifacts(
                     crate::producer::tla_output::detector_config_kind(probe)
                         .expect("registered detector probe"),
                 );
+            }
+            // Two artifacts per obligation, and only two: the configuration TLC
+            // read and the log it produced. Obligations never checkpoint, so
+            // there is no recovery vocabulary to synthesize.
+            for obligation in tla_obligations(manifest, profile) {
+                kinds.push(crate::producer::tla_output::obligation_log_kind(
+                    &obligation.id,
+                ));
+                kinds.push(crate::producer::tla_output::obligation_config_kind(
+                    &obligation.id,
+                ));
             }
             kinds
                 .into_iter()
