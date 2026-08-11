@@ -6,6 +6,8 @@
 #   scripts/tla-model-check --nightly     # nightly 3-voter bounds (RaftNightly.cfg)
 #   scripts/tla-model-check --full        # weekly: --nightly bounds, no symmetry
 #   scripts/tla-model-check --joint-quorum # 4-voter joint quorums, manual only
+#   scripts/tla-model-check --joint-quorum-focused-next # same bounds, MembershipNext
+#   scripts/tla-model-check --joint-quorum-focused-init # also from JointQuorumInit
 #   scripts/tla-model-check --trace-sample # TLC-check generated Rust trace sample
 #   scripts/tla-model-check --fetch-tool  # fetch and verify the pinned TLC jar
 #   scripts/tla-model-check --print-config [--nightly|--full|--joint-quorum]
@@ -15,6 +17,12 @@
 # quotient rather than exploring further. --joint-quorum is the only config
 # here that reaches a joint configuration with an empty quorum core; it is not
 # wired to any profile. See docs/model-checking.md.
+#
+# The two --joint-quorum-focused-* configs carry --joint-quorum's bounds and
+# invariants but replace Next with a focused proof obligation, checking less of
+# the protocol in exchange for a smaller state space. Neither is wired to a
+# profile, and neither has been observed to exhaust at four voters; the measured
+# trajectories are in docs/model-checking.md.
 #
 # Downloads the immutable GitHub release asset pinned by tools/tla/ASSET_ID
 # into tools/cache/ and verifies it against tools/tla/SHA256SUMS before running.
@@ -31,7 +39,7 @@ max_heap="8g"
 fp_mem="0.45"
 
 usage() {
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -61,6 +69,20 @@ while [[ $# -gt 0 ]]; do
             config="RaftJointQuorum.cfg"
             workers=4
             seed=2026071104
+            max_heap="8g"
+            fp_mem="0.45"
+            ;;
+        --joint-quorum-focused-next)
+            config="RaftJointQuorumFocusedNext.cfg"
+            workers=4
+            seed=2026071105
+            max_heap="8g"
+            fp_mem="0.45"
+            ;;
+        --joint-quorum-focused-init)
+            config="RaftJointQuorumFocusedInit.cfg"
+            workers=4
+            seed=2026071106
             max_heap="8g"
             fp_mem="0.45"
             ;;

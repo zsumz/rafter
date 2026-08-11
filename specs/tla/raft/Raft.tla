@@ -1224,6 +1224,268 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+\* Focused proof obligations.
+\*
+\* `Next` is the whole protocol and `Spec` is the whole model: every wired tier
+\* checks all nine invariants against all of it. The relations below are strict
+\* disjunct-subsets of `ProtocolNext`, assembled from the same action operators
+\* under the same guards. None of them adds a transition, weakens a guard, or
+\* writes a variable the corresponding full-model action does not write, so
+\* every behavior of a focused spec is a behavior of `Spec`. That direction is
+\* the cheap one and carries no evidence by itself. The direction that does:
+\* a focused relation whose queue drains proves its invariants over a state
+\* space `Spec` has not finished exploring, and the obligation it discharges is
+\* named by what it leaves out.
+\*
+\* What a focused relation therefore does not prove: anything that needs an
+\* action it drops, and anything about the interaction between the families it
+\* drops and the families it keeps. Splitting the proof splits the coverage with
+\* it. These are obligations to be stated and discharged separately, not a
+\* cheaper route to the same claim.
+\*
+\* Totality on `vars` is inherited, not re-established. Every disjunct of
+\* `ProtocolNext` already constrains all twenty-two variables -- each action
+\* names the ones it primes and carries UNCHANGED for the rest -- so any subset
+\* of those disjuncts constrains them too. TLC rejects an unconstrained
+\* variable, so a mis-composed relation fails loudly at the first state rather
+\* than quietly exploring a larger space.
+
+\* Core agreement: election, replication, commit, apply. The actions an
+\* election-safety, log-matching, leader-completeness, committed-prefix, or
+\* state-machine-safety obligation needs, and nothing else. Deliberately
+\* excludes reads, the snapshot lifecycle, membership change, `Restart`, and
+\* `ApplicationStateLoss`; each of those is the subject of one of the three
+\* relations below, and an obligation that does not name them should not pay
+\* for their branching.
+CoreNext ==
+  \/ \E n \in Nodes : Timeout(n)
+  \/ \E c, v \in Nodes : SendRequestVote(c, v)
+  \/ \E m \in {message \in messages : message.type = RequestVote} :
+       DeliverRequestVote(m)
+  \/ \E n \in Nodes : BecomeLeader(n)
+  \/ \E n \in Nodes, value \in Values : ClientAppend(n, value)
+  \/ \E l, f \in Nodes : SendAppend(l, f)
+  \/ \E m \in {message \in messages : message.type = AppendEntries} :
+       DeliverAppend(m)
+  \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
+  \/ \E n \in Nodes : Apply(n)
+
+\* Membership change: core agreement without ordinary command appends, plus the
+\* two configuration-change actions. `ClientAppend` is dropped rather than kept
+\* because `MaxLogLen` is the binding constraint on any joint-quorum obligation
+\* and a command entry spends a slot that `EnterJoint` and `LeaveJoint` need:
+\* completing a change costs two entries, so at `MaxLogLen = 2` a command and a
+\* completed change cannot coexist at all. Commit and apply stay, because
+\* `EnterJoint` guards on `Len(log[n]) = AppliedThrough(n)` and `LeaveJoint`
+\* likewise, so a configuration entry must be committed and applied before the
+\* next one can be proposed. Excludes reads and the snapshot lifecycle.
+MembershipNext ==
+  \/ \E n \in Nodes : Timeout(n)
+  \/ \E c, v \in Nodes : SendRequestVote(c, v)
+  \/ \E m \in {message \in messages : message.type = RequestVote} :
+       DeliverRequestVote(m)
+  \/ \E n \in Nodes : BecomeLeader(n)
+  \/ \E l, f \in Nodes : SendAppend(l, f)
+  \/ \E m \in {message \in messages : message.type = AppendEntries} :
+       DeliverAppend(m)
+  \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
+  \/ \E n \in Nodes : Apply(n)
+  \/ \E n \in Nodes, voters \in VoterSets : EnterJoint(n, voters)
+  \/ \E n \in Nodes : LeaveJoint(n)
+
+\* Snapshot lifecycle: core agreement plus application-state loss, restart, and
+\* create/transfer/install. Restart and `ApplicationStateLoss` belong here and
+\* not in `CoreNext` because the properties they threaten are the ones snapshot
+\* installation restores: an epoch bump plus a rebuilt application state is the
+\* only path by which `applied` moves backwards. Excludes reads and membership
+\* change.
+SnapshotProtocolNext ==
+  \/ \E n \in Nodes : Timeout(n)
+  \/ \E c, v \in Nodes : SendRequestVote(c, v)
+  \/ \E m \in {message \in messages : message.type = RequestVote} :
+       DeliverRequestVote(m)
+  \/ \E n \in Nodes : BecomeLeader(n)
+  \/ \E n \in Nodes, value \in Values : ClientAppend(n, value)
+  \/ \E l, f \in Nodes : SendAppend(l, f)
+  \/ \E m \in {message \in messages : message.type = AppendEntries} :
+       DeliverAppend(m)
+  \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
+  \/ \E n \in Nodes : Apply(n)
+  \/ \E n \in Nodes : ApplicationStateLoss(n)
+  \/ \E n \in Nodes : Restart(n)
+  \/ \E n \in Nodes : CreateSnapshot(n)
+  \/ \E from, to \in Nodes : TransferSnapshot(from, to)
+  \/ InstallSnapshot
+
+\* `CompactSnapshot` is reachable only through `Next`, never through
+\* `ProtocolNext`, so the snapshot obligation is a subset of `Next` rather than
+\* of `ProtocolNext` and reproduces the same compaction-first discipline. The
+\* other three focused relations need no such wrapper: none of them contains
+\* `CreateSnapshot`, the only action that sets `compactionPending`, so along
+\* their behaviors `Next` and `ProtocolNext` are the same relation.
+SnapshotNext ==
+  IF \E n \in Nodes : compactionPending[n]
+  THEN \E n \in Nodes : CompactSnapshot(n)
+  ELSE SnapshotProtocolNext
+
+\* Read barriers: core agreement plus read registration and grant. The barrier
+\* is stated against `commitIndex`, so commit and apply have to stay; the read
+\* actions themselves touch only `readRequests` and `readBarrierViolationSeen`.
+\* Excludes the snapshot lifecycle and membership change.
+ReadNext ==
+  \/ \E n \in Nodes : Timeout(n)
+  \/ \E c, v \in Nodes : SendRequestVote(c, v)
+  \/ \E m \in {message \in messages : message.type = RequestVote} :
+       DeliverRequestVote(m)
+  \/ \E n \in Nodes : BecomeLeader(n)
+  \/ \E n \in Nodes, value \in Values : ClientAppend(n, value)
+  \/ \E l, f \in Nodes : SendAppend(l, f)
+  \/ \E m \in {message \in messages : message.type = AppendEntries} :
+       DeliverAppend(m)
+  \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
+  \/ \E n \in Nodes : Apply(n)
+  \/ \E n \in Nodes, request \in ReadRequests : RegisterRead(n, request)
+  \/ \E n \in Nodes, request \in ReadRequests : GrantRead(n, request)
+
+CoreSpec == Init /\ [][CoreNext]_vars
+MembershipSpec == Init /\ [][MembershipNext]_vars
+SnapshotSpec == Init /\ [][SnapshotNext]_vars
+ReadSpec == Init /\ [][ReadNext]_vars
+
+\* Focused initial state for the joint-quorum obligation.
+\*
+\* `Init` starts every node at term zero, so a four-voter model spends its first
+\* several levels electing somebody before any membership change is proposed,
+\* and it does that once per candidate. The joint-quorum theorem does not begin
+\* there. It begins at a legally elected leader over a stable four-voter
+\* configuration and asks what the two-half quorum conjunction does from that
+\* point on, so that is where its initial state should be.
+\*
+\* The state below is not a guess at a plausible-looking configuration. It is
+\* the exact post-state of one specific `CoreNext` prefix from `Init`:
+\*
+\*   Timeout(L);
+\*   SendRequestVote(L, v)      for each v \in Nodes \ {L};
+\*   DeliverRequestVote(that m) for each of those messages;
+\*   BecomeLeader(L)
+\*
+\* Each variable below is derived from the action that last writes it along
+\* that prefix, because a monitor left at its `Init` value when the real path
+\* would have advanced it makes the invariant that reads it vacuous, and a
+\* monitor advanced past what the path justifies makes it fire on a state the
+\* protocol never produces. Both failures are silent. The derivations:
+\*
+\*   currentTerm  `Timeout(L)` raises L to 1; each `DeliverRequestVote` sees
+\*                m.term = 1 > 0, so `higher` holds and raises its receiver to
+\*                1. Every node ends at 1.
+\*   votedFor     `Timeout(L)` self-votes; each delivery grants, because the
+\*                voter is unvoted at a higher term, both ends are active
+\*                voters of `StableMembership(Nodes)`, and empty logs make
+\*                `UpToDate` hold. Every node ends at L.
+\*   role         `Timeout` makes L a Candidate and `BecomeLeader` makes it a
+\*                Leader; each granting voter is set to Follower.
+\*   electedLeaders  `RecordElection(L)` adds L at term 1. `RetainedElections`
+\*                keeps it: retirement needs every node above term 1, which no
+\*                node reaches at `MaxTerm = 1`.
+\*   higherTermStepDownFailed  `RecordHigherTermOutcome` latches only when a
+\*                node observing a higher term fails to land at that term as a
+\*                Follower. Every delivery lands exactly there, so FALSE.
+\*   staleAuthorityAccepted  `RecordAuthorityAcceptance` latches only on an
+\*                accepted authority term strictly below the receiver's known
+\*                term. Term 1 against known term 0, then 1 against 1. FALSE.
+\*   frozenAppendAuthorityFailed  written only by `RecordAppendOutcome`, which
+\*                only `DeliverAppend` calls. Untouched by this prefix. FALSE.
+\*   logicalPrefixLedger  `RecordLogicalPrefixes` runs only on actions that
+\*                change a log. No log changes, and `RetireLogicalPrefixes`
+\*                cannot add. Empty.
+\*   committedLedger, commitWitnesses  written only by `Commit`. Empty.
+\*   applied, applicationBases, applicationTransitions  UNCHANGED by every
+\*                action in the prefix, so they hold their `Init` values.
+\*   messages     every vote request sent is delivered, and delivery removes
+\*                it. Empty.
+\*   log, commitIndex, snapshot vars, readRequests, readBarrierViolationSeen
+\*                UNCHANGED throughout; `Init` values.
+\*
+\* So `JointQuorumInit` is a reachable state of `Spec`, and any invariant
+\* violation reported at depth 0 against it is a construction error here, not a
+\* protocol result.
+\*
+\* The distinguished leader breaks permutation symmetry over `Nodes`. A config
+\* using this initial predicate must not declare `SYMMETRY ModelPermutations`.
+JointQuorumLeader == CHOOSE n \in Nodes : TRUE
+
+JointQuorumInit ==
+  /\ currentTerm = [n \in Nodes |-> 1]
+  /\ votedFor = [n \in Nodes |-> JointQuorumLeader]
+  /\ role = [n \in Nodes |->
+       IF n = JointQuorumLeader THEN Leader ELSE Follower]
+  /\ log = [n \in Nodes |-> <<>>]
+  /\ commitIndex = [n \in Nodes |-> 0]
+  /\ snapshotIndex = [n \in Nodes |-> 0]
+  /\ snapshotPrefix = [n \in Nodes |-> <<>>]
+  /\ compactionPending = [n \in Nodes |-> FALSE]
+  /\ snapshotTransfer = NoSnapshotTransfer
+  /\ applied = [n \in Nodes |-> AppliedCursor(0, 0, InitialApplicationState)]
+  /\ applicationBases =
+       {ApplicationBase(n, 0, InitialApplicationState) : n \in Nodes}
+  /\ applicationTransitions = {}
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readBarrierViolationSeen = FALSE
+  /\ electedLeaders =
+       [t \in 1..MaxTerm |-> IF t = 1 THEN {JointQuorumLeader} ELSE {}]
+  /\ logicalPrefixLedger = {}
+  /\ committedLedger = {}
+  /\ commitWitnesses = EmptyCommitWitnessHistory
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
+
+\* `MembershipNext` is the precise fit and no separate `JointQuorumNext` is
+\* warranted. The obligation is about what the two-half quorum conjunction
+\* admits, and the actions that reach and leave a joint configuration are
+\* exactly `EnterJoint` and `LeaveJoint`, with `SendAppend`/`DeliverAppend`
+\* replicating the entries and `Commit`/`Apply` making each change effective.
+\* Its election disjuncts are inert here rather than wrong: at `MaxTerm = 1`
+\* every node already sits at term 1, `Timeout` guards on
+\* `currentTerm[n] < MaxTerm`, and no other action creates a Candidate, so the
+\* election family is disabled in every reachable state. Leaving it in keeps
+\* one relation shared with `RaftJointQuorumFocusedNext.cfg`, which starts from
+\* `Init` and does need it.
+JointQuorumFocusedSpec == JointQuorumInit /\ [][MembershipNext]_vars
+
+\* Sound symmetry for `JointQuorumFocusedSpec`, and the reason a config using it
+\* is not simply cheaper than one using `ModelPermutations`.
+\*
+\* `ModelPermutations` permutes every node, which is unsound against an initial
+\* predicate that names one. This set permutes only the nodes the predicate does
+\* not name, so it is a subgroup of the permutations that fix
+\* `JointQuorumLeader`. That subgroup is a symmetry group of the whole model:
+\* `JointQuorumInit` maps to itself under any permutation fixing the leader
+\* (`currentTerm` is constant, `votedFor` is constantly the leader, `role`
+\* separates the leader from a set of Followers permuted among themselves,
+\* `electedLeaders[1]` is the leader's singleton, and every other component is a
+\* constant function over `Nodes` or empty); `MembershipNext` quantifies over
+\* `Nodes` and `VoterSets` without distinguishing any node; and all nine
+\* invariants are likewise node-symmetric.
+\*
+\* The reason this is worth having: naming a leader removes the |Nodes|
+\* symmetric copies of the election, but `ModelPermutations` was already
+\* quotienting those away, so a focused-Init config that simply drops symmetry
+\* trades a quotient it had for a prefix it did not need. This set recovers the
+\* part of the quotient that remains sound, which for four voters is 3! rather
+\* than 4!. How much that is worth in practice has not been measured; the
+\* trajectories that motivated defining it are in docs/model-checking.md.
+JointQuorumPermutations ==
+  {[modelValue \in Nodes \cup Values \cup ReadRequests |->
+      CASE modelValue = JointQuorumLeader -> JointQuorumLeader
+        [] modelValue \in Nodes -> nodePermutation[modelValue]
+        [] modelValue \in Values -> valuePermutation[modelValue]
+        [] OTHER -> requestPermutation[modelValue]] :
+    nodePermutation \in Permutations(Nodes \ {JointQuorumLeader}),
+    valuePermutation \in Permutations(Values),
+    requestPermutation \in Permutations(ReadRequests)}
+
 ElectionSafety ==
   \A t \in 1..MaxTerm :
     Cardinality(electedLeaders[t]) <= 1
