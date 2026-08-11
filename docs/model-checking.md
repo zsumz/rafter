@@ -441,10 +441,64 @@ evidence rows, and a refutation inside one is reported as a red harness-level
 failure for a human to read rather than attached to a predicate the primary run
 never falsified.
 
-No profile declares an obligation yet: all three `obligations` arrays are
-empty, and an empty array is exactly the identity — the receipt, artifact set,
-and observation frame are byte-identical to the contract before the vocabulary
-existed. Adding a measured obligation is a profiles-manifest edit.
+#### Calibrated obligations
+
+Calibration runs use the pinned jar and the wired flags (`-workers 4 -Xmx8g
+-seed 2026081101 -fp 0 -fpmem 0.45`, symmetric) on the same 14-core host as
+every table above. State counts are machine-independent; wall times are not,
+and the host ran an unrelated toolchain build during several of these runs, so
+read every wall figure as an upper bound.
+
+What exhausts, at which bounds:
+
+| Obligation config | Bounds | Generated | Distinct | Wall | Exhausted |
+| --- | --- | ---: | ---: | ---: | --- |
+| `RaftCoreObligation.cfg` | 2v, V2, T2, L2, R1 | 113,201 | 20,282 | 15 s | yes |
+| `RaftReadObligation.cfg` | 2v, V2, T2, L2, R1 | 592,279 | 98,948 | 30 s | yes |
+| `RaftCoreObligationDeep.cfg` | 2v, V2, T3, L3, R2 | 14,734,799 | 2,004,053 | 8.5 min | yes |
+
+What does not, and how it fails to:
+
+| Model | Bounds | Generated | Distinct | Queue at kill | Verdict |
+| --- | --- | ---: | ---: | ---: | --- |
+| `CoreSpec`, 3 voters | T3, L3 | 12,975,580 | 4,210,497 | 2,699,386 ↑ | diverges, fanout ≈ 2.9 |
+| `CoreSpec`, 3 voters | T2, L2 | 24,590,487 | 5,443,386 | 2,557,643 ↑ | diverges, depth pinned at 21 |
+| `MembershipSpec`, 3 voters | T3, L3 | 52,410,403 | 9,935,434 | 3,959,098 ↑ | diverges, depth pinned at 24 |
+| `SnapshotSpec`, 2 voters | T2, L3 | 50,137,394 | 13,356,326 | 4,992,419 ↑ | diverges, depth pinned at 26 |
+
+The pattern in the second table is one wall seen four ways: at three voters the
+set-valued `messages` variable dominates every relation that contains the core
+send/deliver actions, and the snapshot lifecycle recreates the same explosion
+at two. Dropping per-node bounds does not move it — the three-voter core model
+diverges at `MaxTerm 2 / MaxLogLen 2` with the queue still growing — so the
+node count binds, not the bounds, and `ReadNext ⊇ CoreNext` settles read at
+three voters by containment. The unmeasured remainders are recorded in the
+`RaftMembershipObligation.cfg` and `RaftSnapshotObligation.cfg` headers with
+`DO NOT WIRE` markers; exhausting any of them is a message-dimension redesign,
+not a bounds hunt.
+
+The wired manifest, after calibration:
+
+| Profile | Obligation | Config | Floors (generated / distinct) | Budget |
+| --- | --- | --- | --- | --- |
+| pr | `core-replication` | `RaftCoreObligation.cfg` | 113,201 / 20,282 | 4m |
+| pr | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
+| nightly, weekly | `core-replication-deep` | `RaftCoreObligationDeep.cfg` | 14,734,799 / 2,004,053 | 25m |
+| nightly, weekly | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
+
+Floors are the exact measured counts: TLC's breadth-first counts are
+deterministic for a fixed spec, config, and symmetry, so any deviation is a
+spec change and should be re-calibrated deliberately, not absorbed. The
+two-voter core and read counts were re-measured on the final spec, after the
+reductions, and match the pre-reduction calibration to the state — the
+reductions' identity guarantee observed end to end. The deep core floor was
+measured before the reductions; `CoreSpec` contains no snapshot action, the
+identity was verified exactly at four other core/read bound-sets, and the
+re-verified two-voter runs above confirm it on the wired configs themselves.
+Weekly runs the same symmetric obligation configs as nightly; unsymmetrized
+obligation variants would need their own calibrated floors and are future
+work, recorded here so the weekly tier's unsymmetrized claim is not silently
+overread as covering them.
 
 ### Correspondence to the implementation
 
