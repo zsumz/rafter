@@ -225,7 +225,7 @@ pub(in crate::producer::tla_exec::mutation_tests) fn closed_term_prefix_history_
     let naive_retirement = replace_operator(
         &raft,
         "RetainedLogicalPrefixes(observed, terms)",
-        "RecordLogicalPrefixes(logs, snapshotIndexes, snapshotPrefixes, terms)",
+        "RecordLogicalPrefixes(logs, snapshotIndexes, terms)",
         "{witness \\in observed : ~TermClosed(terms, witness.term)}",
     );
     let erased_conflict = run_tlc_with_config(

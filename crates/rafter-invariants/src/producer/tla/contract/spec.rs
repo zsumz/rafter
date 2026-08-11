@@ -16,7 +16,7 @@ use super::super::tla_output::{
 pub(in crate::producer::tla::contract) const SPEC: &str = "specs/tla/raft/Raft.tla";
 pub(super) const TRACE_SPEC: &str = "specs/tla/raft/RaftMembershipTraceSample.tla";
 pub(super) const TRACE_CONFIG: &str = "specs/tla/raft/RaftMembershipTraceSample.cfg";
-const TRACE_SPEC_SHA256: &str = "95c779dcd9a6f70ab23617671124f1b00186349db758c7cefdf45738fe712e85";
+const TRACE_SPEC_SHA256: &str = "c28b7e336153af62713ab0fa0a05b5a794ad378512d46d3fc42cacc57e2e0436";
 const TRACE_CONFIG_SHA256: &str =
     "1286edee2df96b702937d9c1340f8412c060a6e9a0df53dd46b0149d2027b96e";
 pub(super) const DETECTOR_SPEC: &str = "specs/tla/raft/RafterInvariantDetectorNegative.tla";

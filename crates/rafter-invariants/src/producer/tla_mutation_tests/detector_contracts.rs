@@ -68,7 +68,7 @@ pub(super) fn true_mutation_of_real_predicate_cannot_qualify() {
     let mutated = replace_operator(
         &raft,
         "ElectionSafety",
-        "LogMatchingFor(logs, snapshotIndexes, snapshotPrefixes)",
+        "LogMatchingFor(logs, snapshotIndexes)",
         "TRUE",
     );
     let detector =

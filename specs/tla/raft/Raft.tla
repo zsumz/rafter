@@ -23,6 +23,25 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 \* equality between a rafter log and a model log is never the refinement
 \* mapping.
 \*
+\* No stored snapshot, and no physical compaction. rafter's snapshot is a real
+\* stored object: the implementation writes it, truncates the log behind it,
+\* and serves it to a lagging follower from storage. The model keeps only
+\* `snapshotIndex[n]`, retains `log[n]` in full as ghost logical history, and
+\* derives the snapshot prefix as `Prefix(log[n], snapshotIndex[n])` wherever a
+\* live view of it is needed. So a model state carries no evidence about
+\* retained prefixes, storage offsets, or crash/reopen compaction; those are
+\* simulator and storage-test evidence, and this spec should not be read as
+\* covering them. The one place the abstraction does not reach is a snapshot in
+\* flight, where the sender's log may move before the receiver installs: that
+\* payload is a frozen copy captured at send time and stays materialized in
+\* `snapshotTransfer.prefix`, which is a stored field rather than a view.
+\*
+\* Creation and compaction are also one atomic action here, where the
+\* implementation has two distinct moments. The model has nothing to observe
+\* between them -- see the note on `CreateSnapshot` -- so the separation would
+\* be state without content. Ordering between snapshotting and concurrent
+\* protocol work is likewise simulator evidence.
+\*
 \* Mutation-sensitive monitor. frozenAppendAuthorityFailed stays FALSE under
 \* this spec as written, and that is its specified resting state rather than
 \* evidence that it is dead. Its latch needs message.senderPendingSelfRemoval
@@ -66,7 +85,7 @@ RequestVote == "RequestVote"
 AppendEntries == "AppendEntries"
 
 VARIABLES currentTerm, votedFor, role, log, commitIndex,
-          snapshotIndex, snapshotPrefix, snapshotTransfer,
+          snapshotIndex, snapshotTransfer,
           applied, applicationBases, applicationTransitions,
           messages, readRequests, readBarrierViolationSeen,
           electedLeaders, logicalPrefixLedger, committedLedger,
@@ -76,7 +95,7 @@ VARIABLES currentTerm, votedFor, role, log, commitIndex,
           frozenAppendAuthorityFailed
 
 vars == << currentTerm, votedFor, role, log, commitIndex,
-          snapshotIndex, snapshotPrefix, snapshotTransfer,
+          snapshotIndex, snapshotTransfer,
           applied, applicationBases, applicationTransitions,
           messages, readRequests, readBarrierViolationSeen,
           electedLeaders, logicalPrefixLedger, committedLedger,
@@ -85,7 +104,7 @@ vars == << currentTerm, votedFor, role, log, commitIndex,
           staleAuthorityAccepted,
           frozenAppendAuthorityFailed >>
 
-snapshotVars == <<snapshotIndex, snapshotPrefix, snapshotTransfer>>
+snapshotVars == <<snapshotIndex, snapshotTransfer>>
 
 applicationVars ==
   <<applied, applicationBases, applicationTransitions>>
@@ -278,6 +297,43 @@ LatestIndex(indexes) ==
 Prefix(s, i) ==
   IF i = 0 THEN <<>> ELSE SubSeq(s, 1, i)
 
+\* The snapshot prefix, derived rather than stored.
+\*
+\* This used to be a `snapshotPrefix` variable carrying a copy of the log up to
+\* the snapshot floor, maintained in parallel with `log` and `snapshotIndex` and
+\* asserted equal to `Prefix(log[n], snapshotIndex[n])` by
+\* `SnapshotIdentitySoundFor`.
+\*
+\* What deriving it does not do is shrink the state space. The variable was a
+\* function of two others, so no two reachable states ever differed in it
+\* alone, and the distinct-state counts are identical before and after on every
+\* model measured -- which is the point: a state component that cannot
+\* distinguish two states is not carrying verification. What it does do is
+\* retire an obligation. Three of the four conjuncts `SnapshotIdentitySoundFor`
+\* used to check said the stored copy really was the log's prefix at the floor;
+\* they are now definitional, and the one that remains is the bound that makes
+\* the definition well formed. It also removes the way that obligation could be
+\* broken, which is a write of the wrong prefix.
+\*
+\* The equality it was asserted to satisfy is exactly this definition, so
+\* deriving it is sound wherever that equality held -- which is every reachable
+\* state, since `LogMatching` checked it. The one place that needs more than
+\* "the invariant held" is a recorder called with a primed log and an unprimed
+\* snapshot floor, `RecordLogicalPrefixes(log', snapshotIndex, ...)`, where the
+\* derived prefix reads the successor log while the stored one held the
+\* predecessor's. Those agree because no action rewrites a log at or below its
+\* own snapshot floor: `ClientAppend`, `EnterJoint` and `LeaveJoint` only
+\* append; `DeliverAppend` replaces the log wholesale but only under
+\* `CanAdoptLog`, which pins every index up to `commitIndex[n]`, and
+\* `snapshotIndex[n] <= commitIndex[n]` holds because `CreateSnapshot` snapshots
+\* at `AppliedThrough(n) <= commitIndex[n]` and `InstallSnapshot` raises
+\* `commitIndex` to the transfer index in the same step. TypeOK states that
+\* bound so the argument is machine-checked rather than asserted here.
+SnapshotPrefixFrom(logs, snapshotIndexes, node) ==
+  Prefix(logs[node], snapshotIndexes[node])
+
+SnapshotPrefix(node) == SnapshotPrefixFrom(log, snapshotIndex, node)
+
 LatestConfigurationIn(entries) ==
   LET candidates ==
         {index \in 1..Len(entries) :
@@ -288,22 +344,22 @@ LatestConfigurationIn(entries) ==
     ELSE LET latest == LatestIndex(candidates)
          IN [configIndex |-> latest, config |-> entries[latest].input]
 
-LogicalPrefixFrom(logs, snapshotIndexes, snapshotPrefixes, node, index) ==
+LogicalPrefixFrom(logs, snapshotIndexes, node, index) ==
   IF index = 0
   THEN <<>>
   ELSE IF index <= snapshotIndexes[node]
-       THEN Prefix(snapshotPrefixes[node], index)
-       ELSE snapshotPrefixes[node]
+       THEN Prefix(SnapshotPrefixFrom(logs, snapshotIndexes, node), index)
+       ELSE SnapshotPrefixFrom(logs, snapshotIndexes, node)
               \o SubSeq(logs[node], snapshotIndexes[node] + 1, index)
 
-LogicalEntryFrom(logs, snapshotIndexes, snapshotPrefixes, node, index) ==
-  LogicalPrefixFrom(logs, snapshotIndexes, snapshotPrefixes, node, index)[index]
+LogicalEntryFrom(logs, snapshotIndexes, node, index) ==
+  LogicalPrefixFrom(logs, snapshotIndexes, node, index)[index]
 
 LogicalPrefix(node, index) ==
-  LogicalPrefixFrom(log, snapshotIndex, snapshotPrefix, node, index)
+  LogicalPrefixFrom(log, snapshotIndex, node, index)
 
 LogicalEntry(node, index) ==
-  LogicalEntryFrom(log, snapshotIndex, snapshotPrefix, node, index)
+  LogicalEntryFrom(log, snapshotIndex, node, index)
 
 AppliedConfiguration(node) ==
   LatestConfigurationIn(LogicalPrefix(node, AppliedThrough(node)))
@@ -311,19 +367,21 @@ AppliedConfiguration(node) ==
 EffectiveConfiguration(node) ==
   LatestConfigurationIn(LogicalPrefix(node, Len(log[node])))
 
-SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes) ==
-  \A n \in Nodes :
-    /\ snapshotIndexes[n] = Len(snapshotPrefixes[n])
-    /\ snapshotIndexes[n] <= Len(logs[n])
-    /\ Prefix(logs[n], snapshotIndexes[n]) = snapshotPrefixes[n]
+\* What is left of the snapshot identity once the prefix is derived. The other
+\* three conjuncts -- that the prefix has the snapshot floor's length, and that
+\* it equals the log's prefix at that floor -- were the definition of
+\* `SnapshotPrefixFrom` written as an assertion, and are now true by
+\* construction rather than by check. The bound below is the residue that still
+\* carries content: it is what makes the derived prefix well defined, and it is
+\* checked on every reachable state.
+SnapshotIdentitySoundFor(logs, snapshotIndexes) ==
+  \A n \in Nodes : snapshotIndexes[n] <= Len(logs[n])
 
-LogicalPrefixWitnesses(logs, snapshotIndexes, snapshotPrefixes) ==
+LogicalPrefixWitnesses(logs, snapshotIndexes) ==
   UNION {
     {[index |-> index,
-      term |-> LogicalEntryFrom(
-        logs, snapshotIndexes, snapshotPrefixes, node, index).term,
-      prefix |-> LogicalPrefixFrom(
-        logs, snapshotIndexes, snapshotPrefixes, node, index)] :
+      term |-> LogicalEntryFrom(logs, snapshotIndexes, node, index).term,
+      prefix |-> LogicalPrefixFrom(logs, snapshotIndexes, node, index)] :
         index \in 1..Len(logs[node])} :
       node \in Nodes}
 
@@ -345,10 +403,10 @@ RetainedLogicalPrefixes(observed, terms) ==
     \/ ~TermClosed(terms, witness.term)
     \/ ConflictingPrefixWitness(witness, observed)}
 
-RecordLogicalPrefixes(logs, snapshotIndexes, snapshotPrefixes, terms) ==
+RecordLogicalPrefixes(logs, snapshotIndexes, terms) ==
   LET observed ==
         logicalPrefixLedger \cup
-          LogicalPrefixWitnesses(logs, snapshotIndexes, snapshotPrefixes)
+          LogicalPrefixWitnesses(logs, snapshotIndexes)
   IN logicalPrefixLedger' = RetainedLogicalPrefixes(observed, terms)
 
 RetireLogicalPrefixes(terms) ==
@@ -412,11 +470,10 @@ CommittedEntry(index, entry, committedInTerm) ==
   [index |-> index, entry |-> entry, committedInTerm |-> committedInTerm]
 
 CommittedEntriesFor(
-    logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor,
+    logs, snapshotIndexes, node, oldFloor, newFloor,
     committedInTerm) ==
   {[index |-> index,
-    entry |-> LogicalEntryFrom(
-      logs, snapshotIndexes, snapshotPrefixes, node, index),
+    entry |-> LogicalEntryFrom(logs, snapshotIndexes, node, index),
     committedInTerm |-> committedInTerm] :
       index \in (oldFloor + 1)..newFloor}
 
@@ -440,19 +497,19 @@ CommittedLedgerCanonical(entries) ==
       left.committedInTerm = right.committedInTerm
 
 RecordCommittedEntries(
-    logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor,
+    logs, snapshotIndexes, node, oldFloor, newFloor,
     committedInTerm) ==
   LET candidates == CommittedEntriesFor(
-        logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor,
+        logs, snapshotIndexes, node, oldFloor, newFloor,
         committedInTerm)
   IN committedLedger' = RetainedCommittedEntries(committedLedger, candidates)
 
 ConfigurationMembershipAt(
-    logs, snapshotIndexes, snapshotPrefixes, node, configIndex) ==
+    logs, snapshotIndexes, node, configIndex) ==
   IF configIndex = 0
   THEN StableMembership(Nodes)
   ELSE LET entry == LogicalEntryFrom(
-             logs, snapshotIndexes, snapshotPrefixes, node, configIndex)
+             logs, snapshotIndexes, node, configIndex)
        IN IF entry.kind = ConfigurationEntryKind
           THEN entry.input
           ELSE StableMembership(Nodes)
@@ -467,17 +524,15 @@ FrozenCommitContext(
    effectiveMembership |-> effectiveView,
    authorityMembership |-> authorityView]
 
-MatchingReplicasFrom(logs, snapshotIndexes, snapshotPrefixes, node, index) ==
+MatchingReplicasFrom(logs, snapshotIndexes, node, index) ==
   {replica \in Nodes :
     /\ index \in 1..Len(logs[replica])
     /\ index \in 1..Len(logs[node])
-    /\ LogicalEntryFrom(
-         logs, snapshotIndexes, snapshotPrefixes, replica, index)
-         = LogicalEntryFrom(
-             logs, snapshotIndexes, snapshotPrefixes, node, index)}
+    /\ LogicalEntryFrom(logs, snapshotIndexes, replica, index)
+         = LogicalEntryFrom(logs, snapshotIndexes, node, index)}
 
 MatchingReplicas(node, index) ==
-  MatchingReplicasFrom(log, snapshotIndex, snapshotPrefix, node, index)
+  MatchingReplicasFrom(log, snapshotIndex, node, index)
 
 CommitCertificatesFor(
     node, oldFloor, newFloor, context, configIndex) ==
@@ -489,7 +544,7 @@ CommitCertificatesFor(
     membership |-> context.effectiveMembership,
     authorityMembership |-> context.authorityMembership,
     derivedMembership |-> ConfigurationMembershipAt(
-      log, snapshotIndex, snapshotPrefix, node, configIndex),
+      log, snapshotIndex, node, configIndex),
     configIndex |-> configIndex,
     replicas |-> MatchingReplicas(node, index)] :
       index \in (oldFloor + 1)..newFloor}
@@ -661,12 +716,13 @@ TypeOK ==
   /\ commitIndex \in [Nodes -> 0..MaxLogLen]
   /\ \A n \in Nodes : commitIndex[n] <= Len(log[n])
   /\ DOMAIN snapshotIndex = Nodes
-  /\ DOMAIN snapshotPrefix = Nodes
   /\ \A n \in Nodes :
        /\ snapshotIndex[n] \in 0..MaxLogLen
-       /\ LogOK(snapshotPrefix[n])
-       /\ snapshotIndex[n] = Len(snapshotPrefix[n])
        /\ snapshotIndex[n] <= Len(log[n])
+       \* Load-bearing for the derived snapshot prefix: it is what makes
+       \* `Prefix(log[n], snapshotIndex[n])` well defined, and what lets
+       \* `CanAdoptLog`'s committed-prefix guard protect the snapshot prefix.
+       /\ snapshotIndex[n] <= commitIndex[n]
   /\ DOMAIN snapshotTransfer =
        {"active", "term", "from", "to", "index", "prefix"}
   /\ IF snapshotTransfer.active
@@ -732,7 +788,6 @@ Init ==
   /\ log = [n \in Nodes |-> <<>>]
   /\ commitIndex = [n \in Nodes |-> 0]
   /\ snapshotIndex = [n \in Nodes |-> 0]
-  /\ snapshotPrefix = [n \in Nodes |-> <<>>]
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |-> AppliedCursor(0, 0, InitialApplicationState)]
   /\ applicationBases =
@@ -848,7 +903,7 @@ ClientAppend(n, value) ==
   /\ currentTerm[n] \in 1..MaxTerm
   /\ Len(log[n]) < MaxLogLen
   /\ log' = [log EXCEPT ![n] = Append(@, Entry(currentTerm[n], value))]
-  /\ RecordLogicalPrefixes(log', snapshotIndex, snapshotPrefix, currentTerm)
+  /\ RecordLogicalPrefixes(log', snapshotIndex, currentTerm)
   /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, role, commitIndex, messages,
                   readRequests, readBarrierViolationSeen, electedLeaders,
@@ -919,8 +974,7 @@ DeliverAppend(m) ==
     /\ role' = baseRole
     /\ log' = nextLog
     /\ commitIndex' = nextCommit
-    /\ RecordLogicalPrefixes(
-         nextLog, snapshotIndex, snapshotPrefix, currentTerm')
+    /\ RecordLogicalPrefixes(nextLog, snapshotIndex, currentTerm')
     /\ UNCHANGED committedLedger
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
     /\ RecordAppendOutcome(
@@ -956,7 +1010,7 @@ Commit(n, i) ==
     /\ commitIndex' = [commitIndex EXCEPT ![n] = i]
     /\ role' = RoleAfterCommit(n, selfRemoval)
     /\ RecordCommittedEntries(
-         log, snapshotIndex, snapshotPrefix, n, commitIndex[n], i, preTerm)
+         log, snapshotIndex, n, commitIndex[n], i, preTerm)
     /\ RecordCommitWitnesses(CommitCertificatesFor(
          n, commitIndex[n], i, context, preEffectiveConfigIndex))
     /\ RecordAuthorityAcceptance(preTerm, preTerm, TRUE)
@@ -1027,13 +1081,10 @@ Restart(n) ==
 \* else.
 CreateSnapshot(n) ==
   LET index == AppliedThrough(n)
-      prefix == LogicalPrefix(n, index)
   IN
     /\ index > snapshotIndex[n]
     /\ snapshotIndex' = [snapshotIndex EXCEPT ![n] = index]
-    /\ snapshotPrefix' = [snapshotPrefix EXCEPT ![n] = prefix]
-    /\ RecordLogicalPrefixes(
-         log, snapshotIndex', snapshotPrefix', currentTerm)
+    /\ RecordLogicalPrefixes(log, snapshotIndex', currentTerm)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     snapshotTransfer, messages,
                     readRequests, readBarrierViolationSeen,
@@ -1055,10 +1106,12 @@ TransferSnapshot(from, to) ==
         from |-> from,
         to |-> to,
         index |-> snapshotIndex[from],
-        prefix |-> snapshotPrefix[from]]
+        \* Frozen at send time: the sender's log may move afterwards, so this
+        \* is a copy and not a view. It stays a stored field of the transfer.
+        prefix |-> SnapshotPrefix(from)]
   /\ RecordAuthorityAcceptance(currentTerm[from], currentTerm[from], TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  snapshotIndex, snapshotPrefix,
+                  snapshotIndex,
                   messages, readRequests, readBarrierViolationSeen,
                   electedLeaders,
                   higherTermStepDownFailed>>
@@ -1091,11 +1144,9 @@ InstallSnapshot ==
     /\ log' = nextLog
     /\ commitIndex' = nextCommit
     /\ snapshotIndex' = [snapshotIndex EXCEPT ![node] = transfer.index]
-    /\ snapshotPrefix' = [snapshotPrefix EXCEPT ![node] = transfer.prefix]
     /\ snapshotTransfer' = NoSnapshotTransfer
     /\ StartApplicationEpoch(node, transfer.index, restoredState)
-    /\ RecordLogicalPrefixes(
-         nextLog, snapshotIndex', snapshotPrefix', currentTerm')
+    /\ RecordLogicalPrefixes(nextLog, snapshotIndex', currentTerm')
     /\ UNCHANGED committedLedger
     /\ RecordHigherTermOutcome(
          node, transfer.term, transfer.term > currentTerm[node])
@@ -1121,8 +1172,7 @@ EnterJoint(n, newVoters) ==
     /\ Len(log[n]) = AppliedThrough(n)
     /\ Len(log[n]) < MaxLogLen
     /\ log' = nextLog
-    /\ RecordLogicalPrefixes(
-         nextLog, snapshotIndex, snapshotPrefix, currentTerm)
+    /\ RecordLogicalPrefixes(nextLog, snapshotIndex, currentTerm)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, commitIndex, messages,
                     readRequests, readBarrierViolationSeen, electedLeaders,
@@ -1146,8 +1196,7 @@ LeaveJoint(n) ==
     /\ Len(log[n]) = AppliedThrough(n)
     /\ Len(log[n]) < MaxLogLen
     /\ log' = nextLog
-    /\ RecordLogicalPrefixes(
-         nextLog, snapshotIndex, snapshotPrefix, currentTerm)
+    /\ RecordLogicalPrefixes(nextLog, snapshotIndex, currentTerm)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, commitIndex, messages,
                     readRequests, readBarrierViolationSeen, electedLeaders,
@@ -1240,7 +1289,7 @@ Spec == Init /\ [][Next]_vars
 \* cheaper route to the same claim.
 \*
 \* Totality on `vars` is inherited, not re-established. Every disjunct of
-\* `Next` already constrains all twenty-one variables -- each action
+\* `Next` already constrains all twenty variables -- each action
 \* names the ones it primes and carries UNCHANGED for the rest -- so any subset
 \* of those disjuncts constrains them too. TLC rejects an unconstrained
 \* variable, so a mis-composed relation fails loudly at the first state rather
@@ -1413,7 +1462,6 @@ JointQuorumInit ==
   /\ log = [n \in Nodes |-> <<>>]
   /\ commitIndex = [n \in Nodes |-> 0]
   /\ snapshotIndex = [n \in Nodes |-> 0]
-  /\ snapshotPrefix = [n \in Nodes |-> <<>>]
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |-> AppliedCursor(0, 0, InitialApplicationState)]
   /\ applicationBases =
@@ -1480,20 +1528,20 @@ ElectionSafety ==
   \A t \in 1..MaxTerm :
     Cardinality(electedLeaders[t]) <= 1
 
-LogMatchingFor(logs, snapshotIndexes, snapshotPrefixes) ==
+LogMatchingFor(logs, snapshotIndexes) ==
   \A a, b \in Nodes :
     \A i \in 1..MaxLogLen :
       (/\ i \in 1..Len(logs[a])
        /\ i \in 1..Len(logs[b])
-       /\ LogicalEntryFrom(logs, snapshotIndexes, snapshotPrefixes, a, i).term
-            = LogicalEntryFrom(logs, snapshotIndexes, snapshotPrefixes, b, i).term)
-      => LogicalPrefixFrom(logs, snapshotIndexes, snapshotPrefixes, a, i)
-           = LogicalPrefixFrom(logs, snapshotIndexes, snapshotPrefixes, b, i)
+       /\ LogicalEntryFrom(logs, snapshotIndexes, a, i).term
+            = LogicalEntryFrom(logs, snapshotIndexes, b, i).term)
+      => LogicalPrefixFrom(logs, snapshotIndexes, a, i)
+           = LogicalPrefixFrom(logs, snapshotIndexes, b, i)
 
 LogMatching ==
-  /\ SnapshotIdentitySoundFor(log, snapshotIndex, snapshotPrefix)
+  /\ SnapshotIdentitySoundFor(log, snapshotIndex)
   /\ LogicalPrefixLedgerSound
-  /\ LogMatchingFor(log, snapshotIndex, snapshotPrefix)
+  /\ LogMatchingFor(log, snapshotIndex)
 
 LeaderCompleteness ==
   \A leader \in Nodes :

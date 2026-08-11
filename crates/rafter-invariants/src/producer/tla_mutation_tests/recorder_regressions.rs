@@ -164,7 +164,7 @@ pub(super) fn missing_log_prefix_recorder_cannot_qualify_log_or_snapshot_paths()
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
     let mutated = replace_operator(
         &raft,
-        "RecordLogicalPrefixes(logs, snapshotIndexes, snapshotPrefixes, terms)",
+        "RecordLogicalPrefixes(logs, snapshotIndexes, terms)",
         "RetireLogicalPrefixes(terms)",
         "/\\ UNCHANGED logicalPrefixLedger",
     );
@@ -192,8 +192,8 @@ pub(super) fn missing_commit_ledger_recorder_cannot_qualify_history_predicates()
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
     let mutated = replace_operator(
         &raft,
-        "RecordCommittedEntries(\n    logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor,\n    committedInTerm)",
-        "ConfigurationMembershipAt(\n    logs, snapshotIndexes, snapshotPrefixes, node, configIndex)",
+        "RecordCommittedEntries(\n    logs, snapshotIndexes, node, oldFloor, newFloor,\n    committedInTerm)",
+        "ConfigurationMembershipAt(\n    logs, snapshotIndexes, node, configIndex)",
         "/\\ UNCHANGED committedLedger",
     );
     let detector =

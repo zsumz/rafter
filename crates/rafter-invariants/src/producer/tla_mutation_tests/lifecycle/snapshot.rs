@@ -42,7 +42,10 @@ pub(in crate::producer::tla_exec::mutation_tests) fn snapshot_creation_atomicall
     );
     let summary = parse(&result.stdout).expect("parse stalled snapshot creation output");
     assert_eq!(result.status.code(), Some(13), "stalled mutation passed");
-    assert!(!summary.completed_without_error, "stalled mutation qualified");
+    assert!(
+        !summary.completed_without_error,
+        "stalled mutation qualified"
+    );
     assert!(
         String::from_utf8_lossy(&result.stdout).contains("SnapshotLifecycleCompletes"),
         "stalled mutation did not fail the lifecycle property: {}",

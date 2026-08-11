@@ -6,7 +6,7 @@ CONSTANTS n1, n2, n3, v1, r1
 VARIABLE traceStep
 
 traceVars == << currentTerm, votedFor, role, log, commitIndex,
-               snapshotIndex, snapshotPrefix, snapshotTransfer,
+               snapshotIndex, snapshotTransfer,
                applied, applicationBases, applicationTransitions,
                messages, readRequests, readBarrierViolationSeen,
                electedLeaders, logicalPrefixLedger, committedLedger,
