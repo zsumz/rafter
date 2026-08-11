@@ -13,7 +13,8 @@ use crate::execution::filesystem::{FileIdentity, HeldDirectory, TreeLimits, TREE
 use super::super::finalization::ensure_deadline;
 
 pub(in crate::producer::tla::checkpoint) type TraversalLimits = TreeLimits;
-pub(in crate::producer::tla::checkpoint) const TRAVERSAL_LIMITS: TraversalLimits = TREE_LIMITS;
+pub(in crate::producer::tla::checkpoint) const TRAVERSAL_LIMITS: TraversalLimits =
+    TREE_LIMITS.with_directory_entries(TREE_LIMITS.files());
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::producer::tla::checkpoint) enum CheckpointNodeKind {

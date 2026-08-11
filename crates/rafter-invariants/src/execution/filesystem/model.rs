@@ -45,7 +45,6 @@ impl TreeLimits {
         self.depth
     }
 
-    #[cfg(test)]
     pub(crate) const fn with_directory_entries(mut self, directory_entries: usize) -> Self {
         self.directory_entries = directory_entries;
         self

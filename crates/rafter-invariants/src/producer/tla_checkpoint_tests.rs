@@ -52,6 +52,16 @@ fn traversal_limits(directory_entries: usize, files: usize) -> TraversalLimits {
 }
 
 #[test]
+fn checkpoint_flat_directory_limit_covers_the_global_file_budget() {
+    assert_eq!(TRAVERSAL_LIMITS.directory_entries(), 64 * 1024);
+    assert_eq!(
+        TRAVERSAL_LIMITS.directory_entries(),
+        TRAVERSAL_LIMITS.files(),
+        "a valid flat TLC state store must fit whenever its files fit the global checkpoint budget"
+    );
+}
+
+#[test]
 fn inventory_detects_changed_checkpoint_bytes() {
     let root = test_root("inventory");
     let _ = fs::remove_dir_all(&root);
