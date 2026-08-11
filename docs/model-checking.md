@@ -128,7 +128,115 @@ passes only on `states_left = 0`, so this model would have to drain a queue
 that was still getting longer after ten million generated states.
 
 The honest summary: joint-quorum intersection is checkable, cheaply witnessed,
-and not currently checked by anything that runs on a schedule.
+and not currently checked by anything that runs on a schedule. Restricting the
+transition relation was tried against exactly this problem and did not change
+that; the measurements are in the next section.
+
+### Focused proof obligations
+
+`Spec` checks all nine invariants against all of `Next`. `Raft.tla` also defines
+four narrower transition relations, each a strict disjunct-subset of
+`ProtocolNext` composed from the same action operators under unmodified guards,
+so every behavior of a focused spec is a behavior of `Spec`:
+
+| Relation | Spec operator | Action families |
+| --- | --- | --- |
+| `CoreNext` | `CoreSpec` | `Timeout`, `SendRequestVote`, `DeliverRequestVote`, `BecomeLeader`, `ClientAppend`, `SendAppend`, `DeliverAppend`, `Commit`, `Apply` |
+| `MembershipNext` | `MembershipSpec` | core minus `ClientAppend`, plus `EnterJoint`, `LeaveJoint` |
+| `SnapshotNext` | `SnapshotSpec` | core plus `ApplicationStateLoss`, `Restart`, `CreateSnapshot`, `TransferSnapshot`, `InstallSnapshot`, `CompactSnapshot` |
+| `ReadNext` | `ReadSpec` | core plus `RegisterRead`, `GrantRead` |
+
+`SnapshotNext` is the one subset of `Next` rather than of `ProtocolNext`:
+`CompactSnapshot` is reachable only through `Next`'s compaction-first branch, so
+`SnapshotNext` reproduces that branch. The other three contain no
+`CreateSnapshot`, the only action that sets `compactionPending`, so along their
+behaviors `Next` and `ProtocolNext` coincide.
+
+`JointQuorumInit` is a focused initial state for the joint-quorum obligation: the
+exact post-state of `Timeout(L)`, three `SendRequestVote`/`DeliverRequestVote`
+pairs, and `BecomeLeader(L)` from `Init`, with every witness and monitor variable
+derived from the action that last writes it along that prefix rather than
+guessed. It is therefore a reachable state of `Spec`, and TLC reports no
+invariant violation on it. Because it names a leader, a config using it cannot
+declare `SYMMETRY ModelPermutations`; `RaftJointQuorumFocusedInit.cfg` omits
+symmetry, and `JointQuorumPermutations` is the sound reduced set (permutations
+fixing the distinguished leader) available if that trade is revisited.
+
+Two configs carry `RaftJointQuorum.cfg`'s constants and all nine invariants and
+change only the transition relation and initial state:
+
+| Config | Spec | Init | Symmetry |
+| --- | --- | --- | --- |
+| `RaftJointQuorumFocusedNext.cfg` | `MembershipSpec` | standard | yes |
+| `RaftJointQuorumFocusedInit.cfg` | `JointQuorumFocusedSpec` | `JointQuorumInit` | no |
+
+#### Measurements
+
+Same host and flags as the table above: 14 cores, `-workers 4 -Xmx8g`. Neither
+run reached a shrinking queue, so neither reports peak RSS, and both wall times
+should be read as upper bounds — the host was running an unrelated build
+throughout.
+
+| Model | Generated | Distinct | Queue | Depth | Wall | Exhausted |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 4 voters, full `Spec` (`--joint-quorum`, from the table above) | 10,073,549 | 2,551,776 | 1,397,208 | 20 | 45 min | no, still expanding |
+| 4 voters, `MembershipSpec` (`--joint-quorum-focused-next`) | 25,934,867 | 6,201,924 | 3,185,806 | 24 | 34 min | no, still expanding |
+| 4 voters, `JointQuorumFocusedSpec` (`--joint-quorum-focused-init`) | 8,109,085 | 2,040,484 | 1,004,645 | 20 | 13 min | no, still expanding |
+
+Sampled queue trajectories, both monotonically increasing from the first
+progress line to the last:
+
+| `--joint-quorum-focused-next` | Generated | Distinct | Queue | Depth |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 min | 39,396 | 11,157 | 5,724 | 15 |
+| 6 min | 5,067,921 | 1,363,929 | 730,788 | 22 |
+| 14 min | 10,352,918 | 2,663,185 | 1,407,124 | 23 |
+| 23 min | 15,695,471 | 3,923,771 | 2,042,022 | 24 |
+| 34 min | 25,934,867 | 6,201,924 | 3,185,806 | 24 |
+
+| `--joint-quorum-focused-init` | Generated | Distinct | Queue | Depth |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 min | 34,717 | 14,175 | 8,131 | 13 |
+| 2 min | 2,018,205 | 563,884 | 282,247 | 18 |
+| 7 min | 4,622,630 | 1,216,625 | 601,466 | 19 |
+| 11 min | 6,839,230 | 1,758,878 | 864,955 | 19 |
+| 13 min | 8,109,085 | 2,040,484 | 1,004,645 | 20 |
+
+Neither run was stopped by exhaustion. The focused-next run was stopped at a
+wall cap. The focused-init run ended earlier because the host filesystem filled
+and TLC's disk state queue failed to write; that is a host limit, not a result
+about the model, and its numbers are a truncated reading rather than a budget.
+No invariant was violated in either run.
+
+#### What this means
+
+**Restricting `Next` did not make the four-voter model exhaust.** The focused
+relations are cheaper per state — `--joint-quorum-focused-next` passed the full
+model's 45-minute counts in about 14 minutes — but cheaper per state is not the
+constraint. The frontier still grew monotonically for the whole of every run, and
+`--joint-quorum-focused-next` reached depth 24 against the full model's 20, so
+the extra throughput bought depth rather than closure. Dropping `ClientAppend`,
+reads, snapshots, restart, and application-state loss removes about eighteen
+action families down to ten and still leaves a state space that four voters, two
+log slots, and a set-valued `messages` variable blow past.
+
+**The focused initial state did not change that either**, and it costs a
+symmetry quotient to have. `ModelPermutations` was already collapsing the
+symmetric copies of the election that `JointQuorumInit` skips, so naming a
+leader trades a quotient the model had for a prefix it did not need. At equal
+wall time the two runs are within a small factor of each other, and neither
+shows a shrinking queue.
+
+So the first phase of this redesign answers its question in the negative:
+**focused proof obligations are not on their own sufficient to make the
+four-voter joint-quorum model a wired tier.** What they are is real and
+narrower: each relation states an obligation that is sound by construction and
+that TLC can discharge at smaller bounds — `CoreSpec` and `ReadSpec` both
+exhaust at two voters in seconds — so they are usable as tiers wherever the
+bounds are already tractable. Making four voters tractable needs a different
+lever than action-family selection: a smaller `messages` representation, a state
+constraint bounding in-flight messages, or a symmetry-preserving focused initial
+state. None of those is implemented here.
 
 ### Correspondence to the implementation
 
