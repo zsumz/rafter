@@ -456,6 +456,7 @@ What exhausts, at which bounds:
 | `RaftCoreObligation.cfg` | 2v, V2, T2, L2, R1 | 113,201 | 20,282 | 15 s | yes |
 | `RaftReadObligation.cfg` | 2v, V2, T2, L2, R1 | 592,279 | 98,948 | 30 s | yes |
 | `RaftCoreObligationDeep.cfg` | 2v, V2, T3, L3, R2 | 14,734,799 | 2,004,053 | 8.5 min | yes |
+| `RaftSnapshotObligation.cfg` (folded spec) | 2v, V2, T2, L2, R1 | 14,119,884 | 2,002,205 | 6.7 min | yes |
 
 What does not, and how it fails to:
 
@@ -464,18 +465,26 @@ What does not, and how it fails to:
 | `CoreSpec`, 3 voters | T3, L3 | 12,975,580 | 4,210,497 | 2,699,386 ↑ | diverges, fanout ≈ 2.9 |
 | `CoreSpec`, 3 voters | T2, L2 | 24,590,487 | 5,443,386 | 2,557,643 ↑ | diverges, depth pinned at 21 |
 | `MembershipSpec`, 3 voters | T3, L3 | 52,410,403 | 9,935,434 | 3,959,098 ↑ | diverges, depth pinned at 24 |
-| `SnapshotSpec`, 2 voters | T2, L3 | 50,137,394 | 13,356,326 | 4,992,419 ↑ | diverges, depth pinned at 26 |
+| `MembershipSpec`, 3 voters (folded spec) | T2, L2 | 46,023,230 | 7,526,805 | 2,416,633 ↑ | diverges, depth pinned at 26 |
+| `SnapshotSpec`, 2 voters (pre-fold spec) | T2, L3 | 50,137,394 | 13,356,326 | 4,992,419 ↑ | diverges, depth pinned at 26 |
 
-The pattern in the second table is one wall seen four ways: at three voters the
-set-valued `messages` variable dominates every relation that contains the core
-send/deliver actions, and the snapshot lifecycle recreates the same explosion
-at two. Dropping per-node bounds does not move it — the three-voter core model
-diverges at `MaxTerm 2 / MaxLogLen 2` with the queue still growing — so the
-node count binds, not the bounds, and `ReadNext ⊇ CoreNext` settles read at
-three voters by containment. The unmeasured remainders are recorded in the
-`RaftMembershipObligation.cfg` and `RaftSnapshotObligation.cfg` headers with
-`DO NOT WIRE` markers; exhausting any of them is a message-dimension redesign,
-not a bounds hunt.
+The pattern in the second table is one wall seen five ways: at three voters
+the set-valued `messages` variable dominates every relation that contains the
+core send/deliver actions, and at `MaxLogLen 3` the snapshot lifecycle
+recreated the same explosion at two. Dropping per-node bounds does not move
+the three-voter wall — core and membership both diverge at `MaxTerm 2 /
+MaxLogLen 2`, membership even on the folded spec — so the node count binds,
+not the bounds, and `ReadNext ⊇ CoreNext` settles read at three voters by
+containment. Every candidate membership bound has now been measured and every
+one diverges; its header carries the `DO NOT WIRE` marker and the conclusion
+that exhausting it is a message-dimension redesign, not a bounds hunt.
+
+The snapshot row moved between the tables, and that movement is the fold's
+payoff stated as a verdict rather than a percentage: the pre-fold spec
+diverged at two voters and `MaxLogLen 3`, and the folded spec at `MaxLogLen 2`
+drains in under seven minutes, which turned the snapshot lifecycle — atomic
+create-and-compact, transfer, install, restart, application-state loss — into
+a wired exhaustive theorem.
 
 The wired manifest, after calibration:
 
@@ -485,6 +494,7 @@ The wired manifest, after calibration:
 | pr | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
 | nightly, weekly | `core-replication-deep` | `RaftCoreObligationDeep.cfg` | 14,734,799 / 2,004,053 | 25m |
 | nightly, weekly | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
+| nightly, weekly | `snapshot-lifecycle` | `RaftSnapshotObligation.cfg` | 14,119,884 / 2,002,205 | 12m |
 
 Floors are the exact measured counts: TLC's breadth-first counts are
 deterministic for a fixed spec, config, and symmetry, so any deviation is a
