@@ -6,7 +6,7 @@ CONSTANTS n1, n2, n3, v1, r1
 VARIABLE traceStep
 
 traceVars == << currentTerm, votedFor, role, log, commitIndex,
-               snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
+               snapshotIndex, snapshotPrefix, snapshotTransfer,
                applied, applicationBases, applicationTransitions,
                messages, readRequests, readBarrierViolationSeen,
                electedLeaders, logicalPrefixLedger, committedLedger,
@@ -276,39 +276,34 @@ TraceAction37 ==
 
 TraceAction38 ==
   /\ traceStep = 38
-  /\ CompactSnapshot(n1)
+  /\ ApplicationStateLoss(n1)
   /\ traceStep' = 39
 
 TraceAction39 ==
   /\ traceStep = 39
-  /\ ApplicationStateLoss(n1)
+  /\ Restart(n1)
   /\ traceStep' = 40
 
 TraceAction40 ==
   /\ traceStep = 40
-  /\ Restart(n1)
+  /\ Timeout(n1)
   /\ traceStep' = 41
 
 TraceAction41 ==
   /\ traceStep = 41
-  /\ Timeout(n1)
+  /\ SendRequestVote(n1, n2)
   /\ traceStep' = 42
 
 TraceAction42 ==
   /\ traceStep = 42
-  /\ SendRequestVote(n1, n2)
+  /\ DeliverRequestVote(
+       [type |-> RequestVote, term |-> 2, from |-> n1, to |-> n2])
   /\ traceStep' = 43
 
 TraceAction43 ==
   /\ traceStep = 43
-  /\ DeliverRequestVote(
-       [type |-> RequestVote, term |-> 2, from |-> n1, to |-> n2])
-  /\ traceStep' = 44
-
-TraceAction44 ==
-  /\ traceStep = 44
   /\ BecomeLeader(n1)
-  /\ traceStep' = 45
+  /\ traceStep' = 44
 
 TraceNext ==
   \/ TraceAction0
@@ -355,8 +350,7 @@ TraceNext ==
   \/ TraceAction41
   \/ TraceAction42
   \/ TraceAction43
-  \/ TraceAction44
-  \/ /\ traceStep = 45
+  \/ /\ traceStep = 44
      /\ UNCHANGED traceVars
 
 TraceSpec ==
@@ -364,7 +358,7 @@ TraceSpec ==
   /\ [][TraceNext]_traceVars
   /\ WF_traceVars(TraceNext)
 
-TraceComplete == traceStep = 45
+TraceComplete == traceStep = 44
 
 TraceCompletes == <>TraceComplete
 

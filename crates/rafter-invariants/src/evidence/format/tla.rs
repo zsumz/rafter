@@ -18,7 +18,7 @@ pub(crate) const REGISTERED_PREDICATES: [&str; 8] = [
     "ReadBarrierLinearizability",
 ];
 
-pub(crate) const REQUIRED_MODEL_TRANSITIONS: [&str; 19] = [
+pub(crate) const REQUIRED_MODEL_TRANSITIONS: [&str; 18] = [
     "Timeout",
     "SendRequestVote",
     "DeliverRequestVote",
@@ -33,15 +33,18 @@ pub(crate) const REQUIRED_MODEL_TRANSITIONS: [&str; 19] = [
     "CreateSnapshot",
     "TransferSnapshot",
     "InstallSnapshot",
-    "CompactSnapshot",
     "EnterJoint",
     "LeaveJoint",
     "RegisterRead",
     "GrantRead",
 ];
 
-pub(crate) const MEMBERSHIP_TRACE_MIN_DISTINCT_STATES: u64 = 46;
-pub(crate) const MEMBERSHIP_TRACE_MIN_DEPTH: u64 = 46;
+// One lower than they were: folding snapshot creation and compaction into one
+// atomic action removed `CompactSnapshot` from the model, and with it the trace
+// step that executed it. The trace is one step shorter, not one step weaker --
+// it still executes every transition in REQUIRED_MODEL_TRANSITIONS.
+pub(crate) const MEMBERSHIP_TRACE_MIN_DISTINCT_STATES: u64 = 45;
+pub(crate) const MEMBERSHIP_TRACE_MIN_DEPTH: u64 = 45;
 pub(crate) const DEFAULT_FIXTURE_MODE: &str = "Default";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

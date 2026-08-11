@@ -66,7 +66,7 @@ RequestVote == "RequestVote"
 AppendEntries == "AppendEntries"
 
 VARIABLES currentTerm, votedFor, role, log, commitIndex,
-          snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
+          snapshotIndex, snapshotPrefix, snapshotTransfer,
           applied, applicationBases, applicationTransitions,
           messages, readRequests, readBarrierViolationSeen,
           electedLeaders, logicalPrefixLedger, committedLedger,
@@ -76,7 +76,7 @@ VARIABLES currentTerm, votedFor, role, log, commitIndex,
           frozenAppendAuthorityFailed
 
 vars == << currentTerm, votedFor, role, log, commitIndex,
-          snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
+          snapshotIndex, snapshotPrefix, snapshotTransfer,
           applied, applicationBases, applicationTransitions,
           messages, readRequests, readBarrierViolationSeen,
           electedLeaders, logicalPrefixLedger, committedLedger,
@@ -85,8 +85,7 @@ vars == << currentTerm, votedFor, role, log, commitIndex,
           staleAuthorityAccepted,
           frozenAppendAuthorityFailed >>
 
-snapshotVars ==
-  <<snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer>>
+snapshotVars == <<snapshotIndex, snapshotPrefix, snapshotTransfer>>
 
 applicationVars ==
   <<applied, applicationBases, applicationTransitions>>
@@ -312,11 +311,10 @@ AppliedConfiguration(node) ==
 EffectiveConfiguration(node) ==
   LatestConfigurationIn(LogicalPrefix(node, Len(log[node])))
 
-SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes, compactionPendings) ==
+SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes) ==
   \A n \in Nodes :
     /\ snapshotIndexes[n] = Len(snapshotPrefixes[n])
     /\ snapshotIndexes[n] <= Len(logs[n])
-    /\ compactionPendings[n] => snapshotIndexes[n] > 0
     /\ Prefix(logs[n], snapshotIndexes[n]) = snapshotPrefixes[n]
 
 LogicalPrefixWitnesses(logs, snapshotIndexes, snapshotPrefixes) ==
@@ -664,13 +662,11 @@ TypeOK ==
   /\ \A n \in Nodes : commitIndex[n] <= Len(log[n])
   /\ DOMAIN snapshotIndex = Nodes
   /\ DOMAIN snapshotPrefix = Nodes
-  /\ compactionPending \in [Nodes -> BOOLEAN]
   /\ \A n \in Nodes :
        /\ snapshotIndex[n] \in 0..MaxLogLen
        /\ LogOK(snapshotPrefix[n])
        /\ snapshotIndex[n] = Len(snapshotPrefix[n])
        /\ snapshotIndex[n] <= Len(log[n])
-       /\ compactionPending[n] => snapshotIndex[n] > 0
   /\ DOMAIN snapshotTransfer =
        {"active", "term", "from", "to", "index", "prefix"}
   /\ IF snapshotTransfer.active
@@ -737,7 +733,6 @@ Init ==
   /\ commitIndex = [n \in Nodes |-> 0]
   /\ snapshotIndex = [n \in Nodes |-> 0]
   /\ snapshotPrefix = [n \in Nodes |-> <<>>]
-  /\ compactionPending = [n \in Nodes |-> FALSE]
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |-> AppliedCursor(0, 0, InitialApplicationState)]
   /\ applicationBases =
@@ -1008,6 +1003,28 @@ Restart(n) ==
   /\ UNCHANGED historyVars
   /\ UNCHANGED authorityVars
 
+\* Snapshot creation and compaction, as one atomic step.
+\*
+\* `log` is ghost logical history spanning the snapshot prefix. Compaction
+\* completes the modeled snapshot lifecycle but intentionally retains that
+\* history for safety witnesses. Physical prefix retention, storage offsets,
+\* and crash/reopen compaction are simulator and storage-test evidence.
+\*
+\* Why one action and not two. This used to be `CreateSnapshot` setting a
+\* `compactionPending[n]` flag, a compaction-first branch in `Next` that
+\* disabled every protocol action while any flag was set, and a
+\* `CompactSnapshot(n)` that cleared it and changed nothing else. The
+\* intermediate state was unobservable: no protocol action was enabled in it,
+\* the only enabled action agreed with its own successor on every variable but
+\* the flag, and no predicate outside the flag's own type constraint read the
+\* flag. So each creation cost one extra distinct state that no property could
+\* distinguish from the state that followed it. Folding the pair removes that
+\* state and the variable with it, and the resulting spec is
+\* stuttering-equivalent to the old one for every property over the remaining
+\* variables: drop the flag from each old behavior and the intermediate state
+\* becomes a stuttering step of the new one, which `[][Next]_vars` already
+\* admits. Nothing else had to change, because `CompactSnapshot` wrote nothing
+\* else.
 CreateSnapshot(n) ==
   LET index == AppliedThrough(n)
       prefix == LogicalPrefix(n, index)
@@ -1015,7 +1032,6 @@ CreateSnapshot(n) ==
     /\ index > snapshotIndex[n]
     /\ snapshotIndex' = [snapshotIndex EXCEPT ![n] = index]
     /\ snapshotPrefix' = [snapshotPrefix EXCEPT ![n] = prefix]
-    /\ compactionPending' = [compactionPending EXCEPT ![n] = TRUE]
     /\ RecordLogicalPrefixes(
          log, snapshotIndex', snapshotPrefix', currentTerm)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
@@ -1042,7 +1058,7 @@ TransferSnapshot(from, to) ==
         prefix |-> snapshotPrefix[from]]
   /\ RecordAuthorityAcceptance(currentTerm[from], currentTerm[from], TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  snapshotIndex, snapshotPrefix, compactionPending,
+                  snapshotIndex, snapshotPrefix,
                   messages, readRequests, readBarrierViolationSeen,
                   electedLeaders,
                   higherTermStepDownFailed>>
@@ -1076,7 +1092,6 @@ InstallSnapshot ==
     /\ commitIndex' = nextCommit
     /\ snapshotIndex' = [snapshotIndex EXCEPT ![node] = transfer.index]
     /\ snapshotPrefix' = [snapshotPrefix EXCEPT ![node] = transfer.prefix]
-    /\ compactionPending' = [compactionPending EXCEPT ![node] = FALSE]
     /\ snapshotTransfer' = NoSnapshotTransfer
     /\ StartApplicationEpoch(node, transfer.index, restoredState)
     /\ RecordLogicalPrefixes(
@@ -1088,22 +1103,6 @@ InstallSnapshot ==
     /\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')
     /\ UNCHANGED <<readRequests, readBarrierViolationSeen,
                     commitWitnesses>>
-
-\* `log` is ghost logical history spanning the snapshot prefix. Compaction
-\* completes the modeled snapshot lifecycle but intentionally retains that
-\* history for safety witnesses. Physical prefix retention, storage offsets,
-\* and crash/reopen compaction are simulator and storage-test evidence.
-CompactSnapshot(n) ==
-  /\ compactionPending[n]
-  /\ compactionPending' = [compactionPending EXCEPT ![n] = FALSE]
-  /\ UNCHANGED logicalPrefixLedger
-  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  snapshotIndex, snapshotPrefix, snapshotTransfer,
-                  messages, readRequests, readBarrierViolationSeen,
-                  electedLeaders,
-                  committedLedger, commitWitnesses>>
-  /\ UNCHANGED applicationVars
-  /\ UNCHANGED authorityVars
 
 EnterJoint(n, newVoters) ==
   LET effective == EffectiveConfiguration(n)
@@ -1193,7 +1192,11 @@ GrantRead(n, request) ==
       /\ UNCHANGED applicationVars
       /\ UNCHANGED historyVars
 
-ProtocolNext ==
+\* Every protocol action, and the whole transition relation. There is no
+\* wrapper: snapshot creation and compaction are one atomic action, so `Next`
+\* has no compaction-first branch to reproduce and no second name to carry.
+\* The four focused relations below are strict disjunct-subsets of this one.
+Next ==
   \/ \E n \in Nodes : Timeout(n)
   \/ \E c, v \in Nodes : SendRequestVote(c, v)
   \/ \E m \in {message \in messages : message.type = RequestVote} :
@@ -1215,20 +1218,13 @@ ProtocolNext ==
   \/ \E n \in Nodes, request \in ReadRequests : RegisterRead(n, request)
   \/ \E n \in Nodes, request \in ReadRequests : GrantRead(n, request)
 
-\* Compaction changes only verifier bookkeeping, so complete it before
-\* exploring independent protocol transitions and their equivalent schedules.
-Next ==
-  IF \E n \in Nodes : compactionPending[n]
-  THEN \E n \in Nodes : CompactSnapshot(n)
-  ELSE ProtocolNext
-
 Spec == Init /\ [][Next]_vars
 
 \* Focused proof obligations.
 \*
 \* `Next` is the whole protocol and `Spec` is the whole model: every wired tier
 \* checks all nine invariants against all of it. The relations below are strict
-\* disjunct-subsets of `ProtocolNext`, assembled from the same action operators
+\* disjunct-subsets of `Next`, assembled from the same action operators
 \* under the same guards. None of them adds a transition, weakens a guard, or
 \* writes a variable the corresponding full-model action does not write, so
 \* every behavior of a focused spec is a behavior of `Spec`. That direction is
@@ -1244,7 +1240,7 @@ Spec == Init /\ [][Next]_vars
 \* cheaper route to the same claim.
 \*
 \* Totality on `vars` is inherited, not re-established. Every disjunct of
-\* `ProtocolNext` already constrains all twenty-two variables -- each action
+\* `Next` already constrains all twenty-one variables -- each action
 \* names the ones it primes and carries UNCHANGED for the rest -- so any subset
 \* of those disjuncts constrains them too. TLC rejects an unconstrained
 \* variable, so a mis-composed relation fails loudly at the first state rather
@@ -1299,7 +1295,13 @@ MembershipNext ==
 \* installation restores: an epoch bump plus a rebuilt application state is the
 \* only path by which `applied` moves backwards. Excludes reads and membership
 \* change.
-SnapshotProtocolNext ==
+\*
+\* Like its three siblings this is a plain disjunct-subset of `Next`. It used to
+\* need a compaction-first wrapper, because `CompactSnapshot` was reachable only
+\* through `Next`'s branch and never through the bare disjunction; folding
+\* creation and compaction into one action removed the branch and the wrapper
+\* with it.
+SnapshotNext ==
   \/ \E n \in Nodes : Timeout(n)
   \/ \E c, v \in Nodes : SendRequestVote(c, v)
   \/ \E m \in {message \in messages : message.type = RequestVote} :
@@ -1316,17 +1318,6 @@ SnapshotProtocolNext ==
   \/ \E n \in Nodes : CreateSnapshot(n)
   \/ \E from, to \in Nodes : TransferSnapshot(from, to)
   \/ InstallSnapshot
-
-\* `CompactSnapshot` is reachable only through `Next`, never through
-\* `ProtocolNext`, so the snapshot obligation is a subset of `Next` rather than
-\* of `ProtocolNext` and reproduces the same compaction-first discipline. The
-\* other three focused relations need no such wrapper: none of them contains
-\* `CreateSnapshot`, the only action that sets `compactionPending`, so along
-\* their behaviors `Next` and `ProtocolNext` are the same relation.
-SnapshotNext ==
-  IF \E n \in Nodes : compactionPending[n]
-  THEN \E n \in Nodes : CompactSnapshot(n)
-  ELSE SnapshotProtocolNext
 
 \* Read barriers: core agreement plus read registration and grant. The barrier
 \* is stated against `commitIndex`, so commit and apply have to stay; the read
@@ -1423,7 +1414,6 @@ JointQuorumInit ==
   /\ commitIndex = [n \in Nodes |-> 0]
   /\ snapshotIndex = [n \in Nodes |-> 0]
   /\ snapshotPrefix = [n \in Nodes |-> <<>>]
-  /\ compactionPending = [n \in Nodes |-> FALSE]
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |-> AppliedCursor(0, 0, InitialApplicationState)]
   /\ applicationBases =
@@ -1501,8 +1491,7 @@ LogMatchingFor(logs, snapshotIndexes, snapshotPrefixes) ==
            = LogicalPrefixFrom(logs, snapshotIndexes, snapshotPrefixes, b, i)
 
 LogMatching ==
-  /\ SnapshotIdentitySoundFor(
-       log, snapshotIndex, snapshotPrefix, compactionPending)
+  /\ SnapshotIdentitySoundFor(log, snapshotIndex, snapshotPrefix)
   /\ LogicalPrefixLedgerSound
   /\ LogMatchingFor(log, snapshotIndex, snapshotPrefix)
 

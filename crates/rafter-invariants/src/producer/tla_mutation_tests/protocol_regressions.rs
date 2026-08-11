@@ -331,7 +331,7 @@ pub(super) fn missing_effective_recomputation_breaks_overwrite_regression() {
     let mutated = replace_operator(
         &raft,
         "EffectiveConfiguration(node)",
-        "SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes, compactionPendings)",
+        "SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes)",
         "AppliedConfiguration(node)",
     );
     let detector =
@@ -358,7 +358,7 @@ pub(super) fn follower_recomputation_breaks_delayed_heartbeat_regression() {
     let mutated = replace_operator(
         &raft,
         "EffectiveConfiguration(node)",
-        "SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes, compactionPendings)",
+        "SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes)",
         "AppliedConfiguration(node)",
     );
     let detector =

@@ -27,8 +27,12 @@ pub(in crate::producer::tla_exec::mutation_tests) fn snapshot_lifecycle_preserve
     );
     assert!(summary.completed_without_error);
     assert!(summary.process_finished);
-    assert!(summary.distinct_states >= 7);
-    assert!(summary.search_depth >= 7);
+    // Was 7. Folding snapshot creation and compaction into one atomic action
+    // removed the one intermediate state this lifecycle used to pass through --
+    // measured 7/7 before the fold and 6/6 after, which is the fold's claim
+    // stated as a number.
+    assert!(summary.distinct_states >= 6);
+    assert!(summary.search_depth >= 6);
 
     let six_entry = run_tlc_with_config(
         &root,

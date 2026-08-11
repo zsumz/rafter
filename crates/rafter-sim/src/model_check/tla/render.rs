@@ -50,7 +50,7 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
     // Raft.tla itself rather than against a golden copy of this function.
     module.push_str("traceVars == << currentTerm, votedFor, role, log, commitIndex,\n");
     module.push_str(
-        "               snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,\n",
+        "               snapshotIndex, snapshotPrefix, snapshotTransfer,\n",
     );
     module.push_str("               applied, applicationBases, applicationTransitions,\n");
     module.push_str("               messages, readRequests, readBarrierViolationSeen,\n");

@@ -45,7 +45,7 @@ scheduling properties that are not per-group Raft consensus properties.
 - Every client-visible invariant must retain registered end-to-end evidence.
 - Every persistence invariant must retain typed failure-injection or crash/reopen evidence.
 - Every liveness obligation should state its fairness and timing assumptions.
-- TLA+ `CompactSnapshot` retains a ghost logical log for safety witnesses; it is not physical compaction evidence. Simulator and storage tests own retained-prefix, offset, and crash/reopen compaction behavior.
+- TLA+ `CreateSnapshot` creates and compacts atomically and retains a ghost logical log for safety witnesses; it is not physical compaction evidence. Simulator and storage tests own retained-prefix, offset, and crash/reopen compaction behavior.
 - Registered direct tests are total deterministic oracles: one exact exit-0 pass is green, zero execution is incomplete, and one canonical exact-test exit-101 failure is an invariant violation. Malformed, duplicate, timed-out, signaled, wrong-name, or other process failures are harness errors.
 
 ## Layer Legend

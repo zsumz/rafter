@@ -65,7 +65,6 @@ BaseApplicationBases ==
 BaseApplicationTransitions == {}
 BaseSnapshotIndex == [n \in Nodes |-> 0]
 BaseSnapshotPrefix == [n \in Nodes |-> <<>>]
-BaseCompactionPending == [n \in Nodes |-> FALSE]
 
 ApplicationConfig ==
   JointMembership(Nodes, {FixtureA, FixtureB})
@@ -155,8 +154,6 @@ InitialSnapshotPrefix ==
     IF n = FixtureA THEN <<Entry(1, FixtureValueA)>> ELSE <<>>]
   ELSE BaseSnapshotPrefix
 
-InitialCompactionPending == BaseCompactionPending
-
 InitialEffectiveMembership ==
   IF TargetPredicate = "StateMachineSafety" /\
        FixtureMode # ApplicationEpochRecorderMode
@@ -201,7 +198,6 @@ FixtureInit ==
   /\ commitIndex = InitialCommit
   /\ snapshotIndex = InitialSnapshotIndex
   /\ snapshotPrefix = InitialSnapshotPrefix
-  /\ compactionPending = InitialCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -358,7 +354,7 @@ FaultySnapshotTransfer ==
         from |-> FixtureA, to |-> FixtureB, index |-> 1,
         prefix |-> <<Entry(1, FixtureValueB)>>]
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  snapshotIndex, snapshotPrefix, compactionPending,
+                  snapshotIndex, snapshotPrefix,
                   messages, readRequests, readBarrierViolationSeen,
                   electedLeaders>>
   /\ UNCHANGED applicationVars
@@ -978,7 +974,6 @@ RemovedCandidateVoteGuardInvariant ==
 BaseExtendedState ==
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -1049,7 +1044,6 @@ ClosedLogicalPrefixLifecycleInit ==
   /\ commitIndex = BaseCommit
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -1108,7 +1102,6 @@ ClosedTermPrefixConflictInit ==
   /\ commitIndex = BaseCommit
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -1253,7 +1246,6 @@ SnapshotLifecycleInit ==
   /\ commitIndex = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA
@@ -1278,16 +1270,16 @@ SnapshotLifecycleInit ==
   /\ staleAuthorityAccepted = FALSE
   /\ frozenAppendAuthorityFailed = FALSE
 
+\* Creation and compaction are one atomic step, so this drives one transition
+\* where it used to drive two. The post-state conjunct on the first disjunct is
+\* what the old `compactionPending'[FixtureA]` conjunct was: the fixture's
+\* assertion that the action it just took actually had its effect, and the hook
+\* the mutation suite uses to stall this lifecycle.
 SnapshotLifecycleNext ==
   \/ /\ snapshotIndex[FixtureA] = 0
      /\ CreateSnapshot(FixtureA)
-     /\ compactionPending'[FixtureA]
+     /\ snapshotIndex'[FixtureA] = 1
   \/ /\ snapshotIndex[FixtureA] = 1
-     /\ compactionPending[FixtureA]
-     /\ CompactSnapshot(FixtureA)
-     /\ ~compactionPending'[FixtureA]
-  \/ /\ snapshotIndex[FixtureA] = 1
-     /\ ~compactionPending[FixtureA]
      /\ snapshotIndex[FixtureB] = 0
      /\ ~snapshotTransfer.active
      /\ TransferSnapshot(FixtureA, FixtureB)
@@ -1312,8 +1304,7 @@ SnapshotLifecycleSpec ==
   /\ WF_vars(SnapshotLifecycleNext)
 
 SnapshotLifecycleInvariant ==
-  /\ SnapshotIdentitySoundFor(
-       log, snapshotIndex, snapshotPrefix, compactionPending)
+  /\ SnapshotIdentitySoundFor(log, snapshotIndex, snapshotPrefix)
   /\ LogMatching
   /\ LeaderCompleteness
   /\ CommittedPrefixStability
@@ -1322,8 +1313,6 @@ SnapshotLifecycleInvariant ==
 
 SnapshotLifecycleComplete ==
   /\ snapshotIndex[FixtureB] = 1
-  /\ ~compactionPending[FixtureA]
-  /\ ~compactionPending[FixtureB]
   /\ ApplicationEpoch(FixtureB) = 1
   /\ ApplicationObservationWitnesses(FixtureB) = {}
   /\ currentTerm[FixtureB] = 2
@@ -1341,7 +1330,6 @@ ApplicationEpochLifecycleInit ==
   /\ commitIndex = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -1441,7 +1429,6 @@ SelfRemovalCommitInit ==
   /\ commitIndex = [n \in Nodes |-> 1]
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA

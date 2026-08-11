@@ -46,7 +46,7 @@ pub(super) const REQUIRED_MUTATION_TESTS: [&str; 34] = [
     "sanitized_application_result_cannot_qualify_detector_fixture",
     "self_removing_leader_commits_final_configuration_and_steps_down",
     "shorter_authoritative_log_repairs_an_uncommitted_suffix",
-    "snapshot_compaction_pending_tracks_create_and_compact_transitions",
+    "snapshot_creation_atomically_advances_and_retains_the_snapshot_floor",
     "snapshot_lifecycle_preserves_logical_identity_through_restart",
     "stale_messages_are_retired_when_the_target_term_advances",
     "true_mutation_of_real_predicate_cannot_qualify",

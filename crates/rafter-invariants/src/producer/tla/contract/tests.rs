@@ -216,8 +216,8 @@ fn membership_trace_contract_rejects_any_reviewed_source_drift() {
         spec.replace("/\\ Timeout(n1)", "/\\ TRUE"),
         spec.replace("/\\ ClientAppend(n1, v1)", "/\\ TRUE"),
         spec.replace(
-            "TraceComplete == traceStep = 45",
-            "TraceComplete == traceStep \\in 44..45",
+            "TraceComplete == traceStep = 44",
+            "TraceComplete == traceStep \\in 43..44",
         ),
     ] {
         assert!(validate_trace_contract_sources(&symbols, &mutated, &config).is_err());
