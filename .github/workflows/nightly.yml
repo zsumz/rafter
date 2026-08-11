@@ -210,9 +210,37 @@ jobs:
       # exists. Decide it here, in seconds, against measured bytes.
       - name: Gate restored checkpoint against runner disk
         run: scripts/tla-checkpoint-disk-gate target/rafter-invariants/tla-checkpoint/nightly
+      # Side-channel telemetry: sampled from outside the producer, written
+      # under RUNNER_TEMP so it can never reach the source-bound evidence tree.
+      # This deliberately adds no receipt field, no schema surface, and no
+      # producer version -- a producer bump cascades into contract migrations
+      # and the verifier.
+      - name: Start TLA+ continuation telemetry
+        run: |
+          mkdir -p "${RUNNER_TEMP}/tla-continuation-telemetry"
+          nohup scripts/tla-continuation-telemetry sample \
+            --checkpoint target/rafter-invariants/tla-checkpoint/nightly \
+            --output "${RUNNER_TEMP}/tla-continuation-telemetry/nightly.jsonl" \
+            --interval 300 \
+            >"${RUNNER_TEMP}/tla-continuation-telemetry/sampler.log" 2>&1 &
+          echo "$!" >"${RUNNER_TEMP}/tla-continuation-telemetry/sampler.pid"
       - name: Produce source-bound nightly TLA+ evidence
         timeout-minutes: 330
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla
+      # Reporting only. `summarize` always exits 0 and the lane verdict stays
+      # with the invariant producer: an incomplete nightly continuation is
+      # still a failure. Naming the trajectory says whether continuing this
+      # lineage converges or diverges, which a bare "incomplete" does not.
+      - name: Classify nightly TLA+ continuation
+        if: always()
+        run: |
+          pidfile="${RUNNER_TEMP}/tla-continuation-telemetry/sampler.pid"
+          if [[ -f "$pidfile" ]]; then
+            kill "$(cat "$pidfile")" 2>/dev/null || true
+          fi
+          scripts/tla-continuation-telemetry summarize \
+            --input "${RUNNER_TEMP}/tla-continuation-telemetry/nightly.jsonl" \
+            --label nightly
       - name: Save exact-compatible nightly TLC checkpoint
         if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/nightly/CACHE_VALID') != '' }}
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -257,6 +285,14 @@ jobs:
             artifacts/invariants/nightly-tla.json
             artifacts/invariants/nightly-tla/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload nightly TLA+ continuation telemetry
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: invariants-nightly-tla-continuation-telemetry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tla-continuation-telemetry/
+          if-no-files-found: ignore
           retention-days: 30
       - name: Upload nightly TLA+ process diagnostics
         if: always()
