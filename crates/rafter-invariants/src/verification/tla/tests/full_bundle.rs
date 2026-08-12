@@ -491,11 +491,22 @@ impl Fixture {
             let rendered = render_detector_config(&template, probe).expect("render config");
             self.write_kind(&kind, rendered.as_bytes());
         }
+        // Terminal counters sit exactly at the pinned floors -- the weakest
+        // run the contract accepts -- so a floor recalibration needs no
+        // fixture edit and a floor regression cannot hide behind slack.
+        let generated_floor: u64 = self
+            .configuration("minimum_generated_states")
+            .parse()
+            .expect("profile pins a numeric state floor");
+        let distinct_floor: u64 = self
+            .configuration("minimum_distinct_states")
+            .parse()
+            .expect("profile pins a numeric state floor");
         self.write_process_log(
             "tla-log",
             "model-check",
             None,
-            success_output(130_000_000, 120_000_000, 1),
+            success_output(generated_floor, distinct_floor, 1),
             0,
         );
         self.write_process_log(

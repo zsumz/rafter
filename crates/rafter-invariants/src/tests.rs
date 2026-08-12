@@ -274,9 +274,19 @@ fn synthetic_observations(
             // continuation that spent its budget with the frontier still open,
             // which is the shape its lane actually produces.
             if tla_policy(manifest, profile).gates() {
+                // Counters sit exactly at the pinned floors -- the weakest run
+                // the contract accepts -- so a floor regression cannot hide
+                // behind a generous fixture, and a floor recalibration needs
+                // no fixture edit.
+                let configuration = &manifest.profiles[profile].runners["tla"].configuration;
+                let floor = |key: &str| -> u64 {
+                    configuration[key]
+                        .parse()
+                        .expect("profile pins a numeric state floor")
+                };
                 observations.extend([
-                    ("generated_states".to_owned(), 130_000_000),
-                    ("distinct_states".to_owned(), 120_000_000),
+                    ("generated_states".to_owned(), floor("minimum_generated_states")),
+                    ("distinct_states".to_owned(), floor("minimum_distinct_states")),
                     ("states_left_on_queue".to_owned(), 0),
                     ("search_depth".to_owned(), 1),
                 ]);

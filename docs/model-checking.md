@@ -33,9 +33,12 @@ The two answers differ, and the difference is pinned in the contract as
 `primary_completion` rather than left to a reader's assumption.
 
 **PR is gating.** `RaftCi.cfg` genuinely drains its queue, so the PR tier
-passes only when TLC reports `states_left = 0` and clears the calibrated floors
-of 120,000,000 generated and 16,000,000 distinct states. A timeout is
-incomplete coverage, not a pass. Nothing about the PR gate changed.
+passes only when TLC reports `states_left = 0` and clears the calibrated
+floors of 255,177,640 generated and 36,058,645 distinct states — the exact
+counts of a measured post-reduction exhaustion (93 minutes at `-workers 4` on
+a 14-core host), pinned the way obligation floors are pinned. A timeout is
+incomplete coverage, not a pass. Nothing about the PR gate's semantics
+changed.
 
 **Nightly and weekly are reporting.** A green scheduled tier means: every wired
 proof obligation exhausted its frontier at its own calibrated floors, the
@@ -105,9 +108,9 @@ for every profile once. The affected `runner_contract_sha256` values are:
 
 | Profile | From | To |
 | --- | --- | --- |
-| PR | `84f4980f5963064f…` | `a9c75c280ca2bd18…` |
+| PR | `84f4980f5963064f…` | `4ec4e394e5afbc62…` |
 | Nightly | `4ca7833d8f558e44…` | `931838e2f6cb53ac…` |
-| Weekly | `8d09c27585de34fa…` | `724e90e9696b09f1…` |
+| Weekly | `8d09c27585de34fa…` | `0ccc3067bfcf7546…` |
 
 Scheduled continuations restart from an empty queue at the next run and
 reaccumulate. Obligations themselves are outside that map by design, so future
@@ -188,17 +191,14 @@ neither required nor supported, because `EnterJoint` guards on
 configuration and then complete the change with a following stable entry. Run
 it with `scripts/tla-model-check --joint-quorum`.
 
-It is a manual-run artifact and not a fourth tier, for two independent reasons.
-
-**It cannot be registered as a tier.** The profile contract in
-`crates/rafter-invariants` maps exactly three profile names to exactly three
-config filenames and rejects everything else, and the state floors are pinned
-to the same two constants for all three. So a fourth tier cannot be added, and
-neither can an existing tier be repointed, without changing that contract.
-There is also a squeeze inside it: a model small enough to fit alongside an
-existing tier's budget would fail the 120,000,000-generated-state floor, while
-a model large enough to clear that floor needs a budget of its own, which is
-the thing that cannot be added.
+It is a manual-run artifact and not a wired obligation, for one reason that
+used to be two. The contract objection is gone: when this section was first
+written the profile contract admitted exactly three configs at one shared
+floor pair, and no fourth model could register at any budget. The obligations
+vocabulary removed that wall — an obligation registers any non-primary config
+at its own calibrated floors and budget, which is how eight of them are wired
+today. What survives is the empirical objection, and it is sufficient on its
+own:
 
 **It does not exhaust in a tier's budget.** Measured on a 14-core machine with
 `-workers 4 -Xmx8g`, the same flags `--joint-quorum` uses. State counts are
@@ -503,6 +503,22 @@ What exhausts, at which bounds:
 | `RaftReadObligation.cfg` | 2v, V2, T2, L2, R1 | 592,279 | 98,948 | 30 s | yes |
 | `RaftCoreObligationDeep.cfg` | 2v, V2, T3, L3, R2 | 14,734,799 | 2,004,053 | 8.5 min | yes |
 | `RaftSnapshotObligation.cfg` (folded spec) | 2v, V2, T2, L2, R1 | 14,119,884 | 2,002,205 | 6.7 min | yes |
+| `RaftCoreObligationUnsymmetrized.cfg` | 2v, V2, T2, L2, R1, no symmetry | 452,327 | 80,977 | 15 s | yes |
+| `RaftReadObligationUnsymmetrized.cfg` | 2v, V2, T2, L2, R1, no symmetry | 2,368,355 | 395,573 | 60 s | yes |
+| `RaftIntegrationUnsymmetrized.cfg` | full `Spec`, 2v, V1, T1, L1, R1, no symmetry | 254,211 | 49,985 | 15 s | yes |
+| `RaftSnapshotObligationUnsymmetrized.cfg` | 2v, V2, T2, L2, R1, no symmetry | 56,476,413 | 8,008,105 | 17 min | yes |
+
+The unsymmetrized family doubles as a standing symmetry audit, and the audit
+is a pair of numbers per config, not a round ratio. Each measured distinct
+count falls slightly short of the group order times its symmetric sibling's
+count — 80,977 against 4 x 20,282 = 81,128; 395,573 against 395,792; 49,985
+against 2 x 24,995 = 49,990; 8,008,105 against 4 x 2,002,205 = 8,008,820 —
+deficits of 151, 219, 5, and 715 states. The deficit is structural: a state
+fixed by some permutation has an orbit smaller than the full group, so the
+unquotiented count is the group order times the quotient count minus exactly
+the symmetric states' missing orbit mass. A future change in either number of
+any pair is evidence about symmetry soundness, which is what the weekly tier
+exists to supply.
 
 What does not, and how it fails to:
 
@@ -541,6 +557,17 @@ The wired manifest, after calibration:
 | nightly, weekly | `core-replication-deep` | `RaftCoreObligationDeep.cfg` | 14,734,799 / 2,004,053 | 25m |
 | nightly, weekly | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
 | nightly, weekly | `snapshot-lifecycle` | `RaftSnapshotObligation.cfg` | 14,119,884 / 2,002,205 | 12m |
+| weekly | `core-replication-unsymmetrized` | `RaftCoreObligationUnsymmetrized.cfg` | 452,327 / 80,977 | 4m |
+| weekly | `integration-unsymmetrized` | `RaftIntegrationUnsymmetrized.cfg` | 254,211 / 49,985 | 4m |
+| weekly | `read-fencing-unsymmetrized` | `RaftReadObligationUnsymmetrized.cfg` | 2,368,355 / 395,573 | 6m |
+| weekly | `snapshot-lifecycle-unsymmetrized` | `RaftSnapshotObligationUnsymmetrized.cfg` | 56,476,413 / 8,008,105 | 25m |
+
+Weekly affords its unsymmetrized family by trading continuation time for it:
+its reporting primary runs 200 minutes against nightly's 265, and the
+recovered hour funds the symmetry audit applied to every theorem that
+actually gates — all four gating obligation families now run both quotiented
+and unquotiented on the weekly tier, 82 obligation minutes inside the
+110-minute budget the trade opened.
 
 Floors are the exact measured counts: TLC's breadth-first counts are
 deterministic for a fixed spec, config, and symmetry, so any deviation is a
@@ -551,10 +578,15 @@ reductions' identity guarantee observed end to end. The deep core floor was
 measured before the reductions; `CoreSpec` contains no snapshot action, the
 identity was verified exactly at four other core/read bound-sets, and the
 re-verified two-voter runs above confirm it on the wired configs themselves.
-Weekly runs the same symmetric obligation configs as nightly; unsymmetrized
-obligation variants would need their own calibrated floors and are future
-work, recorded here so the weekly tier's unsymmetrized claim is not silently
-overread as covering them.
+
+The PR primary's floors are exact for the same reason. The post-reduction
+`RaftCi.cfg` exhaustion completed at 255,177,640 generated and 36,058,645
+distinct states with the queue drained, in 93 minutes at `-workers 4` on a
+14-core host, and those counts replaced the round pre-reduction floors of
+120,000,000 / 16,000,000 in the pinned contract. The search runs materially
+past its old slack bar — the frontier deepened from 28 to 39 in the final
+third — which is why a measured exhaustion, not an extrapolated one, is the
+only admissible calibration source.
 
 ### Correspondence to the implementation
 

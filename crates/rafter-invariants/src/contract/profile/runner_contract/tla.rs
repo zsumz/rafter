@@ -19,10 +19,15 @@ pub(super) const PRIMARY_CONFIGS: [&str; 3] = ["RaftCi.cfg", "RaftNightly.cfg", 
 ///
 /// These are the only state floors that gate anything. `RaftCi.cfg` genuinely
 /// drains its queue, so its continuation decides the PR layer and these two
-/// numbers are the calibrated bar it must clear. A `RaftCi` recalibration is
-/// exactly this edit and nothing else.
-const PR_MINIMUM_GENERATED_STATES: &str = "120000000";
-const PR_MINIMUM_DISTINCT_STATES: &str = "16000000";
+/// numbers are the calibrated bar it must clear. They are the exact counts of
+/// a measured post-reduction exhaustion (255,177,640 generated, 36,058,645
+/// distinct, queue drained; TLC 2026.08.11.125311, seed 2026071101, fp 0,
+/// 4 workers, symmetric), matching the obligation-floor philosophy: counts
+/// are deterministic for a fixed spec, config, and symmetry, so a deviation
+/// is a spec change and wants deliberate recalibration, not slack. A `RaftCi`
+/// recalibration is exactly this edit and nothing else.
+const PR_MINIMUM_GENERATED_STATES: &str = "255177640";
+const PR_MINIMUM_DISTINCT_STATES: &str = "36058645";
 
 /// Accumulation bar the scheduled continuations report progress against.
 ///
@@ -160,7 +165,11 @@ fn valid_weekly(contract: &Configuration) -> bool {
         && contract.minimum_generated_states == REPORTING_MINIMUM_GENERATED_STATES
         && contract.minimum_distinct_states == REPORTING_MINIMUM_DISTINCT_STATES
         && contract.seed == "2026071103"
-        && contract.soft_timeout == "265m"
+        // 200m, not nightly's 265m: with the continuation reporting rather
+        // than gating, an hour of its budget buys the unsymmetrized
+        // obligation family instead -- the symmetry audit the weekly tier
+        // exists to provide, applied to the theorems that actually gate.
+        && contract.soft_timeout == "200m"
         && contract.workers == "auto"
         && contract.checkpoint_gzip.as_deref() == Some("required")
         && contract.checkpoint_minutes.as_deref() == Some("30")
