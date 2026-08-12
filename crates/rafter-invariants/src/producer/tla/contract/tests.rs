@@ -114,7 +114,7 @@ fn weekly_checkpoint_contract_is_exact() {
         ("detector_negative".to_owned(), "required".to_owned()),
         ("config".to_owned(), "Raft.cfg".to_owned()),
         ("workers".to_owned(), "auto".to_owned()),
-        ("soft_timeout".to_owned(), "200m".to_owned()),
+        ("soft_timeout".to_owned(), "190m".to_owned()),
         ("checkpoint_minutes".to_owned(), "30".to_owned()),
         ("checkpoint_gzip".to_owned(), "required".to_owned()),
         ("max_heap".to_owned(), "4g".to_owned()),

@@ -165,11 +165,15 @@ fn valid_weekly(contract: &Configuration) -> bool {
         && contract.minimum_generated_states == REPORTING_MINIMUM_GENERATED_STATES
         && contract.minimum_distinct_states == REPORTING_MINIMUM_DISTINCT_STATES
         && contract.seed == "2026071103"
-        // 200m, not nightly's 265m: with the continuation reporting rather
-        // than gating, an hour of its budget buys the unsymmetrized
+        // 190m, not nightly's 250m: with the continuation reporting rather
+        // than gating, over an hour of its budget buys the unsymmetrized
         // obligation family instead -- the symmetry audit the weekly tier
         // exists to provide, applied to the theorems that actually gate.
-        && contract.soft_timeout == "200m"
+        // The first nightly dispatch measured CI runners at almost exactly
+        // twice the local calibration wall on the multi-minute models, so the
+        // unsymmetrized snapshot obligation carries a 40-minute budget and
+        // the primary funds it.
+        && contract.soft_timeout == "190m"
         && contract.workers == "auto"
         && contract.checkpoint_gzip.as_deref() == Some("required")
         && contract.checkpoint_minutes.as_deref() == Some("30")

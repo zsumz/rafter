@@ -35,12 +35,12 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
     // Scoped to the weekly runner's own configuration line. Searching the whole
     // document let another profile's value satisfy a weekly assertion, which is
-    // how weekly's budget moved to 200m while this guard still read 265m and
+    // how weekly's budget moved off 265m while this guard still read 265m and
     // stayed green.
     let profile = tla_configuration_line(&profile, "Raft.cfg");
     for required in [
         "\"config\": \"Raft.cfg\"",
-        "\"soft_timeout\": \"200m\"",
+        "\"soft_timeout\": \"190m\"",
         "\"total_timeout\": \"320m\"",
         "\"finalization_reserve\": \"10m\"",
         "\"workers\": \"auto\"",
