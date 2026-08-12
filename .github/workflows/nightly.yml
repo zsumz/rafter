@@ -373,6 +373,13 @@ jobs:
           path: |
             artifacts/invariants/nightly-maelstrom.json
             artifacts/invariants/nightly-maelstrom/
+          # The durable store trees carry deliberate dotfile markers (for
+          # example .app-persist-crashpoint-fired) that the receipt binds by
+          # path. upload-artifact excludes hidden files by default, which
+          # silently strips them and makes the aggregate's fail-closed
+          # re-verification refuse the whole bundle after every layer already
+          # passed. Evidence uploads must be byte-complete.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload nightly Maelstrom process diagnostics
