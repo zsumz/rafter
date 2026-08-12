@@ -178,8 +178,16 @@ fn tla_contract_accepts_sorted_focused_obligations() {
         "pr",
         "tla",
         &tla_runner_with(vec![
-            obligation("joint-quorum-focused-init", "RaftJointQuorumFocusedInit.cfg", "4m"),
-            obligation("joint-quorum-focused-next", "RaftJointQuorumFocusedNext.cfg", "6m"),
+            obligation(
+                "joint-quorum-focused-init",
+                "RaftJointQuorumFocusedInit.cfg",
+                "4m",
+            ),
+            obligation(
+                "joint-quorum-focused-next",
+                "RaftJointQuorumFocusedNext.cfg",
+                "6m",
+            ),
         ]),
     )
     .expect("sorted, budgeted obligations are canonical");

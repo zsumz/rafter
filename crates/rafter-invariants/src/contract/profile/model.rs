@@ -104,7 +104,8 @@ pub struct ProofObligationContract {
 ///
 /// Only frontier exhaustion is legal. A timed-out or coverage-short obligation
 /// proves nothing about the states it never enumerated, so there is no weaker
-/// variant to select.
+/// variant to select. This enum is deliberately exhaustive so an unreviewed
+/// completion fails during decoding rather than being silently accepted.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ObligationCompletion {
     #[serde(rename = "frontier-exhausted")]

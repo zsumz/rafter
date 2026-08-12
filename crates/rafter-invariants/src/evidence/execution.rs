@@ -5,8 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{
-    ArtifactRef, ExecutableReceipt, SimulatorLivenessBinding, SourceReceipt,
-    TlaContinuationBinding,
+    ArtifactRef, ExecutableReceipt, SimulatorLivenessBinding, SourceReceipt, TlaContinuationBinding,
 };
 use crate::contract::profile::ProfileContract;
 

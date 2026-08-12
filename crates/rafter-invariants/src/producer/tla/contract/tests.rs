@@ -114,7 +114,7 @@ fn weekly_checkpoint_contract_is_exact() {
         ("detector_negative".to_owned(), "required".to_owned()),
         ("config".to_owned(), "Raft.cfg".to_owned()),
         ("workers".to_owned(), "auto".to_owned()),
-        ("soft_timeout".to_owned(), "265m".to_owned()),
+        ("soft_timeout".to_owned(), "200m".to_owned()),
         ("checkpoint_minutes".to_owned(), "30".to_owned()),
         ("checkpoint_gzip".to_owned(), "required".to_owned()),
         ("max_heap".to_owned(), "4g".to_owned()),
@@ -147,7 +147,7 @@ fn nightly_checkpoint_contract_is_exact() {
             "nodes-values-read-requests-product".to_owned(),
         ),
         ("workers".to_owned(), "auto".to_owned()),
-        ("soft_timeout".to_owned(), "265m".to_owned()),
+        ("soft_timeout".to_owned(), "250m".to_owned()),
         ("checkpoint_minutes".to_owned(), "30".to_owned()),
         ("checkpoint_gzip".to_owned(), "required".to_owned()),
         ("max_heap".to_owned(), "8g".to_owned()),
@@ -255,8 +255,14 @@ fn obligation(id: &str, config: &str) -> ProofObligationContract {
 fn producer_refuses_primary_and_duplicate_obligations() {
     validate_obligation_options(&[]).expect("an empty obligation list is legal");
     validate_obligation_options(&[
-        obligation("joint-quorum-focused-init", "RaftJointQuorumFocusedInit.cfg"),
-        obligation("joint-quorum-focused-next", "RaftJointQuorumFocusedNext.cfg"),
+        obligation(
+            "joint-quorum-focused-init",
+            "RaftJointQuorumFocusedInit.cfg",
+        ),
+        obligation(
+            "joint-quorum-focused-next",
+            "RaftJointQuorumFocusedNext.cfg",
+        ),
     ])
     .expect("distinct focused obligations are legal");
 
@@ -320,4 +326,55 @@ fn obligation_specs_must_bind_the_registry_predicates() {
         &symbols,
     )
     .is_err());
+}
+
+/// The producer keeps its own allow-list, deliberately duplicating what the
+/// profile contract already pins so neither gate can be weakened alone. That
+/// independence only holds if both are kept in step, and every earlier test
+/// here fed the allow-list a hand-built map -- so a real profile whose budget
+/// moved in the contract sailed past locally and refused at runtime in CI.
+/// This runs the reviewed manifest itself through the producer's gate.
+#[test]
+fn every_reviewed_profile_satisfies_the_producer_allow_list() {
+    let (_, manifest) = crate::tests::loaded();
+    for profile in ["pr", "nightly", "weekly"] {
+        let runner = &manifest.profiles[profile].runners["tla"];
+        validate_runner_options(&runner.configuration).unwrap_or_else(|error| {
+            panic!("{profile} TLA configuration must satisfy the producer allow-list: {error}")
+        });
+        validate_obligation_options(&runner.obligations).unwrap_or_else(|error| {
+            panic!("{profile} TLA obligations must satisfy the producer allow-list: {error}")
+        });
+    }
+}
+
+/// Obligations and the primary continuation share one execution window, and
+/// the producer hands each phase `min(budget, remaining)`. A reviewed manifest
+/// whose budgets oversubscribe the window would silently truncate whichever
+/// phase ran last, so the sum is checked against the window here as well as in
+/// the contract layer.
+#[test]
+fn reviewed_obligation_budgets_fit_inside_every_execution_window() {
+    let (_, manifest) = crate::tests::loaded();
+    for profile in ["pr", "nightly", "weekly"] {
+        let runner = &manifest.profiles[profile].runners["tla"];
+        let minutes = |value: &str| {
+            value
+                .strip_suffix('m')
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or_else(|| panic!("{profile} budget {value} is whole minutes"))
+        };
+        let obligations: u64 = runner
+            .obligations
+            .iter()
+            .map(|obligation| minutes(&obligation.soft_timeout))
+            .sum();
+        let primary = minutes(&runner.configuration["soft_timeout"]);
+        let window = minutes(&runner.configuration["total_timeout"])
+            - minutes(&runner.configuration["finalization_reserve"]);
+        assert!(
+            obligations + primary <= window,
+            "{profile}: {obligations}m of obligations plus {primary}m of primary exceeds the {window}m window"
+        );
+    }
 }

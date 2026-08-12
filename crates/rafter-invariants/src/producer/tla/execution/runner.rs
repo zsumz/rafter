@@ -12,7 +12,8 @@ use super::{
     obligation::run_obligations,
     outcome::{
         checkpoint_failure, complete_main_execution, detector_failure, main_budget_failure,
-        obligation_failure, prepare_checkpoint, trace_budget_failure, trace_failure, MainCompletion,
+        obligation_failure, prepare_checkpoint, trace_budget_failure, trace_failure,
+        MainCompletion,
     },
     probes::{run_detector_probes, run_trace_probe, trace_succeeded},
 };

@@ -13,9 +13,7 @@ use crate::{
 use super::{
     artifact::read_kind,
     checkpoint::verify_checkpoint_authenticated,
-    completion::{
-        verify_completion, verify_continuation_binding, verify_counterexample_binding,
-    },
+    completion::{verify_completion, verify_continuation_binding, verify_counterexample_binding},
     detector,
     invocation::{optional_process_log, read_initial_process_log},
     obligation, observation,

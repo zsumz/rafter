@@ -142,7 +142,10 @@ fn validate_pass(
     // A continuation that elapsed publishes its progress frame instead of a
     // terminal one. That shape is only admissible under a reporting policy;
     // under a gating policy an elapsed run never reaches this function.
-    let elapsed = check.tla_continuation.ok_or("TLA receipt omitted its continuation binding")?.outcome
+    let elapsed = check
+        .tla_continuation
+        .ok_or("TLA receipt omitted its continuation binding")?
+        .outcome
         == ContinuationOutcome::BudgetElapsedFrontierOpen;
     if elapsed && policy.gates() {
         return Err("a gating TLA continuation cannot pass with an open frontier");

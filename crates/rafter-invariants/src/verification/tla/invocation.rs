@@ -22,7 +22,9 @@ mod arguments;
 mod repository;
 
 pub(super) fn obligation_id(label: &str) -> Option<&str> {
-    label.strip_prefix("obligation-").filter(|id| !id.is_empty())
+    label
+        .strip_prefix("obligation-")
+        .filter(|id| !id.is_empty())
 }
 
 fn contract_obligation<'a>(
@@ -41,9 +43,7 @@ fn contract_obligation<'a>(
         .obligations
         .iter()
         .find(|obligation| obligation.id == id)
-        .ok_or_else(|| {
-            AggregateError::new(format!("TLA log names unpinned proof obligation {id}"))
-        })
+        .ok_or_else(|| AggregateError::new(format!("TLA log names unpinned proof obligation {id}")))
 }
 
 pub(super) fn read_process_log(

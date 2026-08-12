@@ -22,6 +22,9 @@ const REPORTING_CONTINUATION: &str = "reporting-continuation";
 /// changes, and only for the single outcome "budget elapsed with a healthy open
 /// frontier". A counterexample is still a counterexample, and malformed or
 /// missing evidence is still a harness error.
+///
+/// This enum is deliberately exhaustive so an unreviewed policy fails during
+/// decoding instead of being treated as one of the reviewed two.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PrimaryCompletionPolicy {
     #[serde(rename = "gating-frontier-exhausted")]
@@ -55,6 +58,9 @@ impl PrimaryCompletionPolicy {
 /// monolith did not finish. The floor comparison is deliberately absent: in
 /// reporting mode the pinned minimums are accumulation context published as
 /// observations, not a terminal condition.
+///
+/// This enum is deliberately exhaustive so an unreviewed outcome fails during
+/// decoding rather than widening what a receipt may claim.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ContinuationOutcome {
     #[serde(rename = "frontier-exhausted")]

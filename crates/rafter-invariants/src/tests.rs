@@ -37,7 +37,8 @@ pub(crate) fn tla_obligations<'a>(
 /// The continuation policy the profile pins, decoded the way the runners do.
 pub(crate) fn tla_policy(manifest: &ProfileManifest, profile: &str) -> PrimaryCompletionPolicy {
     PrimaryCompletionPolicy::parse(
-        &manifest.profiles[profile].runners["tla"].configuration[crate::evidence::PRIMARY_COMPLETION_KEY],
+        &manifest.profiles[profile].runners["tla"].configuration
+            [crate::evidence::PRIMARY_COMPLETION_KEY],
     )
     .expect("profile pins a reviewed primary_completion policy")
 }
@@ -285,8 +286,14 @@ fn synthetic_observations(
                         .expect("profile pins a numeric state floor")
                 };
                 observations.extend([
-                    ("generated_states".to_owned(), floor("minimum_generated_states")),
-                    ("distinct_states".to_owned(), floor("minimum_distinct_states")),
+                    (
+                        "generated_states".to_owned(),
+                        floor("minimum_generated_states"),
+                    ),
+                    (
+                        "distinct_states".to_owned(),
+                        floor("minimum_distinct_states"),
+                    ),
                     ("states_left_on_queue".to_owned(), 0),
                     ("search_depth".to_owned(), 1),
                 ]);

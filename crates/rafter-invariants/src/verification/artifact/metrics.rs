@@ -28,7 +28,15 @@ impl ProcessArtifactKind {
             "simulator-log" => Some(Self::Simulator),
             "maelstrom-process-log" => Some(Self::Maelstrom),
             "tla-log" | "tla-trace-log" | "tla-mutation-log" => Some(Self::Tla),
-            kind if kind.starts_with("tla-detector-log") => Some(Self::Tla),
+            // Detector probes and proof obligations are both real TLC
+            // processes whose duration and peak RSS the producer folds into the
+            // check totals. Omitting either here would make every receipt that
+            // ran one disagree with its own hashed process logs.
+            kind if kind.starts_with("tla-detector-log")
+                || kind.starts_with("tla-obligation-log") =>
+            {
+                Some(Self::Tla)
+            }
             _ => None,
         }
     }

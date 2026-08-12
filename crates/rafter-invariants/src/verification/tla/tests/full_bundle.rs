@@ -155,7 +155,8 @@ fn reporting_continuation_with_a_malformed_log_is_still_red() {
     let mut fixture = Fixture::new();
     fixture.into_reporting();
     let mut log = fixture.read_log("tla-log");
-    log.stdout = "@!@!@STARTMSG 2200:0 @!@!@\nmalformed progress\n@!@!@ENDMSG 2200 @!@!@\n".to_owned();
+    log.stdout =
+        "@!@!@STARTMSG 2200:0 @!@!@\nmalformed progress\n@!@!@ENDMSG 2200 @!@!@\n".to_owned();
     fixture.write_log("tla-log", &log);
 
     assert!(verify(&fixture.bundle, &fixture.root).is_err());
@@ -576,19 +577,18 @@ impl Fixture {
                 "reporting-continuation".to_owned(),
             );
         self.set_timeout();
-        let symbols = self
-            .bundle
-            .execution
-            .checks[0]
+        let symbols = self.bundle.execution.checks[0]
             .evidence_ids
             .iter()
             .filter_map(|evidence_id| evidence_id.rsplit_once('#').map(|(_, s)| s.to_owned()))
             .collect::<std::collections::BTreeSet<_>>();
         let check = &mut self.bundle.execution.checks[0];
         check.completion = crate::CheckCompletion::FrontierExhausted;
-        check
-            .observations
-            .extend(symbols.into_iter().map(|symbol| (format!("checked:{symbol}"), 1)));
+        check.observations.extend(
+            symbols
+                .into_iter()
+                .map(|symbol| (format!("checked:{symbol}"), 1)),
+        );
         check
             .tla_continuation
             .as_mut()

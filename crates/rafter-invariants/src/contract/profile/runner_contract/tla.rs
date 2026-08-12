@@ -146,7 +146,7 @@ fn valid_nightly(contract: &Configuration) -> bool {
         && contract.minimum_generated_states == REPORTING_MINIMUM_GENERATED_STATES
         && contract.minimum_distinct_states == REPORTING_MINIMUM_DISTINCT_STATES
         && contract.seed == "2026071102"
-        && contract.soft_timeout == "265m"
+        && contract.soft_timeout == "250m"
         && contract.workers == "auto"
         && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
         && contract.checkpoint_gzip.as_deref() == Some("required")

@@ -99,11 +99,7 @@ pub(super) fn verify(
                 )
             });
         if let Some(summary) = summary.as_ref() {
-            derived.extend(obligation_observations(
-                &obligation.id,
-                summary,
-                discharged,
-            ));
+            derived.extend(obligation_observations(&obligation.id, summary, discharged));
         }
         if !discharged {
             discharged_all = false;

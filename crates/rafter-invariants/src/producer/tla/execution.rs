@@ -8,9 +8,9 @@ mod outcome;
 mod probes;
 mod runner;
 
-pub(in crate::producer) use model::{MainStatus, ProbeStatus, TlaExecution};
 #[cfg(test)]
 pub(in crate::producer) use model::ObligationOutcome;
+pub(in crate::producer) use model::{MainStatus, ProbeStatus, TlaExecution};
 #[cfg(test)]
 pub(in crate::producer) use outcome::parse_main_summary;
 #[cfg(test)]

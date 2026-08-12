@@ -109,7 +109,7 @@ for every profile once. The affected `runner_contract_sha256` values are:
 | Profile | From | To |
 | --- | --- | --- |
 | PR | `84f4980f5963064f…` | `4ec4e394e5afbc62…` |
-| Nightly | `4ca7833d8f558e44…` | `931838e2f6cb53ac…` |
+| Nightly | `4ca7833d8f558e44…` | `9de14d88b983720d…` |
 | Weekly | `8d09c27585de34fa…` | `0ccc3067bfcf7546…` |
 
 Scheduled continuations restart from an empty queue at the next run and

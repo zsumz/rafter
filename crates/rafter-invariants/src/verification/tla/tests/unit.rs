@@ -37,8 +37,9 @@ fn the_checked_in_tool_manifest_matches_every_profile_pin() {
     let checksums =
         std::fs::read_to_string(root.join("tools/tla/SHA256SUMS")).expect("read SHA256SUMS");
     let asset_id = std::fs::read_to_string(root.join("tools/tla/ASSET_ID")).expect("read ASSET_ID");
-    let manifest = crate::ProfileManifest::load(&root.join("verification/raft-invariant-profiles.json"))
-        .expect("load profile manifest");
+    let manifest =
+        crate::ProfileManifest::load(&root.join("verification/raft-invariant-profiles.json"))
+            .expect("load profile manifest");
 
     for profile in ["pr", "nightly", "weekly"] {
         let configuration = &manifest.profiles[profile].runners["tla"].configuration;

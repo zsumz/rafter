@@ -27,7 +27,10 @@ pub(in crate::producer::tla) fn validate_obligation_specs(
     for obligation in obligations {
         let path = Path::new("specs/tla/raft").join(&obligation.config);
         let source = fs::read_to_string(&path).map_err(|error| {
-            format!("read TLA proof obligation config {}: {error}", obligation.id)
+            format!(
+                "read TLA proof obligation config {}: {error}",
+                obligation.id
+            )
         })?;
         validate_obligation_config_sources(
             &obligation.id,
@@ -53,10 +56,10 @@ pub(super) fn validate_obligation_config_sources(
         .into_iter()
         .collect::<BTreeSet<_>>();
     if configured != expected {
-        return Err(
-            format!("TLA proof obligation {id} must configure exactly the registry predicates")
-                .into(),
-        );
+        return Err(format!(
+            "TLA proof obligation {id} must configure exactly the registry predicates"
+        )
+        .into());
     }
     validate_safety_only_boundary(spec, config)?;
     validate_symmetry_contract(config_name, config)

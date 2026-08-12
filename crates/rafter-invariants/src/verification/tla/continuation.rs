@@ -3,7 +3,9 @@
 use crate::contract::profile::RunnerContract;
 use std::collections::BTreeSet;
 
-use crate::evidence::{CheckReceipt, PrimaryCompletionPolicy, ResultBundle, PRIMARY_COMPLETION_KEY};
+use crate::evidence::{
+    CheckReceipt, PrimaryCompletionPolicy, ResultBundle, PRIMARY_COMPLETION_KEY,
+};
 
 /// Resolves the contract-pinned continuation policy and refuses any receipt
 /// that disagrees with it.

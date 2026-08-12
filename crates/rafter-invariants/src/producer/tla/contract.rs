@@ -7,8 +7,8 @@ mod spec;
 mod tool;
 
 pub(super) use artifacts::source_artifacts;
-pub(super) use options::{validate_obligation_options, validate_runner_options};
 pub(super) use obligation::validate_obligation_specs;
+pub(super) use options::{validate_obligation_options, validate_runner_options};
 pub(super) use spec::validate_spec_contract;
 #[cfg(test)]
 pub(crate) use tool::fetch_tool_at;

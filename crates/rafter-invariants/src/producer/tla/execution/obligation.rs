@@ -97,13 +97,19 @@ pub(super) fn run_obligations(
                 )
             });
         if let Some(summary) = summary.as_ref() {
-            outcome
-                .observations
-                .extend(obligation_observations(&obligation.id, summary, discharged));
+            outcome.observations.extend(obligation_observations(
+                &obligation.id,
+                summary,
+                discharged,
+            ));
         }
         if !discharged {
             outcome.status = ProbeStatus::Failed;
-            outcome.failure = Some(diagnosis(obligation, run.output.timed_out, summary.as_ref()));
+            outcome.failure = Some(diagnosis(
+                obligation,
+                run.output.timed_out,
+                summary.as_ref(),
+            ));
             return Ok(outcome);
         }
     }

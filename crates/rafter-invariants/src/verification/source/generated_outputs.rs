@@ -73,4 +73,25 @@ fn reviewed_tla_artifact(name: &str) -> bool {
             name.strip_prefix(prefix)
                 .is_some_and(|suffix| FIXTURE_SUFFIXES.contains(&suffix))
         })
+        || reviewed_obligation_artifact(name)
+}
+
+/// Proof-obligation evidence names, recognized independently of the producer.
+///
+/// The detector suffixes above can be a literal list because the probe set is
+/// source-owned. Obligation identities are profile data, so this admits any
+/// kebab-case identity under the two obligation prefixes and nothing else --
+/// still closed against arbitrary ignored files, still derived here rather than
+/// shared with the producer's copy of the same policy.
+fn reviewed_obligation_artifact(name: &str) -> bool {
+    ["tla-obligation-log-", "tla-obligation-config-"]
+        .into_iter()
+        .any(|prefix| {
+            name.strip_prefix(prefix).is_some_and(|identity| {
+                !identity.is_empty()
+                    && identity.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
+            })
+        })
 }

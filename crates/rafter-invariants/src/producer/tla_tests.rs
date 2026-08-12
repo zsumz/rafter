@@ -8,8 +8,7 @@ use super::{
 use crate::{
     producer::tla_exec::parse_main_summary,
     producer::tla_output::{TlcProgress, TlcSummary, REQUIRED_MODEL_TRANSITIONS},
-    Catalog, CheckCompletion, EvidenceStatus, FailureClassification,
-    PrimaryCompletionPolicy,
+    Catalog, CheckCompletion, EvidenceStatus, FailureClassification, PrimaryCompletionPolicy,
 };
 
 pub(super) fn complete_execution(exit_succeeded: bool) -> TlaExecution {
@@ -105,7 +104,12 @@ fn observations_report_each_detector_qualification_independently() {
         .into_iter()
         .map(str::to_owned)
         .collect();
-    let observed = observations(&execution, &symbols, 9, PrimaryCompletionPolicy::GatingFrontierExhausted);
+    let observed = observations(
+        &execution,
+        &symbols,
+        9,
+        PrimaryCompletionPolicy::GatingFrontierExhausted,
+    );
     assert!(!observed.contains_key("detector_negative_passed"));
     for predicate in crate::producer::tla_output::REGISTERED_PREDICATES {
         assert_eq!(observed[&format!("detector_qualified:{predicate}")], 1);
@@ -266,13 +270,22 @@ fn timeout_reports_progress_without_claiming_terminal_proof() {
         depth: 23,
     });
     let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
-    let verdict = evaluate(&execution, &symbols, &super::policy_tests::gating_configuration());
+    let verdict = evaluate(
+        &execution,
+        &symbols,
+        &super::policy_tests::gating_configuration(),
+    );
     assert!(matches!(
         verdict,
         TlaVerdict::Incomplete(CheckCompletion::Timeout, _)
     ));
 
-    let observed = observations(&execution, &symbols, 9, PrimaryCompletionPolicy::GatingFrontierExhausted);
+    let observed = observations(
+        &execution,
+        &symbols,
+        9,
+        PrimaryCompletionPolicy::GatingFrontierExhausted,
+    );
     assert_eq!(observed["progress_generated_states"], 181_490_601);
     assert_eq!(observed["progress_distinct_states"], 40_062_465);
     assert_eq!(observed["progress_states_left"], 19_012_042);
@@ -327,16 +340,26 @@ fn obligation_observations_are_framed_in_the_receipt() {
     let mut execution = complete_execution(true);
     let symbols: std::collections::BTreeSet<String> =
         ["ElectionSafety".to_owned()].into_iter().collect();
-    assert!(!observations(&execution, &symbols, 9, PrimaryCompletionPolicy::GatingFrontierExhausted)
-        .keys()
-        .any(|key| key.starts_with("obligation_")));
+    assert!(!observations(
+        &execution,
+        &symbols,
+        9,
+        PrimaryCompletionPolicy::GatingFrontierExhausted
+    )
+    .keys()
+    .any(|key| key.starts_with("obligation_")));
 
     execution.obligations.status = ProbeStatus::Passed;
     execution.obligations.observations = BTreeMap::from([
         ("obligation_generated_states:focused".to_owned(), 4_242),
         ("obligation_frontier_exhausted:focused".to_owned(), 1),
     ]);
-    let framed = observations(&execution, &symbols, 9, PrimaryCompletionPolicy::GatingFrontierExhausted);
+    let framed = observations(
+        &execution,
+        &symbols,
+        9,
+        PrimaryCompletionPolicy::GatingFrontierExhausted,
+    );
     assert_eq!(framed["obligation_generated_states:focused"], 4_242);
     assert_eq!(framed["obligation_frontier_exhausted:focused"], 1);
 }

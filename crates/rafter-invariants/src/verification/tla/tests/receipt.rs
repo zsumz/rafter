@@ -71,8 +71,14 @@ fn every_obligation_adds_exactly_a_config_and_a_log() {
         false,
         false,
         &contract(vec![
-            obligation("joint-quorum-focused-init", "RaftJointQuorumFocusedInit.cfg"),
-            obligation("joint-quorum-focused-next", "RaftJointQuorumFocusedNext.cfg"),
+            obligation(
+                "joint-quorum-focused-init",
+                "RaftJointQuorumFocusedInit.cfg",
+            ),
+            obligation(
+                "joint-quorum-focused-next",
+                "RaftJointQuorumFocusedNext.cfg",
+            ),
         ]),
     );
 

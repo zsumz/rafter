@@ -13,8 +13,8 @@ use serde_json::Value;
 use super::{
     complete_main_execution, configured_budget_duration, maximum_qualification_time,
     mutation_suite_timeout, probe_timeout, process, DetectorProbes, ExecutionBudget,
-    ObligationOutcome,
-    MainCompletion, TlcRun, FINALIZATION_RESERVE_KEY, QUALIFICATION_PHASE_COUNT, TOTAL_TIMEOUT_KEY,
+    MainCompletion, ObligationOutcome, TlcRun, FINALIZATION_RESERVE_KEY, QUALIFICATION_PHASE_COUNT,
+    TOTAL_TIMEOUT_KEY,
 };
 
 fn pr_budget() -> BTreeMap<String, String> {
