@@ -4,6 +4,7 @@ mod maelstrom;
 mod simulator;
 mod tests_runner;
 mod tla;
+mod tla_obligations;
 mod validate;
 
 pub(super) use validate::validate_runner;

@@ -34,6 +34,34 @@ pub(crate) fn tla_obligations<'a>(
         .map_or(&[], |runner| runner.obligations.as_slice())
 }
 
+/// The continuation policy the profile pins, decoded the way the runners do.
+pub(crate) fn tla_policy(manifest: &ProfileManifest, profile: &str) -> PrimaryCompletionPolicy {
+    PrimaryCompletionPolicy::parse(
+        &manifest.profiles[profile].runners["tla"].configuration[crate::evidence::PRIMARY_COMPLETION_KEY],
+    )
+    .expect("profile pins a reviewed primary_completion policy")
+}
+
+/// Synthetic continuation binding for the profile's pinned policy.
+///
+/// A gating profile models a drained monolith; a reporting profile models the
+/// shape its lane actually produces -- a continuation that spent its budget
+/// with the frontier still open. Both are honest receipts for their contract.
+pub(crate) fn synthetic_continuation_binding(
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> TlaContinuationBinding {
+    let policy = tla_policy(manifest, profile);
+    TlaContinuationBinding {
+        policy,
+        outcome: if policy.gates() {
+            ContinuationOutcome::FrontierExhausted
+        } else {
+            ContinuationOutcome::BudgetElapsedFrontierOpen
+        },
+    }
+}
+
 /// The terminal frame an obligation reports when it discharges.
 ///
 /// The queue is drained and both calibrated ratchets are met exactly. That is
@@ -240,11 +268,26 @@ fn synthetic_observations(
                 ("configured_invariants".to_owned(), 9),
                 ("tool_pin_verified".to_owned(), 1),
                 ("trace_sample_passed".to_owned(), 1),
-                ("generated_states".to_owned(), 130_000_000),
-                ("distinct_states".to_owned(), 120_000_000),
-                ("states_left_on_queue".to_owned(), 0),
-                ("search_depth".to_owned(), 1),
             ]);
+            // A gating profile publishes the terminal frame of a drained
+            // monolith. A reporting profile publishes the progress frame of a
+            // continuation that spent its budget with the frontier still open,
+            // which is the shape its lane actually produces.
+            if tla_policy(manifest, profile).gates() {
+                observations.extend([
+                    ("generated_states".to_owned(), 130_000_000),
+                    ("distinct_states".to_owned(), 120_000_000),
+                    ("states_left_on_queue".to_owned(), 0),
+                    ("search_depth".to_owned(), 1),
+                ]);
+            } else {
+                observations.extend([
+                    ("progress_generated_states".to_owned(), 23_784_130),
+                    ("progress_distinct_states".to_owned(), 6_246_309),
+                    ("progress_states_left".to_owned(), 3_294_097),
+                    ("progress_depth".to_owned(), 21),
+                ]);
+            }
             observations.extend(
                 crate::producer::tla_output::REGISTERED_PREDICATES
                     .into_iter()
@@ -656,6 +699,8 @@ fn synthetic_checks(
                 },
                 observations: synthetic_observations(&descriptors, manifest, profile),
                 simulator_liveness: synthetic_liveness_binding(&descriptors[0], profile),
+                tla_continuation: (runner == "tla")
+                    .then(|| synthetic_continuation_binding(manifest, profile)),
                 duration_ms: 1,
                 peak_rss_kib: 1,
                 artifacts: synthetic_artifacts(&descriptors[0], manifest, profile),

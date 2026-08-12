@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::{
     evidence::{
         format::tla::{MEMBERSHIP_TRACE_MIN_DEPTH, MEMBERSHIP_TRACE_MIN_DISTINCT_STATES},
-        ResultBundle,
+        PrimaryCompletionPolicy, ResultBundle, PRIMARY_COMPLETION_KEY,
     },
     verification::{AggregateError, AuthenticatedArtifacts},
 };
@@ -13,11 +13,13 @@ use crate::{
 use super::{
     artifact::read_kind,
     checkpoint::verify_checkpoint_authenticated,
-    completion::{verify_completion, verify_counterexample_binding},
+    completion::{
+        verify_completion, verify_continuation_binding, verify_counterexample_binding,
+    },
     detector,
     invocation::{optional_process_log, read_initial_process_log},
     obligation, observation,
-    source::{verify_source_binding, verify_tool_pin},
+    source::{configuration, verify_source_binding, verify_tool_pin},
 };
 
 pub(crate) fn verify_authenticated(
@@ -90,11 +92,25 @@ pub(crate) fn verify_authenticated(
     let (main_progress, progress_diagnostic) =
         observation::timeout_progress(main.as_ref(), main_has_violation)?;
     let symbols = observation::configured_invariants(&config);
+    // The policy is read from the pinned profile contract, never from the
+    // receipt: which continuations gate is a contract decision, and a producer
+    // does not get to choose it for itself.
+    let policy = PrimaryCompletionPolicy::parse(configuration(bundle, PRIMARY_COMPLETION_KEY)?)
+        .ok_or_else(|| {
+            AggregateError::new("TLA profile pins no reviewed primary_completion policy".to_owned())
+        })?;
+    let checked_earned = observation::checked_predicates_are_earned(
+        policy,
+        obligations_passed,
+        main.as_ref(),
+        main_summary.as_ref(),
+    );
     let derived = observation::derive(
         &symbols,
         trace_passed,
         detector_observations,
         obligation_observations,
+        checked_earned,
         checkpoint.as_ref(),
         main_progress,
         main.as_ref(),
@@ -109,11 +125,13 @@ pub(crate) fn verify_authenticated(
         .as_ref()
         .and_then(|summary| summary.violated_invariant.as_deref());
     verify_counterexample_binding(bundle, violated)?;
+    verify_continuation_binding(bundle, policy, main.as_ref(), main_summary.as_ref())?;
     verify_completion(
         bundle,
         trace_passed,
         detectors_passed,
         obligations_passed,
+        policy,
         checkpoint.as_ref(),
         main.as_ref(),
         main_summary.as_ref(),

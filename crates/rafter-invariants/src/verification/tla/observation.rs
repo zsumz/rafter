@@ -7,6 +7,7 @@ use crate::{
         process::ProcessLog,
         tla::{parse_latest_progress, TlcProgress, TlcSummary, REQUIRED_MODEL_TRANSITIONS},
     },
+    evidence::PrimaryCompletionPolicy,
     verification::AggregateError,
 };
 
@@ -37,6 +38,7 @@ pub(super) fn derive(
     trace_passed: bool,
     detector_observations: BTreeMap<String, u64>,
     obligation_observations: BTreeMap<String, u64>,
+    checked_predicates_are_earned: bool,
     checkpoint: Option<&RecoveryReport>,
     main_progress: Option<TlcProgress>,
     main: Option<&ProcessLog>,
@@ -95,13 +97,36 @@ pub(super) fn derive(
             ("states_left_on_queue".to_owned(), summary.states_left),
             ("search_depth".to_owned(), summary.search_depth),
         ]);
-        if main.is_some_and(|log| successful_log(log) && successful_summary(summary)) {
-            for symbol in symbols.iter().filter(|symbol| symbol.as_str() != "TypeOK") {
-                derived.insert(format!("checked:{symbol}"), 1);
-            }
+    }
+    // Whether the predicates were checked over an exhausted space is decided by
+    // the caller from the pinned policy: the primary continuation under a
+    // gating policy, the obligations under a reporting one.
+    if checked_predicates_are_earned {
+        for symbol in symbols.iter().filter(|symbol| symbol.as_str() != "TypeOK") {
+            derived.insert(format!("checked:{symbol}"), 1);
         }
     }
     derived
+}
+
+/// Independent rederivation of the producer's `checked:` justification.
+///
+/// A gating profile earns it from its own primary continuation completing
+/// cleanly. A reporting profile earns it from every declared obligation
+/// discharging -- they bind the same predicates and they did drain.
+pub(super) fn checked_predicates_are_earned(
+    policy: PrimaryCompletionPolicy,
+    obligations_passed: bool,
+    main: Option<&ProcessLog>,
+    main_summary: Option<&TlcSummary>,
+) -> bool {
+    if !policy.gates() {
+        return obligations_passed;
+    }
+    match (main, main_summary) {
+        (Some(log), Some(summary)) => successful_log(log) && successful_summary(summary),
+        _ => false,
+    }
 }
 
 pub(super) fn timeout_progress(

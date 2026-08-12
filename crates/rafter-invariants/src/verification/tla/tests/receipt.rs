@@ -96,3 +96,72 @@ fn an_empty_obligation_list_changes_no_artifact_expectation() {
         );
     }
 }
+
+/// The PR lane is the one that blocks a merge, and its primary genuinely
+/// drains. A PR receipt claiming a reporting continuation would be relaxing
+/// that gate from inside the receipt, so the policy is read from the pinned
+/// profile and a disagreeing receipt is refused outright.
+#[test]
+fn a_pr_receipt_cannot_claim_a_reporting_continuation() {
+    use crate::evidence::PRIMARY_COMPLETION_KEY;
+
+    let (catalog, manifest) = crate::tests::loaded();
+    let expected = catalog.required_evidence(&manifest.profiles["pr"]);
+    let expected = expected
+        .values()
+        .flatten()
+        .map(|descriptor| (descriptor.evidence_id(), descriptor))
+        .collect::<BTreeMap<_, _>>();
+    let bundle = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "tla")
+        .expect("synthetic TLA bundle");
+    let contract = manifest.profiles["pr"].runners["tla"].clone();
+    super::validate(&bundle, &expected, &contract).expect("the gating PR receipt validates");
+
+    // Demote the pinned contract and restate the receipt consistently: even a
+    // fully self-consistent reporting claim must be refused for this profile.
+    let mut demoted_contract = contract.clone();
+    demoted_contract.configuration.insert(
+        PRIMARY_COMPLETION_KEY.to_owned(),
+        "reporting-continuation".to_owned(),
+    );
+    let mut demoted = bundle.clone();
+    demoted.execution.checks[0]
+        .tla_continuation
+        .as_mut()
+        .expect("continuation binding")
+        .policy = crate::PrimaryCompletionPolicy::ReportingContinuation;
+    assert!(super::validate(&demoted, &expected, &demoted_contract).is_err());
+
+    // A receipt whose declared policy simply disagrees with the pinned one is
+    // refused for every profile, not just PR.
+    let mut mismatched = bundle;
+    mismatched.execution.checks[0]
+        .tla_continuation
+        .as_mut()
+        .expect("continuation binding")
+        .policy = crate::PrimaryCompletionPolicy::ReportingContinuation;
+    assert!(super::validate(&mismatched, &expected, &contract).is_err());
+}
+
+/// A TLA+ receipt that omits the binding entirely cannot be accepted: the
+/// field is additive on the wire precisely because only this layer needs it,
+/// so this layer is where its absence has to fail closed.
+#[test]
+fn a_tla_receipt_without_a_continuation_binding_fails_closed() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let expected = catalog.required_evidence(&manifest.profiles["pr"]);
+    let expected = expected
+        .values()
+        .flatten()
+        .map(|descriptor| (descriptor.evidence_id(), descriptor))
+        .collect::<BTreeMap<_, _>>();
+    let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "tla")
+        .expect("synthetic TLA bundle");
+    bundle.execution.checks[0].tla_continuation = None;
+
+    assert!(super::validate(&bundle, &expected, &manifest.profiles["pr"].runners["tla"]).is_err());
+}

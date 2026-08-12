@@ -11,7 +11,12 @@ use crate::evidence::format::tla::{
     detector_config_kind, detector_log_kind, detector_observation, DETECTOR_PROBES,
     MUTATION_SUITE_ARTIFACT_KIND, REGISTERED_PREDICATES, REQUIRED_MODEL_TRANSITIONS,
 };
-use crate::evidence::{CheckCompletion, CheckReceipt, EvidenceStatus, ResultBundle};
+use crate::evidence::{
+    CheckCompletion, CheckReceipt, ContinuationOutcome, EvidenceStatus, PrimaryCompletionPolicy,
+    ResultBundle,
+};
+
+use super::continuation;
 
 pub(crate) fn validate(
     bundle: &ResultBundle,
@@ -43,9 +48,10 @@ pub(crate) fn validate(
     if !bundle.execution.source.tools.contains_key("java") {
         return Err("TLA receipt lacks Java executable provenance");
     }
+    let policy = continuation::pinned_policy(bundle, contract)?;
     match check.completion {
         CheckCompletion::FrontierExhausted => {
-            validate_pass(bundle, check, &required, contract)?;
+            validate_pass(bundle, check, &required, contract, policy)?;
         }
         CheckCompletion::Counterexample => validate_counterexample(bundle, &required)?,
         CheckCompletion::CoverageNotReached
@@ -118,6 +124,7 @@ fn validate_pass(
     check: &CheckReceipt,
     required: &BTreeMap<String, String>,
     contract: &RunnerContract,
+    policy: PrimaryCompletionPolicy,
 ) -> Result<(), &'static str> {
     if bundle
         .results
@@ -132,15 +139,15 @@ fn validate_pass(
     let minimum_distinct = contract.configuration["minimum_distinct_states"]
         .parse::<u64>()
         .map_err(|_| "TLA distinct-state floor is invalid")?;
-    let mut expected_observations = BTreeSet::from([
-        "configured_invariants".to_owned(),
-        "tool_pin_verified".to_owned(),
-        "trace_sample_passed".to_owned(),
-        "generated_states".to_owned(),
-        "distinct_states".to_owned(),
-        "states_left_on_queue".to_owned(),
-        "search_depth".to_owned(),
-    ]);
+    // A continuation that elapsed publishes its progress frame instead of a
+    // terminal one. That shape is only admissible under a reporting policy;
+    // under a gating policy an elapsed run never reaches this function.
+    let elapsed = check.tla_continuation.ok_or("TLA receipt omitted its continuation binding")?.outcome
+        == ContinuationOutcome::BudgetElapsedFrontierOpen;
+    if elapsed && policy.gates() {
+        return Err("a gating TLA continuation cannot pass with an open frontier");
+    }
+    let mut expected_observations = continuation::expected_counter_frame(elapsed);
     expected_observations.extend(
         REGISTERED_PREDICATES
             .iter()
@@ -173,11 +180,13 @@ fn validate_pass(
         || REQUIRED_MODEL_TRANSITIONS
             .iter()
             .any(|transition| observed(check, &format!("transition_covered:{transition}")) != 1)
-        || observed(check, "generated_states") < minimum_generated
-        || observed(check, "distinct_states") < minimum_distinct
-        || observed(check, "generated_states") < observed(check, "distinct_states")
-        || observed(check, "states_left_on_queue") != 0
-        || observed(check, "search_depth") == 0
+        || !continuation::counters_are_consistent(
+            check,
+            policy,
+            elapsed,
+            minimum_generated,
+            minimum_distinct,
+        )
         || required
             .values()
             .any(|symbol| observed(check, &format!("checked:{symbol}")) != 1)

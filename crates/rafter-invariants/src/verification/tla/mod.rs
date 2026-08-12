@@ -3,6 +3,7 @@
 mod artifact;
 mod checkpoint;
 mod completion;
+mod continuation;
 mod detector;
 mod invocation;
 mod obligation;

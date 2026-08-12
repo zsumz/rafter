@@ -5,7 +5,8 @@ use std::{collections::BTreeSet, error::Error, path::Path};
 use crate::{
     contract::{catalog::Catalog, profile::ProfileContract},
     evidence::{
-        CheckReceipt, ExecutionReceipt, ResultBundle, SourceReceipt, RESULT_SCHEMA_VERSION,
+        CheckReceipt, ExecutionReceipt, ResultBundle, SourceReceipt, TlaContinuationBinding,
+        RESULT_SCHEMA_VERSION,
     },
 };
 
@@ -16,7 +17,7 @@ use super::{
         validate_obligation_options, validate_obligation_specs, validate_runner_options,
         validate_spec_contract,
     },
-    evaluation::{evaluate, observations},
+    evaluation::{continuation_outcome, evaluate, observations, primary_completion_policy},
     execution::{execute, ExecutionRequest},
     process,
     result::evidence_result,
@@ -76,6 +77,8 @@ pub(in crate::producer) fn run(
         },
         artifacts,
     )?;
+    let policy = primary_completion_policy(&runner.configuration)
+        .ok_or("TLA runner configuration omitted a reviewed primary_completion policy")?;
     let verdict = evaluate(&execution, &symbols, &runner.configuration);
     let execution_id = artifact::stable_id("tla", &format!("{profile}/{config_name}"));
     let evidence_ids = descriptors
@@ -93,8 +96,15 @@ pub(in crate::producer) fn run(
         check_id: format!("tla/{config_name}#Spec"),
         evidence_ids,
         completion: verdict.completion(),
-        observations: observations(&execution, &symbols, configured.len()),
+        observations: observations(&execution, &symbols, configured.len(), policy),
         simulator_liveness: None,
+        // The receipt states the pinned policy and the continuation's actual
+        // ending side by side, so a green scheduled lane cannot read as a
+        // completed monolith.
+        tla_continuation: Some(TlaContinuationBinding {
+            policy,
+            outcome: continuation_outcome(&execution),
+        }),
         duration_ms: execution.duration_ms,
         peak_rss_kib: execution.peak_rss_kib,
         artifacts: execution.artifacts.clone(),

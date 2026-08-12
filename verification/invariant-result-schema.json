@@ -159,6 +159,15 @@
         "require_peak_rss": { "type": "boolean" }
       }
     },
+    "tla_continuation_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "outcome"],
+      "properties": {
+        "policy": { "enum": ["gating-frontier-exhausted", "reporting-continuation"] },
+        "outcome": { "enum": ["frontier-exhausted", "counterexample", "budget-elapsed-frontier-open"] }
+      }
+    },
     "proof_obligation_contract": {
       "type": "object",
       "additionalProperties": false,
@@ -400,6 +409,7 @@
         "evidence_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "completion": { "enum": ["completed", "frontier_exhausted", "counterexample", "coverage_not_reached", "budget_exhausted", "timeout", "harness_error"] },
         "observations": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "tla_continuation": { "$ref": "#/$defs/tla_continuation_binding" },
         "simulator_liveness": {
           "oneOf": [
             { "type": "null" },

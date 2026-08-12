@@ -21,3 +21,7 @@ pub(super) use result::evidence_result;
 #[cfg(test)]
 #[path = "tla_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tla_policy_tests.rs"]
+mod policy_tests;

@@ -241,6 +241,7 @@ fn run_checks(
             completion: outcome.completion,
             observations: outcome.observations,
             simulator_liveness: None,
+            tla_continuation: None,
             duration_ms: outcome.duration_ms,
             peak_rss_kib: outcome.peak_rss_kib,
             artifacts: outcome.artifacts,

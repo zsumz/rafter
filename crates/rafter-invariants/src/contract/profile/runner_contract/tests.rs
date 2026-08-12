@@ -101,6 +101,7 @@ fn tla_contract_rejects_weakened_state_floor() {
             "minimum_distinct_states": "1",
             "minimum_generated_states": "120000000",
             "module": "Raft.tla",
+            "primary_completion": "gating-frontier-exhausted",
             "receipt_finalization_allowance": "5s",
             "seed": "2026071101",
             "soft_timeout": "115m",
@@ -130,6 +131,7 @@ fn canonical_pr_tla_configuration() -> serde_json::Value {
         "minimum_distinct_states": "16000000",
         "minimum_generated_states": "120000000",
         "module": "Raft.tla",
+        "primary_completion": "gating-frontier-exhausted",
         "receipt_finalization_allowance": "5s",
         "seed": "2026071101",
         "soft_timeout": "325m",
@@ -304,4 +306,58 @@ fn maelstrom_contract_rejects_pr_profile() {
         }),
     );
     assert!(validate_runner("pr", "maelstrom", &contract).is_err());
+}
+
+/// Demoting a primary continuation to reporting only makes sense when
+/// something else still exhausts. A reporting profile with no obligations
+/// would gate on nothing at all and report itself green.
+#[test]
+fn a_reporting_profile_must_declare_at_least_one_obligation() {
+    let (_, manifest) = crate::tests::loaded();
+    for profile in ["nightly", "weekly"] {
+        let runner = &manifest.profiles[profile].runners["tla"];
+        assert_eq!(
+            runner.configuration["primary_completion"],
+            "reporting-continuation"
+        );
+        validate_runner(profile, "tla", runner).expect("the reviewed reporting profile validates");
+
+        let mut ungated = runner.clone();
+        ungated.obligations.clear();
+        assert!(validate_runner(profile, "tla", &ungated).is_err());
+    }
+}
+
+/// The deterministic PR lane genuinely drains, so its policy is pinned to
+/// gating and neither value may drift.
+#[test]
+fn the_pr_profile_pins_a_gating_continuation() {
+    let (_, manifest) = crate::tests::loaded();
+    let runner = &manifest.profiles["pr"].runners["tla"];
+    assert_eq!(
+        runner.configuration["primary_completion"],
+        "gating-frontier-exhausted"
+    );
+    validate_runner("pr", "tla", runner).expect("the reviewed PR profile validates");
+
+    for (profile, wrong) in [
+        ("pr", "reporting-continuation"),
+        ("nightly", "gating-frontier-exhausted"),
+        ("weekly", "gating-frontier-exhausted"),
+    ] {
+        let mut swapped = manifest.profiles[profile].runners["tla"].clone();
+        swapped
+            .configuration
+            .insert("primary_completion".to_owned(), wrong.to_owned());
+        assert!(
+            validate_runner(profile, "tla", &swapped).is_err(),
+            "{profile} must not accept {wrong}"
+        );
+    }
+
+    let mut unreviewed = manifest.profiles["pr"].runners["tla"].clone();
+    unreviewed
+        .configuration
+        .insert("primary_completion".to_owned(), "advisory".to_owned());
+    assert!(validate_runner("pr", "tla", &unreviewed).is_err());
 }

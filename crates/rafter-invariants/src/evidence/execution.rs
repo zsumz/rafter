@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{ArtifactRef, ExecutableReceipt, SimulatorLivenessBinding, SourceReceipt};
+use super::{
+    ArtifactRef, ExecutableReceipt, SimulatorLivenessBinding, SourceReceipt,
+    TlaContinuationBinding,
+};
 use crate::contract::profile::ProfileContract;
 
 /// Current version of the hashed execution-plan contract.
@@ -88,6 +91,15 @@ pub struct CheckReceipt {
     pub observations: BTreeMap<String, u64>,
     #[serde(deserialize_with = "deserialize_present_option")]
     pub simulator_liveness: Option<SimulatorLivenessBinding>,
+    /// Primary-continuation policy and outcome, present on TLA+ receipts only.
+    ///
+    /// Unlike `simulator_liveness` this is additive rather than
+    /// present-but-nullable: adding a required key would rewrite every layer's
+    /// serialized receipts for a field only one layer uses. The TLA+ receipt
+    /// validator requires it, so the layer that needs it still fails closed
+    /// when it is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tla_continuation: Option<TlaContinuationBinding>,
     pub duration_ms: u64,
     pub peak_rss_kib: u64,
     pub artifacts: Vec<ArtifactRef>,

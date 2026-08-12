@@ -90,6 +90,7 @@ pub(in crate::producer) fn run(
             completion: verdict.completion(),
             observations: observations(&outcomes),
             simulator_liveness: None,
+            tla_continuation: None,
             duration_ms: outcomes.iter().map(|outcome| outcome.duration_ms).sum(),
             peak_rss_kib: outcomes
                 .iter()

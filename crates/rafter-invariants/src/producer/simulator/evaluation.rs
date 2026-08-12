@@ -67,6 +67,7 @@ pub(super) fn evaluate_descriptors(
             completion: evaluated.completion,
             observations: evaluated.observations,
             simulator_liveness: evaluated.simulator_liveness,
+            tla_continuation: None,
             duration_ms: evaluated.duration_ms,
             peak_rss_kib: evaluated.peak_rss_kib,
             artifacts: evaluated.artifacts,

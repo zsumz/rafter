@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::evidence::CheckCompletion;
+use crate::evidence::{
+    CheckCompletion, ContinuationOutcome, PrimaryCompletionPolicy, PRIMARY_COMPLETION_KEY,
+};
 
 use super::{
     checkpoint::RecoveryStatus,
@@ -71,11 +73,25 @@ pub(in crate::producer) fn evaluate(
             "TLC checkpoint recovery rejected: {checkpoint_error}"
         ));
     }
+    let Some(policy) = primary_completion_policy(configuration) else {
+        return error("TLA runner configuration omitted a reviewed primary_completion policy");
+    };
     if execution.main_status == MainStatus::TimedOut {
-        return incomplete(
-            CheckCompletion::Timeout,
-            "TLC exhausted its soft time budget",
-        );
+        // The frontier is still open. Under a gating policy that is incomplete
+        // coverage; under a reporting policy it is the expected shape of a
+        // continuation and the obligations have already carried the gate. The
+        // progress frame still has to be well formed either way -- a timed-out
+        // log that cannot be read is a harness error, not a report.
+        if policy.gates() {
+            return incomplete(
+                CheckCompletion::Timeout,
+                "TLC exhausted its soft time budget",
+            );
+        }
+        if execution.main_progress.is_none() {
+            return error("reporting TLC continuation omitted a complete progress frame");
+        }
+        return TlaVerdict::Pass;
     }
     if let Some(parse_error) = &execution.main_parse_error {
         return error(&format!("malformed TLC tool output: {parse_error}"));
@@ -89,6 +105,15 @@ pub(in crate::producer) fn evaluate(
     {
         return error("TLC exited without a successful completion verdict");
     }
+    if symbols.is_empty() {
+        return error("TLA registry bound no predicates to this check");
+    }
+    if !policy.gates() {
+        // A reporting continuation that did drain is reported, not gated: its
+        // counters are published as observations and the floors it did or did
+        // not clear are context beside them.
+        return TlaVerdict::Pass;
+    }
     let minimum_generated = required_configuration(configuration, "minimum_generated_states")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -101,7 +126,6 @@ pub(in crate::producer) fn evaluate(
         || summary.generated_states < minimum_generated
         || summary.distinct_states < minimum_distinct
         || summary.search_depth == 0
-        || symbols.is_empty()
     {
         return incomplete(
             CheckCompletion::CoverageNotReached,
@@ -111,10 +135,39 @@ pub(in crate::producer) fn evaluate(
     TlaVerdict::Pass
 }
 
+pub(in crate::producer) fn primary_completion_policy(
+    configuration: &BTreeMap<String, String>,
+) -> Option<PrimaryCompletionPolicy> {
+    PrimaryCompletionPolicy::parse(configuration.get(PRIMARY_COMPLETION_KEY)?)
+}
+
+/// How the primary continuation ended, read only off its own parsed evidence.
+///
+/// This is the receipt's factual record and is derived independently of the
+/// verdict: a reporting profile whose continuation elapsed still says so, and a
+/// gating profile that failed its floors still reports the frontier it drained.
+pub(in crate::producer) fn continuation_outcome(execution: &TlaExecution) -> ContinuationOutcome {
+    if execution
+        .main
+        .as_ref()
+        .is_some_and(|summary| summary.violated_invariant.is_some())
+    {
+        return ContinuationOutcome::Counterexample;
+    }
+    if execution.main_status == MainStatus::TimedOut {
+        return ContinuationOutcome::BudgetElapsedFrontierOpen;
+    }
+    match execution.main.as_ref() {
+        Some(summary) if summary.states_left == 0 => ContinuationOutcome::FrontierExhausted,
+        _ => ContinuationOutcome::BudgetElapsedFrontierOpen,
+    }
+}
+
 pub(in crate::producer) fn observations(
     execution: &TlaExecution,
     symbols: &BTreeSet<String>,
     configured_invariants: usize,
+    policy: PrimaryCompletionPolicy,
 ) -> BTreeMap<String, u64> {
     let mut observations = BTreeMap::from([
         (
@@ -175,13 +228,32 @@ pub(in crate::producer) fn observations(
             ("states_left_on_queue".to_owned(), summary.states_left),
             ("search_depth".to_owned(), summary.search_depth),
         ]);
-        if execution.main_status == MainStatus::Succeeded && summary.completed_without_error {
-            for symbol in symbols {
-                observations.insert(format!("checked:{symbol}"), 1);
-            }
+    }
+    // `checked:` records that a predicate was checked over an exhausted state
+    // space. Under a gating policy the primary continuation is that space.
+    // Under a reporting policy it is the obligations, which bind the same
+    // predicates and did drain -- and which the contract requires to be
+    // non-empty precisely so this claim always has a source.
+    if checked_predicates_are_earned(execution, policy) {
+        for symbol in symbols {
+            observations.insert(format!("checked:{symbol}"), 1);
         }
     }
     observations
+}
+
+fn checked_predicates_are_earned(
+    execution: &TlaExecution,
+    policy: PrimaryCompletionPolicy,
+) -> bool {
+    if policy.gates() {
+        return execution.main_status == MainStatus::Succeeded
+            && execution
+                .main
+                .as_ref()
+                .is_some_and(|summary| summary.completed_without_error);
+    }
+    execution.obligations.status == ProbeStatus::Passed
 }
 
 fn error(message: &str) -> TlaVerdict {

@@ -16,20 +16,60 @@ The invariant gate's ownership, dependency rules, and trust boundaries live in
 
 ## TLA+ Tier Ladder
 
-Three tiers are wired, each pinned to one config by
+Three tiers are wired, each pinned to one primary config by
 `verification/raft-invariant-profiles.json` and by the profile contract in
-`crates/rafter-invariants`. A TLA+ tier passes only when TLC drains its queue
-(`states_left = 0`) and clears the shared floors of 120,000,000 generated and
-16,000,000 distinct states. A timeout is incomplete coverage, not a pass.
+`crates/rafter-invariants`, and each carrying a list of [focused proof
+obligations](#how-an-obligation-is-wired).
 
-| Tier | Config | Nodes | Values | MaxTerm | MaxLogLen | ReadRequests | Symmetry |
-| --- | --- | --- | --- | ---: | ---: | --- | --- |
-| PR | `RaftCi.cfg` | `{n1,n2}` | `{v1,v2}` | 2 | 2 | `{r1}` | yes |
-| Nightly | `RaftNightly.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | yes |
-| Weekly | `Raft.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | no |
+| Tier | Primary config | Nodes | Values | MaxTerm | MaxLogLen | ReadRequests | Symmetry | Primary continuation |
+| --- | --- | --- | --- | ---: | ---: | --- | --- | --- |
+| PR | `RaftCi.cfg` | `{n1,n2}` | `{v1,v2}` | 2 | 2 | `{r1}` | yes | gating |
+| Nightly | `RaftNightly.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | yes | reporting |
+| Weekly | `Raft.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | no | reporting |
 
-Each tier also carries a list of [focused proof
-obligations](#how-an-obligation-is-wired), currently empty for all three.
+### What a green tier means
+
+The two answers differ, and the difference is pinned in the contract as
+`primary_completion` rather than left to a reader's assumption.
+
+**PR is gating.** `RaftCi.cfg` genuinely drains its queue, so the PR tier
+passes only when TLC reports `states_left = 0` and clears the calibrated floors
+of 120,000,000 generated and 16,000,000 distinct states. A timeout is
+incomplete coverage, not a pass. Nothing about the PR gate changed.
+
+**Nightly and weekly are reporting.** A green scheduled tier means: every wired
+proof obligation exhausted its frontier at its own calibrated floors, the
+trace-sample and negative-detector qualification passed, and the monolith
+continuation ran its full budget, checkpointed, recovered, and reported a
+healthy expanding frontier. It does **not** mean the monolith completed. The
+monolith has never completed, not once, and at a measured frontier fanout near
+2.85 with no inflection it is not going to; `scripts/tla-continuation-telemetry`
+classifies each run's trajectory and the nightly lineage currently reads
+`incomplete-expanding`.
+
+That is the honest statement of what was always true. Gating the scheduled
+lanes on an event that cannot occur produced a permanently red result that said
+nothing about the protocol, while the evidence those lanes do produce -- drained
+obligations over sound sub-relations, plus accumulated monolith coverage -- went
+unreported. The continuation is research and coverage accumulation. The
+obligations are the proof.
+
+Reporting relaxes the budget and nothing else. A counterexample found by a
+reporting continuation still fails the layer red; so does a malformed, missing,
+or unreadable artifact set, an incompatible checkpoint, a failed qualification
+probe, and an undischarged obligation. The pinned 120M/16M minimums remain in
+the contract for the scheduled profiles as the accumulation bar the lineage
+reports progress against, published beside the observed counters rather than
+enforced as a terminal condition. Every TLA+ receipt carries a
+`tla_continuation` binding naming its pinned policy and the continuation's
+actual ending -- `frontier-exhausted`, `counterexample`, or
+`budget-elapsed-frontier-open` -- so a green scheduled receipt cannot be read as
+a completed monolith. The policy is contract state: the verifier refuses a
+receipt whose declared policy disagrees with the profile it claims to come
+from, and refuses outright any PR receipt claiming a reporting continuation.
+
+A profile may only demote its primary when something else still exhausts: the
+contract rejects a reporting profile that declares no obligations.
 
 ### Pinning the TLC tool
 
@@ -65,9 +105,9 @@ for every profile once. The affected `runner_contract_sha256` values are:
 
 | Profile | From | To |
 | --- | --- | --- |
-| PR | `84f4980f5963064f…` | `15e3d0ca1c38e17a…` |
-| Nightly | `4ca7833d8f558e44…` | `d1528483c9acc98d…` |
-| Weekly | `8d09c27585de34fa…` | `a14088eca2efbe5d…` |
+| PR | `84f4980f5963064f…` | `a9c75c280ca2bd18…` |
+| Nightly | `4ca7833d8f558e44…` | `931838e2f6cb53ac…` |
+| Weekly | `8d09c27585de34fa…` | `724e90e9696b09f1…` |
 
 Scheduled continuations restart from an empty queue at the next run and
 reaccumulate. Obligations themselves are outside that map by design, so future
@@ -410,6 +450,12 @@ configuration; an obligation is a different model on the same machine, not a
 different machine budget.
 
 Three rules make the vocabulary mean something.
+
+On the scheduled tiers the obligations are not an addition to the gate, they
+**are** the gate: the primary continuation there is reporting-only, so a green
+nightly or weekly lane rests on these exhausted frontiers and on qualification.
+The contract enforces that by refusing a reporting profile with an empty
+obligation list.
 
 **Obligations run before the primary configuration**, after the trace and
 detector qualification probes. A broken theorem is then red in minutes rather
