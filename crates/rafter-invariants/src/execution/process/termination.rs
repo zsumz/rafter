@@ -97,8 +97,23 @@ fn await_termination_after_term(
                 resource_path,
             );
         }
-        match process.observe_target_members(grace_deadline, lifecycle_deadline) {
-            Ok(observation) => {
+        match process.try_observe_target_members(grace_deadline, lifecycle_deadline) {
+            // The grace window closed before an observation could start, which
+            // is the window ending -- the same thing the deadline check at the
+            // top of this loop would have seen on the next pass. Escalate
+            // exactly as real expiry does.
+            Ok(None) => {
+                return kill_process_group_after_grace(
+                    process,
+                    term_signal_sent,
+                    lifecycle_deadline,
+                    policy.kill_confirmation_timeout,
+                    stdout_path,
+                    stderr_path,
+                    resource_path,
+                );
+            }
+            Ok(Some(observation)) => {
                 if let Some(proof) = observation.into_quiescence() {
                     process
                         .release_target_anchor(proof, lifecycle_deadline)

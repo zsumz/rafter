@@ -144,11 +144,25 @@ pub(super) fn collect_process_output(
         .min(deadlines.execution_window);
     let mut peak_rss_kib = 0;
     let completion = loop {
-        let observation = process
-            .observe_target_members(deadlines.execution_window, deadlines.cleanup_start)
+        let observed = process
+            .try_observe_target_members(deadlines.execution_window, deadlines.cleanup_start)
             .map_err(|error| {
                 retained_error(error, &stdout_path, &stderr_path, Some(&resource_path))
             })?;
+        let Some(observation) = observed else {
+            // The execution window closed before an observation could start.
+            // `target_deadline` never outlives that window, so it has closed
+            // too: this is the timeout path below, reached without spending the
+            // run on a `ps` that was never going to fit.
+            break terminate_after_timeout(
+                process,
+                policy,
+                deadlines.cleanup_start,
+                &stdout_path,
+                &stderr_path,
+                &resource_path,
+            )?;
+        };
         peak_rss_kib = peak_rss_kib.max(observation.rss_kib());
         let quiescence = observation.into_quiescence();
         let wrapper_exited = process.wrapper_exit_observed().map_err(|error| {

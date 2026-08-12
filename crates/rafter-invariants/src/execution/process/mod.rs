@@ -105,9 +105,9 @@ use spawn::{
 use telemetry::{
     delay_next_process_group_observation, omit_anchor_from_next_process_group_observation,
     omit_target_rows_from_process_group_observations, parse_process_group_observation,
-    process_observer_path,
+    process_observer_path, ps_telemetry_timeout,
 };
-use telemetry::{parse_peak_rss, process_group_observation, ProcessObserver};
+use telemetry::{parse_peak_rss, process_group_observation, GroupObservation, ProcessObserver};
 use termination::terminate_after_timeout;
 #[cfg(test)]
 use test_support::induce_fallback_cleanup_failure;

@@ -6,8 +6,8 @@ use std::time::Instant;
 use std::cell::RefCell;
 
 use super::super::{
-    process_group_observation, ProcessAnchorState, ProcessSignal, SignalDelivery, TargetLeaseState,
-    TargetMemberState,
+    process_group_observation, GroupObservation, ProcessAnchorState, ProcessSignal, SignalDelivery,
+    TargetLeaseState, TargetMemberState,
 };
 use super::ManagedProcess;
 
@@ -137,11 +137,27 @@ impl ManagedProcess {
         Ok(())
     }
 
+    /// Observes the target group, treating a closed observation window as the
+    /// error it has always been reported as.
+    ///
+    /// Callers whose loop already knows what a closed window means should use
+    /// `try_observe_target_members` and say so explicitly.
     pub(crate) fn observe_target_members(
         &self,
         observation_deadline: Instant,
         lifecycle_deadline: Instant,
     ) -> Result<TargetObservation, Box<dyn std::error::Error>> {
+        self.try_observe_target_members(observation_deadline, lifecycle_deadline)?
+            .ok_or_else(|| "process-group observer exhausted its absolute deadline".into())
+    }
+
+    /// Observes the target group, or reports that the observation window closed
+    /// before an observation could start.
+    pub(crate) fn try_observe_target_members(
+        &self,
+        observation_deadline: Instant,
+        lifecycle_deadline: Instant,
+    ) -> Result<Option<TargetObservation>, Box<dyn std::error::Error>> {
         let observer = self
             .observer
             .as_ref()
@@ -153,13 +169,16 @@ impl ManagedProcess {
         let process_group = self.target.id();
         let exited_before = self.target.exit_observed()?;
         let lease_before = lifetime.observe()?;
-        let observation = process_group_observation(
+        let GroupObservation::Observed(observation) = process_group_observation(
             process_group,
             Some(process_group),
             observer,
             observation_deadline,
             lifecycle_deadline,
-        )?;
+        )?
+        else {
+            return Ok(None);
+        };
         #[cfg(test)]
         run_wrapper_exit_observation_hook();
         let wrapper_exited = self.wrapper.exit_observed()?;
@@ -185,13 +204,13 @@ impl ManagedProcess {
             wrapper_exited,
             observation.target_members,
         )?;
-        Ok(TargetObservation {
+        Ok(Some(TargetObservation {
             rss_kib: observation.rss_kib,
             quiescence: quiescent.then_some(TargetQuiescence {
                 process_group,
                 placement: self.placement,
             }),
-        })
+        }))
     }
 
     pub(crate) fn release_target_anchor(

@@ -72,6 +72,13 @@ const PS_PATH: &str = "/bin/ps";
 #[cfg(all(test, not(any(target_os = "linux", target_os = "macos"))))]
 const PS_PATH: &str = "/usr/bin/ps";
 
+/// The observation budget, exposed so tests bind to the same constant the
+/// truncation rule uses rather than restating it.
+#[cfg(test)]
+pub(crate) const fn ps_telemetry_timeout() -> Duration {
+    PS_TELEMETRY_TIMEOUT
+}
+
 #[cfg(test)]
 pub(crate) fn process_observer_path() -> &'static Path {
     Path::new(PS_PATH)
@@ -95,13 +102,26 @@ pub(crate) fn parse_peak_rss(stderr: &[u8]) -> Option<u64> {
     }
 }
 
+/// One completed observation, or the window that would have contained it
+/// closing before it could start.
+///
+/// `WindowClosed` is a lifecycle fact, not an evidence failure: nothing was
+/// observed because there was no time left in which to observe. An observation
+/// that does start and then fails or times out stays an error, exactly as
+/// before.
+#[derive(Debug)]
+pub(crate) enum GroupObservation {
+    Observed(ProcessGroupObservation),
+    WindowClosed,
+}
+
 pub(crate) fn process_group_observation(
     process_group: u32,
     anchor: Option<u32>,
     observer: &ProcessObserver,
     observation_deadline: Instant,
     lifecycle_deadline: Instant,
-) -> Result<ProcessGroupObservation, Box<dyn Error>> {
+) -> Result<GroupObservation, Box<dyn Error>> {
     #[cfg(test)]
     NEXT_OBSERVATION_DELAY.with(|delay| {
         if let Some(delay) = delay.take() {
@@ -109,21 +129,46 @@ pub(crate) fn process_group_observation(
             std::thread::sleep(delay.min(remaining));
         }
     });
+    // A window already over before the observer was even entered means
+    // something consumed it inside this call -- a stalled observer, not a
+    // window that ran out underneath a running one. That stays fail-closed.
     if Instant::now() >= observation_deadline {
         return Err("process-group observer exhausted its absolute deadline".into());
     }
-    let phase_deadline = Instant::now()
+    // `ps` is given PS_TELEMETRY_TIMEOUT unless the observation window is
+    // shorter than that, in which case the window truncates it. Remembering
+    // which of the two bounded this run is what separates "the observer is
+    // broken" from "the window ended underneath it" below.
+    let full_budget = Instant::now()
         .checked_add(PS_TELEMETRY_TIMEOUT)
-        .ok_or("process observation deadline overflow")?
-        .min(observation_deadline);
-    let output = bounded_internal_output_with_runtime(
+        .ok_or("process observation deadline overflow")?;
+    let truncated_by_window = observation_deadline < full_budget;
+    let phase_deadline = full_budget.min(observation_deadline);
+    let output = match bounded_internal_output_with_runtime(
         observer.runtime(),
         &["-e", "-o", "pid=,pgid=,rss=,stat="],
         phase_deadline,
         lifecycle_deadline,
         observer.reaper(),
-    )
-    .map_err(|error| format!("run process-group observer: {error}"))?;
+    ) {
+        Ok(output) => output,
+        // The window closed while a truncated observation was still running.
+        // That is the window ending, not evidence failing: the caller's own
+        // deadline check would have said the same thing microseconds later, and
+        // every caller already has a path for it. Weekly run 31585942873 lost
+        // an 84-minute simulator run here -- `ps` was handed 711 ms of a window
+        // that was about to close on a loaded runner, and its timeout was
+        // reported as a harness failure 711 ms before the same outcome would
+        // have been reached legitimately.
+        //
+        // Deliberately narrow: an observation that received its full
+        // PS_TELEMETRY_TIMEOUT and then failed or timed out is as fatal as it
+        // has always been, because the window did not bound it.
+        Err(_) if truncated_by_window && Instant::now() >= observation_deadline => {
+            return Ok(GroupObservation::WindowClosed);
+        }
+        Err(error) => return Err(format!("run process-group observer: {error}").into()),
+    };
     if !output.status.success() {
         return Err(format!(
             "sample process-group RSS with ps exited {:?}: {}",
@@ -159,7 +204,7 @@ pub(crate) fn process_group_observation(
             .collect::<Vec<_>>()
             .join("\n");
     }
-    parse_process_group_observation(&source, process_group, anchor)
+    parse_process_group_observation(&source, process_group, anchor).map(GroupObservation::Observed)
 }
 
 #[cfg(test)]
