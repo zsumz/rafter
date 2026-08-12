@@ -46,7 +46,7 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
         "\"workers\": \"auto\"",
         "\"checkpoint_minutes\": \"30\"",
         "\"checkpoint_gzip\": \"required\"",
-        "\"max_heap\": \"4g\"",
+        "\"max_heap\": \"8g\"",
         "\"fp_mem\": \"0.45\"",
         "\"checkpoint_recovery\": \"strict-compatible-if-present\"",
         "\"unsymmetrized_exploration\": \"required\"",

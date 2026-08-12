@@ -178,7 +178,10 @@ fn valid_weekly(contract: &Configuration) -> bool {
         && contract.checkpoint_gzip.as_deref() == Some("required")
         && contract.checkpoint_minutes.as_deref() == Some("30")
         && contract.checkpoint_recovery.as_deref() == Some("strict-compatible-if-present")
-        && contract.max_heap.as_deref() == Some("4g")
+        // 8g, matching nightly and the calibration conditions: the first weekly
+        // dispatch ran the 8M-distinct unsymmetrized snapshot obligation on 4g
+        // and could not drain it inside any defensible budget.
+        && contract.max_heap.as_deref() == Some("8g")
         && contract.fp_mem.as_deref() == Some("0.45")
         && contract.unsymmetrized_exploration.as_deref() == Some("required")
         && contract.finalization_reserve.as_deref() == Some("10m")

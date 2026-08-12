@@ -110,7 +110,7 @@ for every profile once. The affected `runner_contract_sha256` values are:
 | --- | --- | --- |
 | PR | `84f4980f5963064f…` | `4ec4e394e5afbc62…` |
 | Nightly | `4ca7833d8f558e44…` | `9de14d88b983720d…` |
-| Weekly | `8d09c27585de34fa…` | `e6bb0ad6e6b2760d…` |
+| Weekly | `8d09c27585de34fa…` | `580d06b52b886fd3…` |
 
 Scheduled continuations restart from an empty queue at the next run and
 reaccumulate. Obligations themselves are outside that map by design, so future
@@ -560,7 +560,7 @@ The wired manifest, after calibration:
 | weekly | `core-replication-unsymmetrized` | `RaftCoreObligationUnsymmetrized.cfg` | 452,327 / 80,977 | 4m |
 | weekly | `integration-unsymmetrized` | `RaftIntegrationUnsymmetrized.cfg` | 254,211 / 49,985 | 4m |
 | weekly | `read-fencing-unsymmetrized` | `RaftReadObligationUnsymmetrized.cfg` | 2,368,355 / 395,573 | 6m |
-| weekly | `snapshot-lifecycle-unsymmetrized` | `RaftSnapshotObligationUnsymmetrized.cfg` | 56,476,413 / 8,008,105 | 40m |
+| weekly | `snapshot-lifecycle-unsymmetrized` | `RaftSnapshotObligationUnsymmetrized.cfg` | 56,476,413 / 8,008,105 | 45m |
 
 Budgets are set against measured CI wall time, not local wall time. The first
 nightly dispatch put CI runners at almost exactly twice the local calibration
@@ -568,13 +568,20 @@ wall on the multi-minute models — the deep core obligation ran 16m26s against
 8.5 local minutes, the snapshot obligation 13m24s against 6.7 — and the
 snapshot obligation's original 12-minute budget was killed eighty seconds
 short of a drained queue, which is why every multi-minute budget now carries
-roughly 2x-of-CI-projection headroom.
+roughly 2x-of-CI-projection headroom. Heap is part of the calibration
+conditions too: the first weekly dispatch ran the 8M-distinct unsymmetrized
+snapshot obligation on the tier's old 4g heap — half the heap every
+calibration ran at — and could not drain it inside any budget, so weekly now
+runs the same 8g as nightly. The same dispatch discharged its other six
+obligations with distinct counts matching local calibration to the state,
+which is the cross-machine determinism the exact floors rely on, observed in
+production.
 
 Weekly affords its unsymmetrized family by trading continuation time for it:
 its reporting primary runs 190 minutes against nightly's 250, and the
 recovered hour funds the symmetry audit applied to every theorem that
 actually gates — all four gating obligation families now run both quotiented
-and unquotiented on the weekly tier, 110 obligation minutes inside the
+and unquotiented on the weekly tier, 115 obligation minutes inside the
 120-minute budget the trade opened.
 
 Floors are the exact measured counts: TLC's breadth-first counts are

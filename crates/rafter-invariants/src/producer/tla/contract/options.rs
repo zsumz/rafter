@@ -44,7 +44,12 @@ pub(in crate::producer::tla) fn validate_obligation_options(
             .into());
         }
         if PRIMARY_CONFIGS.contains(&obligation.config.as_str())
-            || !obligation.config.ends_with(".cfg")
+            // Case-sensitive on purpose: reviewed config names are exact
+            // identities, so this re-derives the contract layer's rule
+            // rather than a case-folded approximation of it.
+            || !std::path::Path::new(&obligation.config)
+                .extension()
+                .is_some_and(|extension| extension == "cfg")
             || obligation.config.contains('/')
         {
             return Err(format!(
@@ -131,7 +136,7 @@ pub(in crate::producer::tla) fn validate_runner_options(
                     ("soft_timeout", "190m"),
                     ("checkpoint_minutes", "30"),
                     ("checkpoint_gzip", "required"),
-                    ("max_heap", "4g"),
+                    ("max_heap", "8g"),
                     ("fp_mem", "0.45"),
                     ("checkpoint_recovery", "strict-compatible-if-present"),
                     ("unsymmetrized_exploration", "required"),

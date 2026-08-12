@@ -63,7 +63,12 @@ fn validate_obligation(obligation: &ProofObligationContract) -> Result<(), Strin
             obligation.id
         ));
     }
-    if !obligation.config.ends_with(".cfg")
+    // Path::extension is deliberately case-sensitive here: the reviewed
+    // configuration names are exact identities, and `Foo.CFG` is a different
+    // (and unreviewed) name, not an acceptable spelling of `Foo.cfg`.
+    if !std::path::Path::new(&obligation.config)
+        .extension()
+        .is_some_and(|extension| extension == "cfg")
         || obligation.config.contains('/')
         || obligation.config.contains('\\')
         || obligation.config.starts_with('.')

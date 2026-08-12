@@ -24,11 +24,17 @@ pub(crate) const UNPORTABLE_FILENAME_CHARACTERS: [char; 9] =
 ///
 /// Artifact kinds are receipt vocabulary and several are structured with a
 /// colon (`tla-detector-config:LogMatching`, `tla-obligation-log:read-fencing`).
-/// The kind is the compatibility identity and does not change; only the name of
-/// the file carrying it does. `:` becomes `-`, which is the same normalization
-/// the source-identity policy already applies when it recognizes those files.
+/// The kind is the compatibility identity and does not change; only the name
+/// of the file carrying it does. Every rejected character becomes `-` — for
+/// the colon that is the same normalization the source-identity policy
+/// already applies when it recognizes these files, and no other rejected
+/// character occurs in any reviewed kind today, which the artifact-naming
+/// guard asserts.
 pub(crate) fn portable_filename(kind: &str) -> String {
-    kind.replace(':', "-")
+    kind.replace(
+        |character: char| UNPORTABLE_FILENAME_CHARACTERS.contains(&character),
+        "-",
+    )
 }
 
 pub(super) fn validate_output_dir(path: &Path) -> Result<(), Box<dyn Error>> {

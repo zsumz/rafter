@@ -117,7 +117,7 @@ fn weekly_checkpoint_contract_is_exact() {
         ("soft_timeout".to_owned(), "190m".to_owned()),
         ("checkpoint_minutes".to_owned(), "30".to_owned()),
         ("checkpoint_gzip".to_owned(), "required".to_owned()),
-        ("max_heap".to_owned(), "4g".to_owned()),
+        ("max_heap".to_owned(), "8g".to_owned()),
         ("fp_mem".to_owned(), "0.45".to_owned()),
         (
             "checkpoint_recovery".to_owned(),
@@ -129,7 +129,10 @@ fn weekly_checkpoint_contract_is_exact() {
         ),
     ]);
     assert!(validate_runner_options(&options).is_ok());
-    options.insert("max_heap".to_owned(), "8g".to_owned());
+    // The retired 4g heap: weekly moved to nightly's 8g when the first
+    // dispatch showed 4g cannot drain the unsymmetrized snapshot obligation
+    // the tier gates on, so the old value must now be refused.
+    options.insert("max_heap".to_owned(), "4g".to_owned());
     assert!(validate_runner_options(&options).is_err());
 }
 
