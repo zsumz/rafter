@@ -247,6 +247,82 @@ fn synthetic_check_id(descriptor: &EvidenceDescriptor) -> String {
         .map_or_else(|| descriptor.evidence_id(), TestIdentity::check_id)
 }
 
+/// The TLA+ layer's synthetic observation frame.
+///
+/// Split out because it is the one layer whose frame depends on the profile's
+/// continuation policy: a gating profile publishes the terminal counters of a
+/// drained monolith, a reporting one the progress frame of a continuation that
+/// spent its budget with the frontier still open.
+fn synthetic_tla_observations(
+    descriptors: &[EvidenceDescriptor],
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> std::collections::BTreeMap<String, u64> {
+    let mut observations = std::collections::BTreeMap::from([
+        ("configured_invariants".to_owned(), 9),
+        ("tool_pin_verified".to_owned(), 1),
+        ("trace_sample_passed".to_owned(), 1),
+    ]);
+    // A gating profile publishes the terminal frame of a drained
+    // monolith. A reporting profile publishes the progress frame of a
+    // continuation that spent its budget with the frontier still open,
+    // which is the shape its lane actually produces.
+    if tla_policy(manifest, profile).gates() {
+        // Counters sit exactly at the pinned floors -- the weakest run
+        // the contract accepts -- so a floor regression cannot hide
+        // behind a generous fixture, and a floor recalibration needs
+        // no fixture edit.
+        let configuration = &manifest.profiles[profile].runners["tla"].configuration;
+        let floor = |key: &str| -> u64 {
+            configuration[key]
+                .parse()
+                .expect("profile pins a numeric state floor")
+        };
+        observations.extend([
+            (
+                "generated_states".to_owned(),
+                floor("minimum_generated_states"),
+            ),
+            (
+                "distinct_states".to_owned(),
+                floor("minimum_distinct_states"),
+            ),
+            ("states_left_on_queue".to_owned(), 0),
+            ("search_depth".to_owned(), 1),
+        ]);
+    } else {
+        observations.extend([
+            ("progress_generated_states".to_owned(), 23_784_130),
+            ("progress_distinct_states".to_owned(), 6_246_309),
+            ("progress_states_left".to_owned(), 3_294_097),
+            ("progress_depth".to_owned(), 21),
+        ]);
+    }
+    observations.extend(
+        crate::producer::tla_output::REGISTERED_PREDICATES
+            .into_iter()
+            .map(|predicate| (format!("detector_qualified:{predicate}"), 1)),
+    );
+    observations.extend(
+        descriptors
+            .iter()
+            .map(|descriptor| (format!("checked:{}", descriptor.symbol), 1)),
+    );
+    observations.extend(
+        crate::producer::tla_output::REQUIRED_MODEL_TRANSITIONS
+            .into_iter()
+            .map(|transition| (format!("transition_covered:{transition}"), 1)),
+    );
+    for obligation in tla_obligations(manifest, profile) {
+        observations.extend(crate::producer::tla_output::obligation_observations(
+            &obligation.id,
+            &synthetic_obligation_summary(obligation),
+            true,
+        ));
+    }
+    observations
+}
+
 fn synthetic_observations(
     descriptors: &[EvidenceDescriptor],
     manifest: &ProfileManifest,
@@ -265,69 +341,7 @@ fn synthetic_observations(
     }
     let Some(identity) = &descriptor.simulator else {
         if descriptor.layer == "tla" {
-            let mut observations = std::collections::BTreeMap::from([
-                ("configured_invariants".to_owned(), 9),
-                ("tool_pin_verified".to_owned(), 1),
-                ("trace_sample_passed".to_owned(), 1),
-            ]);
-            // A gating profile publishes the terminal frame of a drained
-            // monolith. A reporting profile publishes the progress frame of a
-            // continuation that spent its budget with the frontier still open,
-            // which is the shape its lane actually produces.
-            if tla_policy(manifest, profile).gates() {
-                // Counters sit exactly at the pinned floors -- the weakest run
-                // the contract accepts -- so a floor regression cannot hide
-                // behind a generous fixture, and a floor recalibration needs
-                // no fixture edit.
-                let configuration = &manifest.profiles[profile].runners["tla"].configuration;
-                let floor = |key: &str| -> u64 {
-                    configuration[key]
-                        .parse()
-                        .expect("profile pins a numeric state floor")
-                };
-                observations.extend([
-                    (
-                        "generated_states".to_owned(),
-                        floor("minimum_generated_states"),
-                    ),
-                    (
-                        "distinct_states".to_owned(),
-                        floor("minimum_distinct_states"),
-                    ),
-                    ("states_left_on_queue".to_owned(), 0),
-                    ("search_depth".to_owned(), 1),
-                ]);
-            } else {
-                observations.extend([
-                    ("progress_generated_states".to_owned(), 23_784_130),
-                    ("progress_distinct_states".to_owned(), 6_246_309),
-                    ("progress_states_left".to_owned(), 3_294_097),
-                    ("progress_depth".to_owned(), 21),
-                ]);
-            }
-            observations.extend(
-                crate::producer::tla_output::REGISTERED_PREDICATES
-                    .into_iter()
-                    .map(|predicate| (format!("detector_qualified:{predicate}"), 1)),
-            );
-            observations.extend(
-                descriptors
-                    .iter()
-                    .map(|descriptor| (format!("checked:{}", descriptor.symbol), 1)),
-            );
-            observations.extend(
-                crate::producer::tla_output::REQUIRED_MODEL_TRANSITIONS
-                    .into_iter()
-                    .map(|transition| (format!("transition_covered:{transition}"), 1)),
-            );
-            for obligation in tla_obligations(manifest, profile) {
-                observations.extend(crate::producer::tla_output::obligation_observations(
-                    &obligation.id,
-                    &synthetic_obligation_summary(obligation),
-                    true,
-                ));
-            }
-            return observations;
+            return synthetic_tla_observations(descriptors, manifest, profile);
         }
         return std::collections::BTreeMap::new();
     };

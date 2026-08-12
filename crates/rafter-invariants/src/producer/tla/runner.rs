@@ -66,7 +66,7 @@ pub(in crate::producer) fn run(
         "soft_timeout",
     )?)?;
     let execution = execute(
-        ExecutionRequest {
+        &ExecutionRequest {
             profile,
             source_ref: &source.commit,
             config: config_name,

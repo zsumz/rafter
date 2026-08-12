@@ -36,9 +36,9 @@ use super::{
     observation::{parse_main_summary, successful_log},
 };
 
-pub(super) fn contracted<'a>(
-    bundle: &'a ResultBundle,
-) -> Result<&'a [ProofObligationContract], AggregateError> {
+pub(super) fn contracted(
+    bundle: &ResultBundle,
+) -> Result<&[ProofObligationContract], AggregateError> {
     Ok(&bundle
         .execution
         .plan

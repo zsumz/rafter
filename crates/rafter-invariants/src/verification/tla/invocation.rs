@@ -140,23 +140,20 @@ pub(super) fn optional_process_log(
         .transpose()
 }
 
-fn verify_tla_invocation(
-    bundle: &ResultBundle,
+/// Resolves what TLC was asked to check for one labelled process log.
+///
+/// Every branch reads the pinned profile contract rather than the observed
+/// argv: the point of the reconstruction is to derive independently what the
+/// invocation should have been, so nothing here may come from the receipt.
+fn invocation_target<'a>(
+    bundle: &'a ResultBundle,
     check: &CheckReceipt,
     label: &str,
-    observed: &InvocationReceipt,
     root: &Path,
     producer_repository: &Path,
-    authenticated: &AuthenticatedArtifacts,
-) -> Result<(), AggregateError> {
-    if !crate::verification::process_invocation_matches_source(observed, &bundle.execution.source) {
-        return Err(AggregateError::new(format!(
-            "TLA process log {label} does not match the source-bound process runtime"
-        )));
-    }
-    let repository = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize TLA root: {error}")))?;
-    let target = match label {
+    repository: &Path,
+) -> Result<arguments::InvocationTarget<'a>, AggregateError> {
+    Ok(match label {
         "model-check" => arguments::InvocationTarget {
             config: configuration(bundle, "config")?.to_owned(),
             module: "Raft.tla",
@@ -207,7 +204,7 @@ fn verify_tla_invocation(
                 ))
             })?;
             let config = producer_repository
-                .join(config.strip_prefix(&repository).map_err(|_| {
+                .join(config.strip_prefix(repository).map_err(|_| {
                     AggregateError::new(format!(
                         "TLA detector config escaped the aggregate checkout: {}",
                         artifact.path
@@ -223,7 +220,26 @@ fn verify_tla_invocation(
                 memory_profile: false,
             }
         }
-    };
+    })
+}
+
+fn verify_tla_invocation(
+    bundle: &ResultBundle,
+    check: &CheckReceipt,
+    label: &str,
+    observed: &InvocationReceipt,
+    root: &Path,
+    producer_repository: &Path,
+    authenticated: &AuthenticatedArtifacts,
+) -> Result<(), AggregateError> {
+    if !crate::verification::process_invocation_matches_source(observed, &bundle.execution.source) {
+        return Err(AggregateError::new(format!(
+            "TLA process log {label} does not match the source-bound process runtime"
+        )));
+    }
+    let repository = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize TLA root: {error}")))?;
+    let target = invocation_target(bundle, check, label, root, producer_repository, &repository)?;
     let current_dir = producer_repository.join("specs/tla/raft");
     let expected = arguments::expected(
         bundle,

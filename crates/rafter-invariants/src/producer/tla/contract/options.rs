@@ -47,9 +47,9 @@ pub(in crate::producer::tla) fn validate_obligation_options(
             // Case-sensitive on purpose: reviewed config names are exact
             // identities, so this re-derives the contract layer's rule
             // rather than a case-folded approximation of it.
-            || !std::path::Path::new(&obligation.config)
+            || std::path::Path::new(&obligation.config)
                 .extension()
-                .is_some_and(|extension| extension == "cfg")
+                .is_none_or(|extension| extension != "cfg")
             || obligation.config.contains('/')
         {
             return Err(format!(

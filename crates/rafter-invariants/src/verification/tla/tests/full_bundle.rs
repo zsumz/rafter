@@ -107,7 +107,7 @@ fn timed_out_tla_bundle_verifies_progress_without_terminal_proof() {
 #[test]
 fn reporting_continuation_with_an_open_frontier_verifies() {
     let mut fixture = Fixture::new();
-    fixture.into_reporting();
+    fixture.set_reporting_policy();
 
     let check = &fixture.bundle.execution.checks[0];
     let binding = check.tla_continuation.expect("continuation binding");
@@ -131,7 +131,7 @@ fn reporting_continuation_with_an_open_frontier_verifies() {
 #[test]
 fn reporting_continuation_with_a_violation_is_still_red() {
     let mut fixture = Fixture::new();
-    fixture.into_reporting();
+    fixture.set_reporting_policy();
     let mut log = fixture.read_log("tla-log");
     log.timed_out = false;
     log.exit_code = Some(12);
@@ -153,7 +153,7 @@ fn reporting_continuation_with_a_violation_is_still_red() {
 #[test]
 fn reporting_continuation_with_a_malformed_log_is_still_red() {
     let mut fixture = Fixture::new();
-    fixture.into_reporting();
+    fixture.set_reporting_policy();
     let mut log = fixture.read_log("tla-log");
     log.stdout =
         "@!@!@STARTMSG 2200:0 @!@!@\nmalformed progress\n@!@!@ENDMSG 2200 @!@!@\n".to_owned();
@@ -167,7 +167,7 @@ fn reporting_continuation_with_a_malformed_log_is_still_red() {
 #[test]
 fn a_forged_exhausted_outcome_on_an_elapsed_continuation_fails_closed() {
     let mut fixture = Fixture::new();
-    fixture.into_reporting();
+    fixture.set_reporting_policy();
     fixture.set_continuation_outcome(crate::ContinuationOutcome::FrontierExhausted);
 
     assert!(verify(&fixture.bundle, &fixture.root).is_err());
@@ -562,7 +562,7 @@ impl Fixture {
     /// scenarios. What this models is the shape a reporting lane actually
     /// produces: a continuation that spent its budget with the frontier still
     /// open, whose predicates were checked by the obligations that did drain.
-    fn into_reporting(&mut self) {
+    fn set_reporting_policy(&mut self) {
         self.bundle.profile = "nightly".to_owned();
         self.bundle
             .execution

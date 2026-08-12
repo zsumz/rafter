@@ -8,7 +8,7 @@ use super::{
     super::contract::required_configuration,
     budget::{probe_timeout, ExecutionBudget},
     command::{run_tlc, TlcRequest, TlcState},
-    model::{ProbeStatus, TlaExecution},
+    model::{DetectorProbes, ObligationOutcome, ProbeStatus, TlaExecution, TlcRun},
     obligation::run_obligations,
     outcome::{
         checkpoint_failure, complete_main_execution, detector_failure, main_budget_failure,
@@ -18,6 +18,7 @@ use super::{
     probes::{run_detector_probes, run_trace_probe, trace_succeeded},
 };
 
+#[derive(Clone, Copy)]
 pub(in crate::producer::tla) struct ExecutionRequest<'a> {
     pub(in crate::producer::tla) profile: &'a str,
     pub(in crate::producer::tla) source_ref: &'a str,
@@ -29,18 +30,17 @@ pub(in crate::producer::tla) struct ExecutionRequest<'a> {
 }
 
 pub(in crate::producer::tla) fn execute(
-    request: ExecutionRequest<'_>,
+    request: &ExecutionRequest<'_>,
     mut artifacts: Vec<ArtifactRef>,
 ) -> Result<TlaExecution, Box<dyn Error>> {
     let ExecutionRequest {
         profile,
         source_ref,
-        config,
         configuration,
         obligations,
-        timeout,
         output_dir,
-    } = request;
+        ..
+    } = *request;
     let budget = ExecutionBudget::from_configuration(profile, configuration)?;
     let Some(trace_timeout) = budget.phase_timeout(probe_timeout(profile)) else {
         return Ok(trace_budget_failure(artifacts));
@@ -83,6 +83,51 @@ pub(in crate::producer::tla) fn execute(
             artifacts,
         ));
     }
+    run_primary_continuation(
+        &PrimaryContinuation {
+            request,
+            budget,
+            trace: &trace,
+        },
+        detectors,
+        obligation_outcome,
+        artifacts,
+    )
+}
+
+/// The primary configuration's own phase: checkpoint preparation, the
+/// continuation run, and its terminal classification.
+///
+/// Split from `execute` at the ownership seam that matters -- everything above
+/// decides whether this phase is entitled to run at all, and everything here
+/// consumes the qualification results rather than producing them.
+#[derive(Clone, Copy)]
+struct PrimaryContinuation<'a> {
+    request: &'a ExecutionRequest<'a>,
+    budget: ExecutionBudget,
+    trace: &'a TlcRun,
+}
+
+fn run_primary_continuation(
+    context: &PrimaryContinuation<'_>,
+    detectors: DetectorProbes,
+    obligation_outcome: ObligationOutcome,
+    mut artifacts: Vec<ArtifactRef>,
+) -> Result<TlaExecution, Box<dyn Error>> {
+    let PrimaryContinuation {
+        request,
+        budget,
+        trace,
+    } = *context;
+    let ExecutionRequest {
+        profile,
+        source_ref,
+        config,
+        configuration,
+        timeout,
+        output_dir,
+        ..
+    } = *request;
     let mut checkpoint = prepare_checkpoint(
         profile,
         source_ref,
@@ -103,7 +148,7 @@ pub(in crate::producer::tla) fn execute(
         };
         artifacts.extend(preparation.finish(output_dir, budget.total_deadline)?);
         return Ok(checkpoint_failure(
-            &trace,
+            trace,
             detectors,
             obligation_outcome,
             artifacts,
@@ -116,7 +161,7 @@ pub(in crate::producer::tla) fn execute(
             artifacts.extend(preparation.finish(output_dir, budget.total_deadline)?);
         }
         return Ok(main_budget_failure(
-            &trace,
+            trace,
             detectors,
             obligation_outcome,
             artifacts,
@@ -152,7 +197,7 @@ pub(in crate::producer::tla) fn execute(
     })?;
     complete_main_execution(
         MainCompletion {
-            trace: &trace,
+            trace,
             detectors,
             obligations: obligation_outcome,
             artifacts,

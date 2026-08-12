@@ -33,17 +33,35 @@ pub(super) fn parse_main_summary(
     }
 }
 
-pub(super) fn derive(
-    symbols: &[String],
-    trace_passed: bool,
-    detector_observations: BTreeMap<String, u64>,
-    obligation_observations: BTreeMap<String, u64>,
-    checked_predicates_are_earned: bool,
-    checkpoint: Option<&RecoveryReport>,
-    main_progress: Option<TlcProgress>,
-    main: Option<&ProcessLog>,
-    main_summary: Option<&TlcSummary>,
-) -> BTreeMap<String, u64> {
+/// The independently verified inputs the observation frame is a function of.
+///
+/// Each field is produced by its own verification pass over its own artifacts;
+/// grouping them keeps that provenance readable and stops the frame from being
+/// assembled out of a long positional argument list.
+pub(super) struct DerivedObservations<'a> {
+    pub(super) symbols: &'a [String],
+    pub(super) trace_passed: bool,
+    pub(super) detector_observations: BTreeMap<String, u64>,
+    pub(super) obligation_observations: BTreeMap<String, u64>,
+    pub(super) checked_predicates_are_earned: bool,
+    pub(super) checkpoint: Option<&'a RecoveryReport>,
+    pub(super) main_progress: Option<TlcProgress>,
+    pub(super) main: Option<&'a ProcessLog>,
+    pub(super) main_summary: Option<&'a TlcSummary>,
+}
+
+pub(super) fn derive(inputs: DerivedObservations<'_>) -> BTreeMap<String, u64> {
+    let DerivedObservations {
+        symbols,
+        trace_passed,
+        detector_observations,
+        obligation_observations,
+        checked_predicates_are_earned,
+        checkpoint,
+        main_progress,
+        main,
+        main_summary,
+    } = inputs;
     let mut derived = BTreeMap::from([
         ("configured_invariants".to_owned(), symbols.len() as u64),
         ("tool_pin_verified".to_owned(), 1),

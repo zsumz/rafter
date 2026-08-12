@@ -119,3 +119,7 @@ fn trial_number(path: &Path) -> Result<Option<u64>, AggregateError> {
 fn error(message: impl Into<String>) -> AggregateError {
     AggregateError::new(message.into())
 }
+
+#[cfg(test)]
+#[path = "tests/artifact.rs"]
+mod tests;
