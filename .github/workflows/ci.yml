@@ -215,7 +215,7 @@ jobs:
           set -o pipefail
           mkdir -p target/rafter-invariants/ci-diagnostics
           {
-            scripts/cargo-test-exact 58 execution::process:: --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 62 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1
             scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1
             scripts/cargo-test-exact 4 producer::test_exec::detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
             scripts/cargo-test-exact 1 producer::test_exec::process_tests --locked -p rafter-invariants -- --test-threads=1

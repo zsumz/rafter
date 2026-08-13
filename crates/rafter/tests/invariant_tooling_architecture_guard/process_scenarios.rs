@@ -482,3 +482,111 @@ fn no_signal_reaper_cannot_acquire_a_signal_capability() {
         "no-signal reaper module tree must retain an observation-only reap path"
     );
 }
+
+/// The launcher lane runs an exact-count, exact-name selection over
+/// `execution::process::`. Twice now a scenario has joined that selection and
+/// only CI noticed, because the count lived in the workflow and the guards
+/// compared the workflow to itself. The inventory is the reviewed membership of
+/// that selection, and this derives the real membership from the module graph
+/// so adding, renaming, or removing a scenario fails here rather than an hour
+/// later on a macOS runner.
+#[test]
+fn the_launcher_selection_matches_its_reviewed_inventory() {
+    let root = workspace_root();
+    let inventory_path = "verification/launcher-process-test-inventory.txt";
+    let inventory = read(&root.join(inventory_path));
+    let reviewed = inventory.lines().collect::<Vec<_>>();
+
+    let mut canonical = reviewed.clone();
+    canonical.sort_unstable();
+    canonical.dedup();
+    assert_eq!(
+        reviewed, canonical,
+        "{inventory_path} must be sorted and free of duplicates"
+    );
+
+    let declared = declared_launcher_selection(&root);
+    let reviewed = reviewed
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing = declared.difference(&reviewed).collect::<Vec<_>>();
+    let stale = reviewed.difference(&declared).collect::<Vec<_>>();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "{inventory_path} disagrees with the compiled selection\n  missing: {missing:#?}\n  stale: {stale:#?}"
+    );
+
+    for pin in [
+        ".github/workflows/ci.yml",
+        "crates/rafter/tests/ci_test_inventory_contract.rs",
+        "crates/rafter/tests/invariant_ci_contract/support/assertions.rs",
+    ] {
+        assert!(
+            read(&root.join(pin)).contains(&format!(
+                "scripts/cargo-test-exact {} execution::process:: --inventory {inventory_path}",
+                declared.len()
+            )),
+            "{pin} must select exactly the {} reviewed launcher scenarios by name",
+            declared.len()
+        );
+    }
+}
+
+/// Every `#[test]` the `execution::process::` filter matches on the launcher
+/// lane, named the way libtest names it: the module path the crate mounts the
+/// file at, plus the function. The lane is macOS, so Linux-gated scenarios are
+/// not part of its selection and are excluded here for the same reason they are
+/// absent from its listing.
+fn declared_launcher_selection(root: &std::path::Path) -> std::collections::BTreeSet<String> {
+    let modules = declared_module_graph(root);
+    let mut names = std::collections::BTreeSet::new();
+    for path in invariant_rust_files(root) {
+        let relative = display_path(root, &path);
+        if !relative.starts_with("crates/rafter-invariants/src/execution/process") {
+            continue;
+        }
+        let module = declared_module_path(&modules, &relative).join("::");
+        if !module.starts_with("execution::process") {
+            continue;
+        }
+        let file = syn::parse_file(&read(&path))
+            .unwrap_or_else(|error| panic!("{relative} must parse: {error}"));
+        collect_test_functions(&file.items, &module, &mut names);
+    }
+    names
+}
+
+fn collect_test_functions(
+    items: &[syn::Item],
+    module: &str,
+    names: &mut std::collections::BTreeSet<String>,
+) {
+    for item in items {
+        match item {
+            syn::Item::Fn(function)
+                if function
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("test"))
+                    && !is_linux_only(&function.attrs) =>
+            {
+                names.insert(format!("{module}::{}", function.sig.ident));
+            }
+            syn::Item::Mod(inline) => {
+                if let Some((_, nested)) = &inline.content {
+                    collect_test_functions(nested, &format!("{module}::{}", inline.ident), names);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn is_linux_only(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && matches!(&attribute.meta, syn::Meta::List(list)
+                if list.tokens.to_string().replace(' ', "").contains("target_os=\"linux\""))
+    })
+}
