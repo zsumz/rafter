@@ -173,7 +173,7 @@ fn valid_weekly(contract: &Configuration) -> bool {
         // twice the local calibration wall on the multi-minute models, so the
         // unsymmetrized snapshot obligation carries a 40-minute budget and
         // the primary funds it.
-        && contract.soft_timeout == "190m"
+        && contract.soft_timeout == "165m"
         && contract.workers == "auto"
         && contract.checkpoint_gzip.as_deref() == Some("required")
         && contract.checkpoint_minutes.as_deref() == Some("30")

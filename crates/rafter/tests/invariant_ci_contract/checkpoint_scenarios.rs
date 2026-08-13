@@ -40,7 +40,7 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
     let profile = tla_configuration_line(&profile, "Raft.cfg");
     for required in [
         "\"config\": \"Raft.cfg\"",
-        "\"soft_timeout\": \"190m\"",
+        "\"soft_timeout\": \"165m\"",
         "\"total_timeout\": \"320m\"",
         "\"finalization_reserve\": \"10m\"",
         "\"workers\": \"auto\"",

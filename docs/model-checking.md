@@ -110,7 +110,7 @@ for every profile once. The affected `runner_contract_sha256` values are:
 | --- | --- | --- |
 | PR | `84f4980f5963064f…` | `4ec4e394e5afbc62…` |
 | Nightly | `4ca7833d8f558e44…` | `9de14d88b983720d…` |
-| Weekly | `8d09c27585de34fa…` | `580d06b52b886fd3…` |
+| Weekly | `8d09c27585de34fa…` | `d22551dc3088fdae…` |
 
 Scheduled continuations restart from an empty queue at the next run and
 reaccumulate. Obligations themselves are outside that map by design, so future
