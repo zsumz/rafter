@@ -111,7 +111,7 @@ pub(in crate::producer::tla) fn validate_runner_options(
         (Some("RaftNightly.cfg"), true) => {
             for (name, expected) in [
                 ("workers", "auto"),
-                ("soft_timeout", "250m"),
+                ("soft_timeout", "240m"),
                 ("checkpoint_minutes", "30"),
                 ("checkpoint_gzip", "required"),
                 ("max_heap", "8g"),
@@ -133,7 +133,7 @@ pub(in crate::producer::tla) fn validate_runner_options(
             "Raft.cfg" => {
                 for (name, expected) in [
                     ("workers", "auto"),
-                    ("soft_timeout", "165m"),
+                    ("soft_timeout", "155m"),
                     ("checkpoint_minutes", "30"),
                     ("checkpoint_gzip", "required"),
                     ("max_heap", "8g"),

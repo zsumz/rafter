@@ -109,8 +109,8 @@ for every profile once. The affected `runner_contract_sha256` values are:
 | Profile | From | To |
 | --- | --- | --- |
 | PR | `84f4980f5963064f…` | `4ec4e394e5afbc62…` |
-| Nightly | `4ca7833d8f558e44…` | `9de14d88b983720d…` |
-| Weekly | `8d09c27585de34fa…` | `d22551dc3088fdae…` |
+| Nightly | `4ca7833d8f558e44…` | `1efd3caeda589043…` |
+| Weekly | `8d09c27585de34fa…` | `e4966ae607e3a2b7…` |
 
 Scheduled continuations restart from an empty queue at the next run and
 reaccumulate. Obligations themselves are outside that map by design, so future
@@ -554,13 +554,13 @@ The wired manifest, after calibration:
 | --- | --- | --- | --- | --- |
 | pr | `core-replication` | `RaftCoreObligation.cfg` | 113,201 / 20,282 | 4m |
 | pr | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
-| nightly, weekly | `core-replication-deep` | `RaftCoreObligationDeep.cfg` | 14,734,799 / 2,004,053 | 25m |
+| nightly, weekly | `core-replication-deep` | `RaftCoreObligationDeep.cfg` | 14,734,799 / 2,004,053 | 35m |
 | nightly, weekly | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
 | nightly, weekly | `snapshot-lifecycle` | `RaftSnapshotObligation.cfg` | 14,119,884 / 2,002,205 | 25m |
 | weekly | `core-replication-unsymmetrized` | `RaftCoreObligationUnsymmetrized.cfg` | 452,327 / 80,977 | 4m |
 | weekly | `integration-unsymmetrized` | `RaftIntegrationUnsymmetrized.cfg` | 254,211 / 49,985 | 4m |
 | weekly | `read-fencing-unsymmetrized` | `RaftReadObligationUnsymmetrized.cfg` | 2,368,355 / 395,573 | 6m |
-| weekly | `snapshot-lifecycle-unsymmetrized` | `RaftSnapshotObligationUnsymmetrized.cfg` | 56,476,413 / 8,008,105 | 45m |
+| weekly | `snapshot-lifecycle-unsymmetrized` | `RaftSnapshotObligationUnsymmetrized.cfg` | 56,476,413 / 8,008,105 | 70m |
 
 Budgets are set against measured CI wall time, not local wall time. The first
 nightly dispatch put CI runners at almost exactly twice the local calibration
@@ -577,12 +577,35 @@ obligations with distinct counts matching local calibration to the state,
 which is the cross-machine determinism the exact floors rely on, observed in
 production.
 
+Two dispatches of the same commit then showed the hosts themselves vary. Every
+obligation ran 1.3x to 1.5x slower on the second: the deep core obligation
+11m25s then 16m58s, the snapshot obligation 9m01s then 12m27s, the
+unsymmetrized read obligation 1m24s then 2m02s, and so on uniformly across
+seven obligations and both profiles. Nothing in the specification, the floors,
+or the producer changed between them -- the distinct counts matched to the
+state, as they always do -- so the difference is the machine.
+
+That is fatal to a budget calibrated from a single observation. The
+unsymmetrized snapshot obligation had discharged in 33m08s of a 45-minute
+budget, which reads like comfortable headroom and is in fact 26%: one host a
+third slower spends all of it, and the second dispatch was killed at the wall.
+Budgets are therefore set against **1.5x the fastest measured CI wall**, taking
+the fastest as the base because the variance is multiplicative. On that rule
+the deep core obligation needs 24m of its 25 -- sitting on the line rather than
+inside it -- so it moves to 35m, and the unsymmetrized snapshot obligation to
+70m, a little over twice its fastest observation. The small obligations run in
+seconds against four- and six-minute budgets and are already an order of
+magnitude clear.
+
 Weekly affords its unsymmetrized family by trading continuation time for it:
-its reporting primary runs 190 minutes against nightly's 250, and the
-recovered hour funds the symmetry audit applied to every theorem that
+its reporting primary runs 155 minutes against nightly's 240, and the
+recovered time funds the symmetry audit applied to every theorem that
 actually gates — all four gating obligation families now run both quotiented
-and unquotiented on the weekly tier, 115 obligation minutes inside the
-120-minute budget the trade opened.
+and unquotiented on the weekly tier, 150 obligation minutes against nightly's
+66. That trade is the reporting policy working as intended: the continuation
+accumulates coverage and the obligations decide the verdict, so when the
+variance rule above needed more obligation time, it came out of the primary
+rather than out of the gate.
 
 Floors are the exact measured counts: TLC's breadth-first counts are
 deterministic for a fixed spec, config, and symmetry, so any deviation is a
