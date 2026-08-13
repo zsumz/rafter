@@ -31,12 +31,18 @@ pub(super) fn validate(
                 || !markers_cover(check, scenario, trials)
                 || artifact_count(check, "maelstrom-results") != trials_usize
                 || artifact_count(check, "maelstrom-process-log") != trials_usize
-                || artifact_count(check, "maelstrom-runner") != trials_usize
-                || artifact_count(check, "maelstrom-binary") != trials_usize
-                || artifact_count(check, "maelstrom-tool-jar") != trials_usize
+                // Tool inputs are captured once per source tree and shared by
+                // every trial, so a check names each of them exactly once
+                // however many trials referenced it. Requiring one per trial
+                // was the same duplication the producer used to emit and the
+                // trial grouping already refuses as ambiguous; single-trial
+                // profiles could not tell the two rules apart.
+                || artifact_count(check, "maelstrom-runner") != 1
+                || artifact_count(check, "maelstrom-binary") != 1
+                || artifact_count(check, "maelstrom-tool-jar") != 1
                 || artifact_count(check, "maelstrom-node-log") == 0
                 || (scenario.requires_proxy()
-                    && artifact_count(check, "maelstrom-proxy-binary") != trials_usize)
+                    && artifact_count(check, "maelstrom-proxy-binary") != 1)
                 || (scenario.requires_durable_state()
                     && artifact_count(check, "maelstrom-durable-file") < trials_usize)
             {

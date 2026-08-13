@@ -24,6 +24,9 @@ evidence::format::maelstrom::tests::parses_structural_linearizability_and_operat
 evidence::format::process::tests::maelstrom_v3_wire_is_byte_stable_and_forbids_termination
 producer::filesystem_integration_tests::maelstrom_discovery_and_evidence_traversal_obey_expired_deadlines
 producer::filesystem_integration_tests::maelstrom_scratch_cleanup_removes_generated_tree_before_source_revalidation
+producer::maelstrom::runner::tests::a_single_trial_receipt_is_unchanged
+producer::maelstrom::runner::tests::distinct_artifacts_are_never_collapsed
+producer::maelstrom::runner::tests::repeated_shared_inputs_collapse_and_trial_evidence_survives
 producer::maelstrom::tests::producer_preserves_simultaneous_rd05_and_rd06_counterexamples
 producer::maelstrom::tests::rd05_violation_survives_later_parse_process_and_transcript_errors
 producer::maelstrom::tests::trial_timeout_is_a_harness_error_even_with_a_valid_checker_summary
@@ -48,3 +51,11 @@ producer::source::identity_tests::maelstrom_jar_resolution_is_identical_through_
 producer::source::identity_tests::maelstrom_tool_identity_binds_adjacent_jar_replacement
 receipt_maelstrom::tests::receipt_accepts_combined_rd05_rd06_counterexample_only
 verification::bundle::integrity::tests::nightly_maelstrom_budget_accepts_the_observed_shared_reference_shape
+verification::maelstrom::artifact::tests::a_multi_trial_check_resolves_one_shared_input_per_kind
+verification::maelstrom::artifact::tests::a_shared_input_repeated_per_trial_is_still_ambiguous
+verification::maelstrom::artifact::tests::binding_class::a_producer_context_build_output_still_rejects_a_mismatched_file
+verification::maelstrom::artifact::tests::binding_class::a_producer_context_build_output_still_requires_its_file
+verification::maelstrom::artifact::tests::binding_class::a_source_binding_still_requires_the_checkout_file_in_the_aggregate
+verification::maelstrom::artifact::tests::binding_class::an_aggregate_context_build_output_rejects_tampered_bytes
+verification::maelstrom::artifact::tests::binding_class::an_aggregate_context_build_output_verifies_without_the_file
+verification::maelstrom::artifact::tests::the_shared_input_kinds_are_exactly_those_counted_once_per_check

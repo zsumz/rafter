@@ -226,3 +226,41 @@ mod binding_class {
         assert!(error.to_string().contains("read source-bound"), "{error}");
     }
 }
+
+/// Two places decide which inputs are shared across trials: the trial grouping
+/// that sets them aside, and the receipt validator that counts them. They
+/// disagreed -- grouping treated them as shared while the validator still
+/// demanded one copy per trial -- and a single-trial profile cannot tell the
+/// two rules apart, so nightly stayed green while weekly's three trials were
+/// refused. This pins them together.
+#[test]
+fn the_shared_input_kinds_are_exactly_those_counted_once_per_check() {
+    use super::super::artifact::SHARED_INPUT_KINDS;
+
+    let counted_once = [
+        "maelstrom-runner",
+        "maelstrom-binary",
+        "maelstrom-tool-jar",
+        "maelstrom-proxy-binary",
+    ];
+    let mut shared = SHARED_INPUT_KINDS.to_vec();
+    shared.sort_unstable();
+    let mut expected = counted_once.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        shared, expected,
+        "a kind is shared exactly when the receipt names it once per check"
+    );
+
+    let completion = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/verification/maelstrom/receipt/completion.rs"),
+    )
+    .expect("read the receipt validator");
+    for kind in counted_once {
+        assert!(
+            completion.contains(&format!("artifact_count(check, \"{kind}\") != 1")),
+            "{kind} is shared, so the receipt validator must require exactly one"
+        );
+    }
+}

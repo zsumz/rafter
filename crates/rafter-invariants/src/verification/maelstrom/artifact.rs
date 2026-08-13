@@ -32,7 +32,7 @@ pub(super) fn verify_matches_file(
 
 /// Tool inputs are captured once per source tree and shared by every trial;
 /// all other evidence must stay bound to exactly one trial.
-const SHARED_INPUT_KINDS: [&str; 4] = [
+pub(super) const SHARED_INPUT_KINDS: [&str; 4] = [
     "maelstrom-runner",
     "maelstrom-tool-jar",
     "maelstrom-binary",

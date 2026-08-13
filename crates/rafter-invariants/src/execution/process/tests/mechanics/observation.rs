@@ -163,10 +163,15 @@ fn internal_observer_read_failure_retains_process_group_cleanup_ownership() {
         );
         assert!(snapshot.failures.is_empty());
     } else {
-        assert_eq!(
-            process_group_state(process_group).expect("probe observer process group"),
-            ProcessGroupState::Absent
-        );
+        // The group is cleaned up, but the kernel reaps it on its own schedule:
+        // sampling once immediately after SIGKILL asserts *when* rather than
+        // *whether*, and a loaded macOS runner reports Alive for a few more
+        // milliseconds. Bound the same claim by the production confirmation
+        // primitive, which still fails closed if absence never arrives.
+        confirm_process_group_absent_with(DEFAULT_KILL_CONFIRMATION_TIMEOUT, || {
+            process_group_state(process_group)
+        })
+        .expect("observer process group is cleaned up");
     }
     std::fs::remove_file(process_group_path).expect("remove observer receipt");
 }
