@@ -13,7 +13,14 @@ use super::super::{verify_receipts_for_test, VerificationRequest};
 fn failed_fixture_turns_only_its_passing_evidence_into_a_harness_error() {
     let (catalog, manifest) = crate::tests::loaded();
     let plan = crate::tests::plan_receipt(&manifest, "pr");
-    let request = VerificationRequest::new(&catalog, &manifest, &plan, "abc", Path::new("."));
+    let request = VerificationRequest::new(
+        &catalog,
+        &manifest,
+        &plan,
+        "abc",
+        Path::new("."),
+        crate::verification::VerificationContext::ProducingJob,
+    );
     let bundles = crate::tests::passing_bundles(&catalog, &manifest);
     let mut intake = verify_receipts_for_test(request, &bundles, Vec::new())
         .expect("passing receipts produce an intake");
@@ -63,7 +70,14 @@ fn failed_fixture_turns_only_its_passing_evidence_into_a_harness_error() {
 fn identity_mismatch_is_rejected_before_any_evidence_is_changed() {
     let (catalog, manifest) = crate::tests::loaded();
     let plan = crate::tests::plan_receipt(&manifest, "pr");
-    let request = VerificationRequest::new(&catalog, &manifest, &plan, "abc", Path::new("."));
+    let request = VerificationRequest::new(
+        &catalog,
+        &manifest,
+        &plan,
+        "abc",
+        Path::new("."),
+        crate::verification::VerificationContext::ProducingJob,
+    );
     let bundles = crate::tests::passing_bundles(&catalog, &manifest);
     let mut intake = verify_receipts_for_test(request, &bundles, Vec::new())
         .expect("passing receipts produce an intake");
@@ -96,7 +110,14 @@ fn identity_mismatch_is_rejected_before_any_evidence_is_changed() {
 fn passing_qualification_without_an_artifact_guard_is_rejected() {
     let (catalog, manifest) = crate::tests::loaded();
     let plan = crate::tests::plan_receipt(&manifest, "pr");
-    let request = VerificationRequest::new(&catalog, &manifest, &plan, "abc", Path::new("."));
+    let request = VerificationRequest::new(
+        &catalog,
+        &manifest,
+        &plan,
+        "abc",
+        Path::new("."),
+        crate::verification::VerificationContext::ProducingJob,
+    );
     let bundles = crate::tests::passing_bundles(&catalog, &manifest);
     let mut intake = verify_receipts_for_test(request, &bundles, Vec::new())
         .expect("passing receipts produce an intake");

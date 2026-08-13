@@ -20,6 +20,7 @@ fn separately_supplied_profile_and_runner_cannot_override_the_receipt() {
             &catalog,
             profile,
             runner,
+            crate::verification::VerificationContext::ProducingJob,
         )
         .expect_err("trusted identity mismatch must fail before artifact access");
         assert!(error.to_string().contains("identity mismatch"), "{error}");

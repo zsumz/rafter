@@ -162,6 +162,7 @@ impl Fixture {
             &self.bundle.execution.plan,
             &self.bundle.source_ref,
             &self.root,
+            crate::verification::VerificationContext::ProducingJob,
         );
         let intake = crate::verification::verify_layer_paths(request, "tla", bundle_path.clone())
             .expect("verify serialized TLA fixture");

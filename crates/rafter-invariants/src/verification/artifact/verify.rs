@@ -17,6 +17,7 @@ pub(crate) fn verify_bundle(
     catalog: &Catalog,
     trusted_profile: &str,
     trusted_runner: &str,
+    context: crate::verification::VerificationContext,
 ) -> Result<(Vec<String>, super::super::AuthenticatedArtifacts), AggregateError> {
     if bundle.profile != trusted_profile || bundle.runner != trusted_runner {
         return Err(AggregateError::new(format!(
@@ -48,9 +49,13 @@ pub(crate) fn verify_bundle(
             detector_log_verifier(),
         ),
         "tla" => super::super::tla::verify_authenticated(bundle, root, source_root, &artifacts),
-        "maelstrom" => {
-            super::super::maelstrom::verify_authenticated(bundle, root, source_root, &artifacts)
-        }
+        "maelstrom" => super::super::maelstrom::verify_authenticated(
+            bundle,
+            root,
+            source_root,
+            &artifacts,
+            context,
+        ),
         runner => Err(AggregateError::new(format!(
             "no semantic artifact verifier exists for runner {runner}"
         ))),

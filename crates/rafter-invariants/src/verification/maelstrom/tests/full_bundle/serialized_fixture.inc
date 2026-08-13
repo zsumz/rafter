@@ -70,6 +70,7 @@ fn serialized_counterexample_fixture(
         &catalog,
         &serialized.profile,
         &serialized.runner,
+        crate::verification::VerificationContext::ProducingJob,
     )?;
     assert_eq!(diagnostics.len(), 1);
     assert!(diagnostics[0].contains("counterexample alongside a harness error"));
@@ -144,6 +145,7 @@ fn canonical_counterexample_intake(
         &plan,
         "abc",
         &fixture.root,
+        crate::verification::VerificationContext::ProducingJob,
     );
     crate::verification::verify_receipts_for_test(
         request,

@@ -146,6 +146,32 @@ publishes content-addressed process logs plus a replay report. CI seals that
 inventory into a deterministic archive, downloads it to a fresh path, and
 repeats digest, metadata, schema, and semantic readback.
 
+Captured inputs divide into two binding classes, because two different jobs
+can honestly re-derive two different things. A **checkout binding** names a
+version-controlled file — the Maelstrom runner script, the TLA+ specifications
+and configurations — and every context re-derives it the same way, by reading
+the reviewed commit and comparing bytes. A **build-output binding** names
+something a producer built: the Maelstrom node and proxy binaries. Only the job
+that ran `cargo build` has those files, and no other job can reproduce them
+byte-for-byte either, since each invariant job sets its own `CARGO_HOME` and
+`CARGO_TARGET_DIR` and debug binaries embed those paths. A build output is
+therefore bound by byte-equality against the checkout in the producing job,
+where that comparison means something and still fails closed on a missing or
+altered file, and by artifact integrity everywhere else: the published bytes
+are the ones the receipt names, digest and length both, with their provenance
+carried by the source receipt and the producing job's own verification. Which
+context is running is decided by the invoking gate command and travels only in
+the verification request; a receipt cannot declare itself aggregate-context to
+excuse a check the producing job could have made.
+
+That distinction was missing until the scheduled lanes first went green
+together. The Maelstrom binaries were bound as if they were source files, which
+made aggregation unsatisfiable by construction — it asked a fresh checkout to
+read a build output it had never produced. Nothing caught it because no
+aggregate run had reached that far: the scheduled lanes had always failed
+earlier, for unrelated reasons, so the first end-to-end green run was also the
+first to reach the check and find it impossible.
+
 The threat model does not cover a malicious producer binary, compromised
 kernel or CI runner, hostile same-UID process, or SHA-256 compromise. Those
 claims require external build and host attestation.

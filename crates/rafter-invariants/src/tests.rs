@@ -96,6 +96,7 @@ pub(crate) fn aggregate_unverified(
         &plan,
         source_ref,
         Path::new("."),
+        crate::verification::VerificationContext::ProducingJob,
     );
     let intake = crate::verification::verify_receipts_for_test(request, bundles, Vec::new())?;
     crate::verdict::reduce(catalog, manifest, &intake)
@@ -125,6 +126,7 @@ fn verify_layer_bundle(
         &plan,
         &bundle.source_ref,
         Path::new("."),
+        crate::verification::VerificationContext::ProducingJob,
     );
     let intake = crate::verification::verify_receipts_for_test(
         request,
@@ -1451,6 +1453,7 @@ fn evidence_load_error_still_emits_exactly_44_red_verdicts() {
         &plan,
         "abc",
         Path::new("."),
+        crate::verification::VerificationContext::ProducingJob,
     );
     let intake = crate::verification::verify_receipts_for_test(
         request,

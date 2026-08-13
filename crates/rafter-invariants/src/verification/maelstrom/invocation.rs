@@ -1,10 +1,18 @@
 //! Exact Maelstrom trial input and process-invocation binding.
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+
+use sha2::{Digest, Sha256};
 
 use crate::{
     evidence::{ArtifactRef, InvocationReceipt, ResultBundle},
-    verification::{script_invocation_matches_source, AggregateError, AuthenticatedArtifacts},
+    verification::{
+        script_invocation_matches_source, AggregateError, AuthenticatedArtifacts,
+        VerificationContext,
+    },
 };
 
 use super::{artifact::unique, configuration, scenario::Scenario};
@@ -76,6 +84,81 @@ pub(super) fn verify_process(
     Ok(())
 }
 
+/// How a captured shared input is independently re-derived.
+///
+/// The two classes differ in what a later job can honestly reconstruct, not in
+/// how much they are trusted.
+pub(super) enum InputBinding {
+    /// A version-controlled file. Any checkout of the reviewed commit holds
+    /// the same bytes, so byte-equality against the checkout is a real
+    /// independent derivation in every context.
+    Checkout(PathBuf),
+    /// A build output. Only the job that built it has the file; a later job
+    /// has the repository but not the artifacts of someone else's `cargo
+    /// build`, and cannot reproduce them byte-for-byte either -- the invariant
+    /// jobs each set their own `CARGO_HOME` and `CARGO_TARGET_DIR`, whose
+    /// paths debug binaries embed.
+    BuildOutput(PathBuf),
+}
+
+/// Verifies one shared input against the strongest claim its context supports.
+///
+/// A build output binds by byte-equality where the build happened, which is
+/// where that comparison means something, and by artifact integrity everywhere
+/// else: the published bytes are the ones the receipt names, digest and length
+/// both. That is not a weaker acceptance of the same claim, it is the claim
+/// that is actually available -- the provenance of those bytes is carried by
+/// the source receipt and the producing job's own verification, which runs
+/// this same function against the real file and still fails closed.
+///
+/// This binding had been aggregate-unsatisfiable since it was written. It went
+/// unnoticed because no aggregate run had ever reached it: the scheduled lanes
+/// failed earlier, for other reasons, until this branch made every layer green
+/// at once and the aggregate got far enough to read a file that could not
+/// exist.
+#[cfg(test)]
+pub(super) fn verify_input_binding_for_test(
+    artifact: &ArtifactRef,
+    binding: &InputBinding,
+    context: VerificationContext,
+    authenticated: &AuthenticatedArtifacts,
+) -> Result<(), AggregateError> {
+    verify_input_binding(artifact, binding, context, authenticated)
+}
+
+fn verify_input_binding(
+    artifact: &ArtifactRef,
+    binding: &InputBinding,
+    context: VerificationContext,
+    authenticated: &AuthenticatedArtifacts,
+) -> Result<(), AggregateError> {
+    match (binding, context) {
+        (InputBinding::Checkout(path), _)
+        | (InputBinding::BuildOutput(path), VerificationContext::ProducingJob) => {
+            super::artifact::verify_matches_file(artifact, path, authenticated)
+        }
+        (InputBinding::BuildOutput(_), VerificationContext::Aggregate) => {
+            verify_artifact_integrity(artifact, authenticated)
+        }
+    }
+}
+
+/// Re-derives the published bytes' identity from the bytes themselves.
+fn verify_artifact_integrity(
+    artifact: &ArtifactRef,
+    authenticated: &AuthenticatedArtifacts,
+) -> Result<(), AggregateError> {
+    let bytes = authenticated.bytes(artifact)?;
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    if digest != artifact.sha256 || bytes.len() as u64 != artifact.size_bytes {
+        return Err(error(format!(
+            "published {} does not match the identity its receipt claims",
+            artifact.kind
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn verify_shared_inputs(
     bundle: &ResultBundle,
     scenario: Scenario,
@@ -83,15 +166,22 @@ pub(super) fn verify_shared_inputs(
     root: &Path,
     source_root: &Path,
     authenticated: &AuthenticatedArtifacts,
+    context: VerificationContext,
 ) -> Result<(), AggregateError> {
-    super::artifact::verify_matches_file(
+    // The runner script is version controlled, so every context can re-derive
+    // it from the checkout. The node binary is a build output: see
+    // `verify_input_binding` for why byte-equality against a checkout path is
+    // a producer-local claim.
+    verify_input_binding(
         unique(artifacts, "maelstrom-runner")?,
-        source_root.join(scenario.script()),
+        &InputBinding::Checkout(source_root.join(scenario.script())),
+        context,
         authenticated,
     )?;
-    super::artifact::verify_matches_file(
+    verify_input_binding(
         unique(artifacts, "maelstrom-binary")?,
-        root.join("target/debug/rafter-maelstrom"),
+        &InputBinding::BuildOutput(root.join("target/debug/rafter-maelstrom")),
+        context,
         authenticated,
     )?;
     if unique(artifacts, "maelstrom-tool-jar")?.sha256
@@ -104,9 +194,12 @@ pub(super) fn verify_shared_inputs(
         .filter(|artifact| artifact.kind == "maelstrom-proxy-binary")
         .count();
     if scenario.requires_proxy() {
-        super::artifact::verify_matches_file(
+        verify_input_binding(
             unique(artifacts, "maelstrom-proxy-binary")?,
-            root.join("target/debug/rafter-maelstrom-leader-restart-proxy"),
+            &InputBinding::BuildOutput(
+                root.join("target/debug/rafter-maelstrom-leader-restart-proxy"),
+            ),
+            context,
             authenticated,
         )?;
     } else if proxies != 0 {

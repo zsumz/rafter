@@ -70,6 +70,9 @@ pub fn verify_layer_evidence(
         &verified_plan.receipt,
         &source_ref,
         Path::new("."),
+        // `verify-layer` runs inside the job that produced the evidence, whose
+        // working tree still holds everything the run built.
+        crate::verification::VerificationContext::ProducingJob,
     );
     let intake =
         crate::verification::verify_layer_paths(request, layer, evidence_path.to_path_buf())?;
@@ -90,6 +93,9 @@ pub(super) fn verify_and_write_report_with_errors(
         &plan.receipt,
         source_ref,
         Path::new("."),
+        // Aggregation runs in a fresh checkout that downloaded the evidence
+        // but never built anything the producers built.
+        crate::verification::VerificationContext::Aggregate,
     );
     let defects = structural_errors
         .into_iter()

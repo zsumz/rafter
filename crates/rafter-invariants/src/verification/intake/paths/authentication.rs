@@ -40,6 +40,7 @@ impl ReceiptAuthenticator<'_, '_> {
             self.request.catalog,
             &self.request.active_plan.profile,
             trusted_runner,
+            self.request.context,
         ) {
             Ok((diagnostics, artifact_guard)) => {
                 self.defects.extend(diagnostics.into_iter().map(|message| {

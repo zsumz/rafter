@@ -79,6 +79,23 @@ pub(crate) struct VerificationRequest<'a> {
     pub(crate) active_plan: &'a ExecutionPlanReceipt,
     pub(crate) source_ref: &'a str,
     pub(crate) root: &'a Path,
+    pub(crate) context: VerificationContext,
+}
+
+/// Which flow is running the verifier.
+///
+/// This is set by the invoking gate command and travels only in the request.
+/// It is deliberately not serialized state: a receipt or an artifact must not
+/// be able to declare itself aggregate-context and so excuse itself from a
+/// check that the producing job could have made.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VerificationContext {
+    /// The job that produced the evidence, whose working tree still holds
+    /// everything the run built and read.
+    ProducingJob,
+    /// A later job re-verifying published evidence from a fresh checkout,
+    /// which has the repository but none of the producing job's build outputs.
+    Aggregate,
 }
 
 impl<'a> VerificationRequest<'a> {
@@ -88,6 +105,7 @@ impl<'a> VerificationRequest<'a> {
         active_plan: &'a ExecutionPlanReceipt,
         source_ref: &'a str,
         root: &'a Path,
+        context: VerificationContext,
     ) -> Self {
         Self {
             catalog,
@@ -95,6 +113,7 @@ impl<'a> VerificationRequest<'a> {
             active_plan,
             source_ref,
             root,
+            context,
         }
     }
 }
