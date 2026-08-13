@@ -57,6 +57,7 @@ pub(crate) use identity::run_identity_command_in;
 use internal_command::{
     await_next_internal_completion_after_deadline, bounded_internal_output,
     bounded_internal_output_with_reaper, inject_next_internal_drain_error,
+    inject_next_internal_drain_errors,
 };
 use internal_process::ManagedInternalProcess;
 #[cfg(test)]
@@ -105,7 +106,7 @@ use spawn::{
 use telemetry::{
     delay_next_process_group_observation, omit_anchor_from_next_process_group_observation,
     omit_target_rows_from_process_group_observations, parse_process_group_observation,
-    process_observer_path, ps_telemetry_timeout,
+    process_observer_path,
 };
 use telemetry::{parse_peak_rss, process_group_observation, GroupObservation, ProcessObserver};
 use termination::terminate_after_timeout;

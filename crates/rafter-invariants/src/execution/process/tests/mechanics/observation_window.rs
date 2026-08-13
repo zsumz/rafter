@@ -3,7 +3,8 @@
 
 use std::time::{Duration, Instant};
 
-use super::super::super::{process_group_observation, ps_telemetry_timeout, GroupObservation};
+use super::super::super::telemetry::PS_TELEMETRY_TIMEOUT;
+use super::super::super::{process_group_observation, GroupObservation};
 use super::super::support::process_observer;
 
 /// A window that was already over before the observer was entered means
@@ -38,7 +39,7 @@ fn an_untruncated_observation_is_never_excused_as_a_closed_window() {
     let observer = process_observer();
     // Strictly more than the budget, so the budget bounds the run and the
     // window does not.
-    let window = Instant::now() + ps_telemetry_timeout() + Duration::from_secs(5);
+    let window = Instant::now() + PS_TELEMETRY_TIMEOUT + Duration::from_secs(5);
     let outcome = process_group_observation(std::process::id(), None, &observer, window, window);
     assert!(
         !matches!(outcome, Ok(GroupObservation::WindowClosed)),
@@ -55,7 +56,7 @@ fn an_untruncated_observation_is_never_excused_as_a_closed_window() {
 #[test]
 fn a_window_shorter_than_the_budget_still_observes() {
     let observer = process_observer();
-    let window = Instant::now() + ps_telemetry_timeout() / 2;
+    let window = Instant::now() + PS_TELEMETRY_TIMEOUT / 2;
     let outcome = process_group_observation(
         std::process::id(),
         None,

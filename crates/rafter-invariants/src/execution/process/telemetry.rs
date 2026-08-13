@@ -30,7 +30,11 @@ thread_local! {
     };
 }
 
-const PS_TELEMETRY_TIMEOUT: Duration = Duration::from_secs(2);
+pub(super) const PS_TELEMETRY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Marks a failure of the observer *command* rather than of what it observed;
+/// written here and matched by the execution-window retry.
+pub(super) const OBSERVER_COMMAND_FAILURE: &str = "run process-group observer";
 
 #[derive(Debug)]
 pub(crate) struct ProcessObserver {
@@ -71,13 +75,6 @@ const PS_PATH: &str = "/usr/bin/ps";
 const PS_PATH: &str = "/bin/ps";
 #[cfg(all(test, not(any(target_os = "linux", target_os = "macos"))))]
 const PS_PATH: &str = "/usr/bin/ps";
-
-/// The observation budget, exposed so tests bind to the same constant the
-/// truncation rule uses rather than restating it.
-#[cfg(test)]
-pub(crate) const fn ps_telemetry_timeout() -> Duration {
-    PS_TELEMETRY_TIMEOUT
-}
 
 #[cfg(test)]
 pub(crate) fn process_observer_path() -> &'static Path {
@@ -167,7 +164,7 @@ pub(crate) fn process_group_observation(
         Err(_) if truncated_by_window && Instant::now() >= observation_deadline => {
             return Ok(GroupObservation::WindowClosed);
         }
-        Err(error) => return Err(format!("run process-group observer: {error}").into()),
+        Err(error) => return Err(format!("{OBSERVER_COMMAND_FAILURE}: {error}").into()),
     };
     if !output.status.success() {
         return Err(format!(

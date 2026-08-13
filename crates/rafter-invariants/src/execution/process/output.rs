@@ -8,6 +8,8 @@ use std::{cell::RefCell, time::Duration};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
+use super::managed::TargetObservation;
+use super::telemetry::{OBSERVER_COMMAND_FAILURE, PS_TELEMETRY_TIMEOUT};
 use super::{
     await_target_process_group, finalize_process_output, retained_error, retained_result,
     terminate_after_timeout, CleanupFailures, FinalizationPolicy, ManagedProcess,
@@ -144,11 +146,9 @@ pub(super) fn collect_process_output(
         .min(deadlines.execution_window);
     let mut peak_rss_kib = 0;
     let completion = loop {
-        let observed = process
-            .try_observe_target_members(deadlines.execution_window, deadlines.cleanup_start)
-            .map_err(|error| {
-                retained_error(error, &stdout_path, &stderr_path, Some(&resource_path))
-            })?;
+        let observed = observe_within_execution_window(process, deadlines).map_err(|error| {
+            retained_error(error, &stdout_path, &stderr_path, Some(&resource_path))
+        })?;
         let Some(observation) = observed else {
             // The execution window closed before an observation could start.
             // `target_deadline` never outlives that window, so it has closed
@@ -216,6 +216,52 @@ pub(super) fn collect_process_output(
         deadlines.lifecycle,
         artifacts,
     )
+}
+
+/// Observes the target group, retrying one untruncated failure a single time.
+///
+/// The simulator's evidence is seed-deterministic, so a slow host cannot
+/// corrupt what a run proves -- only the harness's ability to watch the process
+/// tree while it proves it. Weekly run 31665042929 lost an eighty-four-minute
+/// simulator run to one `ps` that took 140,062 ms to be noticed on a swapping
+/// runner: a single transient stall, a destroyed run, and nothing learned about
+/// the protocol. One fresh attempt costs another observation budget and keeps
+/// the run; a second failure stays exactly as fatal as it has always been,
+/// because a persistent inability to watch the tree is what failing closed is
+/// for.
+///
+/// Only the execution-window loop retries. Termination and grace keep their
+/// single attempt: there the grace clock is the authority over how long
+/// anything may take, and that window's edge is already answered by reporting
+/// it closed.
+fn observe_within_execution_window(
+    process: &mut ManagedProcess,
+    deadlines: ProcessDeadlines,
+) -> Result<Option<TargetObservation>, Box<dyn Error>> {
+    match process.try_observe_target_members(deadlines.execution_window, deadlines.cleanup_start) {
+        observed @ Ok(_) => observed,
+        // Only the observer *command* failing is retried. An observation that
+        // ran and then disagreed with itself -- a missing live anchor row, an
+        // anchor that exited before release -- is a fail-closed property, and
+        // re-running it would relax what the observation has to return.
+        Err(stalled) if stalled.to_string().starts_with(OBSERVER_COMMAND_FAILURE) => {
+            // Decided on what the window has left *after* the stall was
+            // noticed, not on what it held before. A retry the window cannot
+            // fit would be cut off for the same reason the first attempt was,
+            // so it is not attempted; the original failure stands, which is
+            // what keeps an observer that consumed a whole window fail-closed
+            // rather than quietly reclassified.
+            if deadlines
+                .execution_window
+                .saturating_duration_since(Instant::now())
+                < PS_TELEMETRY_TIMEOUT
+            {
+                return Err(stalled);
+            }
+            process.try_observe_target_members(deadlines.execution_window, deadlines.cleanup_start)
+        }
+        failed @ Err(_) => failed,
+    }
 }
 
 #[cfg(test)]
