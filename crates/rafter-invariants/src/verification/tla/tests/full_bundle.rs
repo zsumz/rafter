@@ -121,8 +121,63 @@ fn reporting_continuation_with_an_open_frontier_verifies() {
     );
     assert!(check.observations["progress_states_left"] > 0);
     assert!(!check.observations.contains_key("states_left_on_queue"));
+    // The completion field alone is enough to read this receipt correctly. It
+    // does not claim a drained frontier that the very next observation refutes.
+    assert_eq!(
+        check.completion,
+        crate::CheckCompletion::BudgetElapsedFrontierOpen
+    );
 
     verify(&fixture.bundle, &fixture.root).expect("reporting continuation verifies");
+}
+
+/// The inversion this variant exists to make impossible: a receipt whose
+/// primary completion claims a drained frontier while its own observations show
+/// an open one. Before the split there was no way to state the difference, so
+/// every scheduled receipt carried exactly this contradiction and nothing
+/// rejected it.
+#[test]
+fn a_reporting_receipt_may_not_claim_a_drained_frontier_over_an_open_one() {
+    let mut fixture = Fixture::new();
+    fixture.set_reporting_policy();
+    fixture.bundle.execution.checks[0].completion = crate::CheckCompletion::FrontierExhausted;
+
+    let error = verify(&fixture.bundle, &fixture.root)
+        .expect_err("a claimed drained frontier over progress counters must be rejected");
+    assert!(
+        error.to_string().contains("disagrees with proof artifacts"),
+        "{error}"
+    );
+}
+
+/// And the reverse: a run that genuinely drained may not record the elapsed
+/// completion either. The two facts are pinned in both directions, so neither
+/// can be used to launder the other.
+#[test]
+fn a_drained_continuation_may_not_claim_an_elapsed_budget() {
+    let mut fixture = Fixture::new();
+    fixture.bundle.execution.checks[0].completion =
+        crate::CheckCompletion::BudgetElapsedFrontierOpen;
+
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+/// A gating profile may never record the elapsed completion at all. Reporting
+/// mode is what makes an open frontier a pass; the PR tier gates on exhaustion,
+/// and a receipt that passes without draining is the one thing it may not do.
+#[test]
+fn a_gating_profile_may_not_record_an_elapsed_budget() {
+    let mut fixture = Fixture::new();
+    fixture.bundle.execution.checks[0].completion =
+        crate::CheckCompletion::BudgetElapsedFrontierOpen;
+    fixture.bundle.execution.checks[0]
+        .tla_continuation
+        .as_mut()
+        .expect("TLA fixture carries a continuation binding")
+        .outcome = crate::ContinuationOutcome::BudgetElapsedFrontierOpen;
+
+    assert_eq!(fixture.bundle.profile, "pr");
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
 }
 
 /// Demotion is about budget, not about safety. A counterexample found by a
@@ -583,7 +638,10 @@ impl Fixture {
             .filter_map(|evidence_id| evidence_id.rsplit_once('#').map(|(_, s)| s.to_owned()))
             .collect::<std::collections::BTreeSet<_>>();
         let check = &mut self.bundle.execution.checks[0];
-        check.completion = crate::CheckCompletion::FrontierExhausted;
+        // Not `FrontierExhausted`: nothing drained here. `set_timeout` gave the
+        // fixture a progress frame with an open queue, and the completion has
+        // to say the same thing the observations do.
+        check.completion = crate::CheckCompletion::BudgetElapsedFrontierOpen;
         check.observations.extend(
             symbols
                 .into_iter()

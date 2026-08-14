@@ -1,11 +1,6 @@
 //! Exact Maelstrom trial input and process-invocation binding.
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
-
-use sha2::{Digest, Sha256};
+use std::{collections::BTreeMap, path::Path};
 
 use crate::{
     evidence::{ArtifactRef, InvocationReceipt, ResultBundle},
@@ -15,7 +10,12 @@ use crate::{
     },
 };
 
-use super::{artifact::unique, configuration, scenario::Scenario};
+use super::{
+    artifact::unique,
+    binding::{verify_input_binding, InputBinding},
+    configuration,
+    scenario::Scenario,
+};
 
 pub(super) fn verify_process(
     bundle: &ResultBundle,
@@ -80,81 +80,6 @@ pub(super) fn verify_process(
         return Err(error(
             "Maelstrom base environment does not match producer invocation provenance",
         ));
-    }
-    Ok(())
-}
-
-/// How a captured shared input is independently re-derived.
-///
-/// The two classes differ in what a later job can honestly reconstruct, not in
-/// how much they are trusted.
-pub(super) enum InputBinding {
-    /// A version-controlled file. Any checkout of the reviewed commit holds
-    /// the same bytes, so byte-equality against the checkout is a real
-    /// independent derivation in every context.
-    Checkout(PathBuf),
-    /// A build output. Only the job that built it has the file; a later job
-    /// has the repository but not the artifacts of someone else's `cargo
-    /// build`, and cannot reproduce them byte-for-byte either -- the invariant
-    /// jobs each set their own `CARGO_HOME` and `CARGO_TARGET_DIR`, whose
-    /// paths debug binaries embed.
-    BuildOutput(PathBuf),
-}
-
-/// Verifies one shared input against the strongest claim its context supports.
-///
-/// A build output binds by byte-equality where the build happened, which is
-/// where that comparison means something, and by artifact integrity everywhere
-/// else: the published bytes are the ones the receipt names, digest and length
-/// both. That is not a weaker acceptance of the same claim, it is the claim
-/// that is actually available -- the provenance of those bytes is carried by
-/// the source receipt and the producing job's own verification, which runs
-/// this same function against the real file and still fails closed.
-///
-/// This binding had been aggregate-unsatisfiable since it was written. It went
-/// unnoticed because no aggregate run had ever reached it: the scheduled lanes
-/// failed earlier, for other reasons, until this branch made every layer green
-/// at once and the aggregate got far enough to read a file that could not
-/// exist.
-#[cfg(test)]
-pub(super) fn verify_input_binding_for_test(
-    artifact: &ArtifactRef,
-    binding: &InputBinding,
-    context: VerificationContext,
-    authenticated: &AuthenticatedArtifacts,
-) -> Result<(), AggregateError> {
-    verify_input_binding(artifact, binding, context, authenticated)
-}
-
-fn verify_input_binding(
-    artifact: &ArtifactRef,
-    binding: &InputBinding,
-    context: VerificationContext,
-    authenticated: &AuthenticatedArtifacts,
-) -> Result<(), AggregateError> {
-    match (binding, context) {
-        (InputBinding::Checkout(path), _)
-        | (InputBinding::BuildOutput(path), VerificationContext::ProducingJob) => {
-            super::artifact::verify_matches_file(artifact, path, authenticated)
-        }
-        (InputBinding::BuildOutput(_), VerificationContext::Aggregate) => {
-            verify_artifact_integrity(artifact, authenticated)
-        }
-    }
-}
-
-/// Re-derives the published bytes' identity from the bytes themselves.
-fn verify_artifact_integrity(
-    artifact: &ArtifactRef,
-    authenticated: &AuthenticatedArtifacts,
-) -> Result<(), AggregateError> {
-    let bytes = authenticated.bytes(artifact)?;
-    let digest = format!("{:x}", Sha256::digest(bytes));
-    if digest != artifact.sha256 || bytes.len() as u64 != artifact.size_bytes {
-        return Err(error(format!(
-            "published {} does not match the identity its receipt claims",
-            artifact.kind
-        )));
     }
     Ok(())
 }

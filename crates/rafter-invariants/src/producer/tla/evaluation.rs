@@ -15,6 +15,12 @@ use super::{
 
 pub(in crate::producer) enum TlaVerdict {
     Pass,
+    /// A reporting continuation that spent its budget with a healthy open
+    /// frontier. It passes exactly as `Pass` does -- the obligations carried
+    /// the gate -- but it drained nothing, so it records a different
+    /// completion. Splitting the verdict rather than the completion mapping
+    /// keeps the two pass shapes apart at the point where they are decided.
+    PassBudgetElapsed,
     Violation(String),
     Incomplete(CheckCompletion, String),
     Error(String),
@@ -24,6 +30,7 @@ impl TlaVerdict {
     pub(super) const fn completion(&self) -> CheckCompletion {
         match self {
             Self::Pass => CheckCompletion::FrontierExhausted,
+            Self::PassBudgetElapsed => CheckCompletion::BudgetElapsedFrontierOpen,
             Self::Violation(_) => CheckCompletion::Counterexample,
             Self::Incomplete(completion, _) => *completion,
             Self::Error(_) => CheckCompletion::HarnessError,
@@ -99,7 +106,7 @@ pub(in crate::producer) fn evaluate(
         if execution.main_progress.is_none() {
             return error("reporting TLC continuation omitted a complete progress frame");
         }
-        return TlaVerdict::Pass;
+        return TlaVerdict::PassBudgetElapsed;
     }
     if let Some(parse_error) = &execution.main_parse_error {
         return error(&format!("malformed TLC tool output: {parse_error}"));

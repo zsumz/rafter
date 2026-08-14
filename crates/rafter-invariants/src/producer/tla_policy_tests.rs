@@ -53,10 +53,15 @@ fn an_elapsed_continuation_gates_only_under_a_gating_policy() {
         evaluate(&execution, &symbols, &gating_configuration()),
         TlaVerdict::Incomplete(CheckCompletion::Timeout, _)
     ));
-    assert!(matches!(
-        evaluate(&execution, &symbols, &reporting_configuration()),
-        TlaVerdict::Pass
-    ));
+    let reporting = evaluate(&execution, &symbols, &reporting_configuration());
+    assert!(matches!(reporting, TlaVerdict::PassBudgetElapsed));
+    // It passes, and it records what actually happened. Those are separate
+    // claims: the obligations carried the gate, and this run left 3,294,097
+    // states on its queue. The receipt says both.
+    assert_eq!(
+        reporting.completion(),
+        CheckCompletion::BudgetElapsedFrontierOpen
+    );
 }
 
 /// Reporting relaxes the budget, never safety or evidence integrity.

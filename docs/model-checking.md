@@ -63,13 +63,35 @@ or unreadable artifact set, an incompatible checkpoint, a failed qualification
 probe, and an undischarged obligation. The pinned 120M/16M minimums remain in
 the contract for the scheduled profiles as the accumulation bar the lineage
 reports progress against, published beside the observed counters rather than
-enforced as a terminal condition. Every TLA+ receipt carries a
-`tla_continuation` binding naming its pinned policy and the continuation's
-actual ending -- `frontier-exhausted`, `counterexample`, or
-`budget-elapsed-frontier-open` -- so a green scheduled receipt cannot be read as
-a completed monolith. The policy is contract state: the verifier refuses a
-receipt whose declared policy disagrees with the profile it claims to come
-from, and refuses outright any PR receipt claiming a reporting continuation.
+enforced as a terminal condition.
+
+A green scheduled receipt cannot be read as a completed monolith, and that is
+true of its primary `completion` field on its own — not only of the TLA+
+specific binding beside it. A reporting continuation that spends its budget
+with a healthy open frontier records `completion: budget_elapsed_frontier_open`
+and publishes the `progress_*` counters, including a `progress_states_left`
+greater than zero. It records that instead of `frontier_exhausted`, which is
+reserved for a run that actually drained and publishes terminal counters with
+`states_left_on_queue` at zero. Both are passes and the verdict semantics are
+identical; the difference is only in what the receipt claims about its
+frontier, which is the part an external reader has no other way to learn.
+
+That mattered because the two used to share a variant. Every scheduled receipt
+recorded `frontier_exhausted` for a run whose own observations proved the
+frontier was open, recoverable only by a reader who knew to cross-check
+`tla_continuation` — and the schema published `frontier_exhausted` to external
+consumers with `tla_continuation` as a separate, optional-looking key.
+
+Every TLA+ receipt still carries that `tla_continuation` binding, naming its
+pinned policy and the continuation's actual ending -- `frontier-exhausted`,
+`counterexample`, or `budget-elapsed-frontier-open`. It now restates the
+completion rather than correcting it, and the verifier requires the two to
+agree: a receipt claiming a drained frontier alongside a budget-elapsed
+outcome is rejected, and so is the reverse. The policy is contract state: the
+verifier refuses a receipt whose declared policy disagrees with the profile it
+claims to come from, refuses outright any PR receipt claiming a reporting
+continuation, and refuses any gating profile that records
+`budget_elapsed_frontier_open` at all.
 
 A profile may only demote its primary when something else still exhausts: the
 contract rejects a reporting profile that declares no obligations.
@@ -239,18 +261,46 @@ four narrower transition relations, each a strict disjunct-subset of `Next`
 composed from the same action operators under unmodified guards, so every
 behavior of a focused spec is a behavior of `Spec`:
 
-| Relation | Spec operator | Action families |
+| Relation | Spec operator | Definition |
 | --- | --- | --- |
-| `CoreNext` | `CoreSpec` | `Timeout`, `SendRequestVote`, `DeliverRequestVote`, `BecomeLeader`, `ClientAppend`, `SendAppend`, `DeliverAppend`, `Commit`, `Apply` |
-| `MembershipNext` | `MembershipSpec` | core minus `ClientAppend`, plus `EnterJoint`, `LeaveJoint` |
-| `SnapshotNext` | `SnapshotSpec` | core plus `ApplicationStateLoss`, `Restart`, `CreateSnapshot`, `TransferSnapshot`, `InstallSnapshot` |
-| `ReadNext` | `ReadSpec` | core plus `RegisterRead`, `GrantRead` |
+| `AgreementNext` | — | `Timeout`, `SendRequestVote`, `DeliverRequestVote`, `BecomeLeader`, `SendAppend`, `DeliverAppend`, `Commit`, `Apply` |
+| `CoreNext` | `CoreSpec` | `AgreementNext` plus `ClientAppend` |
+| `MembershipNext` | `MembershipSpec` | `AgreementNext` plus `EnterJoint`, `LeaveJoint` |
+| `SnapshotNext` | `SnapshotSpec` | `CoreNext` plus `ApplicationStateLoss`, `Restart`, `CreateSnapshot`, `TransferSnapshot`, `InstallSnapshot` |
+| `ReadNext` | `ReadSpec` | `CoreNext` plus `RegisterRead`, `GrantRead` |
+| `Next` | `Spec` | `SnapshotNext` plus `RegisterRead`, `GrantRead`, `EnterJoint`, `LeaveJoint` |
 
-All four are plain disjunct-subsets. `SnapshotNext` used to need an IF wrapper
-reproducing `Next`'s compaction-first branch, because `CompactSnapshot` was
-reachable only through it; folding creation and compaction into one action
-removed the branch, the wrapper, and the separate `ProtocolNext` name that
-existed to denote the disjunction without the branch.
+The subset property is by construction, not by inspection. Every obligation in
+this document rests on it — a focused relation that quietly gained a disjunct
+`Next` lacked would invalidate the containment argument for every theorem
+discharged against it — and it used to be maintained by eye across five
+hand-kept lists that restated the same nine core disjuncts verbatim. Nothing
+could have detected the divergence. The relations are now composed from one
+another, so `CoreNext` cannot acquire a disjunct `Next` lacks: `Next` is
+defined in terms of `CoreNext`. Each of the eighteen action disjuncts is
+written exactly once.
+
+That last point is load-bearing rather than tidy. `Next` could equally be
+written `SnapshotNext \/ ReadNext \/ EnterJoint \/ LeaveJoint`, which denotes
+the same relation, but TLC enumerates successors per disjunct rather than per
+distinct action, and the two relations overlap on all of `CoreNext`. Written
+that way `RaftIntegrationUnsymmetrized.cfg` reports 403,405 generated states
+for the same 49,985 distinct — the pinned generated floors are calibration, so
+the non-overlapping form is the one that keeps them meaningful.
+
+Composition is otherwise inert for TLC: definitions expand at evaluation, so
+every pinned count is unchanged. `RaftCoreObligation.cfg`, `RaftReadObligation.cfg`,
+`RaftIntegrationUnsymmetrized.cfg`, `RaftCoreObligationUnsymmetrized.cfg`,
+`RaftReadObligationUnsymmetrized.cfg` and the end-to-end trace sample were each
+measured before and after and report identical generated, distinct, and depth
+figures.
+
+`SnapshotNext` used to need an IF wrapper reproducing `Next`'s compaction-first
+branch, because `CompactSnapshot` was reachable only through it; folding
+creation and compaction into one action removed the branch, the wrapper, and
+the separate `ProtocolNext` name that existed to denote the disjunction without
+the branch. That fold is also what lets `SnapshotNext` be a plain extension of
+`CoreNext` today.
 
 `JointQuorumInit` is a focused initial state for the joint-quorum obligation: the
 exact post-state of `Timeout(L)`, three `SendRequestVote`/`DeliverRequestVote`
@@ -508,11 +558,11 @@ contract adds all four:
 | --- | ---: | ---: | ---: | --- |
 | Setup after the layer clock starts | 4m | 10m | 10m | workflow budget guard |
 | Trace, detector, and mutation qualification | 7m | 32m | 32m | `execution/budget.rs` |
-| Proof obligations | 10m | 66m | 150m | profile manifest |
+| Proof obligations | 10m | 70m | 154m | profile manifest |
 | Primary `soft_timeout` | 310m | 195m | 110m | profile manifest |
-| **Committed** | **331m** | **303m** | **302m** | |
+| **Committed** | **331m** | **307m** | **306m** | |
 | Execution window | 336m | 310m | 310m | `total_timeout` less reserve |
-| Slack | 5m | 7m | 8m | |
+| Slack | 5m | 3m | 4m | |
 
 Qualification scales with the tier: twelve phases at a 15-second probe cap plus
 a 4-minute mutation suite on PR, at a 2-minute cap plus 8 minutes on the
@@ -555,6 +605,7 @@ What exhausts, at which bounds:
 | `RaftCoreObligation.cfg` | 2v, V2, T2, L2, R1 | 113,201 | 20,282 | 15 s | yes |
 | `RaftReadObligation.cfg` | 2v, V2, T2, L2, R1 | 592,279 | 98,948 | 30 s | yes |
 | `RaftCoreObligationDeep.cfg` | 2v, V2, T3, L3, R2 | 14,734,799 | 2,004,053 | 8.5 min | yes |
+| `RaftMembershipObligationPair.cfg` | 2v, V1, T3, L3, R1 | 1,054,317 | 162,938 | 27 s | yes |
 | `RaftSnapshotObligation.cfg` (folded spec) | 2v, V2, T2, L2, R1 | 14,119,884 | 2,002,205 | 6.7 min | yes |
 | `RaftCoreObligationUnsymmetrized.cfg` | 2v, V2, T2, L2, R1, no symmetry | 452,327 | 80,977 | 15 s | yes |
 | `RaftReadObligationUnsymmetrized.cfg` | 2v, V2, T2, L2, R1, no symmetry | 2,368,355 | 395,573 | 60 s | yes |
@@ -590,9 +641,27 @@ recreated the same explosion at two. Dropping per-node bounds does not move
 the three-voter wall — core and membership both diverge at `MaxTerm 2 /
 MaxLogLen 2`, membership even on the folded spec — so the node count binds,
 not the bounds, and `ReadNext ⊇ CoreNext` settles read at three voters by
-containment. Every candidate membership bound has now been measured and every
-one diverges; its header carries the `DO NOT WIRE` marker and the conclusion
-that exhausting it is a message-dimension redesign, not a bounds hunt.
+containment. Every candidate membership bound at three or four voters has been
+measured and every one diverges; `RaftMembershipObligation.cfg` carries the
+`DO NOT WIRE` marker and the conclusion that exhausting it is a
+message-dimension redesign, not a bounds hunt.
+
+At two voters membership does drain, which is what
+`RaftMembershipObligationPair.cfg` wires, and it is worth being precise about
+what that buys. It exercises `EnterJoint` and `LeaveJoint` and their
+interaction with commit and apply — a configuration entry proposed, replicated,
+committed, applied, and left, under elections and re-elections, with all nine
+invariants checked at every state. It is **not** evidence about nondegenerate
+joint-quorum intersection: with `|Nodes| <= 3` and `OneVoterChange` every joint
+configuration keeps a non-empty quorum core, so the two-half conjunction never
+constrains more than a fixed set of nodes does. That gap is the one described
+at the top of this document and it remains open. The reason to wire the
+two-voter config anyway is narrower and still worth having: the nightly and
+weekly primaries are reporting-only, so their obligations are the green
+condition, and before this config was wired that condition was `CoreSpec`,
+`ReadSpec`, and `SnapshotSpec` — none of which contain a membership action at
+all. A scheduled tier was reporting green over a relation set that had never
+executed `EnterJoint`.
 
 The snapshot row moved between the tables, and that movement is the fold's
 payoff stated as a verdict rather than a percentage: the pre-fold spec
@@ -608,6 +677,7 @@ The wired manifest, after calibration:
 | pr | `core-replication` | `RaftCoreObligation.cfg` | 113,201 / 20,282 | 4m |
 | pr | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
 | nightly, weekly | `core-replication-deep` | `RaftCoreObligationDeep.cfg` | 14,734,799 / 2,004,053 | 35m |
+| nightly, weekly | `membership-change` | `RaftMembershipObligationPair.cfg` | 1,054,317 / 162,938 | 4m |
 | nightly, weekly | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
 | nightly, weekly | `snapshot-lifecycle` | `RaftSnapshotObligation.cfg` | 14,119,884 / 2,002,205 | 25m |
 | weekly | `core-replication-unsymmetrized` | `RaftCoreObligationUnsymmetrized.cfg` | 452,327 / 80,977 | 4m |

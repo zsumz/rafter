@@ -183,10 +183,15 @@ fn expected_completion(
         // A reporting continuation is expected to end here. It is only a pass
         // when the progress frame is readable, which `timeout_progress` has
         // already required of the same log.
+        //
+        // The pass records `BudgetElapsedFrontierOpen`, not `FrontierExhausted`:
+        // nothing drained, and this verifier is looking at the very artifacts
+        // that say so. Mirroring the producer is the point of the function, but
+        // mirroring it onto a claim neither side can support is not.
         return Ok(if evidence.policy.gates() {
             CheckCompletion::Timeout
         } else {
-            CheckCompletion::FrontierExhausted
+            CheckCompletion::BudgetElapsedFrontierOpen
         });
     }
     let (Some(main), Some(summary)) = (evidence.main, evidence.summary) else {

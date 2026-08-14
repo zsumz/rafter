@@ -77,6 +77,28 @@ impl ExecutionBudget {
                     .checked_sub(reserve)
                     .filter(|window| !window.is_zero())
                     .ok_or("TLA total_timeout must exceed finalization_reserve")?;
+                // Deliberately narrower than the contract's phase inventory,
+                // which also counts setup, the obligations, and the primary
+                // run. Two reasons it stays that way rather than being brought
+                // into agreement.
+                //
+                // It cannot see the rest. The obligation list lives outside
+                // `configuration` on purpose -- the checkpoint contract digests
+                // only `configuration`, so obligation edits must not rotate the
+                // namespace and discard accumulated TLC state -- and setup is a
+                // workflow figure, not a manifest one. Qualification is exactly
+                // the phase set `configuration` alone determines, so it is
+                // exactly what this check can assert.
+                //
+                // Nothing is lost by the gap. An inventory that overruns its
+                // window is refused up front by `validate_obligation_budget`,
+                // and if one somehow reached execution it would not produce a
+                // wrong verdict: `whole_phase_timeout_at` refuses to start an
+                // obligation it cannot fund to its whole cap, which surfaces as
+                // `ObligationFailure::Underfunded` -- a named red harness
+                // failure. That check measures elapsed time rather than
+                // projected minutes, so it is the stronger runtime guarantee,
+                // not a weaker one.
                 let maximum_probe_time = maximum_qualification_time(profile)
                     .ok_or("TLA qualification budget overflow")?;
                 if execution_window <= maximum_probe_time {

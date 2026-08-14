@@ -74,8 +74,15 @@ pub(super) fn validate(
                 return Err("Maelstrom harness error must mark every result errored");
             }
         }
+        // Both are frontier vocabulary and Maelstrom has no frontier: it runs a
+        // fixed number of randomized trials and checks their histories. Listed
+        // separately from the arms above so a future completion cannot join
+        // this rejection by accident.
         CheckCompletion::FrontierExhausted => {
             return Err("Maelstrom scenario cannot claim exhaustive frontier completion");
+        }
+        CheckCompletion::BudgetElapsedFrontierOpen => {
+            return Err("Maelstrom scenario cannot claim a model-checking frontier at all");
         }
     }
     Ok(())

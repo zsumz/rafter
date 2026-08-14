@@ -407,9 +407,15 @@
         "execution_id": { "type": "string", "minLength": 1 },
         "check_id": { "type": "string", "minLength": 1 },
         "evidence_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-        "completion": { "enum": ["completed", "frontier_exhausted", "counterexample", "coverage_not_reached", "budget_exhausted", "timeout", "harness_error"] },
+        "completion": {
+          "$comment": "Why the check stopped. Two of these are passes and they are not interchangeable. 'frontier_exhausted' means the search space was drained: 'states_left_on_queue' is 0 and the terminal counters are published. 'budget_elapsed_frontier_open' means a TLA+ reporting continuation spent its time budget with a healthy open frontier: it publishes the 'progress_*' counters instead, 'progress_states_left' is greater than 0, and the layer's verdict was carried by its proof obligations rather than by this run. Reading 'completion' alone is sufficient; 'tla_continuation' repeats the same fact in the TLA+ layer's own vocabulary and must agree with it.",
+          "enum": ["completed", "frontier_exhausted", "counterexample", "coverage_not_reached", "budget_exhausted", "timeout", "harness_error", "budget_elapsed_frontier_open"]
+        },
         "observations": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
-        "tla_continuation": { "$ref": "#/$defs/tla_continuation_binding" },
+        "tla_continuation": {
+          "$comment": "TLA+ receipts only. 'policy' is pinned by the profile, not chosen by the producer. 'outcome' must agree with 'completion': 'budget-elapsed-frontier-open' pairs with 'budget_elapsed_frontier_open', 'frontier-exhausted' with 'frontier_exhausted', 'counterexample' with 'counterexample'.",
+          "$ref": "#/$defs/tla_continuation_binding"
+        },
         "simulator_liveness": {
           "oneOf": [
             { "type": "null" },

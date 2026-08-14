@@ -89,7 +89,7 @@ mod binding_class {
 
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    use crate::verification::maelstrom::invocation::{verify_input_binding_for_test, InputBinding};
+    use crate::verification::maelstrom::binding::{verify_input_binding_for_test, InputBinding};
     use crate::verification::VerificationContext;
     use crate::ArtifactRef;
 
@@ -170,7 +170,7 @@ mod binding_class {
     }
 
     /// The aggregate has the repository but nothing anyone else built, so a
-    /// build output binds by the identity of the bytes that were published.
+    /// build output binds by the presence of the bytes the bundle authenticated.
     #[test]
     fn an_aggregate_context_build_output_verifies_without_the_file() {
         let bytes = b"built-binary".as_slice();
@@ -183,15 +183,28 @@ mod binding_class {
             VerificationContext::Aggregate,
             &snapshot,
         )
-        .expect("intact published bytes verify without the producing job's build tree");
+        .expect("retained published bytes verify without the producing job's build tree");
     }
 
-    /// Relaxing the file comparison does not relax the bytes: a published
-    /// artifact whose content no longer matches its receipt is still refused.
+    /// Relaxing the file comparison does not relax the failure mode: an
+    /// artifact the bundle never retained has nothing to assert, and the
+    /// aggregate refuses rather than treating absence as agreement.
+    ///
+    /// This is deliberately not a tampered-bytes test. There used to be one,
+    /// and it could only be written by building an `AuthenticatedArtifacts`
+    /// whose retained bytes disagree with the declaration they were retained
+    /// under -- a state the production constructor cannot produce, because
+    /// `bundle::integrity::file::read_declared` compares digest and length
+    /// before retaining and drops the bytes if they disagree. The check it
+    /// exercised was a second hash of already-hashed bytes with one possible
+    /// answer. Tampering is caught at bundle authentication, which has the file
+    /// and the declaration; the tests for that live beside it in
+    /// `verification::bundle::integrity`.
     #[test]
-    fn an_aggregate_context_build_output_rejects_tampered_bytes() {
+    fn an_aggregate_context_build_output_rejects_an_unretained_artifact() {
         let reference = artifact("maelstrom-binary", b"built-binary");
-        let snapshot = authenticated(&reference, b"tampered-binary!");
+        let unrelated = artifact("maelstrom-proxy-binary", b"something-else");
+        let snapshot = authenticated(&unrelated, b"something-else");
 
         let error = verify_input_binding_for_test(
             &reference,
@@ -199,11 +212,8 @@ mod binding_class {
             VerificationContext::Aggregate,
             &snapshot,
         )
-        .expect_err("tampered published bytes must not verify in any context");
-        assert!(
-            error.to_string().contains("does not match the identity"),
-            "{error}"
-        );
+        .expect_err("an artifact the bundle never retained cannot be asserted present");
+        assert!(error.to_string().contains("was not retained"), "{error}");
     }
 
     /// Source bindings are unchanged everywhere: the runner script is in the

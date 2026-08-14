@@ -1241,39 +1241,12 @@ GrantRead(n, request) ==
       /\ UNCHANGED applicationVars
       /\ UNCHANGED historyVars
 
-\* Every protocol action, and the whole transition relation. There is no
-\* wrapper: snapshot creation and compaction are one atomic action, so `Next`
-\* has no compaction-first branch to reproduce and no second name to carry.
-\* The four focused relations below are strict disjunct-subsets of this one.
-Next ==
-  \/ \E n \in Nodes : Timeout(n)
-  \/ \E c, v \in Nodes : SendRequestVote(c, v)
-  \/ \E m \in {message \in messages : message.type = RequestVote} :
-       DeliverRequestVote(m)
-  \/ \E n \in Nodes : BecomeLeader(n)
-  \/ \E n \in Nodes, value \in Values : ClientAppend(n, value)
-  \/ \E l, f \in Nodes : SendAppend(l, f)
-  \/ \E m \in {message \in messages : message.type = AppendEntries} :
-       DeliverAppend(m)
-  \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
-  \/ \E n \in Nodes : Apply(n)
-  \/ \E n \in Nodes : ApplicationStateLoss(n)
-  \/ \E n \in Nodes : Restart(n)
-  \/ \E n \in Nodes : CreateSnapshot(n)
-  \/ \E from, to \in Nodes : TransferSnapshot(from, to)
-  \/ InstallSnapshot
-  \/ \E n \in Nodes, voters \in VoterSets : EnterJoint(n, voters)
-  \/ \E n \in Nodes : LeaveJoint(n)
-  \/ \E n \in Nodes, request \in ReadRequests : RegisterRead(n, request)
-  \/ \E n \in Nodes, request \in ReadRequests : GrantRead(n, request)
-
-Spec == Init /\ [][Next]_vars
-
-\* Focused proof obligations.
+\* Focused proof obligations, and the whole transition relation built out of
+\* them.
 \*
 \* `Next` is the whole protocol and `Spec` is the whole model: every wired tier
-\* checks all nine invariants against all of it. The relations below are strict
-\* disjunct-subsets of `Next`, assembled from the same action operators
+\* checks all nine invariants against all of it. The focused relations below are
+\* strict disjunct-subsets of `Next`, assembled from the same action operators
 \* under the same guards. None of them adds a transition, weakens a guard, or
 \* writes a variable the corresponding full-model action does not write, so
 \* every behavior of a focused spec is a behavior of `Spec`. That direction is
@@ -1281,6 +1254,21 @@ Spec == Init /\ [][Next]_vars
 \* a focused relation whose queue drains proves its invariants over a state
 \* space `Spec` has not finished exploring, and the obligation it discharges is
 \* named by what it leaves out.
+\*
+\* The subset property is load-bearing -- the entire obligation architecture
+\* rests on it -- so it is established by construction rather than by eye. The
+\* five relations used to be five hand-kept lists that restated the same nine
+\* core disjuncts verbatim, and a disjunct added to one list and forgotten in
+\* another would have broken the claim with nothing able to detect it. Now the
+\* containments are facts about the text: `AgreementNext` is named once,
+\* `CoreNext` extends it, the three family relations extend those, and `Next`
+\* extends the largest of them. `CoreNext` cannot acquire a disjunct `Next`
+\* lacks, because `Next` is built from `CoreNext`. `Next`'s own comment carries
+\* the chain for the two families it does not name directly.
+\*
+\* Composition is inert for TLC. Definitions expand at evaluation, so a model
+\* checked against `SnapshotNext` explores exactly the disjunction it did when
+\* the disjuncts were written out, and every pinned state count is unchanged.
 \*
 \* What a focused relation therefore does not prove: anything that needs an
 \* action it drops, and anything about the interaction between the families it
@@ -1295,46 +1283,48 @@ Spec == Init /\ [][Next]_vars
 \* variable, so a mis-composed relation fails loudly at the first state rather
 \* than quietly exploring a larger space.
 
-\* Core agreement: election, replication, commit, apply. The actions an
-\* election-safety, log-matching, leader-completeness, committed-prefix, or
-\* state-machine-safety obligation needs, and nothing else. Deliberately
-\* excludes reads, the snapshot lifecycle, membership change, `Restart`, and
-\* `ApplicationStateLoss`; each of those is the subject of one of the three
-\* relations below, and an obligation that does not name them should not pay
-\* for their branching.
-CoreNext ==
+\* The agreement core: election, replication, commit, apply. Every focused
+\* relation contains it, so it is named once and extended rather than copied.
+\* `ClientAppend` is deliberately not here -- it is the one core action a
+\* membership obligation must drop, for the log-length reason given below --
+\* which is why the shared core is eight disjuncts and `CoreNext` is nine.
+AgreementNext ==
   \/ \E n \in Nodes : Timeout(n)
   \/ \E c, v \in Nodes : SendRequestVote(c, v)
   \/ \E m \in {message \in messages : message.type = RequestVote} :
        DeliverRequestVote(m)
   \/ \E n \in Nodes : BecomeLeader(n)
-  \/ \E n \in Nodes, value \in Values : ClientAppend(n, value)
   \/ \E l, f \in Nodes : SendAppend(l, f)
   \/ \E m \in {message \in messages : message.type = AppendEntries} :
        DeliverAppend(m)
   \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
   \/ \E n \in Nodes : Apply(n)
 
+\* Core agreement: the agreement core plus ordinary command appends. The actions
+\* an election-safety, log-matching, leader-completeness, committed-prefix, or
+\* state-machine-safety obligation needs, and nothing else. Deliberately
+\* excludes reads, the snapshot lifecycle, membership change, `Restart`, and
+\* `ApplicationStateLoss`; each of those is the subject of one of the three
+\* relations below, and an obligation that does not name them should not pay
+\* for their branching.
+CoreNext ==
+  \/ AgreementNext
+  \/ \E n \in Nodes, value \in Values : ClientAppend(n, value)
+
 \* Membership change: core agreement without ordinary command appends, plus the
 \* two configuration-change actions. `ClientAppend` is dropped rather than kept
 \* because `MaxLogLen` is the binding constraint on any joint-quorum obligation
 \* and a command entry spends a slot that `EnterJoint` and `LeaveJoint` need:
 \* completing a change costs two entries, so at `MaxLogLen = 2` a command and a
-\* completed change cannot coexist at all. Commit and apply stay, because
-\* `EnterJoint` guards on `Len(log[n]) = AppliedThrough(n)` and `LeaveJoint`
-\* likewise, so a configuration entry must be committed and applied before the
-\* next one can be proposed. Excludes reads and the snapshot lifecycle.
+\* completed change cannot coexist at all. That is why this relation extends
+\* `AgreementNext` and not `CoreNext`: it is the only focused relation that
+\* subtracts a core action, and the composition says so. Commit and apply stay,
+\* because `EnterJoint` guards on `Len(log[n]) = AppliedThrough(n)` and
+\* `LeaveJoint` likewise, so a configuration entry must be committed and applied
+\* before the next one can be proposed. Excludes reads and the snapshot
+\* lifecycle.
 MembershipNext ==
-  \/ \E n \in Nodes : Timeout(n)
-  \/ \E c, v \in Nodes : SendRequestVote(c, v)
-  \/ \E m \in {message \in messages : message.type = RequestVote} :
-       DeliverRequestVote(m)
-  \/ \E n \in Nodes : BecomeLeader(n)
-  \/ \E l, f \in Nodes : SendAppend(l, f)
-  \/ \E m \in {message \in messages : message.type = AppendEntries} :
-       DeliverAppend(m)
-  \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
-  \/ \E n \in Nodes : Apply(n)
+  \/ AgreementNext
   \/ \E n \in Nodes, voters \in VoterSets : EnterJoint(n, voters)
   \/ \E n \in Nodes : LeaveJoint(n)
 
@@ -1345,23 +1335,13 @@ MembershipNext ==
 \* only path by which `applied` moves backwards. Excludes reads and membership
 \* change.
 \*
-\* Like its three siblings this is a plain disjunct-subset of `Next`. It used to
-\* need a compaction-first wrapper, because `CompactSnapshot` was reachable only
-\* through `Next`'s branch and never through the bare disjunction; folding
-\* creation and compaction into one action removed the branch and the wrapper
-\* with it.
+\* It used to need a compaction-first wrapper, because `CompactSnapshot` was
+\* reachable only through `Next`'s branch and never through the bare
+\* disjunction; folding creation and compaction into one action removed the
+\* branch and the wrapper with it, which is what lets this be a plain extension
+\* of `CoreNext`.
 SnapshotNext ==
-  \/ \E n \in Nodes : Timeout(n)
-  \/ \E c, v \in Nodes : SendRequestVote(c, v)
-  \/ \E m \in {message \in messages : message.type = RequestVote} :
-       DeliverRequestVote(m)
-  \/ \E n \in Nodes : BecomeLeader(n)
-  \/ \E n \in Nodes, value \in Values : ClientAppend(n, value)
-  \/ \E l, f \in Nodes : SendAppend(l, f)
-  \/ \E m \in {message \in messages : message.type = AppendEntries} :
-       DeliverAppend(m)
-  \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
-  \/ \E n \in Nodes : Apply(n)
+  \/ CoreNext
   \/ \E n \in Nodes : ApplicationStateLoss(n)
   \/ \E n \in Nodes : Restart(n)
   \/ \E n \in Nodes : CreateSnapshot(n)
@@ -1373,19 +1353,41 @@ SnapshotNext ==
 \* actions themselves touch only `readRequests` and `readBarrierViolationSeen`.
 \* Excludes the snapshot lifecycle and membership change.
 ReadNext ==
-  \/ \E n \in Nodes : Timeout(n)
-  \/ \E c, v \in Nodes : SendRequestVote(c, v)
-  \/ \E m \in {message \in messages : message.type = RequestVote} :
-       DeliverRequestVote(m)
-  \/ \E n \in Nodes : BecomeLeader(n)
-  \/ \E n \in Nodes, value \in Values : ClientAppend(n, value)
-  \/ \E l, f \in Nodes : SendAppend(l, f)
-  \/ \E m \in {message \in messages : message.type = AppendEntries} :
-       DeliverAppend(m)
-  \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
-  \/ \E n \in Nodes : Apply(n)
+  \/ CoreNext
   \/ \E n \in Nodes, request \in ReadRequests : RegisterRead(n, request)
   \/ \E n \in Nodes, request \in ReadRequests : GrantRead(n, request)
+
+\* Every protocol action, and the whole transition relation. There is no
+\* wrapper: snapshot creation and compaction are one atomic action, so `Next`
+\* has no compaction-first branch to reproduce and no second name to carry.
+\*
+\* `SnapshotNext` is the largest focused relation, so it carries the core here
+\* and the remaining four actions are named alongside it: exactly the eighteen
+\* disjuncts, each written once.
+\*
+\* Each disjunct appears once on purpose. `SnapshotNext \/ ReadNext` also
+\* denotes the right relation -- disjunction is idempotent, and the two share
+\* every `CoreNext` disjunct -- but TLC enumerates successors per disjunct
+\* rather than per distinct action, so the overlap would generate every core
+\* successor twice. Distinct-state counts are unaffected; generated-state counts
+\* are not, and those are pinned as calibration in the obligation configs. It
+\* was measured: written as `SnapshotNext \/ ReadNext`,
+\* RaftIntegrationUnsymmetrized.cfg reports 403,405 generated for the same
+\* 49,985 distinct, against 254,211 in this form.
+\*
+\* The containment chain is still by construction, just routed through
+\* `SnapshotNext`: `AgreementNext \subseteq CoreNext \subseteq SnapshotNext
+\* \subseteq Next`, `ReadNext \subseteq Next` because `ReadNext` is `CoreNext`
+\* plus the two read actions named below, and `MembershipNext \subseteq Next`
+\* because it is `AgreementNext` plus the two membership actions named below.
+Next ==
+  \/ SnapshotNext
+  \/ \E n \in Nodes, request \in ReadRequests : RegisterRead(n, request)
+  \/ \E n \in Nodes, request \in ReadRequests : GrantRead(n, request)
+  \/ \E n \in Nodes, voters \in VoterSets : EnterJoint(n, voters)
+  \/ \E n \in Nodes : LeaveJoint(n)
+
+Spec == Init /\ [][Next]_vars
 
 CoreSpec == Init /\ [][CoreNext]_vars
 MembershipSpec == Init /\ [][MembershipNext]_vars
