@@ -9,7 +9,8 @@ use super::{
     super::{
         base_environment, clear_signal_attempts, confirm_process_group_absent_with,
         delay_next_process_group_observation, delay_next_process_group_receipt,
-        delay_next_target_release, omit_anchor_from_next_process_group_observation,
+        delay_next_target_release, hold_next_poll_until_the_execution_window_closes,
+        omit_anchor_from_next_process_group_observation,
         omit_target_rows_from_process_group_observations, process_group_state,
         take_last_delayed_process_group, take_last_unreleased_process_group, take_signal_attempts,
         FinalizationPolicy, ProcessDeadlines, ProcessGroupState, ProcessSignal,
@@ -235,6 +236,49 @@ fn stalled_process_observer_cannot_escape_the_lifecycle_deadline() {
     assert!(
         started.elapsed() < observer_stall,
         "the run outlasted the observer stall it was supposed to cut off"
+    );
+}
+
+#[test]
+fn a_window_edge_reached_between_observations_is_a_timeout() {
+    // A window that closes while the collection loop is between two
+    // observations is that loop reaching its own timeout, and the run has to
+    // report the timeout it reached. Entering the observer first turns it into
+    // an exhausted-deadline stall instead -- correct for a stall, fatal for a
+    // run that had simply run out of time -- and the poll is where that edge
+    // lands, being a hundred milliseconds against an observation of single-digit
+    // ones. The target outlives every deadline here so the loop can only leave
+    // by timing out.
+    let startup = managed_process_startup_allowance();
+    let finalization_reserve = startup * 2;
+    let started = Instant::now();
+    let execution_window = started + startup;
+    let cleanup_start = started + startup * 3;
+    let finalization_start = started + startup * 5;
+    let lifecycle = finalization_start + finalization_reserve;
+    hold_next_poll_until_the_execution_window_closes();
+    let output = run_shell_with_deadlines(
+        "sleep 30",
+        &base_environment(),
+        Path::new("."),
+        ProcessDeadlines::new(
+            // Long enough that the window, not the target timeout, is the
+            // deadline the loop reaches -- which is the configuration a loaded
+            // runner produces on its own once startup has eaten the difference.
+            Duration::from_secs(30),
+            execution_window,
+            cleanup_start,
+            finalization_start,
+            lifecycle,
+        )
+        .expect("valid window-edge deadlines"),
+        finalization_reserve,
+        FinalizationPolicy::bounded(finalization_reserve),
+    )
+    .expect("a window edge reached between observations must not fail the run");
+    assert!(
+        output.timed_out,
+        "a run that reached its execution window must report the timeout it reached"
     );
 }
 

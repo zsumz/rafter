@@ -80,6 +80,8 @@ use model::{
 };
 #[cfg(test)]
 pub(crate) use output::await_next_target_stdout_prefix;
+#[cfg(test)]
+use output::hold_next_poll_until_the_execution_window_closes;
 use process_group::await_target_process_group;
 #[cfg(test)]
 use process_group::{
@@ -104,7 +106,8 @@ use spawn::{
 };
 #[cfg(test)]
 use telemetry::{
-    delay_next_process_group_observation, omit_anchor_from_next_process_group_observation,
+    delay_next_process_group_observation, fail_next_process_group_observation_command,
+    omit_anchor_from_next_process_group_observation,
     omit_target_rows_from_process_group_observations, parse_process_group_observation,
     process_observer_path,
 };
