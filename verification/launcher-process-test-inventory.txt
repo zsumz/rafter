@@ -1,5 +1,6 @@
 execution::process::bounded::tests::process_policy_clamps_target_time_to_the_absolute_lifecycle_deadline
 execution::process::bounded::tests::process_policy_rejects_an_outer_deadline_without_lifecycle_reserve
+execution::process::tests::deadlines::a_window_edge_reached_between_observations_is_a_timeout
 execution::process::tests::deadlines::delayed_process_group_publication_cannot_escape_the_lifecycle_deadline
 execution::process::tests::deadlines::late_termination_preserves_the_receipt_finalization_boundary
 execution::process::tests::deadlines::natural_exit_after_the_deadline_cannot_be_reported_as_success
@@ -56,6 +57,7 @@ execution::process::tests::mechanics::reaper::reaped_identity_cannot_signal_a_re
 execution::process::tests::mechanics::receipts::process_group_receipt_rejects_foreign_processes_before_acknowledgement
 execution::process::tests::mechanics::receipts::process_group_receipt_requires_complete_frames
 execution::process::tests::mechanics::receipts::ready_process_group_requires_the_published_process_in_the_anchored_group
+execution::process::tests::observation_retry::a_failed_observer_command_is_retried_like_a_stalled_one
 execution::process::tests::observation_retry::a_persistent_observation_failure_is_still_fatal
 execution::process::tests::observation_retry::a_stall_that_exhausts_the_window_is_not_retried
 execution::process::tests::observation_retry::a_transient_observation_stall_is_retried_once_and_the_run_survives

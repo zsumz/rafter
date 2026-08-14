@@ -1,15 +1,15 @@
 //! Raw bounded-process collection and resource-receipt finalization.
 
-use std::{error::Error, path::Path, time::Instant};
-
 #[cfg(test)]
-use std::{cell::RefCell, time::Duration};
+mod test_support;
+
+use std::{error::Error, path::Path, time::Instant};
 
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
 use super::managed::TargetObservation;
-use super::telemetry::{OBSERVER_COMMAND_FAILURE, PS_TELEMETRY_TIMEOUT};
+use super::telemetry::{ObserverCommandFailure, PS_TELEMETRY_TIMEOUT};
 use super::{
     await_target_process_group, finalize_process_output, retained_error, retained_result,
     terminate_after_timeout, CleanupFailures, FinalizationPolicy, ManagedProcess,
@@ -18,55 +18,13 @@ use super::{
 };
 
 #[cfg(test)]
-thread_local! {
-    static NEXT_TARGET_STDOUT_READINESS: RefCell<Option<TargetStdoutReadiness>> =
-        const { RefCell::new(None) };
-}
-
+pub(crate) use test_support::{
+    await_next_target_stdout_prefix, hold_next_poll_until_the_execution_window_closes,
+};
 #[cfg(test)]
-struct TargetStdoutReadiness {
-    prefix: Vec<u8>,
-    timeout: Duration,
-}
-
-#[cfg(test)]
-pub(crate) struct TargetStdoutReadinessGuard;
-
-#[cfg(test)]
-pub(crate) fn await_next_target_stdout_prefix(
-    prefix: &[u8],
-    timeout: Duration,
-) -> TargetStdoutReadinessGuard {
-    assert!(
-        !prefix.is_empty(),
-        "target readiness prefix must not be empty"
-    );
-    assert!(
-        !timeout.is_zero(),
-        "target readiness timeout must be positive"
-    );
-    NEXT_TARGET_STDOUT_READINESS.with(|next| {
-        assert!(
-            next.borrow_mut()
-                .replace(TargetStdoutReadiness {
-                    prefix: prefix.to_vec(),
-                    timeout,
-                })
-                .is_none(),
-            "target stdout readiness hook was already armed"
-        );
-    });
-    TargetStdoutReadinessGuard
-}
-
-#[cfg(test)]
-impl Drop for TargetStdoutReadinessGuard {
-    fn drop(&mut self) {
-        NEXT_TARGET_STDOUT_READINESS.with(|next| {
-            next.borrow_mut().take();
-        });
-    }
-}
+use test_support::{
+    await_target_stdout_readiness, hold_poll_across_the_execution_window_if_requested,
+};
 
 pub(super) fn finish_managed_process(
     mut process: ManagedProcess,
@@ -146,6 +104,24 @@ pub(super) fn collect_process_output(
         .min(deadlines.execution_window);
     let mut peak_rss_kib = 0;
     let completion = loop {
+        // The edge answered before the next observation is entered, the way the
+        // grace loop answers its own. An observer entered after its window has
+        // closed reports a stall -- correctly, because inside that call nothing
+        // but the observer can have consumed the window -- and a run that had
+        // merely reached its timeout would die of that stall instead. The poll
+        // below is a hundred milliseconds and the observation is single-digit
+        // ones, so the edge falls in the poll almost every time it falls
+        // anywhere.
+        if Instant::now() >= target_deadline {
+            break terminate_after_timeout(
+                process,
+                policy,
+                deadlines.cleanup_start,
+                &stdout_path,
+                &stderr_path,
+                &resource_path,
+            )?;
+        }
         let observed = observe_within_execution_window(process, deadlines).map_err(|error| {
             retained_error(error, &stdout_path, &stderr_path, Some(&resource_path))
         })?;
@@ -205,7 +181,15 @@ pub(super) fn collect_process_output(
                 kill_signal_sent: false,
             };
         }
-        std::thread::sleep(PROCESS_POLL_INTERVAL);
+        // Clamped so the poll cannot carry the loop past the edge it is about
+        // to check: the deadline check at the top of this loop is what decides
+        // what a closed window means, and it can only decide it if the sleep
+        // stops there.
+        std::thread::sleep(
+            PROCESS_POLL_INTERVAL.min(target_deadline.saturating_duration_since(Instant::now())),
+        );
+        #[cfg(test)]
+        hold_poll_across_the_execution_window_if_requested(deadlines.execution_window);
     };
     finalize_process_output(
         started,
@@ -240,11 +224,13 @@ fn observe_within_execution_window(
 ) -> Result<Option<TargetObservation>, Box<dyn Error>> {
     match process.try_observe_target_members(deadlines.execution_window, deadlines.cleanup_start) {
         observed @ Ok(_) => observed,
-        // Only the observer *command* failing is retried. An observation that
-        // ran and then disagreed with itself -- a missing live anchor row, an
-        // anchor that exited before release -- is a fail-closed property, and
-        // re-running it would relax what the observation has to return.
-        Err(stalled) if stalled.to_string().starts_with(OBSERVER_COMMAND_FAILURE) => {
+        // Only the observer *command* failing is retried, and the observer says
+        // so by type: a message prefix left the decision to whichever site
+        // happened to format the string. An observation that ran and then
+        // disagreed with itself -- a missing live anchor row, an anchor that
+        // exited before release -- is a fail-closed property, and re-running it
+        // would relax what the observation has to return.
+        Err(stalled) if stalled.downcast_ref::<ObserverCommandFailure>().is_some() => {
             // Decided on what the window has left *after* the stall was
             // noticed, not on what it held before. A retry the window cannot
             // fit would be cut off for the same reason the first attempt was,
@@ -261,39 +247,5 @@ fn observe_within_execution_window(
             process.try_observe_target_members(deadlines.execution_window, deadlines.cleanup_start)
         }
         failed @ Err(_) => failed,
-    }
-}
-
-#[cfg(test)]
-fn await_target_stdout_readiness(
-    artifacts: &ProcessArtifacts,
-    execution_window: Instant,
-) -> Result<(), Box<dyn Error>> {
-    const MAX_READINESS_STDOUT_BYTES: u64 = 64 * 1024 * 1024;
-
-    let readiness = NEXT_TARGET_STDOUT_READINESS.with(|next| next.borrow_mut().take());
-    let Some(readiness) = readiness else {
-        return Ok(());
-    };
-    let deadline = Instant::now()
-        .checked_add(readiness.timeout)
-        .ok_or("target stdout readiness deadline overflow")?
-        .min(execution_window);
-    let operation_deadline =
-        crate::execution::filesystem::OperationDeadline::at(deadline, "target stdout readiness");
-    loop {
-        let stdout = artifacts.read_stdout(operation_deadline, MAX_READINESS_STDOUT_BYTES)?;
-        if stdout.starts_with(&readiness.prefix) {
-            return Ok(());
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(format!(
-                "target did not publish its stdout readiness prefix within {} ms",
-                readiness.timeout.as_millis()
-            )
-            .into());
-        }
-        std::thread::sleep(PROCESS_POLL_INTERVAL.min(deadline.duration_since(now)));
     }
 }

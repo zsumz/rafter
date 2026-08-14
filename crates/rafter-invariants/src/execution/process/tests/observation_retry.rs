@@ -4,7 +4,8 @@ use std::{path::Path, time::Duration};
 
 use super::{
     super::{
-        base_environment, delay_next_process_group_observation, inject_next_internal_drain_error,
+        base_environment, delay_next_process_group_observation,
+        fail_next_process_group_observation_command, inject_next_internal_drain_error,
         inject_next_internal_drain_errors,
     },
     support::run_shell,
@@ -25,6 +26,26 @@ fn a_transient_observation_stall_is_retried_once_and_the_run_survives() {
         Duration::from_millis(200),
     )
     .expect("one stalled observation must not destroy the run");
+    assert!(!output.timed_out);
+    assert!(output.status.success());
+}
+
+/// An observer that ran and exited non-zero costs the same one retry as one
+/// that never answered. Both are the observer *command* failing, and on the
+/// starved host the retry exists for, a `ps` that loses a fork to memory
+/// pressure is at least as likely as a `ps` that hangs.
+#[test]
+fn a_failed_observer_command_is_retried_like_a_stalled_one() {
+    fail_next_process_group_observation_command();
+
+    let output = run_shell(
+        "printf ready; exit 0",
+        &base_environment(),
+        Path::new("."),
+        Duration::from_secs(20),
+        Duration::from_millis(200),
+    )
+    .expect("one failed observer command must not destroy the run");
     assert!(!output.timed_out);
     assert!(output.status.success());
 }

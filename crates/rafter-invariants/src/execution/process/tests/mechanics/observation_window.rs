@@ -4,8 +4,29 @@
 use std::time::{Duration, Instant};
 
 use super::super::super::telemetry::PS_TELEMETRY_TIMEOUT;
-use super::super::super::{process_group_observation, GroupObservation};
+use super::super::super::{
+    duration_ms, process_group_observation, GroupObservation, ProcessObserver,
+};
 use super::super::support::process_observer;
+
+/// How long this machine needs, right now, for one untruncated observation.
+///
+/// A short window is only evidence of "short but still viable" if this host has
+/// just been seen to observe inside a fraction of it. Measuring says that in
+/// terms the machine can honour; half the budget says it about the machine the
+/// constant was picked on.
+fn measured_observation_cost(observer: &ProcessObserver) -> Duration {
+    let started = Instant::now();
+    process_group_observation(
+        std::process::id(),
+        None,
+        observer,
+        started + PS_TELEMETRY_TIMEOUT * 4,
+        started + Duration::from_secs(30),
+    )
+    .expect("measure one untruncated process-group observation");
+    started.elapsed()
+}
 
 /// A window that was already over before the observer was entered means
 /// something consumed it inside this call. That is a stalled observer, not a
@@ -56,7 +77,14 @@ fn an_untruncated_observation_is_never_excused_as_a_closed_window() {
 #[test]
 fn a_window_shorter_than_the_budget_still_observes() {
     let observer = process_observer();
-    let window = Instant::now() + PS_TELEMETRY_TIMEOUT / 2;
+    let cost = measured_observation_cost(&observer);
+    let window_span = (cost * 8).max(PS_TELEMETRY_TIMEOUT / 4);
+    assert!(
+        window_span < PS_TELEMETRY_TIMEOUT,
+        "a host needing {} ms for one observation cannot demonstrate a truncated one",
+        duration_ms(cost)
+    );
+    let window = Instant::now() + window_span;
     let outcome = process_group_observation(
         std::process::id(),
         None,
@@ -65,10 +93,11 @@ fn a_window_shorter_than_the_budget_still_observes() {
         Instant::now() + Duration::from_secs(30),
     )
     .expect("a truncated observation that completes is not a failure");
-    if matches!(outcome, GroupObservation::WindowClosed) {
-        assert!(
-            Instant::now() >= window,
-            "a closed window must actually have closed"
-        );
-    }
+    // The window is short by construction and viable by measurement, so there
+    // is no expiry left to excuse a refusal: looking inside it is the only
+    // outcome this scenario accepts.
+    assert!(
+        matches!(outcome, GroupObservation::Observed(_)),
+        "a window shorter than the budget must be looked inside, not reported closed"
+    );
 }
