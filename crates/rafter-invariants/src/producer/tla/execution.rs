@@ -10,7 +10,7 @@ mod runner;
 
 #[cfg(test)]
 pub(in crate::producer) use model::ObligationOutcome;
-pub(in crate::producer) use model::{MainStatus, ProbeStatus, TlaExecution};
+pub(in crate::producer) use model::{MainStatus, ObligationFailure, ProbeStatus, TlaExecution};
 #[cfg(test)]
 pub(in crate::producer) use outcome::parse_main_summary;
 #[cfg(test)]
@@ -28,6 +28,8 @@ use budget::{
 use command::require_sound_tlc_state_binding;
 #[cfg(test)]
 use model::{DetectorProbes, TlcRun};
+#[cfg(test)]
+use obligation::{run_obligations, undischarged};
 #[cfg(test)]
 use outcome::{complete_main_execution, MainCompletion};
 #[cfg(test)]

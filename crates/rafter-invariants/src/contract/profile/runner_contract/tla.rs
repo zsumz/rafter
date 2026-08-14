@@ -115,6 +115,7 @@ pub(super) fn validate(profile: &str, runner: &RunnerContract) -> Result<(), Str
     }
     tla_obligations::validate(
         PrimaryBudget {
+            profile,
             reporting: contract.primary_completion == REPORTING_CONTINUATION,
             soft_timeout: &contract.soft_timeout,
             total_timeout: contract.total_timeout.as_deref(),
@@ -130,7 +131,15 @@ fn valid_pr(contract: &Configuration) -> bool {
         && contract.minimum_generated_states == PR_MINIMUM_GENERATED_STATES
         && contract.minimum_distinct_states == PR_MINIMUM_DISTINCT_STATES
         && contract.seed == "2026071101"
-        && contract.soft_timeout == "325m"
+        // The only primary budget that has to be *sufficient* rather than
+        // merely affordable: PR gates on frontier exhaustion, so a truncated
+        // run is a red merge gate. `RaftCi` drains in 93 minutes at these
+        // flags on the calibration host and CI runs 1.3x to 1.5x slower, so
+        // this is better than twice the projected wall. Everything else in the
+        // window -- qualification, setup, the two obligations, the
+        // finalization reserve -- is subtracted from `total_timeout` first;
+        // see the phase-inventory check in `tla_obligations`.
+        && contract.soft_timeout == "310m"
         && contract.workers == "4"
         && contract.finalization_reserve.as_deref() == Some("2m")
         && contract.max_heap.as_deref() == Some("8g")
@@ -146,7 +155,12 @@ fn valid_nightly(contract: &Configuration) -> bool {
         && contract.minimum_generated_states == REPORTING_MINIMUM_GENERATED_STATES
         && contract.minimum_distinct_states == REPORTING_MINIMUM_DISTINCT_STATES
         && contract.seed == "2026071102"
-        && contract.soft_timeout == "240m"
+        // A reporting continuation, so this is the residual and not a
+        // requirement: qualification, setup, and the obligation family are
+        // funded first out of the execution window, and the continuation
+        // accumulates coverage in whatever is left. Nightly's obligations are
+        // the cheaper symmetric family, so more remains here than on weekly.
+        && contract.soft_timeout == "195m"
         && contract.workers == "auto"
         && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
         && contract.checkpoint_gzip.as_deref() == Some("required")
@@ -165,15 +179,18 @@ fn valid_weekly(contract: &Configuration) -> bool {
         && contract.minimum_generated_states == REPORTING_MINIMUM_GENERATED_STATES
         && contract.minimum_distinct_states == REPORTING_MINIMUM_DISTINCT_STATES
         && contract.seed == "2026071103"
-        // 190m, not nightly's 250m: with the continuation reporting rather
-        // than gating, over an hour of its budget buys the unsymmetrized
-        // obligation family instead -- the symmetry audit the weekly tier
-        // exists to provide, applied to the theorems that actually gate.
-        // The first nightly dispatch measured CI runners at almost exactly
-        // twice the local calibration wall on the multi-minute models, so the
-        // unsymmetrized snapshot obligation carries a 40-minute budget and
-        // the primary funds it.
-        && contract.soft_timeout == "155m"
+        // The smallest primary of the three, and deliberately so. Weekly runs
+        // both the symmetric obligation family and its unquotiented mirror --
+        // the symmetry audit this tier exists to provide, applied to the
+        // theorems that actually gate -- which is roughly twice nightly's
+        // obligation minutes out of the same execution window. Because the
+        // continuation reports rather than gates, this number is the residual
+        // of that window and never a floor: obligation budgets are calibrated
+        // against measured CI wall time and the primary absorbs whatever they
+        // and the qualification, setup, and finalization phases leave. A
+        // recalibration that lengthens an obligation is expected to shorten
+        // this value, not to breach the window.
+        && contract.soft_timeout == "110m"
         && contract.workers == "auto"
         && contract.checkpoint_gzip.as_deref() == Some("required")
         && contract.checkpoint_minutes.as_deref() == Some("30")

@@ -10,8 +10,13 @@ use super::super::{process, tla_output::DETECTOR_PROBES};
 
 pub(super) const TOTAL_TIMEOUT_KEY: &str = "total_timeout";
 pub(super) const FINALIZATION_RESERVE_KEY: &str = "finalization_reserve";
-// The hosted PR inventory is 7m qualification + 325m main + 4m setup + 2m
-// finalization = 338m. Scheduled runners retain the wider qualification caps.
+// Every phase below is paid out of one `execution_deadline`, so the inventory
+// has to be counted whole. The hosted PR tier is 4m setup + 7m qualification +
+// 10m proof obligations + 310m main + 2m finalization = 333m inside a 338m
+// budget. Scheduled runners retain the wider qualification caps (32m) and fund
+// larger obligation families out of a 320m budget, which is why their
+// reporting primaries are the shortest of the three. The contract layer
+// re-derives this same inventory and refuses a profile that overcommits it.
 const PR_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const PR_MUTATION_SUITE_TIMEOUT: Duration = Duration::from_secs(4 * 60);
 const SCHEDULED_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -108,6 +113,23 @@ impl ExecutionBudget {
     pub(super) fn phase_timeout_at(self, now: Instant, cap: Duration) -> Option<Duration> {
         let remaining = self.execution_deadline.checked_duration_since(now)?;
         (!remaining.is_zero()).then_some(cap.min(remaining))
+    }
+
+    pub(super) fn whole_phase_timeout(self, cap: Duration) -> Option<Duration> {
+        self.whole_phase_timeout_at(Instant::now(), cap)
+    }
+
+    /// A phase that is only meaningful at its full cap, or not at all.
+    ///
+    /// Truncation is the right answer for the qualification probes and for the
+    /// primary continuation: a short probe still qualifies and a short
+    /// continuation still accumulates. It is the wrong answer for an
+    /// obligation, whose whole contract is "drain this frontier within a
+    /// calibrated budget". Handing one a shortened clock converts a budget
+    /// shortfall into a theorem that appears not to hold.
+    pub(super) fn whole_phase_timeout_at(self, now: Instant, cap: Duration) -> Option<Duration> {
+        let remaining = self.execution_deadline.checked_duration_since(now)?;
+        (remaining >= cap).then_some(cap)
     }
 }
 

@@ -9,7 +9,7 @@ use crate::evidence::{
 use super::{
     checkpoint::RecoveryStatus,
     contract::required_configuration,
-    execution::{MainStatus, ProbeStatus, TlaExecution},
+    execution::{MainStatus, ObligationFailure, ProbeStatus, TlaExecution},
     tla_output::REQUIRED_MODEL_TRANSITIONS,
 };
 
@@ -42,19 +42,27 @@ pub(in crate::producer) fn evaluate(
     if execution.detector_status != ProbeStatus::Passed {
         return error("TLC negative detector did not report its named counterexample");
     }
-    // Obligations run before the primary configuration, so an undischarged
-    // obligation means the main check never started. It is reported as a
-    // harness-level failure rather than a counterexample because obligations
-    // carry no registry evidence bindings: they strengthen the layer, and a
-    // refutation inside one is a red result that a human must read, not a
-    // verdict this layer may silently attach to one predicate.
+    // Obligations run before the primary configuration, so a failed obligation
+    // means the main check never started. It is reported as a harness-level
+    // failure rather than a counterexample because obligations carry no
+    // registry evidence bindings: they strengthen the layer, and a refutation
+    // inside one is a red result that a human must read, not a verdict this
+    // layer may silently attach to one predicate.
+    //
+    // The two failure shapes get two messages. On the scheduled tiers the
+    // obligations *are* the gate, so "this theorem did not hold" and "this
+    // harness never funded the run" would otherwise arrive at an operator
+    // wearing the same words, and only one of them is about the model.
     if execution.obligations.status == ProbeStatus::Failed {
-        let detail = execution
-            .obligations
-            .failure
-            .as_deref()
-            .unwrap_or("proof obligation failed without a diagnosis");
-        return error(&format!("TLA proof obligation did not discharge: {detail}"));
+        return match &execution.obligations.failure {
+            Some(ObligationFailure::Undischarged(detail)) => {
+                error(&format!("TLA proof obligation did not discharge: {detail}"))
+            }
+            Some(ObligationFailure::Underfunded(detail)) => error(&format!(
+                "TLA proof obligation ran out of execution budget: {detail}"
+            )),
+            None => error("TLA proof obligation failed without a diagnosis"),
+        };
     }
     if let Some(invariant) = execution
         .main

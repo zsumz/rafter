@@ -12,6 +12,12 @@
 //! would be squeezed into the finalization reserve, where a timeout is
 //! indistinguishable from a refutation.
 //!
+//! Ordering alone does not finish the job. An obligation is only started when
+//! the window still holds its whole calibrated budget; anything less is
+//! reported as a budget shortfall and never as an undischarged theorem. A
+//! truncated obligation would be killed at a wall it was never given, and the
+//! resulting diagnosis would name the model rather than the harness.
+//!
 //! # Why obligations never checkpoint
 //!
 //! Each obligation runs from scratch into an ephemeral state directory. It
@@ -38,7 +44,7 @@ use super::{
     },
     budget::ExecutionBudget,
     command::{run_tlc, TlcRequest, TlcState},
-    model::{ObligationOutcome, ProbeStatus},
+    model::{ObligationFailure, ObligationOutcome, ProbeStatus},
 };
 
 pub(super) fn run_obligations(
@@ -60,8 +66,13 @@ pub(super) fn run_obligations(
             "tla",
             &format!("TLA proof obligation {}", obligation.id),
         )?;
-        let Some(timeout) = budget.phase_timeout(parse_timeout(&obligation.soft_timeout)?) else {
-            return Ok(exhausted_budget(outcome, obligation));
+        // The full calibrated cap or nothing. An obligation started under a
+        // truncated clock would be killed at the wall and diagnosed as a
+        // frontier it failed to exhaust, which is the one confusion the
+        // ordering above exists to prevent.
+        let cap = parse_timeout(&obligation.soft_timeout)?;
+        let Some(timeout) = budget.whole_phase_timeout(cap) else {
+            return Ok(underfunded(outcome, obligation));
         };
         let run = run_tlc(TlcRequest {
             profile,
@@ -105,7 +116,7 @@ pub(super) fn run_obligations(
         }
         if !discharged {
             outcome.status = ProbeStatus::Failed;
-            outcome.failure = Some(diagnosis(
+            outcome.failure = Some(undischarged(
                 obligation,
                 run.output.timed_out,
                 summary.as_ref(),
@@ -116,16 +127,28 @@ pub(super) fn run_obligations(
     Ok(outcome)
 }
 
-fn exhausted_budget(
+fn underfunded(
     mut outcome: ObligationOutcome,
     obligation: &ProofObligationContract,
 ) -> ObligationOutcome {
     outcome.status = ProbeStatus::Failed;
-    outcome.failure = Some(format!(
-        "proof obligation {} had no execution budget left",
-        obligation.id
-    ));
+    outcome.failure = Some(ObligationFailure::Underfunded(format!(
+        "proof obligation {} was not started: the shared execution window no longer holds its {} budget",
+        obligation.id, obligation.soft_timeout
+    )));
     outcome
+}
+
+/// An obligation that ran with the whole budget it was promised and still did
+/// not discharge. Only reachable after `whole_phase_timeout` granted the full
+/// cap, which is what makes the wall in the timed-out diagnosis below a real
+/// statement about the model.
+pub(super) fn undischarged(
+    obligation: &ProofObligationContract,
+    timed_out: bool,
+    summary: Option<&tla_output::TlcSummary>,
+) -> ObligationFailure {
+    ObligationFailure::Undischarged(diagnosis(obligation, timed_out, summary))
 }
 
 fn diagnosis(

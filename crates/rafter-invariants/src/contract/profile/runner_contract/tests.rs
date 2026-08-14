@@ -134,7 +134,7 @@ fn canonical_pr_tla_configuration() -> serde_json::Value {
         "primary_completion": "gating-frontier-exhausted",
         "receipt_finalization_allowance": "5s",
         "seed": "2026071101",
-        "soft_timeout": "325m",
+        "soft_timeout": "310m",
         "symmetry": "nodes-values-read-requests-product",
         "termination_grace": "30s",
         "tool_asset_id": "510788686",
@@ -234,25 +234,49 @@ fn tla_contract_rejects_primary_and_escaping_obligation_configs() {
     }
 }
 
-/// Obligations are paid out of the same window as the primary run. A set that
-/// would starve the continuation is a contract error, not a runtime surprise.
+/// Obligations are paid out of the same window as every other phase. A set
+/// that would starve the continuation is a contract error, not a runtime
+/// surprise.
 #[test]
 fn tla_contract_rejects_obligations_that_starve_the_primary_run() {
-    // The PR window is 338m total less a 2m reserve; the primary run already
-    // claims 325m, so 11m is the entire remaining budget.
+    // The PR window is 338m total less a 2m reserve. Qualification and setup
+    // claim 11m of it and the primary run 310m, so 15m is the entire remaining
+    // budget.
     let affordable = tla_runner_with(vec![obligation(
         "focused",
         "RaftJointQuorumFocusedInit.cfg",
-        "11m",
+        "15m",
     )]);
-    validate_runner("pr", "tla", &affordable).expect("11m fits the PR window exactly");
+    validate_runner("pr", "tla", &affordable).expect("15m fits the PR window exactly");
 
     let overcommitted = tla_runner_with(vec![obligation(
         "focused",
         "RaftJointQuorumFocusedInit.cfg",
-        "12m",
+        "16m",
     )]);
     assert!(validate_runner("pr", "tla", &overcommitted).is_err());
+}
+
+/// The phases that are neither an obligation nor the primary run draw on the
+/// same execution deadline, so the check must count them. Before it did, an
+/// obligation set could be accepted whose whole inventory overran the window
+/// and truncated the monolith -- reported, under the PR tier's gating policy,
+/// as a timeout on a model that would have drained.
+#[test]
+fn tla_contract_counts_qualification_and_setup_against_the_window() {
+    // 15m of obligations is the documented ceiling above. Without the 11m
+    // qualification-and-setup charge the same window would appear to afford
+    // 26m, so an obligation set between the two must be refused.
+    for budget in ["16m", "20m", "26m"] {
+        let contract = tla_runner_with(vec![obligation(
+            "focused",
+            "RaftJointQuorumFocusedInit.cfg",
+            budget,
+        )]);
+        let error = validate_runner("pr", "tla", &contract)
+            .expect_err("qualification and setup are not free");
+        assert!(error.contains("qualification and setup"), "{error}");
+    }
 }
 
 #[test]

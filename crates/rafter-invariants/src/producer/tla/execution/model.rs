@@ -45,6 +45,21 @@ pub(super) struct TlcRun {
     pub(super) artifact: ArtifactRef,
 }
 
+/// Why the obligation sequence stopped.
+///
+/// Both variants are red, but they are not the same red and an operator must
+/// not have to guess which one they are reading. `Undischarged` is a statement
+/// about the model: a theorem the layer claims did not hold, or did not drain
+/// its frontier inside the budget its own calibration says is enough.
+/// `Underfunded` is a statement about this harness: the obligation was never
+/// given the budget it was promised, so it says nothing about the model at
+/// all. Collapsing them is how a rebudgeting mistake comes to read as a broken
+/// safety invariant.
+pub(in crate::producer) enum ObligationFailure {
+    Undischarged(String),
+    Underfunded(String),
+}
+
 /// Aggregate result of the profile's focused proof obligations.
 ///
 /// Obligations are sequential and fail fast, so a `Failed` outcome describes
@@ -53,7 +68,7 @@ pub(super) struct TlcRun {
 /// is what the verifier independently reconstructs.
 pub(in crate::producer) struct ObligationOutcome {
     pub(in crate::producer) status: ProbeStatus,
-    pub(in crate::producer) failure: Option<String>,
+    pub(in crate::producer) failure: Option<ObligationFailure>,
     pub(in crate::producer) observations: BTreeMap<String, u64>,
     pub(super) peak_rss_kib: u64,
     pub(super) duration_ms: u64,

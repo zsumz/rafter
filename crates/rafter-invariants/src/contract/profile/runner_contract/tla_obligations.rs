@@ -9,11 +9,30 @@ use super::tla::PRIMARY_CONFIGS;
 /// obligation list needs to know about the run it shares a window with.
 #[derive(Clone, Copy)]
 pub(super) struct PrimaryBudget<'a> {
+    pub(super) profile: &'a str,
     pub(super) reporting: bool,
     pub(super) soft_timeout: &'a str,
     pub(super) total_timeout: Option<&'a str>,
     pub(super) finalization_reserve: Option<&'a str>,
 }
+
+/// Whole minutes the layer spends inside the execution window on work that is
+/// neither an obligation nor the primary run: the trace-sample and negative
+/// detector qualification probes plus the mutation suite, and the setup the
+/// runner performs after the layer clock starts.
+///
+/// Re-derived here rather than imported, for the same reason the completion
+/// vocabulary above is: `contract` sits upstream of `producer`, and this gate
+/// exists to reject at review time a budget the runner would otherwise have to
+/// truncate at runtime. Sharing constants would let one edit weaken both sides
+/// at once. The producer owns the same inventory as `Duration`s -- twelve
+/// qualification phases at a per-profile probe cap plus one mutation suite in
+/// `producer/tla/execution/budget.rs`, and the setup allowance in the workflow
+/// budget guard. All four numbers move together or none of them do.
+const PR_QUALIFICATION_MINUTES: u64 = 7;
+const PR_SETUP_MINUTES: u64 = 4;
+const SCHEDULED_QUALIFICATION_MINUTES: u64 = 32;
+const SCHEDULED_SETUP_MINUTES: u64 = 10;
 
 /// Validates the obligation list structurally rather than by value.
 ///
@@ -103,11 +122,18 @@ fn validate_obligation(obligation: &ProofObligationContract) -> Result<(), Strin
     }
 }
 
-/// Obligations are paid out of the same layer budget as the primary run, and
-/// they run first. Requiring the whole sequence to fit inside the execution
-/// window keeps that ordering honest: an obligation set that would starve the
-/// primary continuation is rejected at contract time rather than silently
-/// truncating the monolith at runtime.
+/// Every phase of the layer is paid out of one execution window, and the
+/// obligations run first. Requiring the *complete* inventory to fit keeps that
+/// ordering honest: an obligation set that would starve the primary
+/// continuation is rejected at contract time rather than silently truncating
+/// the monolith at runtime.
+///
+/// Checking only the obligations against the window would be the same bug this
+/// gate exists to prevent, one layer up. Qualification and setup draw on the
+/// same `execution_deadline`, so the primary run never actually receives its
+/// `soft_timeout` unless they are budgeted for too -- and under a gating policy
+/// a truncated primary run reports as a timeout, which is a red merge gate for
+/// a model that would have drained.
 fn validate_obligation_budget(
     budget: PrimaryBudget<'_>,
     obligations: &[ProofObligationContract],
@@ -129,12 +155,26 @@ fn validate_obligation_budget(
     let window = total
         .checked_sub(reserve)
         .ok_or_else(|| "TLA+ total_timeout must exceed finalization_reserve".to_owned())?;
-    if obligated.saturating_add(primary) > window {
-        return Err(
-            "TLA+ proof obligations and the primary run must fit the execution window".to_owned(),
-        );
+    let shared = shared_phase_minutes(budget.profile);
+    let committed = shared
+        .checked_add(obligated)
+        .and_then(|sum| sum.checked_add(primary))
+        .ok_or_else(|| "TLA+ phase inventory overflows".to_owned())?;
+    if committed > window {
+        return Err(format!(
+            "TLA+ execution window of {window}m cannot fund {shared}m of qualification and \
+             setup, {obligated}m of proof obligations, and a {primary}m primary run"
+        ));
     }
     Ok(())
+}
+
+fn shared_phase_minutes(profile: &str) -> u64 {
+    if profile == "pr" {
+        PR_QUALIFICATION_MINUTES + PR_SETUP_MINUTES
+    } else {
+        SCHEDULED_QUALIFICATION_MINUTES + SCHEDULED_SETUP_MINUTES
+    }
 }
 
 fn whole_minutes(value: &str) -> Option<u64> {

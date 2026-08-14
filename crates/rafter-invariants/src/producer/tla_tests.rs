@@ -3,7 +3,8 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use super::{
-    evaluate, evidence_result, observations, MainStatus, ProbeStatus, TlaExecution, TlaVerdict,
+    evaluate, evidence_result, observations, MainStatus, ObligationFailure, ProbeStatus,
+    TlaExecution, TlaVerdict,
 };
 use crate::{
     producer::tla_exec::parse_main_summary,
@@ -326,11 +327,25 @@ fn an_undischarged_obligation_fails_the_layer_before_the_primary_verdict() {
     ));
 
     execution.obligations.status = ProbeStatus::Failed;
-    execution.obligations.failure = Some("proof obligation focused refuted LogMatching".to_owned());
+    execution.obligations.failure = Some(ObligationFailure::Undischarged(
+        "proof obligation focused refuted LogMatching".to_owned(),
+    ));
     let TlaVerdict::Error(message) = evaluate(&execution, &symbols, &configuration) else {
         panic!("an undischarged obligation must fail the layer");
     };
     assert!(message.contains("refuted LogMatching"), "{message}");
+    assert!(message.contains("did not discharge"), "{message}");
+
+    // The same red, a different sentence: a shortfall in this harness's own
+    // budget must never reach an operator wearing a refuted theorem's words.
+    execution.obligations.failure = Some(ObligationFailure::Underfunded(
+        "proof obligation focused was not started".to_owned(),
+    ));
+    let TlaVerdict::Error(message) = evaluate(&execution, &symbols, &configuration) else {
+        panic!("an underfunded obligation must fail the layer");
+    };
+    assert!(message.contains("ran out of execution budget"), "{message}");
+    assert!(!message.contains("did not discharge"), "{message}");
 }
 
 /// Observations from executed obligations reach the receipt frame verbatim, so

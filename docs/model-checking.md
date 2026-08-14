@@ -108,9 +108,9 @@ for every profile once. The affected `runner_contract_sha256` values are:
 
 | Profile | From | To |
 | --- | --- | --- |
-| PR | `84f4980f5963064f…` | `4ec4e394e5afbc62…` |
-| Nightly | `4ca7833d8f558e44…` | `1efd3caeda589043…` |
-| Weekly | `8d09c27585de34fa…` | `e4966ae607e3a2b7…` |
+| PR | `84f4980f5963064f…` | `9bf4afe04e99fd9f…` |
+| Nightly | `4ca7833d8f558e44…` | `7b7e262c46961a7c…` |
+| Weekly | `8d09c27585de34fa…` | `8b79618f3368d415…` |
 
 Scheduled continuations restart from an empty queue at the next run and
 reaccumulate. Obligations themselves are outside that map by design, so future
@@ -119,7 +119,7 @@ obligation edits do not repeat this reset.
 TLC's `-coverage` is deliberately not part of the contract. Measured on this
 repository's own trace-sample model, one coverage report costs about 790 KB of
 additional framed stdout (3,849 bytes without, 793,379 with). At the PR tier's
-325-minute budget, `-coverage 5` would emit roughly 65 reports — on the order
+310-minute budget, `-coverage 5` would emit roughly 62 reports — on the order
 of 50 MB against the producer's 64 MiB per-process stdout cap, all of it inside
 the receipt-bound, hashed, uploaded, and re-parsed `tla-log` artifact. It
 destabilizes more than it informs at these run lengths.
@@ -461,8 +461,19 @@ obligation list.
 detector qualification probes. A broken theorem is then red in minutes rather
 than after a five-hour continuation, and the primary run inherits whatever
 remains of the shared execution window. The contract refuses an obligation set
-whose budgets plus the primary `soft_timeout` exceed `total_timeout` less
-`finalization_reserve`, so the ordering cannot silently truncate the monolith.
+the window cannot fund, so the ordering cannot silently truncate the monolith;
+[the budget model](#the-shared-execution-window) below states what "fund"
+means.
+
+An obligation is also started only when the window still holds its whole
+calibrated budget. Handing one a truncated clock would kill it at a wall it was
+never given, and the producer's diagnosis would then say the obligation did not
+exhaust its frontier — a statement about the model, made about a shortfall in
+this harness. The two outcomes therefore carry different messages into the
+receipt: `did not discharge` is about the theorem, `ran out of execution
+budget` is about the budget. On the scheduled tiers, where the obligations are
+the gate, that distinction is the difference between an operator reading a
+broken safety invariant and reading a mis-set number.
 
 **Obligations never checkpoint.** Each runs from scratch into an ephemeral
 state directory, writes no checkpoint, recovers none, and contributes to no
@@ -486,6 +497,48 @@ configuration. Obligations strengthen the layer; they do not add registry
 evidence rows, and a refutation inside one is reported as a red harness-level
 failure for a human to read rather than attached to a predicate the primary run
 never falsified.
+
+#### The shared execution window
+
+Every phase of the layer is paid out of one `execution_deadline`, which is
+`total_timeout` less `finalization_reserve`. There are four claimants, and the
+contract adds all four:
+
+| Phase | PR | Nightly | Weekly | Owner |
+| --- | ---: | ---: | ---: | --- |
+| Setup after the layer clock starts | 4m | 10m | 10m | workflow budget guard |
+| Trace, detector, and mutation qualification | 7m | 32m | 32m | `execution/budget.rs` |
+| Proof obligations | 10m | 66m | 150m | profile manifest |
+| Primary `soft_timeout` | 310m | 195m | 110m | profile manifest |
+| **Committed** | **331m** | **303m** | **302m** | |
+| Execution window | 336m | 310m | 310m | `total_timeout` less reserve |
+| Slack | 5m | 7m | 8m | |
+
+Qualification scales with the tier: twelve phases at a 15-second probe cap plus
+a 4-minute mutation suite on PR, at a 2-minute cap plus 8 minutes on the
+scheduled runners. The setup allowance is what the runner spends inside the
+window before the first TLC process starts.
+
+Only the PR primary is a requirement rather than a residual. It gates on
+frontier exhaustion, so a truncated run is a red merge gate, and `RaftCi`
+drains in 93 minutes at its pinned flags against CI hosts measured 1.3x to 1.5x
+slower than the calibration machine. The nightly and weekly primaries report
+rather than gate, so their budgets are whatever the other three claimants
+leave; a recalibration that lengthens an obligation shortens them and never
+breaches the window.
+
+Counting only the obligations and the primary run against the window is the
+bug this table exists to prevent. Every phase draws on the same deadline, so an
+inventory that overruns it does not fail loudly — it hands the primary run a
+`phase_timeout` shorter than its `soft_timeout`, and under the PR tier's gating
+policy TLC is then killed early and reported as a timeout on a model that would
+have drained.
+
+Two independent gates enforce the arithmetic. The contract layer re-derives the
+qualification and setup minutes and refuses a profile whose inventory overruns
+its window, and `workflow_caps_cover_the_exact_tla_phase_inventory` reads the
+same manifest against the workflow's own step and job caps. Both must move
+together with any budget edit.
 
 #### Calibrated obligations
 
@@ -598,7 +651,7 @@ seconds against four- and six-minute budgets and are already an order of
 magnitude clear.
 
 Weekly affords its unsymmetrized family by trading continuation time for it:
-its reporting primary runs 155 minutes against nightly's 240, and the
+its reporting primary runs 110 minutes against nightly's 195, and the
 recovered time funds the symmetry audit applied to every theorem that
 actually gates — all four gating obligation families now run both quotiented
 and unquotiented on the weekly tier, 150 obligation minutes against nightly's
@@ -606,6 +659,15 @@ and unquotiented on the weekly tier, 150 obligation minutes against nightly's
 accumulates coverage and the obligations decide the verdict, so when the
 variance rule above needed more obligation time, it came out of the primary
 rather than out of the gate.
+
+Obligation budgets are never trimmed to make an inventory fit. They are
+calibrated against measured CI wall time by the 1.5x rule above, and shrinking
+one below that line converts a host on the slow end of the observed spread into
+a red gate. The reporting primaries are the lever instead, which is why they
+are the shortest budgets of the three profiles despite running the largest
+models: they absorb whatever [the shared execution
+window](#the-shared-execution-window) has left after qualification, setup, and
+the obligation family are paid.
 
 Floors are the exact measured counts: TLC's breadth-first counts are
 deterministic for a fixed spec, config, and symmetry, so any deviation is a

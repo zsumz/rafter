@@ -14,7 +14,9 @@ pub(super) use super::{artifact, process, source, tla_output, ProducerContext};
 #[cfg(test)]
 pub(super) use evaluation::{evaluate, observations, TlaVerdict};
 #[cfg(test)]
-pub(super) use execution::{MainStatus, ObligationOutcome, ProbeStatus, TlaExecution};
+pub(super) use execution::{
+    MainStatus, ObligationFailure, ObligationOutcome, ProbeStatus, TlaExecution,
+};
 #[cfg(test)]
 pub(super) use result::evidence_result;
 
