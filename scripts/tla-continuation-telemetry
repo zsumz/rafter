@@ -2,12 +2,16 @@
 # Side-channel telemetry for scheduled TLA+ continuations.
 #
 # Usage:
-#   scripts/tla-continuation-telemetry sample    --checkpoint DIR --output FILE [options]
+#   scripts/tla-continuation-telemetry sample    --config CFG --checkpoint DIR --output FILE [options]
 #   scripts/tla-continuation-telemetry summarize --input FILE [--label NAME]
 #
 # `sample` runs as a background process alongside the TLA+ layer and appends one
 # JSON object per interval to a JSONL file. `summarize` reads that file back and
 # classifies the continuation's frontier trajectory.
+#
+# --config names the continuation's TLC configuration (RaftNightly.cfg for
+# nightly, Raft.cfg for weekly). It is required, and it is the whole reason this
+# reports the continuation rather than whatever else the layer was running.
 #
 # This is deliberately a side channel. It observes the run from outside and
 # writes nothing the invariant producer reads, so it adds no receipt fields, no
@@ -33,66 +37,100 @@ readonly DEFAULT_INTERVAL=300
 readonly DEFAULT_TELEMETRY_DIR="target/rafter-invariants/telemetry"
 
 usage() {
-    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
 # measurement helpers
+#
+# Every one of these runs once per tick against a machine that is running TLC.
+# A checkpoint generation is retired underneath `du`, an auxiliary TLC exits
+# between `pgrep` and `ps`, a capture is rotated between the stat and the read
+# -- all routine. So none of them may fail: the sampler is nohup'd behind a
+# multi-hour job, and a non-zero exit under `set -euo pipefail` ends it
+# silently, leaving the remaining hours unobserved and `summarize` classifying
+# from whatever the first few minutes happened to look like. A helper that
+# cannot measure prints nothing, which becomes a null field in one sample.
+# Misconfiguration is different and stays loud: that is caught at startup.
 # ---------------------------------------------------------------------------
 
 # `du -sb` / `df -PB1` report exact bytes but are GNU extensions. Workflows run
 # on Linux; the POSIX 1-KiB fallbacks keep this usable on a macOS checkout.
 directory_bytes() {
-    local path="$1"
-    [[ -d "$path" ]] || { echo 0; return; }
+    local path="$1" blocks
+    [[ -d "$path" ]] || { echo 0; return 0; }
     if du -sb "$path" >/dev/null 2>&1; then
-        du -sb "$path" 2>/dev/null | awk '{ print $1 }'
-    else
-        echo $(( $(du -sk "$path" 2>/dev/null | awk '{ print $1 }') * 1024 ))
+        du -sb "$path" 2>/dev/null | awk 'NR == 1 { print $1 }' || true
+        return 0
     fi
+    blocks="$(du -sk "$path" 2>/dev/null | awk 'NR == 1 { print $1 }' || true)"
+    [[ "$blocks" =~ ^[0-9]+$ ]] || return 0
+    echo $((blocks * 1024))
 }
 
 free_bytes() {
-    local path="$1"
+    local path="$1" blocks
     while [[ ! -e "$path" ]]; do
         local parent
-        parent="$(dirname "$path")"
-        [[ "$parent" != "$path" ]] || break
+        parent="$(dirname "$path" || true)"
+        [[ -n "$parent" && "$parent" != "$path" ]] || return 0
         path="$parent"
     done
     if df -PB1 "$path" >/dev/null 2>&1; then
-        df -PB1 "$path" 2>/dev/null | awk 'NR == 2 { print $4 }'
-    else
-        echo $(( $(df -Pk "$path" 2>/dev/null | awk 'NR == 2 { print $4 }') * 1024 ))
+        df -PB1 "$path" 2>/dev/null | awk 'NR == 2 { print $4 }' || true
+        return 0
     fi
+    blocks="$(df -Pk "$path" 2>/dev/null | awk 'NR == 2 { print $4 }' || true)"
+    [[ "$blocks" =~ ^[0-9]+$ ]] || return 0
+    echo $((blocks * 1024))
 }
 
-# The main model-checking JVM. A profile can have several TLC processes in
-# flight (trace sample, negative detector), so the largest resident set wins --
-# the continuation dwarfs the auxiliary checks.
-tlc_pid() {
-    pgrep -f 'tlc2\.TLC' 2>/dev/null \
-        | while read -r pid; do
-            printf '%s %s\n' "$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')" "$pid"
-        done \
-        | grep -E '^[0-9]+ ' \
-        | sort -rn \
-        | awk 'NR == 1 { print $2 }'
+# The continuation's own TLC process, identified by the configuration only it
+# runs. A scheduled TLA+ layer runs several TLC processes in the same job:
+# calibrated proof obligations for over two hours before the primary starts, a
+# trace sample, and a negative detector whose whole purpose is to print
+# "Invariant ... is violated". Ranking them by resident set or by capture size
+# picks whichever is currently biggest, which for the first half of a weekly
+# run is never the continuation -- and then a drained obligation's "Model
+# checking completed" or the detector's violation is reported as the
+# continuation's verdict. Only the continuation carries the profile's -config.
+continuation_pid() {
+    local config="$1" pid arguments
+    while read -r pid; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        arguments="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+        case " $arguments " in
+            *" -config $config "*)
+                printf '%s\n' "$pid"
+                return 0
+                ;;
+        esac
+    done < <(pgrep -f 'tlc2\.TLC' 2>/dev/null || true)
+    return 0
 }
 
-# The newest live stdout capture. The runner allocates one per spawned process
-# as PID-SEQUENCE.stdout and writes the child's output into it as it runs, so
-# this is readable mid-flight rather than only after TLC exits.
-newest_stdout() {
-    local directory="$1"
-    [[ -d "$directory" ]] || return 0
-    find "$directory" -maxdepth 1 -name '*.stdout' -type f 2>/dev/null \
-        | while read -r file; do
-            printf '%s %s\n' "$(wc -c <"$file" 2>/dev/null | tr -d ' ')" "$file"
-        done \
-        | grep -E '^[0-9]+ ' \
-        | sort -rn \
-        | awk 'NR == 1 { $1 = ""; sub(/^ /, ""); print }'
+# The capture that is *this* process's stdout. The runner names captures after
+# itself -- PRODUCER_PID-SEQUENCE.stdout -- so the file name identifies the
+# producer, not the child, and every TLC in the job writes into the same
+# directory. What does identify the child is the sibling .pgid receipt: the
+# launcher publishes the target's own process group into it before exec, and
+# each managed target gets a group of its own. Match the continuation's process
+# group to that receipt and the remaining capture is its stdout and nothing
+# else's.
+continuation_stdout() {
+    local directory="$1" pid="$2" group receipt capture
+    [[ -d "$directory" && "$pid" =~ ^[0-9]+$ ]] || return 0
+    group="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+    [[ "$group" =~ ^[0-9]+$ ]] || return 0
+    for receipt in "$directory"/*.pgid; do
+        [[ -f "$receipt" ]] || continue
+        [[ "$(head -n 1 "$receipt" 2>/dev/null || true)" == "$group" ]] || continue
+        capture="${receipt%.pgid}.stdout"
+        [[ -r "$capture" ]] || return 0
+        printf '%s\n' "$capture"
+        return 0
+    done
+    return 0
 }
 
 # Pull the last progress triple out of a TLC capture. Commas are stripped
@@ -100,7 +138,7 @@ newest_stdout() {
 progress_counters() {
     local file="$1"
     [[ -n "$file" && -r "$file" ]] || return 0
-    tail -c 262144 "$file" 2>/dev/null | awk '
+    { tail -c 262144 "$file" 2>/dev/null || true; } | awk '
         /states generated/ {
             line = $0
             gsub(/,/, "", line)
@@ -127,11 +165,13 @@ progress_counters() {
 
 # TLC's own terminal verdict, when it has reached one. Kept separate from the
 # trajectory classification: a violation or a completed exploration is a fact
-# TLC states, not something to infer from a slope.
+# TLC states, not something to infer from a slope. Only ever called against the
+# continuation's own capture -- read against any other TLC in the job this
+# reports that process's verdict as the continuation's.
 terminal_verdict() {
     local file="$1"
     [[ -n "$file" && -r "$file" ]] || return 0
-    tail -c 262144 "$file" 2>/dev/null | awk '
+    { tail -c 262144 "$file" 2>/dev/null || true; } | awk '
         /is violated|Invariant .* is violated|Temporal property .* is violated/ { verdict = "violated" }
         /Model checking completed/ { if (verdict == "") verdict = "exhausted" }
         END { if (verdict != "") print verdict }
@@ -147,16 +187,25 @@ json_number() {
     fi
 }
 
+json_string() {
+    local value="$1"
+    case "$value" in
+        "" | *'"'* | *\\* | *$'\n'*) printf 'null' ;;
+        *) printf '"%s"' "$value" ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # sample
 # ---------------------------------------------------------------------------
 
 run_sample() {
-    local checkpoint="" output="" interval="$DEFAULT_INTERVAL"
+    local config="" checkpoint="" output="" interval="$DEFAULT_INTERVAL"
     local telemetry_dir="$DEFAULT_TELEMETRY_DIR"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --config) config="$2"; shift 2 ;;
             --checkpoint) checkpoint="$2"; shift 2 ;;
             --output) output="$2"; shift 2 ;;
             --interval) interval="$2"; shift 2 ;;
@@ -165,8 +214,10 @@ run_sample() {
         esac
     done
 
-    if [[ -z "$checkpoint" || -z "$output" ]]; then
-        echo "error: sample requires --checkpoint and --output" >&2
+    # Startup is where misconfiguration is loud. Everything after this point
+    # degrades one sample rather than ending the run.
+    if [[ -z "$config" || -z "$checkpoint" || -z "$output" ]]; then
+        echo "error: sample requires --config, --checkpoint, and --output" >&2
         exit 2
     fi
 
@@ -174,54 +225,68 @@ run_sample() {
     : >"$output"
 
     local started previous_queue="" previous_distinct="" previous_epoch=""
+    # Resolved once, then held. The capture outlives the process that wrote it,
+    # so holding it keeps the terminal verdict readable after TLC exits -- and
+    # keeps a later TLC in the same job from ever being re-resolved as the
+    # continuation.
+    local capture=""
     started="$(date -u +%s)"
 
     # No bound on iterations: the sampler is owned by the workflow step that
     # started it and by the job timeout behind that. It exits when killed.
     while true; do
-        local now epoch stdout_file counters generated distinct queue
+        local now epoch counters generated distinct queue
         local pid rss cpu checkpoint_size free_disk verdict
-        epoch="$(date -u +%s)"
-        now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-        stdout_file="$(newest_stdout "$telemetry_dir" || true)"
-        counters="$(progress_counters "$stdout_file" || true)"
-        generated="$(printf '%s' "$counters" | awk '{ print $1 }')"
-        distinct="$(printf '%s' "$counters" | awk '{ print $2 }')"
-        queue="$(printf '%s' "$counters" | awk '{ print $3 }')"
-        verdict="$(terminal_verdict "$stdout_file" || true)"
-
-        pid="$(tlc_pid || true)"
-        if [[ -n "$pid" ]]; then
-            rss="$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')"
-            # ps reports CPU averaged over process lifetime, not an instant
-            # rate. Across a multi-hour run that is the number worth having.
-            cpu="$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' ')"
-        else
-            rss=""
-            cpu=""
+        epoch="$(date -u +%s || true)"
+        now="$(date -u +%Y-%m-%dT%H:%M:%SZ || true)"
+        if [[ ! "$epoch" =~ ^[0-9]+$ || -z "$now" ]]; then
+            # A record with no clock reading cannot be ordered against the
+            # others, and a slope over an unknown span is not a measurement.
+            sleep "$interval"
+            continue
         fi
 
-        checkpoint_size="$(directory_bytes "$checkpoint")"
-        free_disk="$(free_bytes "$checkpoint")"
+        pid="$(continuation_pid "$config" || true)"
+        if [[ -z "$capture" ]]; then
+            capture="$(continuation_stdout "$telemetry_dir" "$pid" || true)"
+        fi
+
+        counters="$(progress_counters "$capture" || true)"
+        generated="$(printf '%s' "$counters" | awk '{ print $1 }' || true)"
+        distinct="$(printf '%s' "$counters" | awk '{ print $2 }' || true)"
+        queue="$(printf '%s' "$counters" | awk '{ print $3 }' || true)"
+        verdict="$(terminal_verdict "$capture" || true)"
+
+        rss=""
+        cpu=""
+        if [[ -n "$pid" ]]; then
+            rss="$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+            # ps reports CPU averaged over process lifetime, not an instant
+            # rate. Across a multi-hour run that is the number worth having.
+            cpu="$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+        fi
+
+        checkpoint_size="$(directory_bytes "$checkpoint" || true)"
+        free_disk="$(free_bytes "$checkpoint" || true)"
 
         # Slopes are per second across the actual gap between samples, which
         # drifts from --interval whenever a measurement blocks on a busy runner.
         local queue_slope="" distinct_slope="" fanout="" span=""
-        if [[ -n "$queue" && -n "$previous_queue" && -n "$previous_epoch" ]]; then
+        if [[ "$queue" =~ ^[0-9]+$ && "$previous_queue" =~ ^[0-9]+$ \
+            && "$previous_epoch" =~ ^[0-9]+$ ]]; then
             span=$((epoch - previous_epoch))
             if ((span > 0)); then
                 queue_slope="$(awk -v a="$queue" -v b="$previous_queue" -v s="$span" \
-                    'BEGIN { printf "%.6f", (a - b) / s }')"
-                if [[ -n "$distinct" && -n "$previous_distinct" ]]; then
+                    'BEGIN { printf "%.6f", (a - b) / s }' || true)"
+                if [[ "$distinct" =~ ^[0-9]+$ && "$previous_distinct" =~ ^[0-9]+$ ]]; then
                     distinct_slope="$(awk -v a="$distinct" -v b="$previous_distinct" -v s="$span" \
-                        'BEGIN { printf "%.6f", (a - b) / s }')"
+                        'BEGIN { printf "%.6f", (a - b) / s }' || true)"
                     # States retired = discovered - net queue growth. Fanout is
                     # new distinct states per retired state: above 1 the
                     # frontier is expanding, below 1 it is draining.
                     fanout="$(awk -v dd="$((distinct - previous_distinct))" \
                         -v dq="$((queue - previous_queue))" \
-                        'BEGIN { r = dd - dq; if (r > 0) printf "%.4f", dd / r }')"
+                        'BEGIN { r = dd - dq; if (r > 0) printf "%.4f", dd / r }' || true)"
                 fi
             fi
         fi
@@ -240,8 +305,12 @@ run_sample() {
             printf ',"tlc_pid":%s' "$(json_number "$pid")"
             printf ',"tlc_rss_kib":%s' "$(json_number "$rss")"
             printf ',"tlc_cpu_percent":%s' "$(json_number "$cpu")"
-            printf ',"tlc_verdict":%s' \
-                "$([[ -n "$verdict" ]] && printf '"%s"' "$verdict" || printf 'null')"
+            printf ',"tlc_config":%s' "$(json_string "$config")"
+            # Names the one stream every counter above was read from, so the
+            # uploaded artifact can be audited for attribution rather than
+            # taken on trust.
+            printf ',"tlc_capture":%s' "$(json_string "$capture")"
+            printf ',"tlc_verdict":%s' "$(json_string "$verdict")"
             printf '}\n'
         } >>"$output"
 
@@ -309,6 +378,13 @@ run_summarize() {
             if (match($0, /"tlc_verdict":"[a-z-]+"/))    { v  = substr($0, RSTART + 15, RLENGTH - 16) }
 
             samples++
+            # A verdict survives later samples that carry none: TLC states a
+            # verdict once and then exits, and the ticks after that observe no
+            # live process. This is sound only because the sampler bound every
+            # sample to the continuation capture when it wrote the sample.
+            # Carrying a verdict forward across an unattributed stream would
+            # let a drained obligation or a negative detector stand as the
+            # verdict of the continuation.
             if (v != "") { verdict = v }
             if (q != "") { qn++; qv[qn] = q + 0 }
             if (d != "") { dn++; dv[dn] = d + 0 }

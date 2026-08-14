@@ -62,7 +62,7 @@ while [[ $# -gt 0 ]]; do
             config="Raft.cfg"
             workers=auto
             seed=2026071103
-            max_heap="4g"
+            max_heap="8g"
             fp_mem="0.45"
             ;;
         --joint-quorum)
