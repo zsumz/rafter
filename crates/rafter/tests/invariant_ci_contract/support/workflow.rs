@@ -17,6 +17,69 @@ pub(crate) fn workflow_step<'a>(job: &'a str, name: &str) -> &'a str {
     &tail[..end]
 }
 
+/// Every step of every job, in file order, bounded the way `workflow_step`
+/// bounds one: at the next step or at the next line that leaves step
+/// indentation. Deriving the step set is what lets a guard state a property
+/// over *all* steps -- a hand-listed inventory only ever states it over the
+/// steps somebody remembered.
+pub(crate) fn workflow_steps(workflow: &str) -> Vec<&str> {
+    let mut starts = Vec::new();
+    for (offset, line) in line_offsets(workflow) {
+        if line.starts_with("      - ") {
+            starts.push(offset);
+        }
+    }
+    starts
+        .iter()
+        .map(|&start| {
+            let end = line_offsets(&workflow[start..])
+                .skip(1)
+                .find(|(_, line)| {
+                    line.starts_with("      - ")
+                        || (!line.trim().is_empty() && !line.starts_with("       "))
+                })
+                .map_or(workflow.len() - start, |(offset, _)| offset);
+            &workflow[start..start + end]
+        })
+        .collect()
+}
+
+/// The `path:` entries a step declares, in either the scalar or the block
+/// form.
+pub(crate) fn workflow_step_paths(step: &str) -> Vec<&str> {
+    let mut lines = step.lines().skip_while(|line| !is_step_key(line, "path:"));
+    let Some(head) = lines.next() else {
+        return Vec::new();
+    };
+    let scalar = head.trim_start().trim_start_matches("path:").trim();
+    if scalar != "|" {
+        return if scalar.is_empty() {
+            Vec::new()
+        } else {
+            vec![scalar]
+        };
+    }
+    lines
+        .take_while(|line| line.trim().is_empty() || line.starts_with("            "))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn is_step_key(line: &str, key: &str) -> bool {
+    line.strip_prefix("          ")
+        .is_some_and(|rest| rest.starts_with(key))
+}
+
+fn line_offsets(source: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut offset = 0;
+    source.split_inclusive('\n').map(move |line| {
+        let start = offset;
+        offset += line.len();
+        (start, line.trim_end_matches('\n'))
+    })
+}
+
 pub(crate) fn run_workflow_script(
     step: &str,
     current_dir: &Path,

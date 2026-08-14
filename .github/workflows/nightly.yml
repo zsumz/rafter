@@ -106,6 +106,9 @@ jobs:
           path: |
             artifacts/invariants/nightly-tests.json
             artifacts/invariants/nightly-tests/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload nightly test process diagnostics
@@ -147,6 +150,9 @@ jobs:
             artifacts/invariants/nightly-simulator.json
             artifacts/invariants/nightly-simulator/
             artifacts/invariants/nightly-simulator-detectors-tests/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload nightly simulator process diagnostics
@@ -218,7 +224,15 @@ jobs:
       - name: Start TLA+ continuation telemetry
         run: |
           mkdir -p "${RUNNER_TEMP}/tla-continuation-telemetry"
+          # Attribution, not decoration. Calibrated proof obligations run for
+          # over two hours before the primary starts, and a negative detector
+          # exists to print a violation; all of them write captures into the
+          # same directory. Only the process running this config is the
+          # continuation. Read the config from the runner that owns the tier
+          # rather than restating it here.
+          config="$(scripts/tla-model-check --print-config --nightly)"
           nohup scripts/tla-continuation-telemetry sample \
+            --config "$config" \
             --checkpoint target/rafter-invariants/tla-checkpoint/nightly \
             --output "${RUNNER_TEMP}/tla-continuation-telemetry/nightly.jsonl" \
             --interval 300 \
@@ -284,6 +298,9 @@ jobs:
           path: |
             artifacts/invariants/nightly-tla.json
             artifacts/invariants/nightly-tla/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload nightly TLA+ continuation telemetry
@@ -564,6 +581,9 @@ jobs:
         with:
           name: invariants-nightly-aggregate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 30
       - name: Seal nightly aggregate verifier evidence

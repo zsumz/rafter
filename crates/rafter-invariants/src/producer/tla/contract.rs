@@ -25,5 +25,8 @@ use spec::{
 use tool::{fetch_tool_with, java_major, tool_fetch_environment};
 
 #[cfg(test)]
+#[path = "contract/runner_tier_tests.rs"]
+mod runner_tier_tests;
+#[cfg(test)]
 #[path = "contract/tests.rs"]
 mod tests;

@@ -18,5 +18,5 @@ pub(crate) use contracts::{
 pub(crate) use evidence_transport::EvidenceTransportFixture;
 pub(crate) use workflow::{
     assert_failure, assert_success, job_block, read, run_workflow_script, workflow_step,
-    workspace_root,
+    workflow_step_paths, workflow_steps, workspace_root,
 };

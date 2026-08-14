@@ -73,6 +73,13 @@ jobs:
         run: scripts/rustdoc-check
       - name: work-completion proof references
         run: scripts/work-completion-check
+      - name: TLA+ continuation sampler adversarial checks
+        # The sampler only runs inside the scheduled TLA+ layers, nohup'd
+        # behind a multi-hour step where a wrong answer looks exactly like a
+        # right one and a dead sampler looks like nothing at all. Nothing there
+        # can check it, so it is checked here against stubbed process and
+        # filesystem tools: no TLC, no JVM, seconds instead of hours.
+        run: scripts/tests/tla_continuation_telemetry_test.sh
       - name: out-of-workspace manifests
         # `cargo fmt --all` and `cargo clippy --workspace` above stop at the
         # workspace members. fuzz/ and bench-compare/ keep their own manifests
@@ -176,6 +183,9 @@ jobs:
           path: |
             artifacts/invariants/pr-tests.json
             artifacts/invariants/pr-tests/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload test evidence process diagnostics
@@ -288,6 +298,9 @@ jobs:
             artifacts/invariants/pr-simulator.json
             artifacts/invariants/pr-simulator/
             artifacts/invariants/pr-simulator-detectors-tests/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload simulator evidence process diagnostics
@@ -360,6 +373,9 @@ jobs:
           path: |
             artifacts/invariants/pr-tla.json
             artifacts/invariants/pr-tla/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload TLA+ evidence process diagnostics
@@ -623,6 +639,9 @@ jobs:
         with:
           name: invariants-pr-aggregate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 30
       - name: Seal aggregate verifier evidence

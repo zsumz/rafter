@@ -100,6 +100,53 @@ fn scheduled_invariant_evidence_is_isolated_by_run_attempt() {
     }
 }
 
+/// The continuation sampler reports whichever TLC it was pointed at, and this
+/// job runs several: calibrated proof obligations for over two hours before
+/// the primary starts, a trace sample, and a negative detector whose purpose is
+/// to print a violation. Started without the primary configuration it reports
+/// one of those instead, with nothing in the output to say so. The
+/// configuration is read from the tier runner rather than restated here, so it
+/// cannot drift from the run it claims to describe.
+#[test]
+fn scheduled_continuation_telemetry_is_bound_to_the_primary_config() {
+    let root = workspace_root();
+    for (workflow, profile, tier) in [
+        (".github/workflows/nightly.yml", "nightly", "--nightly"),
+        (".github/workflows/weekly.yml", "weekly", "--full"),
+    ] {
+        let source = read(&root.join(workflow));
+        let block = job_block(&source, "invariants-tla");
+
+        let start = workflow_step(block, "Start TLA+ continuation telemetry");
+        for required in [
+            format!("config=\"$(scripts/tla-model-check --print-config {tier})\""),
+            "--config \"$config\"".to_owned(),
+            format!("--checkpoint target/rafter-invariants/tla-checkpoint/{profile}"),
+            format!("--output \"${{RUNNER_TEMP}}/tla-continuation-telemetry/{profile}.jsonl\""),
+        ] {
+            assert!(
+                start.contains(&required),
+                "{profile} continuation sampler omitted {required}"
+            );
+        }
+
+        let classify = workflow_step(block, &format!("Classify {profile} TLA+ continuation"));
+        assert!(classify.contains("if: always()"));
+        assert!(classify.contains(&format!(
+            "--input \"${{RUNNER_TEMP}}/tla-continuation-telemetry/{profile}.jsonl\""
+        )));
+
+        // Side channel: the sampler writes under RUNNER_TEMP, never into the
+        // source-bound evidence tree the receipts cover.
+        let upload = workflow_step(
+            block,
+            &format!("Upload {profile} TLA+ continuation telemetry"),
+        );
+        assert!(upload.contains("path: ${{ runner.temp }}/tla-continuation-telemetry/"));
+        assert!(!upload.contains("artifacts/invariants"));
+    }
+}
+
 #[test]
 fn scheduled_profiles_run_real_maelstrom_evidence() {
     let root = workspace_root();

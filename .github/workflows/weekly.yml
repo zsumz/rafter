@@ -49,6 +49,9 @@ jobs:
           path: |
             artifacts/invariants/weekly-tests.json
             artifacts/invariants/weekly-tests/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload weekly test process diagnostics
@@ -90,6 +93,9 @@ jobs:
             artifacts/invariants/weekly-simulator.json
             artifacts/invariants/weekly-simulator/
             artifacts/invariants/weekly-simulator-detectors-tests/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload weekly simulator process diagnostics
@@ -158,7 +164,15 @@ jobs:
       - name: Start TLA+ continuation telemetry
         run: |
           mkdir -p "${RUNNER_TEMP}/tla-continuation-telemetry"
+          # Attribution, not decoration. Calibrated proof obligations run for
+          # over two hours before the primary starts, and a negative detector
+          # exists to print a violation; all of them write captures into the
+          # same directory. Only the process running this config is the
+          # continuation. Read the config from the runner that owns the tier
+          # rather than restating it here.
+          config="$(scripts/tla-model-check --print-config --full)"
           nohup scripts/tla-continuation-telemetry sample \
+            --config "$config" \
             --checkpoint target/rafter-invariants/tla-checkpoint/weekly \
             --output "${RUNNER_TEMP}/tla-continuation-telemetry/weekly.jsonl" \
             --interval 300 \
@@ -224,6 +238,9 @@ jobs:
           path: |
             artifacts/invariants/weekly-tla.json
             artifacts/invariants/weekly-tla/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
       - name: Upload weekly TLA+ continuation telemetry
@@ -471,6 +488,9 @@ jobs:
         with:
           name: invariants-weekly-aggregate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/
+          # Byte-complete or it is not evidence: the receipts bind
+          # artifacts by path and upload-artifact drops dotfiles by default.
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 30
       - name: Seal weekly aggregate verifier evidence
