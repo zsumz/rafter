@@ -291,28 +291,33 @@ run_sample() {
             fi
         fi
 
-        {
-            printf '{"timestamp":"%s"' "$now"
-            printf ',"elapsed_seconds":%s' "$((epoch - started))"
-            printf ',"generated_states":%s' "$(json_number "$generated")"
-            printf ',"distinct_states":%s' "$(json_number "$distinct")"
-            printf ',"queue_states":%s' "$(json_number "$queue")"
-            printf ',"queue_slope_per_second":%s' "$(json_number "$queue_slope")"
-            printf ',"distinct_slope_per_second":%s' "$(json_number "$distinct_slope")"
-            printf ',"frontier_fanout":%s' "$(json_number "$fanout")"
-            printf ',"checkpoint_bytes":%s' "$(json_number "$checkpoint_size")"
-            printf ',"free_disk_bytes":%s' "$(json_number "$free_disk")"
-            printf ',"tlc_pid":%s' "$(json_number "$pid")"
-            printf ',"tlc_rss_kib":%s' "$(json_number "$rss")"
-            printf ',"tlc_cpu_percent":%s' "$(json_number "$cpu")"
-            printf ',"tlc_config":%s' "$(json_string "$config")"
-            # Names the one stream every counter above was read from, so the
-            # uploaded artifact can be audited for attribution rather than
-            # taken on trust.
-            printf ',"tlc_capture":%s' "$(json_string "$capture")"
-            printf ',"tlc_verdict":%s' "$(json_string "$verdict")"
-            printf '}\n'
-        } >>"$output"
+        # Assembled whole, then appended in one write. The workflow kills this
+        # sampler by pid at the end of the layer, and a record built by a
+        # sequence of appends is torn wherever that signal lands -- the file
+        # then ends in a line that opens an object and never closes it, which
+        # is indistinguishable from corruption to anything reading the
+        # artifact. One write per record keeps every line either absent or
+        # complete. `tlc_capture` names the one stream every counter above was
+        # read from, so the uploaded artifact can be audited for attribution
+        # rather than taken on trust.
+        record='{"timestamp":"'"$now"'"'
+        record+=',"elapsed_seconds":'"$((epoch - started))"
+        record+=',"generated_states":'"$(json_number "$generated")"
+        record+=',"distinct_states":'"$(json_number "$distinct")"
+        record+=',"queue_states":'"$(json_number "$queue")"
+        record+=',"queue_slope_per_second":'"$(json_number "$queue_slope")"
+        record+=',"distinct_slope_per_second":'"$(json_number "$distinct_slope")"
+        record+=',"frontier_fanout":'"$(json_number "$fanout")"
+        record+=',"checkpoint_bytes":'"$(json_number "$checkpoint_size")"
+        record+=',"free_disk_bytes":'"$(json_number "$free_disk")"
+        record+=',"tlc_pid":'"$(json_number "$pid")"
+        record+=',"tlc_rss_kib":'"$(json_number "$rss")"
+        record+=',"tlc_cpu_percent":'"$(json_number "$cpu")"
+        record+=',"tlc_config":'"$(json_string "$config")"
+        record+=',"tlc_capture":'"$(json_string "$capture")"
+        record+=',"tlc_verdict":'"$(json_string "$verdict")"
+        record+='}'
+        printf '%s\n' "$record" >>"$output"
 
         previous_queue="$queue"
         previous_distinct="$distinct"
