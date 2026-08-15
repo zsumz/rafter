@@ -25,8 +25,8 @@ pub use replay::{
 };
 pub(crate) use simulator::{
     canonical_simulator_check_id, per_check_observation_key, per_check_protocol_states_key,
-    per_check_verifier_states_key, scheduled_simulator_seeds, SimulatorRunnerConfiguration,
-    SimulatorStateFloors,
+    per_check_verifier_states_key, scheduled_check_suffix, scheduled_model_profile,
+    scheduled_simulator_seeds, SimulatorRunnerConfiguration, SimulatorStateFloors,
 };
 
 #[cfg(test)]

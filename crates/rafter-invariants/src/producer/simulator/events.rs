@@ -256,9 +256,12 @@ fn machine_invariant_id<'a>(check: &str, event: &'a Value) -> Result<&'a str, St
 }
 
 fn allowed_summary_event(profile: &str, check_id: &str, event: &Value) -> bool {
-    matches!(profile, "nightly" | "weekly")
-        && event.get("event").and_then(Value::as_str) == Some("profile-total")
-        && check_id == format!("raft-profile-total-{profile}")
+    // The total is named for the model profile that produced it, which is not
+    // the lane name once a lane runs a sibling's profile.
+    crate::contract::profile::scheduled_check_suffix(profile).is_some_and(|suffix| {
+        event.get("event").and_then(Value::as_str) == Some("profile-total")
+            && check_id == format!("raft-profile-total-{suffix}")
+    })
 }
 
 fn invalid_event_pair_message(check: &str, event: &Value) -> String {

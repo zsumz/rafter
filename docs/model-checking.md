@@ -14,6 +14,44 @@ is incomplete coverage, not a pass.
 The invariant gate's ownership, dependency rules, and trust boundaries live in
 [Invariant tooling architecture](invariant-tooling-architecture.md).
 
+## Weekly Simulator Demotion
+
+The weekly invariants lane invokes the `raft-nightly` profile, not
+`raft-weekly`. This is a demotion, not a tuning change: weekly's deep bounds
+have never completed on a GitHub-hosted runner. Three consecutive runs were
+killed by `The runner has received a shutdown signal` (exit 143) once the
+~15GiB-RSS explorer made the VM unhealthy enough for the service to reclaim
+it, and before the harness fixes two earlier runs died to observation stalls
+at 84m and 54m.
+
+Weekly therefore runs nightly's proven configuration on weekly's own
+source-derived seeds. The deep configuration is still the reviewed target and
+is restored once a >=32GB — likely self-hosted — runner exists:
+
+| Key | Interim, in effect today | Target |
+| --- | --- | --- |
+| `model_profile` | `raft-nightly` | `raft-weekly` |
+| `seed_count` | `6` | `10` |
+| `soak_steps` | `1024` | `4096` |
+| `state_floors` | `13000000-protocol-and-verifier` | `250000000-protocol-and-verifier` |
+| `layer_timeout` | `170m` | `340m` |
+
+Only the lane's choice of profile moved. The `raft-weekly` profile definition
+in `rafter-sim` is untouched and still carries the deep bounds, so restoring
+weekly is a one-line change to `scheduled_model_profile` in
+`crates/rafter-invariants/src/contract/profile/simulator/identity.rs` plus the
+weekly simulator map in `verification/raft-invariant-profiles.json`. Every
+check-id suffix, replay log line, and liveness execution contract follows the
+model profile a lane actually ran, which is why that mapping is the single
+place the lane-to-profile binding is written down.
+
+Two consequences are worth stating plainly. Weekly's simulator layer now adds
+seed diversity over nightly, not depth. And the three checks only the
+`raft-weekly` profile emits — `raft-commit-check-quorum`,
+`raft-membership-prevote`, and `raft-membership-check-quorum` — are not
+produced while the demotion holds; no registry evidence binds them, so the
+44-row aggregate is unaffected.
+
 ## TLA+ Tier Ladder
 
 Three tiers are wired, each pinned to one primary config by
@@ -813,10 +851,13 @@ Each exhaustive check reports two distinct cardinalities:
   unique-state-budget key.
 
 Profile totals add each check's independently explored cardinality. They are
-not a globally deduplicated union. The scheduled `raft-nightly` and
-`raft-weekly` gates enforce reviewed lower bounds on both totals: 13 million
-and 250 million states respectively. The floors are coverage ratchets; they do
-not control the configured exploration depth or workloads.
+not a globally deduplicated union. The scheduled gates enforce reviewed lower
+bounds on both totals. Nightly and weekly both enforce 13 million, because
+both lanes currently run the `raft-nightly` profile; the `raft-weekly`
+profile's 250 million floor is the target recorded in
+[Weekly simulator demotion](#weekly-simulator-demotion) and is not enforced by
+any lane today. The floors are coverage ratchets; they do not control the
+configured exploration depth or workloads.
 
 ## Retained Logical Prefixes
 

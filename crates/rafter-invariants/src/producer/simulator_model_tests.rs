@@ -14,10 +14,14 @@ fn scheduled_plans_use_stable_source_derived_seed_counts() {
     let seeds = first[0].arguments[3].to_string_lossy();
     assert_eq!(seeds.split(',').count(), 6);
 
+    // Weekly runs nightly's model profile and seed count while its deep
+    // bounds await a >=32GB runner, but keeps its own source-derived seeds:
+    // a weekly run must still explore different traces than that night's.
     let weekly = execution_plan("weekly", "abc123").expect("weekly plan");
+    assert_eq!(weekly[0].arguments[1].to_string_lossy(), "raft-nightly");
     assert_eq!(
         weekly[0].arguments[3].to_string_lossy().split(',').count(),
-        10
+        6
     );
     assert_ne!(first[0].arguments[3], weekly[0].arguments[3]);
 }
@@ -28,8 +32,9 @@ fn scheduled_check_ids_bind_to_canonical_registry_checks() {
         canonical_check_id("nightly", "raft-commit-nightly").as_deref(),
         Some("raft-commit")
     );
+    // Weekly's events carry its model profile's suffix, so `-nightly`.
     assert_eq!(
-        canonical_check_id("weekly", "raft-election-prevote-weekly").as_deref(),
+        canonical_check_id("weekly", "raft-election-prevote-nightly").as_deref(),
         Some("raft-election-prevote")
     );
     assert_eq!(

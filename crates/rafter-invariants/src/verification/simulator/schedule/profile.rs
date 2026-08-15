@@ -36,7 +36,10 @@ pub(super) fn validate_scanned_simulator_schedule(
             logs.len()
         )));
     }
-    let model_profile = format!("raft-{profile}");
+    // The log proves the model profile that ran, which is not the lane name
+    // once a lane runs a sibling's profile (weekly currently runs nightly's).
+    let model_profile = crate::contract::profile::scheduled_model_profile(profile)
+        .ok_or_else(|| AggregateError::new(format!("unknown simulator profile {profile}")))?;
     let expected_profile = format!("model-check profile={model_profile} ");
     let expected_seed_line =
         format!("model-check {model_profile}-soak seeds source=replay seeds={expected_seeds}");
@@ -52,9 +55,9 @@ pub(super) fn validate_scanned_simulator_schedule(
             .source
             .lines()
             .any(|line| line == expected_seed_line)
-        || !profile_total_is_rederived(&model_profile, &configuration.state_floors, &logs[0].events)
+        || !profile_total_is_rederived(model_profile, &configuration.state_floors, &logs[0].events)
         || !soak_seeds_are_rederived(
-            &model_profile,
+            model_profile,
             &expected_seeds,
             configuration.soak_steps,
             logs[0].events.iter(),

@@ -285,8 +285,19 @@ fn simulator_contract_rejects_weakened_nightly_thresholds() {
 fn simulator_contract_rejects_weakened_weekly_thresholds() {
     assert_weakened_scheduled_thresholds_are_rejected(
         "weekly",
-        reviewed_scheduled_contract("weekly", 4_096, 10, 250_000_000),
+        reviewed_scheduled_contract("weekly", 1_024, 6, 13_000_000),
     );
+}
+
+/// Weekly's retired deep bounds must fail closed: a manifest asking for
+/// `raft-weekly` at 10 seeds, 4096 steps, and 250M floors describes a run the
+/// runner service killed three times running and that nothing produces today.
+#[test]
+fn simulator_contract_rejects_the_unrunnable_weekly_deep_bounds() {
+    let mut deep = reviewed_scheduled_contract("weekly", 4_096, 10, 250_000_000);
+    deep.model_profile = "raft-weekly".to_owned();
+    deep.layer_timeout = "340m".to_owned();
+    assert!(deep.validate_profile("weekly").is_err());
 }
 
 fn assert_weakened_scheduled_thresholds_are_rejected(
@@ -366,9 +377,11 @@ fn reviewed_scheduled_contract(
         execution_contract: "rafter-soak-execution-v1".to_owned(),
         finalization_reserve: "10m".to_owned(),
         kill_confirmation_timeout: "5s".to_owned(),
-        layer_timeout: if profile == "nightly" { "170m" } else { "340m" }.to_owned(),
+        layer_timeout: "170m".to_owned(),
         liveness_report_binding: "typed-canonical-json-sha256-v3".to_owned(),
-        model_profile: format!("raft-{profile}"),
+        model_profile: super::scheduled_model_profile(profile)
+            .expect("scheduled lane has a reviewed model profile")
+            .to_owned(),
         model_timeout_policy: "remaining-layer-budget".to_owned(),
         receipt_finalization_allowance: "5s".to_owned(),
         seed_policy: "source-derived-sha256-v1".to_owned(),

@@ -112,7 +112,11 @@ fn expected_simulator_invocations(
             ),
         ]),
         profile @ ("nightly" | "weekly") => {
-            let label = format!("raft-{profile}");
+            // The invocation names the model profile the lane runs, which is
+            // not the lane name once a lane runs a sibling's profile.
+            let label = crate::contract::profile::scheduled_model_profile(profile)
+                .ok_or_else(|| AggregateError::new(format!("unknown simulator profile {profile}")))?
+                .to_owned();
             let seed_count = configuration
                 .seed_count
                 .and_then(|count| usize::try_from(count).ok())
