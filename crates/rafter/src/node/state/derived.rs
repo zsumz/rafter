@@ -4,9 +4,6 @@
 //! queries inexpensive, and each index owns the mutation and validation rules
 //! that keep it synchronized with its canonical source.
 
-#[cfg(any(test, feature = "internal-test-hooks"))]
-mod validate;
-
 use crate::{CommittedConfiguration, ConfigurationEntry, LogEntry, LogIndex};
 
 /// All state that can be reconstructed exactly from canonical node state.
@@ -22,8 +19,11 @@ impl DerivedState {
         }
     }
 
-    #[cfg(any(test, feature = "internal-test-hooks"))]
-    fn validate(&self, log: &[LogEntry]) -> Result<(), String> {
+    /// Checks every index against a fresh rebuild from the canonical log.
+    ///
+    /// Reached from `Node::validate_derived_state`, which owns the public
+    /// contract; this is the derived-state half of it.
+    pub(in crate::node) fn validate(&self, log: &[LogEntry]) -> Result<(), String> {
         self.configuration.validate(log)
     }
 
@@ -171,7 +171,6 @@ impl ConfigurationIndex {
             .count()
     }
 
-    #[cfg(any(test, feature = "internal-test-hooks"))]
     fn validate(&self, log: &[LogEntry]) -> Result<(), String> {
         let expected = Self::from_log(log);
         if *self == expected {

@@ -8,10 +8,16 @@ map is [`docs/work-completion.md`](docs/work-completion.md); its references are
 checked by `scripts/work-completion-check`.
 
 The current publishable graph remains the ten crates listed in the historical
-0.0.1 section below. `rafter-sim` remains unpublished until its hidden
-`internal-test-hooks` dependency is replaced by a clean, intentional public
-surface. C1 streaming snapshots and C2 replication pipelining remain additive
-future work and are not preconditions smuggled into this preflight.
+0.0.1 section below. `rafter-sim`'s hidden `internal-test-hooks` dependency is
+gone, and that blocker is closed: the kernel self-check the simulator reached
+for is now the documented public `Node::validate_derived_state`, returning a
+typed `StateValidationError`, and the feature is deleted from `rafter`
+entirely. The design and what it deliberately defers are recorded in
+[`docs/api-promotions.md`](docs/api-promotions.md). Closing the blocker is not
+the same as deciding to publish `rafter-sim`; that decision has not been taken
+and the crate still carries `publish = false`. C1 streaming snapshots and C2
+replication pipelining remain additive future work and are not preconditions
+smuggled into this preflight.
 
 For a non-release completion run at one checked-out SHA, run and retain:
 
@@ -94,9 +100,13 @@ Naming a crate here is not the same as checking it. `rafter-fuzz` and
 command below reaches either one; the Verification section records what does
 reach them and what still does not.
 
-`rafter-sim` stays workspace-only until its dependency on the core crate's
-hidden `internal-test-hooks` feature is either removed or promoted into an
-intentional public simulation hook.
+`rafter-sim` stays workspace-only, but no longer because of a hidden surface.
+Its dependency on the core crate's `internal-test-hooks` feature is removed and
+the feature is deleted; the hook it needed was promoted into
+`Node::validate_derived_state`, a documented public kernel API. The crate is
+absent from the 0.0.1 list because that release publishes the embedding graph,
+and adding a simulation and model-checking harness to it is a separate decision
+nobody has taken.
 
 ### Publish Order
 
@@ -164,11 +174,15 @@ scripts/reference-package-process-check
 ```
 
 `scripts/rustdoc-check` is the gate on the HTML that reaches docs.rs. It builds
-the publish list above by name as well as the whole workspace, because
-`rafter-sim` depends on `rafter` with the hidden `internal-test-hooks` feature
-and resolver 2 unifies that feature into every `--workspace` invocation: a
-workspace-only doc build documents `rafter` in a shape no published consumer
-can produce.
+the publish list above by name as well as the whole workspace, and both builds
+still earn their place: naming the publish list pins the exact set a crates.io
+reader lands on under `-D missing-docs`, while the workspace build also covers
+crates that never reach docs.rs but are still read here. The two no longer
+differ in the *shape* of `rafter`. They used to: `rafter-sim` depended on
+`rafter` with the hidden `internal-test-hooks` feature and resolver 2 unified
+it into every `--workspace` invocation, so a workspace-only doc build
+documented `rafter` in a shape no published consumer could produce. That
+feature no longer exists.
 
 `scripts/reference-package-check` and
 `scripts/reference-package-process-check` disable Cargo's per-archive
@@ -181,8 +195,13 @@ command also runs every reviewed ignored process suite from the unpacked set,
 then rebuilds and tests that same set in public-feature shape on Rust 1.88 with
 a process smoke. Archive creation remains on the newer packaging toolchain.
 
-These commands leave three things unchecked, none of which is implied away
-elsewhere in this file:
+These commands leave two things unchecked, neither of which is implied away
+elsewhere in this file. A third gap closed with the `internal-test-hooks`
+removal: `rafter` had no published-shape build outside
+`scripts/reference-package-check` phase 6, because every `--workspace`
+invocation resolved `rafter-sim` and turned the feature on. `rafter` now has no
+features, so every check builds the shape a published consumer gets, and phase
+6 is corroboration rather than the sole evidence.
 
 - **Per-crate `LICENSE` and `NOTICE` copies.** Nothing compares them against
   the root, as the paragraph above says.
@@ -193,11 +212,6 @@ elsewhere in this file:
   that, and it compiles those binaries without linting them. The
   `--no-default-features` invocation above lints the Rafter-only binaries and
   the shared library, which is all of `bench-compare` except those two files.
-- **`rafter` in its published feature shape, outside the package lane.** Every
-  `--workspace` invocation resolves `rafter-sim` and therefore builds `rafter`
-  with `internal-test-hooks` on. `scripts/reference-package-check` phase 6 is
-  the only check that the crate composes with that feature off, which is the
-  shape a published consumer gets.
 
 Run `scripts/private-name-scan` with private downstream names supplied through
 `RAFTER_PRIVATE_NAME_PATTERNS` before tagging a public release. It reads every

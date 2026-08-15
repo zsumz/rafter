@@ -51,8 +51,10 @@ multiplexed peer connection.
 - `managed_policy_boundary` rejects scheduler dependencies on consumer
   schemas, lifecycle-retention policy, authentication/certificate policy,
   unpublished simulation hooks, and test-only observation surfaces.
-- Exact-package lanes compile every public example and target with the hidden
-  internal test hook absent.
+- Exact-package lanes compile every public example and target against the
+  archives a consumer receives. `rafter` now declares no features at all, so
+  that shape is also what every workspace command builds; the lanes' rejection
+  of hidden test features remains as a standing boundary against reintroduction.
 
 ## Verification lanes
 
@@ -76,8 +78,12 @@ the deterministic invariant verdict.
 - C2 replication pipelining is outside this completed initial scope. A future
   pipelined replication interface remains additive; no compatibility promise
   is inferred here.
-- `rafter-sim` remains unpublished until it has a clean, intentional public
-  surface without the core crate's hidden `internal-test-hooks` feature.
+- `rafter-sim` no longer depends on a hidden core-crate feature. The kernel
+  self-check it needed is the documented public `Node::validate_derived_state`,
+  and `internal-test-hooks` is deleted from `rafter`. The crate stays
+  unpublished by decision rather than by blocker; adding a simulation and
+  model-checking harness to a publish list is separate work nobody has taken
+  on.
 - `lock-production-node` is a bounded acceptance fixture proving that the
   public crates compose with authenticated transport, durable identity/replay
   state, recovery, readiness, and resource limits. It is not a generic server,

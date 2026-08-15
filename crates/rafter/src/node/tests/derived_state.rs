@@ -230,8 +230,13 @@ fn config() -> NodeConfig {
         .expect("test Raft node config is valid")
 }
 
+// The detector reports the diagnostic text so each fixture below can assert the
+// rule it targets by name. `StateValidationError` is deliberately opaque, and
+// pinning its rendering here is the one place that is appropriate: these are
+// the negative controls for the rules, not a consumer branching on them.
 fn detect_derived_state_violation(node: &Node) -> Result<(), String> {
     node.validate_derived_state()
+        .map_err(|error| error.to_string())
 }
 
 fn stable_configuration(config_id: u64) -> ConfigurationEntry {

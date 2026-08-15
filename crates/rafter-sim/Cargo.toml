@@ -10,7 +10,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rafter = { path = "../rafter", version = "0.0.1", features = ["internal-test-hooks"] }
+rafter = { path = "../rafter", version = "0.0.1" }
 serde_json = "1"
 
 [dev-dependencies]

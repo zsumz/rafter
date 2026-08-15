@@ -12,12 +12,13 @@
 #     variants, fields, trait items, associated items, and re-exports in the
 #     compiler's resolved public surface rather than a source-text
 #     approximation. The crates are named rather than reached through --workspace
-#     because rafter-sim depends on rafter with the hidden internal-test-hooks
-#     feature, and resolver 2 unifies features across every package one
-#     invocation selects. `cargo doc --workspace` therefore documents rafter
-#     with a feature no published consumer can turn on, and a link that only
-#     resolves under that feature would pass a workspace-only gate and still
-#     break on docs.rs. Naming the publish set documents the published shape.
+#     so this build is exactly the published set: --workspace would also pull in
+#     unpublished crates, whose public items are not the artifact this gate is
+#     about. It used to matter for a second reason too — rafter-sim depended on
+#     rafter with the hidden internal-test-hooks feature, and resolver 2 unifies
+#     features across every package one invocation selects, so `cargo doc
+#     --workspace` documented rafter with a feature no published consumer could
+#     turn on. That feature no longer exists; rafter declares none.
 #  2. The whole workspace. A broken link in an unpublished crate never reaches
 #     docs.rs, but it still misleads a reader of this repository.
 #

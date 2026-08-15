@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 pub(crate) const REVIEWED_DETECTOR_REPLAY_INVENTORY_SHA256: &str =
-    "48f1e0eddcd6d5bebef0495280b74fdb9db49056727f0969eef2bc6c335c9cae";
+    "2f98bb2b7c61ed58cbc9e6490aa9395b4ae9abd1f467962b625d4235e7d0cb95";
 pub(crate) const REVIEWED_DETECTOR_REPLAY_TOTAL_TIMEOUT_SECONDS: u64 = 30 * 60;
 
 /// Independent source and execution policy for detector replay.
