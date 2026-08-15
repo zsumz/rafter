@@ -1,8 +1,6 @@
 //! Scenarios for scheduled simulator check and seed identities.
 
-use super::{
-    canonical_simulator_check_id, scheduled_model_profile, scheduled_simulator_seeds,
-};
+use super::{canonical_simulator_check_id, scheduled_model_profile, scheduled_simulator_seeds};
 
 #[test]
 fn canonical_ids_preserve_scheduled_soak_suffixes() {
@@ -42,7 +40,10 @@ fn weekly_canonicalizes_the_model_profile_it_actually_runs() {
         None
     );
     // The deep profile's own identities are not produced by any lane today.
-    assert_eq!(canonical_simulator_check_id("weekly", "raft-commit-weekly"), None);
+    assert_eq!(
+        canonical_simulator_check_id("weekly", "raft-commit-weekly"),
+        None
+    );
 }
 
 #[test]
