@@ -12,6 +12,56 @@
 //! Prefer the `recover_with_storage_and_snapshot_store*` constructors on
 //! restart paths so committed-but-unapplied recovery outputs are explicit and
 //! can be applied before serving reads or accepting new writes.
+//!
+//! # Persist before output, made concrete
+//!
+//! A lone voter reaches a decision without a peer, so the whole write path fits
+//! in one sequence of steps. The storage type parameters default to the
+//! in-memory stores, which is what keeps this example short; a deployment hands
+//! in `rafter_storage::FileRaftNodeStores`.
+//!
+//! ```
+//! use rafter::{Input, LogIndex, NodeConfig, NodeId, Output, Role};
+//! use rafter_runtime::DurableRaftNode;
+//! use rafter_storage::{InMemoryRaftHardStateStore, RaftHardStateStore, RaftLogSegment};
+//!
+//! let config = NodeConfig::new(NodeId(1), Vec::new(), 3).expect("valid raft config");
+//! let mut node = DurableRaftNode::new(config, InMemoryRaftHardStateStore::new())
+//!     .expect("a fresh in-memory node opens");
+//!
+//! for _ in 0..3 {
+//!     node.step(Input::Tick).expect("each tick persists what it changed");
+//! }
+//! assert_eq!(node.role(), Role::Leader);
+//!
+//! let outputs = node
+//!     .step(Input::ClientProposal {
+//!         payload: b"set alpha=one".to_vec(),
+//!     })
+//!     .expect("the leader appends, commits, and persists its own proposal");
+//! assert!(outputs.iter().any(|output| matches!(
+//!     output,
+//!     Output::Apply {
+//!         index: LogIndex(2),
+//!         ..
+//!     }
+//! )));
+//!
+//! // That `Apply` was released only after the entry it names was durable.
+//! // Decomposing the runtime shows the medium already holding it: this is the
+//! // whole difference between this crate and stepping the kernel yourself.
+//! let storage = node.into_storage();
+//! let persisted = storage.log_segment.replay_entries();
+//! assert_eq!(persisted.len(), 2, "the leader's term no-op, then the command");
+//! assert_eq!(
+//!     persisted[1].kind.application_payload(),
+//!     Some(&b"set alpha=one"[..]),
+//! );
+//! assert_eq!(
+//!     storage.hard_state_store.current().commit_index,
+//!     LogIndex(2),
+//! );
+//! ```
 
 #[cfg(test)]
 use rafter::BootstrapValidationError;
@@ -36,6 +86,7 @@ use rafter_storage::{
 mod construction;
 mod error;
 mod log_repair;
+mod runtime_api;
 
 pub use error::{RaftRuntimeError, RaftRuntimeFatalError};
 use log_repair::repair_persisted_log_suffix;
@@ -817,75 +868,6 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             self.fatal_error = Some(fatal_error);
         }
         error
-    }
-}
-
-impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotChunkSource>
-    PersistedRaftRuntime for DurableRaftNode<H, L, S>
-{
-    type Error = RaftRuntimeError;
-
-    fn id(&self) -> RaftNodeId {
-        DurableRaftNode::id(self)
-    }
-
-    fn leader_hint(&self) -> Option<RaftNodeId> {
-        DurableRaftNode::leader_hint(self)
-    }
-
-    fn role(&self) -> RaftRole {
-        DurableRaftNode::role(self)
-    }
-
-    fn current_term(&self) -> Term {
-        DurableRaftNode::current_term(self)
-    }
-
-    fn commit_index(&self) -> LogIndex {
-        DurableRaftNode::commit_index(self)
-    }
-
-    fn last_log_index(&self) -> LogIndex {
-        DurableRaftNode::last_log_index(self)
-    }
-
-    fn snapshot_index(&self) -> LogIndex {
-        DurableRaftNode::snapshot_index(self)
-    }
-
-    fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {
-        DurableRaftNode::committed_application_index_through(self, index)
-    }
-
-    fn membership(&self) -> MembershipConfig {
-        DurableRaftNode::effective_membership(self)
-    }
-
-    fn committed_membership(&self) -> MembershipConfig {
-        DurableRaftNode::committed_membership(self)
-    }
-
-    fn replication(&self) -> Vec<ReplicationProgress> {
-        DurableRaftNode::leader_replication_progress(self)
-    }
-
-    fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
-        DurableRaftNode::step(self, input)
-    }
-
-    fn step_proposal_batch(
-        &mut self,
-        proposals: Vec<ClientProposalInput>,
-    ) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
-        DurableRaftNode::step_proposal_batch(self, proposals)
-    }
-
-    fn step_batch(&mut self, inputs: Vec<RaftInput>) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
-        DurableRaftNode::step_batch(self, inputs)
-    }
-
-    fn term_at_index(&self, index: LogIndex) -> Option<Term> {
-        DurableRaftNode::term_at_index(self, index)
     }
 }
 
