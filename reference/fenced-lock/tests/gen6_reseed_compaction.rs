@@ -228,7 +228,10 @@ fn establish(
     compact: bool,
 ) -> Established {
     let store = LockStore::open(scratch.path(), lock_config).expect("a fresh store opens");
-    let mut group = open_group(DurableLockStateMachine::new(store), empty_storage());
+    let mut group = open_group(
+        DurableLockStateMachine::new(store, scratch.path().join("raft/snapshots")),
+        empty_storage(),
+    );
     become_leader(&mut group);
     for (offset, command) in workload().into_iter().enumerate() {
         commit(&mut group, base_id + offset as u64, command);
@@ -301,8 +304,11 @@ fn gen6_a_reseed_over_a_compacted_log_is_refused_at_the_composition_seam() {
     // that promoted an inbound snapshot and has not yet installed it runs
     // before restoring, and it supplies nothing here: every entry the emptied
     // store is short of is below the boundary and compacted away.
-    let mut group = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
-        .expect("the recovery pump takes no boundary verdict");
+    let mut group = try_open_group(
+        DurableLockStateMachine::new(reseeded, scratch.path().join("raft/snapshots")),
+        established.storage,
+    )
+    .expect("the recovery pump takes no boundary verdict");
     assert_eq!(
         group
             .state_machine()
@@ -340,8 +346,11 @@ fn gen6_a_reseed_over_a_compacted_log_cannot_reissue_a_spent_fencing_token() {
 
     let reseeded = LockStore::discard_and_reseed(scratch.path(), lock_config)
         .expect("the re-seed empties the directory and opens it");
-    let mut group = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
-        .expect("the recovery pump takes no boundary verdict");
+    let mut group = try_open_group(
+        DurableLockStateMachine::new(reseeded, scratch.path().join("raft/snapshots")),
+        established.storage,
+    )
+    .expect("the recovery pump takes no boundary verdict");
 
     // Every route to a token is a step, and every step is refused. Driving the
     // whole workload proves it rather than asserting it of the first one.
@@ -399,7 +408,10 @@ fn gen6_a_reseed_over_an_uncompacted_log_still_recovers_its_marks() {
         .expect("the re-seed empties the directory and opens it");
     assert_eq!(reseeded.applied_index(), LogIndex::ZERO);
 
-    let mut group = open_group(DurableLockStateMachine::new(reseeded), established.storage);
+    let mut group = open_group(
+        DurableLockStateMachine::new(reseeded, scratch.path().join("raft/snapshots")),
+        established.storage,
+    );
     become_leader(&mut group);
     for _ in 0..32 {
         tick(&mut group);

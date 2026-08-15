@@ -27,7 +27,7 @@ const ALPHA: AccountId = AccountId::new(11);
 
 fn commit_workload(directory: &Path) -> Vec<u8> {
     let store = LedgerStore::open(directory, config(2, 4)).expect("a ledger store opens");
-    let mut app = DurableLedgerStateMachine::new(store);
+    let mut app = DurableLedgerStateMachine::new(store, directory.join("raft/snapshots"));
     let commands = [
         open_session(0, 1),
         execute(0, 1, 1, Mutation::OpenAccount { account_id: ALPHA }),
