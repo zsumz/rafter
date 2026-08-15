@@ -20,6 +20,7 @@ mod read_index;
 mod replication;
 mod state;
 mod transfer;
+mod validate;
 
 #[cfg(test)]
 mod tests;
@@ -34,6 +35,7 @@ pub use event::{
 pub use log::LocalSnapshotInstallError;
 pub use replication::PendingSnapshotTransferResumeError;
 use state::{DerivedState, ElectionState, LeaderState, PersistentState, VolatileState};
+pub use validate::StateValidationError;
 
 /// Pure deterministic Raft state machine.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

@@ -68,8 +68,7 @@ jobs:
         # The ten crates in RELEASE.md's publish list reach docs.rs, and until
         # this step nothing built their documentation at all. The script
         # explains why the published set is documented by name instead of
-        # relying on --workspace, which unifies rafter's internal-test-hooks
-        # feature in from rafter-sim and so documents a shape that never ships.
+        # relying on --workspace, which also documents crates that never ship.
         run: scripts/rustdoc-check
       - name: work-completion proof references
         run: scripts/work-completion-check
@@ -845,12 +844,13 @@ jobs:
       - name: Exact-package boundary adversarial checks
         run: scripts/tests/reference_package_boundary_test.sh
       - name: Reference consumers against exact package archives
-        # This is also the only lane that builds `rafter` in its published
-        # shape. Every cargo invocation over the root workspace resolves
-        # rafter-sim, which depends on rafter with `internal-test-hooks`, and
-        # resolver 2 unifies that feature into rafter for the whole invocation.
-        # Phase 6 rejects the hook in the consumer graph, so the archives are
-        # exercised with it off.
+        # This used to be the only lane that built `rafter` in its published
+        # shape: every cargo invocation over the root workspace resolved
+        # rafter-sim, which depended on rafter with `internal-test-hooks`, and
+        # resolver 2 unified that feature into rafter for the whole invocation.
+        # `rafter` now declares no features, so every lane builds that shape.
+        # Phase 6 keeps rejecting hidden test features in the consumer graph,
+        # which is what stops one from being reintroduced unnoticed.
         env:
           # Phase 6 proves that no consumer dependency resolves back inside the
           # checkout, so the workdir must live outside it. runner.temp is a
