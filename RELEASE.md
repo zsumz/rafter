@@ -104,6 +104,20 @@ For the first 0.0.1 release, publish in dependency order. Cargo checks versioned
 path dependencies against the registry when packaging, so dependent crates cannot
 fully package until their predecessors are live on crates.io.
 
+Registry state, verified 2026-08-15 against the live index: `rafter`,
+`rafter-runtime-api`, `rafter-storage`, `rafter-codec`,
+`rafter-transport-tcp-insecure`, `rafter-runtime`, `rafter-app`,
+`rafter-service`, and `rafter-multiraft` are already on crates.io at 0.0.1,
+published 2026-07-09. `rafter-crc32` is not there at all; its name is
+unclaimed. Those nine archives predate this checkout and cannot be replaced:
+the published `rafter-storage` and `rafter-codec` declare neither `rafter-crc32`
+nor `fs4`, and the published `rafter` has no `ClientProposalInput`. So 0.0.1 is
+spent. Publishing the current sources needs a new version across all ten
+crates; `cargo publish -p rafter` at 0.0.1 is rejected as already uploaded.
+Until that bump lands, a per-crate `cargo publish --dry-run` for any crate with
+a Rafter dependency fails, because Cargo resolves that dependency to the stale
+registry 0.0.1 instead of to this checkout.
+
 ```sh
 cargo publish --dry-run -p rafter
 cargo publish -p rafter
@@ -136,14 +150,31 @@ cargo publish --dry-run -p rafter-multiraft
 cargo publish -p rafter-multiraft
 ```
 
+That sequence is a valid dependency order and stays the order to publish in,
+but the `--dry-run` half of each pair only proves anything once the crates
+above it are live. The check a checkout can run today packages the whole set in
+one command, so Cargo verifies each archive against the sibling archives the
+same run just built rather than against the registry:
+
+```sh
+cargo package -p rafter -p rafter-runtime-api -p rafter-crc32 \
+  -p rafter-storage -p rafter-codec -p rafter-transport-tcp-insecure \
+  -p rafter-runtime -p rafter-app -p rafter-service -p rafter-multiraft
+```
+
+Run that and require it green before the first `cargo publish` of a release.
+
 ### Verification
 
 Cargo packages only files under a crate's own directory, so every publishable
 crate keeps a physical copy of the repository's `LICENSE` and `NOTICE` beside
 its manifest. The root files stay authoritative: the per-crate copies must match
 them byte for byte, and a copy that drifts ships a licence the project did not
-grant. Nothing enforces that today; comparing each copy against the root is a
-good CI check to add.
+grant. That is enforced: `cargo test -p rafter --test publish_metadata_contract`
+reads the publish list out of this file, compares every crate it names against
+the root `LICENSE` and `NOTICE` byte for byte, and holds those same crates to
+the description, readme, keywords, and categories a crates.io upload needs. It
+runs under `cargo test --workspace`.
 
 Before publishing, run:
 
@@ -181,11 +212,9 @@ command also runs every reviewed ignored process suite from the unpacked set,
 then rebuilds and tests that same set in public-feature shape on Rust 1.88 with
 a process smoke. Archive creation remains on the newer packaging toolchain.
 
-These commands leave three things unchecked, none of which is implied away
+These commands leave two things unchecked, neither of which is implied away
 elsewhere in this file:
 
-- **Per-crate `LICENSE` and `NOTICE` copies.** Nothing compares them against
-  the root, as the paragraph above says.
 - **`bench-compare` formatting, and its comparison binaries' lints.**
   `bench-compare` is not format-checked by any command here or in CI, and it is
   not currently `rustfmt` clean. Its `raft-rs` and `openraft` binaries sit

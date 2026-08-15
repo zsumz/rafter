@@ -1,8 +1,10 @@
 [package]
 name = "rafter-multiraft"
 version = "0.0.1"
-description = "Manual many-group host layer for Rafter."
+description = "Manual and bounded managed many-group hosting for Rafter."
 readme = "README.md"
+keywords = ["raft", "consensus", "multiraft", "sharding", "replication"]
+categories = ["algorithms", "concurrency", "database-implementations"]
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
