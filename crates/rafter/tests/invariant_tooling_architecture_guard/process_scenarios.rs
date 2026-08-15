@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use syn::visit::Visit;
 
 use super::architecture_support::{
-    declared_module_graph, declared_module_path, display_path, invariant_rust_files,
-    is_declared_test_module, is_legacy_verifier, normalize_rust_path, read, rust_files,
-    workspace_root, BlockingProcessCollector, PathContext, RustPathCollector,
+    collect_test_functions, declared_module_graph, declared_module_path, display_path,
+    invariant_rust_files, is_declared_test_module, is_legacy_verifier, normalize_rust_path, read,
+    rust_files, workspace_root, BlockingProcessCollector, PathContext, RustPathCollector,
 };
 
 #[test]
@@ -540,7 +540,7 @@ fn the_launcher_selection_matches_its_reviewed_inventory() {
 /// absent from its listing.
 fn declared_launcher_selection(root: &std::path::Path) -> std::collections::BTreeSet<String> {
     let modules = declared_module_graph(root);
-    let mut names = std::collections::BTreeSet::new();
+    let mut names = BTreeMap::new();
     for path in invariant_rust_files(root) {
         let relative = display_path(root, &path);
         if !relative.starts_with("crates/rafter-invariants/src/execution/process") {
@@ -555,38 +555,8 @@ fn declared_launcher_selection(root: &std::path::Path) -> std::collections::BTre
         collect_test_functions(&file.items, &module, &mut names);
     }
     names
-}
-
-fn collect_test_functions(
-    items: &[syn::Item],
-    module: &str,
-    names: &mut std::collections::BTreeSet<String>,
-) {
-    for item in items {
-        match item {
-            syn::Item::Fn(function)
-                if function
-                    .attrs
-                    .iter()
-                    .any(|attribute| attribute.path().is_ident("test"))
-                    && !is_linux_only(&function.attrs) =>
-            {
-                names.insert(format!("{module}::{}", function.sig.ident));
-            }
-            syn::Item::Mod(inline) => {
-                if let Some((_, nested)) = &inline.content {
-                    collect_test_functions(nested, &format!("{module}::{}", inline.ident), names);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn is_linux_only(attributes: &[syn::Attribute]) -> bool {
-    attributes.iter().any(|attribute| {
-        attribute.path().is_ident("cfg")
-            && matches!(&attribute.meta, syn::Meta::List(list)
-                if list.tokens.to_string().replace(' ', "").contains("target_os=\"linux\""))
-    })
+        .into_iter()
+        .filter(|(_, linux_only)| !*linux_only)
+        .map(|(name, _)| name)
+        .collect()
 }

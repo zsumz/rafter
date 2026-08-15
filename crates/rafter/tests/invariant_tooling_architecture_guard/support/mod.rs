@@ -10,8 +10,9 @@ pub(crate) use domain::{
     assert_domain_source_imports_follow_manifest, assert_forbidden_domain_imports_absent, domain,
 };
 pub(crate) use module_graph::{
-    declared_module_graph, declared_module_graph_from_roots, declared_module_path,
-    is_declared_test_module, module_is_test_only, DeclaredModuleGraph,
+    collect_test_functions, declared_module_graph, declared_module_graph_from_roots,
+    declared_module_path, declared_test_names, is_declared_test_module, module_is_test_only,
+    DeclaredModuleGraph,
 };
 pub(crate) use rust_paths::{
     normalize_rust_path, BlockingProcessCollector, PathContext, RustPathCollector,

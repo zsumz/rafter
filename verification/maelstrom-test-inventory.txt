@@ -56,6 +56,6 @@ verification::maelstrom::artifact::tests::a_shared_input_repeated_per_trial_is_s
 verification::maelstrom::artifact::tests::binding_class::a_producer_context_build_output_still_rejects_a_mismatched_file
 verification::maelstrom::artifact::tests::binding_class::a_producer_context_build_output_still_requires_its_file
 verification::maelstrom::artifact::tests::binding_class::a_source_binding_still_requires_the_checkout_file_in_the_aggregate
-verification::maelstrom::artifact::tests::binding_class::an_aggregate_context_build_output_rejects_tampered_bytes
+verification::maelstrom::artifact::tests::binding_class::an_aggregate_context_build_output_rejects_an_unretained_artifact
 verification::maelstrom::artifact::tests::binding_class::an_aggregate_context_build_output_verifies_without_the_file
 verification::maelstrom::artifact::tests::the_shared_input_kinds_are_exactly_those_counted_once_per_check
