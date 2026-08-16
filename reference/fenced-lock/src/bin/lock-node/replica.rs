@@ -543,7 +543,13 @@ impl Replica {
 
         // The driver takes the recovery *outputs* rather than an already-applied
         // group, so the recovery report's peer messages and snapshot directives
-        // are routed by the driver instead of being dropped outside it.
+        // are routed by the driver instead of being dropped outside it — and so
+        // the ordering travels with them. The driver drains this through
+        // `RaftGroup::apply_recovery_outputs`, which installs the snapshot a
+        // replica opened below before applying the committed suffix above it.
+        // Handing over an already-applied group would put that decision back on
+        // this call site, where `RecoveryMode::Reseed` is one line away from
+        // producing exactly the state it guards against.
         let group = RaftGroup::with_applied_index(GROUP_ID, node_id, raft, app, applied_index);
         let driver = NodeDriver::with_control_plane_checkpoint(
             group,

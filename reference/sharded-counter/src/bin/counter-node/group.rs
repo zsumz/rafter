@@ -145,7 +145,10 @@ impl SharedGroup {
         let (runtime, outputs) = recovered.into_parts();
         let mut group =
             RaftGroup::with_applied_index(group_id, node_id, runtime, state_machine, applied);
-        let recovery = match group.apply_raft_outputs(outputs) {
+        // The ordered operation, not the raw pump: a replica that opened below
+        // its own snapshot boundary must install that snapshot before the
+        // committed suffix is applied over the gap it leaves.
+        let recovery = match group.apply_recovery_outputs(outputs) {
             Ok(recovery) => recovery,
             Err(error) => {
                 if matches!(

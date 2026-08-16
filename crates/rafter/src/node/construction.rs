@@ -100,8 +100,17 @@ impl Node {
     /// construction to see whether a declaration was raised.
     ///
     /// A composition that owns both halves should enforce this rather than
-    /// assume it; `rafter-app`'s `RaftGroup` does, and refuses to run a group
-    /// whose state machine is below the boundary.
+    /// assume it, and enforcing it means two separate things.
+    /// `rafter-app`'s `RaftGroup` does both: it refuses to *run* a group whose
+    /// state machine is below the boundary — no step, no proposal, no read —
+    /// and it refuses to apply a committed entry to one, which is the half
+    /// that matters here. The suffix [`Node::drain_committed_outputs`] hands
+    /// back starts above the raised floor, so applying it to a state machine
+    /// that is still below the boundary writes the gap into durable
+    /// application state and leaves every index reporting a replica that has
+    /// caught up. `RaftGroup::apply_recovery_outputs` is the composition's
+    /// answer: it restores the application from the snapshot the boundary
+    /// names and only then applies what this constructor's companion drained.
     ///
     /// # Errors
     ///

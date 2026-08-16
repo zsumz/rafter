@@ -522,11 +522,21 @@ where
         })
     }
 
+    /// Drains a restart's committed suffix through the group's ordered recovery
+    /// operation rather than the raw output pump.
+    ///
+    /// The two differ only when this replica opened below its own snapshot
+    /// boundary — the crash window between promoting an inbound snapshot and
+    /// installing it into the application — and that is exactly the case a
+    /// driver reaches. Every adoption path routes here one call after the group
+    /// is built, so there is no window in which a caller could restore the state
+    /// machine ahead of this; the raw pump would apply the suffix over the gap
+    /// instead, which is durable corruption no later report can find.
     pub(super) fn apply_recovery_outputs(
         &mut self,
         outputs: Vec<RaftOutput>,
     ) -> Result<(), ManagedDriverError> {
-        let applied = self.group_mut()?.apply_raft_outputs(outputs);
+        let applied = self.group_mut()?.apply_recovery_outputs(outputs);
         let result = match applied {
             Ok(report) => {
                 self.route_report(report);

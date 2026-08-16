@@ -153,7 +153,7 @@ use std::error::Error;
 
 use rafter::{
     ClientProposalInput, Input as RaftInput, LogIndex, MembershipConfig, NodeId as RaftNodeId,
-    Output as RaftOutput, ReplicationProgress, Role as RaftRole, Term,
+    Output as RaftOutput, RaftSnapshot, ReplicationProgress, Role as RaftRole, Term,
 };
 
 /// Persist-before-output runtime contract consumed by application layers.
@@ -192,6 +192,32 @@ pub trait PersistedRaftRuntime {
 
     /// Returns the installed snapshot boundary index.
     fn snapshot_index(&self) -> LogIndex;
+
+    /// Returns the promoted snapshot descriptor sitting at
+    /// [`PersistedRaftRuntime::snapshot_index`], when the runtime holds one.
+    ///
+    /// **The only thing that can lift a state machine back up to a boundary it
+    /// opened below.** The entries a compacted prefix covers exist nowhere a
+    /// composition can reach: this runtime will not replay them, and a leader
+    /// does not send a snapshot to a follower whose log already matches its
+    /// own. So a composition that finds its state machine short of the boundary
+    /// has exactly one repair available, and this is where the material for it
+    /// comes from.
+    ///
+    /// The default answers `None`, which is the honest answer for a runtime
+    /// that cannot produce its own descriptor rather than a claim that no
+    /// snapshot exists. It fails closed: a composition that cannot obtain the
+    /// descriptor refuses the recovery instead of applying a committed suffix
+    /// on top of state that never installed the snapshot underneath it. An
+    /// implementation whose `snapshot_index` can ever exceed zero should
+    /// override it.
+    ///
+    /// This is a descriptor, not payload bytes. Delivering the payload is the
+    /// snapshot store's job, exactly as it is on the install path a leader
+    /// drives.
+    fn snapshot(&self) -> Option<RaftSnapshot> {
+        None
+    }
 
     /// Returns the index the local state machine must reach to have consumed
     /// every committed application command at or below `index`.

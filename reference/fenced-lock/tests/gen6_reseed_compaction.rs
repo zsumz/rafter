@@ -22,13 +22,31 @@
 //! the damage is unreachable behind it, and pin the control that the refusal is
 //! scoped to compaction rather than to re-seeding.
 //!
-//! The refusal falls on the reopened group's first *use* rather than on the
-//! `apply_raft_outputs` call that drains its recovery outputs. That pump is
-//! also what a replica which crashed between promoting an inbound snapshot and
-//! installing it drains before restoring, so refusing there would refuse a
+//! The *permanent* refusal falls on the reopened group's first use rather than
+//! on the `apply_raft_outputs` call that drains its recovery outputs. That pump
+//! is also what a replica which crashed between promoting an inbound snapshot
+//! and installing it drains before restoring, so poisoning there would poison a
 //! recoverable replica; `crates/rafter-app/tests/gen7_boundary_probe.rs` pins
-//! that direction. Nothing is given up here: minting a fencing token needs a
-//! session, a session needs a committed proposal, and a proposal needs a step.
+//! that direction.
+//!
+//! # What "nothing is given up" left out
+//!
+//! This file used to argue that deferring the whole verdict past the pump cost
+//! nothing, because minting a fencing token needs a session, a session needs a
+//! committed proposal, and a proposal needs a step. That is true of the two
+//! fixtures below, and they are the reason it read as true: both compact
+//! *through* the applied index and stop, so the commit index lands exactly on
+//! the boundary and the pump has nothing to hand over.
+//!
+//! One more commit breaks the argument. A replica compacted at 5 that then
+//! commits 6 hands its reopened group a suffix, and the re-seeded store is at
+//! zero — so the pump applied 6 onto an empty lock service and produced a store
+//! holding the tail of a history whose head it had deleted, with an applied
+//! index that matched the commit index and a fencing floor derived from
+//! nothing. No step was needed and no token was minted through a session,
+//! because the laundering happened inside the apply itself.
+//! `gen6_a_reseed_with_a_commit_above_the_boundary_is_refused_before_it_applies`
+//! is that variant, and it is refused now, before `apply_batch`.
 
 #[allow(dead_code)]
 mod support;
@@ -218,6 +236,9 @@ fn compact_through_applied(
 struct Established {
     mark: u64,
     applied: LogIndex,
+    /// The snapshot boundary the storage carries, which is `applied` for
+    /// [`establish`] and stays there while later entries commit above it.
+    boundary: LogIndex,
     storage: Storage,
 }
 
@@ -261,6 +282,7 @@ fn establish(
             "the log is compacted through the applied index"
         );
     }
+    let boundary = runtime.snapshot_index();
     let storage = runtime.into_storage();
     // Reading and rewriting the store's directory needs it closed.
     drop(state_machine);
@@ -268,7 +290,57 @@ fn establish(
     Established {
         mark: established,
         applied,
+        boundary,
         storage,
+    }
+}
+
+/// The same replica, plus one committed application entry *above* the snapshot
+/// boundary.
+///
+/// This is the shape the two fixtures above cannot reach and the whole reason
+/// the pump had to take a verdict of its own: the compaction stops at the
+/// applied index, and then ordinary traffic carries the commit index past it.
+/// Every replica that compacts and keeps serving is here within one write.
+fn establish_with_commit_above_the_boundary(
+    scratch: &ScratchDir,
+    lock_config: LockConfig,
+    base_id: u64,
+) -> Established {
+    let established = establish(scratch, lock_config, base_id, true);
+
+    let store = LockStore::open(scratch.path(), lock_config).expect("the compacted store reopens");
+    let mut group = open_group(DurableLockStateMachine::new(store), established.storage);
+    become_leader(&mut group);
+    commit(&mut group, base_id + 90, open_session(2, 1));
+
+    let applied = group
+        .state_machine()
+        .applied_index()
+        .expect("the state machine reports its applied index");
+    assert!(
+        applied > established.boundary,
+        "the extra commit must land above the boundary: applied {applied}, boundary {}",
+        established.boundary
+    );
+
+    let RaftGroupParts {
+        state_machine,
+        runtime,
+        ..
+    } = group.into_parts();
+    assert_eq!(
+        runtime.snapshot_index(),
+        established.boundary,
+        "and it must not have moved the boundary"
+    );
+    let storage = runtime.into_storage();
+    drop(state_machine);
+
+    Established {
+        applied,
+        storage,
+        ..established
     }
 }
 
@@ -297,10 +369,12 @@ fn gen6_a_reseed_over_a_compacted_log_is_refused_at_the_composition_seam() {
         .expect("the deleted store held a whole image");
     assert_eq!(reported_floor, established.applied);
 
-    // Draining the recovery outputs is not the seam. It is the pump a replica
-    // that promoted an inbound snapshot and has not yet installed it runs
-    // before restoring, and it supplies nothing here: every entry the emptied
-    // store is short of is below the boundary and compacted away.
+    // Draining the recovery outputs is not the seam *for this fixture*, and the
+    // reason is a property of the fixture rather than of the pump: the
+    // compaction stopped at the applied index, so the commit index is the
+    // boundary and there is nothing above it to hand over. One more commit and
+    // the pump is the seam — see
+    // `gen6_a_reseed_with_a_commit_above_the_boundary_is_refused_before_it_applies`.
     let mut group = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
         .expect("the recovery pump takes no boundary verdict");
     assert_eq!(
@@ -382,6 +456,53 @@ fn gen6_a_reseed_over_a_compacted_log_cannot_reissue_a_spent_fencing_token() {
             rafter_app::group::GroupFatalState::Poisoned { .. }
         ),
         "and the refusal is permanent rather than a state to retry out of"
+    );
+}
+
+/// The variant the "nothing is given up" argument did not cover: a compacted
+/// replica that kept serving, so its commit index sits above its boundary.
+///
+/// Here the re-seeded store is at zero, the boundary is at the compaction
+/// point, and the recovery drain carries a committed application entry above
+/// it. Applying that entry is the laundering — an empty lock service plus the
+/// tail of a history whose head was deleted, published with an applied index
+/// that matches the commit index — and it needs no step, no session, and no
+/// election, so nothing downstream of the pump can prevent it. The pump refuses
+/// it instead, before `apply_batch`, and says which entry it stopped in front
+/// of.
+#[test]
+fn gen6_a_reseed_with_a_commit_above_the_boundary_is_refused_before_it_applies() {
+    let scratch = ScratchDir::new("gen6-reseed-above-boundary");
+    let lock_config: LockConfig = config(2, 4);
+    let established = establish_with_commit_above_the_boundary(&scratch, lock_config, 900);
+
+    let reseeded = LockStore::discard_and_reseed(scratch.path(), lock_config)
+        .expect("the re-seed empties the directory and opens it");
+    assert_eq!(reseeded.applied_index(), LogIndex::ZERO);
+
+    let boundary = established.boundary;
+    let error = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
+        .expect_err("a committed suffix must not be applied over the deleted prefix");
+    assert!(
+        matches!(
+            &error,
+            LockGroupError::SnapshotRestoreRequired {
+                app_applied_index: LogIndex(0),
+                snapshot_index,
+                entry_index,
+            } if *snapshot_index == boundary && *entry_index > boundary
+        ),
+        "the refusal must name the gap and the entry it stopped in front of, got {error}"
+    );
+
+    // And it is refused rather than repaired-in-place: the store on disk is
+    // still the empty one the re-seed created, so nothing has been published
+    // from a partial history.
+    let reopened = LockStore::open(scratch.path(), lock_config).expect("the store reopens");
+    assert_eq!(
+        reopened.applied_index(),
+        LogIndex::ZERO,
+        "the application must be exactly what the re-seed left"
     );
 }
 

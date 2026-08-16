@@ -132,6 +132,8 @@ where
             });
         }
 
+        self.reject_if_snapshot_restore_required(app_applied_index, entries)?;
+
         if let Some(entry) = entries
             .iter()
             .find(|entry| entry.index <= app_applied_index)
@@ -215,18 +217,24 @@ where
     /// caller that reads through them is outside anything this group can
     /// mediate, and restoring through them is the documented repair.
     ///
-    /// [`RaftGroup::apply_raft_outputs`] deliberately takes no verdict, and
-    /// that is the direction a correct recovery uses. An inbound snapshot is
+    /// [`RaftGroup::apply_raft_outputs`] takes no *permanent* verdict, and that
+    /// is the direction a correct recovery uses. An inbound snapshot is
     /// promoted durably before the application installs it, so a replica that
     /// crashed between those two writes opens legitimately below its own
-    /// boundary; the repair is for the caller to restore the state machine
-    /// afterwards. `apply_raft_outputs` is the raw output pump such a caller
-    /// drains first — both reference drivers call it one line after
-    /// construction, leaving no window to restore ahead of it — so refusing
-    /// there refuses the recovery rather than the fault. A verdict there would
-    /// also depend on how the caller chunked one runtime step's outputs into
-    /// calls, which is not a fact about the replica. Nothing escapes in the
-    /// meantime: a replica that never restores cannot step, propose, or read.
+    /// boundary; the repair is
+    /// [`RaftGroup::apply_recovery_outputs`], which installs the snapshot and
+    /// then applies the suffix as one operation. Poisoning the raw pump would
+    /// refuse that recovery rather than the fault, and would depend on how the
+    /// caller chunked one runtime step's outputs into calls, which is not a
+    /// fact about the replica.
+    ///
+    /// Tolerating the transient is not the same as letting anything through
+    /// it. A committed application entry aimed at a state machine still short
+    /// of the boundary is refused on every apply path, with
+    /// [`crate::error::GroupError::SnapshotRestoreRequired`] and without
+    /// poison — see `reject_if_snapshot_restore_required`. Nothing escapes in
+    /// the meantime either: a replica that never restores cannot step,
+    /// propose, or read.
     ///
     /// [`RaftGroup::metrics`] takes no verdict either. It reports
     /// `applied_index` and `snapshot_index` side by side, which is the
