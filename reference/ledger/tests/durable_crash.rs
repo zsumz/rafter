@@ -308,7 +308,10 @@ fn a_whole_frame_that_was_never_sealed_is_not_resolved_by_a_read() {
         .expect("a repair that discarded a frame reports it");
     assert_eq!(repair.discarded_bytes(), frame_len, "under `{plan}`");
     assert_eq!(
-        durable_state(&DurableLedgerStateMachine::new(repaired)),
+        durable_state(&DurableLedgerStateMachine::new(
+            repaired,
+            scratch.path().join("raft/snapshots")
+        )),
         before,
         "the repair resolves the write-ahead window to the pre-transaction state (`{plan}`)"
     );
@@ -349,7 +352,10 @@ fn a_failed_seal_barrier_never_shortens_the_journal() {
                 0,
                 "a frame whose seal reached the file is not residue (`{plan}`)"
             );
-            let state = durable_state(&DurableLedgerStateMachine::new(store));
+            let state = durable_state(&DurableLedgerStateMachine::new(
+                store,
+                scratch.path().join("raft/snapshots"),
+            ));
             assert!(
                 state == before || state == after,
                 "a failed seal barrier recovered to neither side (`{plan}`)"
@@ -462,7 +468,7 @@ fn a_failed_durability_barrier_is_refused_by_open_and_resolved_only_by_the_repai
         matches!(repair.corruption(), TornTail::UnsealedCompleteFrame { .. }),
         "the repair names the ambiguity it resolved (`{plan}`): {repair}"
     );
-    let recovered = DurableLedgerStateMachine::new(repaired);
+    let recovered = DurableLedgerStateMachine::new(repaired, scratch.path().join("raft/snapshots"));
     let state = durable_state(&recovered);
     assert_eq!(
         state, before,
@@ -1630,7 +1636,7 @@ fn open(directory: &Path, faults: FaultPlan) -> DurableLedgerStateMachine {
                 directory.display()
             )
         });
-    DurableLedgerStateMachine::new(store)
+    DurableLedgerStateMachine::new(store, directory.join("raft/snapshots"))
 }
 
 /// Applies one command at `index`, returning its outcome.

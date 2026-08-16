@@ -28,7 +28,7 @@ const RESOURCE: &str = "orders/shard-0";
 
 fn commit_workload(directory: &Path) -> DurableLockStateMachine {
     let store = LockStore::open(directory, config(2, 4)).expect("a lock store opens");
-    let mut app = DurableLockStateMachine::new(store);
+    let mut app = DurableLockStateMachine::new(store, directory.join("raft/snapshots"));
     let commands: Vec<Command> = vec![
         open_session(0, 1),
         submit(0, 1, 1, acquire(RESOURCE, 10)),

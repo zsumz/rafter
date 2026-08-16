@@ -80,7 +80,7 @@ fn workload_ending_in_a_release() -> Vec<Command> {
 
 fn open(directory: &Path) -> DurableLockStateMachine {
     let store = LockStore::open(directory, config(2, 4)).expect("a lock store opens");
-    DurableLockStateMachine::new(store)
+    DurableLockStateMachine::new(store, directory.join("raft/snapshots"))
 }
 
 fn apply_one(
@@ -526,7 +526,7 @@ fn a_permitted_repair_still_opens_a_working_store() {
 
     let store = LockStore::open_and_repair(scratch.path(), config(2, 4))
         .expect("a repair losing no mark proceeds");
-    let mut app = DurableLockStateMachine::new(store);
+    let mut app = DurableLockStateMachine::new(store, scratch.path().join("raft/snapshots"));
 
     let mut index = applied.0;
     let mut step = |command: Command, app: &mut DurableLockStateMachine| {

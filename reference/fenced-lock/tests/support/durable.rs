@@ -138,7 +138,7 @@ impl DurableLockApps {
             "replica {} recovered from a damaged slot no scenario put there: {recovery:?}",
             node_id.0
         );
-        DurableLockStateMachine::new(store)
+        DurableLockStateMachine::new(store, self.directory(node_id).join("raft/snapshots"))
     }
 }
 

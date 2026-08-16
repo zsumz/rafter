@@ -104,7 +104,7 @@ impl DurableLedgerApps {
             "replica {} recovered from residue no scenario put there: {recovery:?}",
             node_id.0
         );
-        DurableLedgerStateMachine::new(store)
+        DurableLedgerStateMachine::new(store, self.directory(node_id).join("raft/snapshots"))
     }
 }
 

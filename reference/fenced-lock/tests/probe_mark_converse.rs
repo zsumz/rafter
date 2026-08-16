@@ -52,7 +52,7 @@ fn workload() -> Vec<Command> {
 
 fn open(directory: &Path) -> DurableLockStateMachine {
     let store = LockStore::open(directory, config(2, 4)).expect("a lock store opens");
-    DurableLockStateMachine::new(store)
+    DurableLockStateMachine::new(store, directory.join("raft/snapshots"))
 }
 
 fn apply_one(
@@ -149,7 +149,8 @@ fn a_live_slot_whose_mark_byte_was_lost_must_not_be_mistaken_for_publication_res
                 })
                 .expect("the departed owner's token is accepted");
 
-            let mut app = DurableLockStateMachine::new(store);
+            let mut app =
+                DurableLockStateMachine::new(store, scratch.path().join("raft/snapshots"));
             let base = applied.0;
             let epoch = 100 + base;
             let mut index = base;

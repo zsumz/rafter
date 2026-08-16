@@ -493,7 +493,12 @@ impl Replica {
 
         announce_recovery(node_id, &app_dir, store.recovery());
 
-        let app = DurableLockStateMachine::new(store);
+        // The machine is handed the same `snapshots` directory the runtime's
+        // own snapshot store owns, because a Raft-driven install gives the
+        // application a descriptor rather than bytes and this is where the
+        // bytes have already been promoted. It is a read-only second view: the
+        // runtime below still owns the writing handle.
+        let app = DurableLockStateMachine::new(store, raft_dir.join("snapshots"));
         let applied_index = app.applied_index().map_err(|error| OpenError::Store {
             detail: error.to_string(),
         })?;

@@ -34,13 +34,18 @@
 //! preserved, and a batch of one — which is what the deterministic driver
 //! produces — is the per-entry case.
 
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+};
 
-use rafter::LogIndex;
+use rafter::{LogIndex, SnapshotChunkSource};
 use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
     ReplicatedStateMachine, SnapshotSupport,
 };
+use rafter_storage::FileRaftSnapshotStore;
 
 use crate::{
     adapter::{codec, discipline},
@@ -100,16 +105,58 @@ impl From<LedgerStoreError> for DurableLedgerError {
 #[derive(Debug)]
 pub struct DurableLedgerStateMachine {
     store: LedgerStore,
+    snapshot_dir: PathBuf,
 }
 
 impl DurableLedgerStateMachine {
-    /// Wraps an opened store.
+    /// Wraps an opened store and names this replica's Raft snapshot directory.
     ///
     /// The store has already recovered, so the machine starts at whatever
     /// applied index the last committed transaction left.
+    ///
+    /// `snapshot_dir` is the directory the replica's own Raft runtime keeps its
+    /// snapshots in — the `snapshots` child of the directory handed to
+    /// `FileRaftNodeStores::open`. It is a second, read-only view of the store
+    /// the runtime writes rather than a handle shared with it, and it is opened
+    /// only for an install that has no inline payload, which is the only time
+    /// this machine reads a snapshot it did not build. Naming it is not
+    /// optional: [`ReplicatedStateMachine::SNAPSHOT_SUPPORT`] below declares
+    /// this application installs Raft-driven snapshots, and a machine with
+    /// nowhere to read them from could not honour that declaration.
     #[must_use]
-    pub const fn new(store: LedgerStore) -> Self {
-        Self { store }
+    pub fn new(store: LedgerStore, snapshot_dir: PathBuf) -> Self {
+        Self {
+            store,
+            snapshot_dir,
+        }
+    }
+
+    /// Returns the Raft snapshot directory this machine reads promoted
+    /// payloads from.
+    #[must_use]
+    pub fn snapshot_dir(&self) -> &Path {
+        &self.snapshot_dir
+    }
+
+    /// Opens this replica's snapshot store, and only for an install that needs
+    /// it.
+    ///
+    /// An install carrying its own bytes never touches the filesystem, and
+    /// neither does one already refused by its index — opening this store
+    /// creates the directory, so an install that will not proceed must not
+    /// leave one behind. Which installs those are is
+    /// [`discipline::install_needs_source`]'s answer rather than this method's,
+    /// so it cannot drift from the refusal it is predicting.
+    ///
+    /// A failed open is not distinguished from a store that cannot serve the
+    /// transfer: both mean these bytes are not available here, and
+    /// [`discipline::admit_install`] refuses on the absence rather than on the
+    /// reason.
+    fn promoted_source(&self, snapshot: &ApplicationSnapshot) -> Option<FileRaftSnapshotStore> {
+        if !discipline::install_needs_source(snapshot, self.store.applied_index()) {
+            return None;
+        }
+        FileRaftSnapshotStore::open(&self.snapshot_dir).ok()
     }
 
     /// Returns the configured resource bounds.
@@ -157,6 +204,13 @@ impl ReplicatedStateMachine for DurableLedgerStateMachine {
     /// Declared `Supported`: both methods below carry the whole
     /// contract-enumerated state through the adapter's own frames, and
     /// `durable_crash.rs` proves the round trip against the durable backend.
+    ///
+    /// The declaration covers the Raft-driven install too, not only the local
+    /// round trip. Rafter hands that install a descriptor and an empty payload,
+    /// and `durable_snapshot_install.rs` proves this machine reads the promoted
+    /// bytes back out of [`Self::snapshot_dir`] and installs them — because a
+    /// machine that declared support and refused that shape would poison its
+    /// group the first time a follower fell behind a compaction.
     const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Supported;
 
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
@@ -231,8 +285,19 @@ impl ReplicatedStateMachine for DurableLedgerStateMachine {
         &mut self,
         snapshot: ApplicationSnapshot,
     ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
-        let ledger_snapshot = discipline::admit_install(&snapshot, self.store.applied_index())
-            .map_err(DurableLedgerError::Adapter)?;
+        // A Raft-driven install arrives as a descriptor with no bytes; this is
+        // where they come back off the replica's own snapshot store. Whichever
+        // shape arrived, the bytes leave `admit_install` having passed the same
+        // decode and the same index check.
+        let source = self.promoted_source(&snapshot);
+        let ledger_snapshot = discipline::admit_install(
+            &snapshot,
+            self.store.applied_index(),
+            source
+                .as_ref()
+                .map(|store| store as &dyn SnapshotChunkSource),
+        )
+        .map_err(DurableLedgerError::Adapter)?;
         let ledger = Ledger::from_snapshot(self.store.config(), ledger_snapshot)
             .map_err(LedgerAdapterError::Snapshot)
             .map_err(DurableLedgerError::Adapter)?;
