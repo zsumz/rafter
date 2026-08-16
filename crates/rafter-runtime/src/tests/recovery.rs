@@ -1,7 +1,7 @@
 use super::recording_stores::{
     RecordingHardStateStore, RecordingLogSegment, RecordingSnapshotStore, StoreJournal,
 };
-use super::snapshot::{raft_snapshot, FailingSnapshotStore};
+use super::snapshot::{raft_snapshot, raft_snapshot_for_writer, FailingSnapshotStore};
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
@@ -562,8 +562,12 @@ fn into_storage_after_a_fatal_persistence_error_returns_the_durable_stores() {
     runtime.step(RaftInput::Tick).expect("single node elects");
     let durable_before = runtime.log_segment.replay_entries();
 
+    // Authored by node 1, the only member of this single-voter cluster. The
+    // shared `raft_snapshot` builder signs with node 2, which the kernel's
+    // author rule refuses here — and this test is about reaching the store's
+    // write failure, not about that refusal.
     let error = runtime
-        .compact_log_with_snapshot(raft_snapshot(1, 1, 1, b"payload"))
+        .compact_log_with_snapshot(raft_snapshot_for_writer(1, 1, 1, 1, b"payload"))
         .expect_err("the snapshot store refuses every write");
     oracle_assert!(matches!(error, RaftRuntimeError::SnapshotWrite(_)));
     assert_poisoned_after_failure(&mut runtime, |cause| {

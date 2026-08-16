@@ -63,19 +63,32 @@ impl BootstrapState {
             );
         }
 
-        if snapshot_writer_is_voter(metadata, config) {
+        if snapshot_writer_is_replica(metadata, config) {
             Ok(())
         } else {
-            Err(BootstrapValidationError::SnapshotWriterNonVoter {
+            Err(BootstrapValidationError::SnapshotWriterNotReplica {
                 writer_id: metadata.writer_id,
             })
         }
     }
 }
 
-fn snapshot_writer_is_voter(metadata: &RaftSnapshotMetadata, config: &NodeConfig) -> bool {
+/// The author rule, in the one place that sees only a durable image.
+///
+/// Replica rather than voter: a learner replicates the same committed prefix a
+/// voter does, and the shipped compaction API stamps the boundary membership
+/// into the descriptor a node writes about itself — so demanding a voter here
+/// made a learner's own snapshot unhydratable, which is to say it made the
+/// learner unbootable. The receive path and
+/// [`Node::install_local_snapshot`](crate::Node::install_local_snapshot) apply
+/// the same rule, so nothing can be installed that this refuses to recover.
+fn snapshot_writer_is_replica(metadata: &RaftSnapshotMetadata, config: &NodeConfig) -> bool {
     metadata.committed_membership().map_or_else(
-        || config.voters().any(|voter| voter == metadata.writer_id),
-        |membership| membership.contains_voter(metadata.writer_id),
+        || {
+            config
+                .static_membership_ref()
+                .contains_replica(metadata.writer_id)
+        },
+        |membership| membership.contains_replica(metadata.writer_id),
     )
 }

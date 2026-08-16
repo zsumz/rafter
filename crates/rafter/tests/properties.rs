@@ -767,10 +767,11 @@ fn materialized_entries(state: &BootstrapState) -> Vec<(u64, u64)> {
 }
 
 /// An independent restatement of the documented acceptance rules: a vote
-/// requires a nonzero term; a snapshot's hard-state term stays within the current term and its writer is a voter (of the
-/// snapshot's committed membership when it carries one, of the static voters
-/// otherwise); the log is contiguous from the snapshot boundary with nonzero
-/// terms no newer than the current term; boundary sentinel entries match the
+/// requires a nonzero term; a snapshot's hard-state term stays within the
+/// current term and its writer is a replica — voter or learner — of the
+/// snapshot's committed membership when it carries one, of the static
+/// membership otherwise; the log is contiguous from the snapshot boundary with
+/// nonzero terms no newer than the current term; boundary sentinel entries match the
 /// snapshot term; nothing sits below the boundary; the commit index never lies
 /// beyond the log; and at most one uncommitted configuration entry exists
 /// above the recovered commit index.
@@ -786,11 +787,18 @@ fn accepted_by_documented_rules(state: &BootstrapState) -> bool {
         if metadata.hard_state_term > state.current_term {
             return false;
         }
-        let writer_is_voter = match metadata.committed_membership() {
-            Some(membership) => membership.contains_voter(metadata.writer_id),
+        // Spelled as voter-or-learner rather than through `contains_replica`,
+        // so this oracle does not restate the rule by calling the one predicate
+        // the implementation calls. The static half needs no learner arm: this
+        // suite's static membership (`bootstrap_node_config`) has none.
+        let writer_is_replica = match metadata.committed_membership() {
+            Some(membership) => {
+                membership.contains_voter(metadata.writer_id)
+                    || membership.contains_learner(metadata.writer_id)
+            }
             None => STATIC_VOTERS.contains(&metadata.writer_id.0),
         };
-        if !writer_is_voter {
+        if !writer_is_replica {
             return false;
         }
         boundary = metadata.last_included_index.0;

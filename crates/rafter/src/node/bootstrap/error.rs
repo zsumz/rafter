@@ -55,8 +55,13 @@ pub enum BootstrapValidationError {
         /// Durable current term.
         current_term: Term,
     },
-    /// Snapshot writer is not a voter in the captured membership.
-    SnapshotWriterNonVoter {
+    /// Snapshot writer is not a replica — voter or learner — of the membership
+    /// captured at the snapshot's boundary.
+    ///
+    /// A learner replicates the same committed prefix a voter does, so it may
+    /// author a snapshot of it; what this rejects is a writer the boundary
+    /// membership does not contain at all.
+    SnapshotWriterNotReplica {
         /// Unauthorized snapshot writer.
         writer_id: NodeId,
     },
@@ -200,7 +205,7 @@ impl fmt::Display for BootstrapValidationError {
                 entry_term = entry_term,
                 current_term = current_term,
             ),
-            Self::SnapshotWriterNonVoter { .. }
+            Self::SnapshotWriterNotReplica { .. }
             | Self::SnapshotHardStateTermAheadOfCurrentTerm { .. }
             | Self::CompactedLogEntry { .. }
             | Self::SnapshotBoundaryTermMismatch { .. } => self.fmt_snapshot_error(formatter),
@@ -237,9 +242,9 @@ impl Error for BootstrapValidationError {}
 impl BootstrapValidationError {
     fn fmt_snapshot_error(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SnapshotWriterNonVoter { writer_id } => write!(
+            Self::SnapshotWriterNotReplica { writer_id } => write!(
                 formatter,
-                "Raft bootstrap snapshot writer {writer_id} is not a voter"
+                "Raft bootstrap snapshot writer {writer_id} is not a replica of the captured membership"
             ),
             Self::SnapshotHardStateTermAheadOfCurrentTerm {
                 snapshot_hard_state_term,
@@ -365,7 +370,7 @@ impl BootstrapValidationError {
             | Self::NonContiguousLog { .. }
             | Self::ZeroTermLogEntry { .. }
             | Self::EntryTermAheadOfCurrentTerm { .. }
-            | Self::SnapshotWriterNonVoter { .. }
+            | Self::SnapshotWriterNotReplica { .. }
             | Self::SnapshotHardStateTermAheadOfCurrentTerm { .. }
             | Self::CompactedLogEntry { .. }
             | Self::SnapshotBoundaryTermMismatch { .. }
