@@ -2,6 +2,7 @@
 
 pub(super) use super::*;
 
+mod authority;
 mod chunks;
 mod install;
 mod streaming;

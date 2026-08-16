@@ -133,6 +133,18 @@ impl MembershipConfig {
             }
         }
     }
+
+    /// Returns whether `node_id` is a replica — voter or learner — in any
+    /// active membership half.
+    ///
+    /// The predicate for questions about *belonging* rather than about voting
+    /// power. A learner replicates the same committed prefix a voter does, so
+    /// it may author a snapshot of it and may be sent one; only quorum
+    /// arithmetic cares which half of the set an id sits in.
+    #[must_use]
+    pub fn contains_replica(&self, node_id: NodeId) -> bool {
+        self.contains_voter(node_id) || self.contains_learner(node_id)
+    }
 }
 
 impl MembershipSet {
