@@ -19,20 +19,14 @@ failures=0
 # stubbed process table
 #
 # The stubs read a table of "pid pgid rss cpu argv" lines, so a scenario states
-# which TLC processes exist simply by writing that file. `pgrep` lists the
-# pids, `ps` answers per-pid queries against the same table, and both vanish
-# from the sampler perspective exactly the way real ones do when a row is
-# removed.
+# which TLC processes exist simply by writing that file. `ps` answers per-pid
+# queries against the table, and a process vanishes from the sampler
+# perspective exactly the way a real one does when its row is removed.
 # --------------------------------------------------------------------------
 stub_bin="$scratch/bin"
 mkdir -p "$stub_bin"
 process_table="$scratch/process-table"
 : >"$process_table"
-
-cat >"$stub_bin/pgrep" <<'STUB'
-#!/usr/bin/env bash
-awk '{ print $1 }' "$RAFTER_TEST_PROCESS_TABLE"
-STUB
 
 cat >"$stub_bin/ps" <<'STUB'
 #!/usr/bin/env bash
@@ -72,7 +66,7 @@ fi
 exec /usr/bin/env -u PATH PATH="$RAFTER_TEST_REAL_PATH" du "$@"
 STUB
 
-chmod +x "$stub_bin/pgrep" "$stub_bin/ps" "$stub_bin/du"
+chmod +x "$stub_bin/ps" "$stub_bin/du"
 
 export RAFTER_TEST_PROCESS_TABLE="$process_table"
 export RAFTER_TEST_REAL_PATH="$PATH"
@@ -82,13 +76,19 @@ export PATH="$stub_bin:$PATH"
 # capture fixtures
 #
 # Named the way the invariant runner names them: PRODUCER_PID-SEQUENCE, with a
-# .pgid receipt beside each .stdout carrying the process group of the child
-# that wrote it.
+# .pgid receipt beside each .stdout, written the way the target-group launcher
+# writes it: the first line is the PID the launcher publishes before exec --
+# the same PID the target keeps through exec -- and `ready` lands after the
+# runner anchors that process into a process group owned by a separate anchor
+# process. The receipt therefore names a PID whose process group is never its
+# own pid, and the process tables below keep that true: every target row
+# carries an anchor group id distinct from its pid, exactly the shape a PGID
+# comparison against the receipt can never bind.
 # --------------------------------------------------------------------------
 write_capture() {
-    local directory="$1" prefix="$2" group="$3" body="$4"
+    local directory="$1" prefix="$2" target_pid="$3" body="$4"
     mkdir -p "$directory"
-    printf '%s\nready\n' "$group" >"$directory/$prefix.pgid"
+    printf '%s\nready\n' "$target_pid" >"$directory/$prefix.pgid"
     printf '%s' "$body" >"$directory/$prefix.stdout"
 }
 
@@ -190,17 +190,34 @@ check() {
 scenario_obligation_precedes_continuation() {
     local label="obligation-first"
     local telemetry="$scratch/$label/telemetry"
-    write_capture "$telemetry" "9000-0" 5001 "$(obligation_capture)"
+    write_capture "$telemetry" "9000-0" 4101 "$(obligation_capture)"
 
     # Only the obligation is alive at first, and it is not the continuation.
-    printf '4101 5001 900000 180 java -cp tla2tools.jar tlc2.TLC -config RaftCoreObligationDeep.cfg Raft.tla\n' \
-        >"$process_table"
+    # Its /usr/bin/time resource wrapper runs beside it, in a group of its own,
+    # with the entire java command visible in its arguments -- a command-line
+    # scan matches the wrapper before the JVM, and the wrapper's pid is in no
+    # receipt. The continuation's launcher has published its pid but not yet
+    # reached `ready`: a mid-handshake receipt names a perl process that has
+    # not exec'd the JVM.
+    {
+        printf '4100 4100 1500 0.0 /usr/bin/time -v java -cp tla2tools.jar tlc2.TLC -config RaftCoreObligationDeep.cfg Raft.tla\n'
+        printf '4101 6000 900000 180 java -cp tla2tools.jar tlc2.TLC -config RaftCoreObligationDeep.cfg Raft.tla\n'
+        printf '4107 6001 800 0.0 perl -e launcher\n'
+    } >"$process_table"
+    printf '4107\n' >"$telemetry/9000-1.pgid"
+    : >"$telemetry/9000-1.stdout"
     run_scenario "$label" 2
 
-    # The continuation starts, with a far smaller capture than the obligation.
-    write_capture "$telemetry" "9000-1" 5003 "$(continuation_capture)"
-    printf '4107 5003 4000000 390 java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
-        "$CONTINUATION_CONFIG" >"$process_table"
+    # The continuation is released and execs into the JVM: the receipt reaches
+    # `ready`, the pid it named is now TLC, and its time wrapper -- lower pid,
+    # same java command in its arguments -- sits beside it as bait.
+    write_capture "$telemetry" "9000-1" 4107 "$(continuation_capture)"
+    {
+        printf '4106 4106 1500 0.0 /usr/bin/time -v java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
+            "$CONTINUATION_CONFIG"
+        printf '4107 6001 4000000 390 java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
+            "$CONTINUATION_CONFIG"
+    } >"$process_table"
     grow_continuation "$telemetry/9000-1.stdout" 8
     stop_sampler
 
@@ -219,6 +236,18 @@ scenario_obligation_precedes_continuation() {
         printf 'FAIL %s: never bound the continuation capture\n' "$label" >&2
         failures=$((failures + 1))
     fi
+    if grep -q '"tlc_pid":4107' "$output"; then
+        printf 'ok   %s reported the TLC process the receipt names\n' "$label"
+    else
+        printf 'FAIL %s: never reported the receipt target pid\n' "$label" >&2
+        failures=$((failures + 1))
+    fi
+    if grep -q '"tlc_pid":410[06]' "$output"; then
+        printf 'FAIL %s: reported a resource wrapper as the continuation\n' "$label" >&2
+        failures=$((failures + 1))
+    else
+        printf 'ok   %s never reported a resource wrapper\n' "$label"
+    fi
 }
 
 # --------------------------------------------------------------------------
@@ -230,12 +259,14 @@ scenario_obligation_precedes_continuation() {
 scenario_detector_violation_alongside_continuation() {
     local label="detector-negative"
     local telemetry="$scratch/$label/telemetry"
-    write_capture "$telemetry" "9100-0" 5002 "$(detector_capture)"
-    write_capture "$telemetry" "9100-1" 5003 "$(continuation_capture)"
+    write_capture "$telemetry" "9100-0" 4201 "$(detector_capture)"
+    write_capture "$telemetry" "9100-1" 4207 "$(continuation_capture)"
 
     {
-        printf '4201 5002 200000 90 java -cp tla2tools.jar tlc2.TLC -config RafterInvariantDetectorNegative.cfg RafterInvariantDetectorNegative.tla\n'
-        printf '4207 5003 4000000 390 java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
+        printf '4201 6002 200000 90 java -cp tla2tools.jar tlc2.TLC -config RafterInvariantDetectorNegative.cfg RafterInvariantDetectorNegative.tla\n'
+        printf '4206 4206 1500 0.0 /usr/bin/time -v java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
+            "$CONTINUATION_CONFIG"
+        printf '4207 6003 4000000 390 java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
             "$CONTINUATION_CONFIG"
     } >"$process_table"
 
@@ -264,9 +295,13 @@ scenario_detector_violation_alongside_continuation() {
 scenario_transient_subcommand_failure() {
     local label="transient-failure"
     local telemetry="$scratch/$label/telemetry"
-    write_capture "$telemetry" "9200-0" 5003 "$(continuation_capture)"
-    printf '4307 5003 4000000 390 java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
-        "$CONTINUATION_CONFIG" >"$process_table"
+    write_capture "$telemetry" "9200-0" 4307 "$(continuation_capture)"
+    {
+        printf '4306 4306 1500 0.0 /usr/bin/time -v java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
+            "$CONTINUATION_CONFIG"
+        printf '4307 6004 4000000 390 java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
+            "$CONTINUATION_CONFIG"
+    } >"$process_table"
 
     export RAFTER_TEST_PS_FAILS="$scratch/$label/ps-fails"
     export RAFTER_TEST_DU_FAILS="$scratch/$label/du-fails"
@@ -322,23 +357,37 @@ scenario_transient_subcommand_failure() {
 scenario_continuation_exhausts() {
     local label="continuation-exhausted"
     local telemetry="$scratch/$label/telemetry"
-    write_capture "$telemetry" "9300-0" 5003 "$(continuation_capture)"
-    printf '4407 5003 4000000 390 java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
-        "$CONTINUATION_CONFIG" >"$process_table"
+    write_capture "$telemetry" "9300-0" 4407 "$(continuation_capture)"
+    {
+        printf '4406 4406 1500 0.0 /usr/bin/time -v java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
+            "$CONTINUATION_CONFIG"
+        printf '4407 6005 4000000 390 java -cp tla2tools.jar tlc2.TLC -config %s Raft.tla\n' \
+            "$CONTINUATION_CONFIG"
+    } >"$process_table"
     run_scenario "$label" 2
 
+    # The runner always passes -tool, where TLC never prints "Model checking
+    # completed": a finished search states its depth instead, and states it
+    # only after exploring everything.
     {
         continuation_capture
         progress_line 40000000 8000000 0
-        printf 'Model checking completed. No error has been found.\n'
+        printf 'The depth of the complete state graph search is 97.\n'
     } >"$telemetry/9300-0.stdout"
     sleep 2
     : >"$process_table"
     sleep 2
     stop_sampler
 
+    local output="$scratch/$label/samples.jsonl"
     check "$label reports the exhaustion TLC stated" \
-        "exhausted" "$(summarize_status "$scratch/$label/samples.jsonl")"
+        "exhausted" "$(summarize_status "$output")"
+    if grep -q '"tlc_verdict":"exhausted"' "$output"; then
+        printf 'ok   %s parsed the -tool completion signature\n' "$label"
+    else
+        printf 'FAIL %s: the -tool completion signature was not parsed\n' "$label" >&2
+        failures=$((failures + 1))
+    fi
 }
 
 # --------------------------------------------------------------------------

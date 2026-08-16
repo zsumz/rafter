@@ -85,52 +85,64 @@ free_bytes() {
     echo $((blocks * 1024))
 }
 
-# The continuation's own TLC process, identified by the configuration only it
-# runs. A scheduled TLA+ layer runs several TLC processes in the same job:
+# The continuation's own TLC process and its capture, resolved receipt-first.
+#
+# A scheduled TLA+ layer runs several TLC processes in the same job:
 # calibrated proof obligations for over two hours before the primary starts, a
 # trace sample, and a negative detector whose whole purpose is to print
 # "Invariant ... is violated". Ranking them by resident set or by capture size
 # picks whichever is currently biggest, which for the first half of a weekly
-# run is never the continuation -- and then a drained obligation's "Model
-# checking completed" or the detector's violation is reported as the
-# continuation's verdict. Only the continuation carries the profile's -config.
-continuation_pid() {
-    local config="$1" pid arguments
-    while read -r pid; do
-        [[ "$pid" =~ ^[0-9]+$ ]] || continue
-        arguments="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-        case " $arguments " in
-            *" -config $config "*)
-                printf '%s\n' "$pid"
-                return 0
-                ;;
-        esac
-    done < <(pgrep -f 'tlc2\.TLC' 2>/dev/null || true)
-    return 0
-}
-
-# The capture that is *this* process's stdout. The runner names captures after
-# itself -- PRODUCER_PID-SEQUENCE.stdout -- so the file name identifies the
-# producer, not the child, and every TLC in the job writes into the same
-# directory. What does identify the child is the sibling .pgid receipt: the
-# launcher publishes the target's own process group into it before exec, and
-# each managed target gets a group of its own. Match the continuation's process
-# group to that receipt and the remaining capture is its stdout and nothing
-# else's.
-continuation_stdout() {
-    local directory="$1" pid="$2" group receipt capture
-    [[ -d "$directory" && "$pid" =~ ^[0-9]+$ ]] || return 0
-    group="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
-    [[ "$group" =~ ^[0-9]+$ ]] || return 0
+# run is never the continuation. Only the continuation carries the profile's
+# -config -- but a command-line scan for it is also wrong: the runner executes
+# every target under a /usr/bin/time resource wrapper whose arguments contain
+# the entire java command, so the scan's first match is the wrapper -- a
+# plausible pid idling at 1.5 MiB that never produces a counter.
+#
+# What actually identifies the child is the sibling .pgid receipt. Its first
+# line is the pid the target launcher publishes before exec -- the pid the
+# target keeps through exec, so at sampling time it is the JVM's own -- and
+# its second line is `ready`, written after the runner anchors that process
+# into a process group owned by a separate anchor process. Anchoring is why no
+# process-group comparison can ever bind: the target's group is the anchor's
+# pid, never the value in the receipt. So resolve from the receipts: take each
+# published pid, require readiness, and accept the one whose command line is a
+# TLC carrying this continuation's -config. The sibling .stdout is that
+# process's capture and nothing else's, and the wrapper is unselectable
+# because its pid is in no receipt.
+continuation_target() {
+    local directory="$1" config="$2" receipt pid state arguments capture
+    [[ -d "$directory" ]] || return 0
     for receipt in "$directory"/*.pgid; do
         [[ -f "$receipt" ]] || continue
-        [[ "$(head -n 1 "$receipt" 2>/dev/null || true)" == "$group" ]] || continue
+        pid="$(sed -n '1p' "$receipt" 2>/dev/null || true)"
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        # Without its readiness line the receipt is mid-handshake: published,
+        # not yet anchored, not yet released toward exec.
+        state="$(sed -n '2p' "$receipt" 2>/dev/null || true)"
+        [[ "$state" == "ready" ]] || continue
+        arguments="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+        case " $arguments " in
+            *"tlc2.TLC"*" -config $config "*) ;;
+            *) continue ;;
+        esac
         capture="${receipt%.pgid}.stdout"
-        [[ -r "$capture" ]] || return 0
-        printf '%s\n' "$capture"
+        [[ -r "$capture" ]] || continue
+        printf '%s %s\n' "$pid" "$capture"
         return 0
     done
     return 0
+}
+
+# True while `pid` is still the process the receipt bound: a recycled pid
+# stops carrying the continuation's command line and stops being reported.
+continuation_alive() {
+    local pid="$1" config="$2" arguments
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    arguments="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+    case " $arguments " in
+        *"tlc2.TLC"*" -config $config "*) return 0 ;;
+    esac
+    return 1
 }
 
 # Pull the last progress triple out of a TLC capture. Commas are stripped
@@ -171,9 +183,15 @@ progress_counters() {
 terminal_verdict() {
     local file="$1"
     [[ -n "$file" && -r "$file" ]] || return 0
+    # Two exhaustion phrasings: "Model checking completed" is TLC's plain-mode
+    # sentence, and the runner always passes -tool, where that sentence never
+    # appears -- a completed search instead prints "The depth of the complete
+    # state graph search is N", and prints it only after exploring everything.
     { tail -c 262144 "$file" 2>/dev/null || true; } | awk '
         /is violated|Invariant .* is violated|Temporal property .* is violated/ { verdict = "violated" }
-        /Model checking completed/ { if (verdict == "") verdict = "exhausted" }
+        /Model checking completed|The depth of the complete state graph search is/ {
+            if (verdict == "") verdict = "exhausted"
+        }
         END { if (verdict != "") print verdict }
     '
 }
@@ -228,8 +246,10 @@ run_sample() {
     # Resolved once, then held. The capture outlives the process that wrote it,
     # so holding it keeps the terminal verdict readable after TLC exits -- and
     # keeps a later TLC in the same job from ever being re-resolved as the
-    # continuation.
-    local capture=""
+    # continuation. The bound pid is held with it; each tick re-verifies it
+    # before reporting, so a finished continuation goes back to null fields
+    # rather than to a recycled process.
+    local capture="" bound_pid=""
     started="$(date -u +%s)"
 
     # No bound on iterations: the sampler is owned by the workflow step that
@@ -246,9 +266,17 @@ run_sample() {
             continue
         fi
 
-        pid="$(continuation_pid "$config" || true)"
         if [[ -z "$capture" ]]; then
-            capture="$(continuation_stdout "$telemetry_dir" "$pid" || true)"
+            local target
+            target="$(continuation_target "$telemetry_dir" "$config" || true)"
+            if [[ -n "$target" ]]; then
+                bound_pid="${target%% *}"
+                capture="${target#* }"
+            fi
+        fi
+        pid=""
+        if continuation_alive "$bound_pid" "$config"; then
+            pid="$bound_pid"
         fi
 
         counters="$(progress_counters "$capture" || true)"
