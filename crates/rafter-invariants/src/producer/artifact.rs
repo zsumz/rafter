@@ -14,6 +14,29 @@ use crate::{
     execution::filesystem::HeldDirectory,
 };
 
+/// Characters `actions/upload-artifact` rejects outright for Windows
+/// portability. A published evidence tree that contains any of them cannot be
+/// uploaded at all, so the whole layer fails after the work is already done.
+pub(crate) const UNPORTABLE_FILENAME_CHARACTERS: [char; 9] =
+    [':', '*', '?', '"', '<', '>', '|', '\\', '\0'];
+
+/// Maps an artifact kind onto a filename component that is safe to upload.
+///
+/// Artifact kinds are receipt vocabulary and several are structured with a
+/// colon (`tla-detector-config:LogMatching`, `tla-obligation-log:read-fencing`).
+/// The kind is the compatibility identity and does not change; only the name
+/// of the file carrying it does. Every rejected character becomes `-` — for
+/// the colon that is the same normalization the source-identity policy
+/// already applies when it recognizes these files, and no other rejected
+/// character occurs in any reviewed kind today, which the artifact-naming
+/// guard asserts.
+pub(crate) fn portable_filename(kind: &str) -> String {
+    kind.replace(
+        |character: char| UNPORTABLE_FILENAME_CHARACTERS.contains(&character),
+        "-",
+    )
+}
+
 pub(super) fn validate_output_dir(path: &Path) -> Result<(), Box<dyn Error>> {
     if path.is_absolute()
         || path
@@ -60,7 +83,7 @@ pub(super) fn capture_bytes(
 ) -> Result<ArtifactRef, Box<dyn Error>> {
     require_bounded(bytes, kind)?;
     let digest = format!("{:x}", Sha256::digest(bytes));
-    let relative_name = namespace.join(format!("{kind}-{digest}"));
+    let relative_name = namespace.join(format!("{}-{digest}", portable_filename(kind)));
     let path = output_dir.join(relative_name);
     let workspace = HeldDirectory::workspace()?;
     match workspace.read(&path) {
@@ -139,3 +162,7 @@ pub(super) fn stable_id(namespace: &str, value: &str) -> String {
     let digest = format!("{:x}", Sha256::digest(format!("{namespace}\0{value}")));
     format!("{namespace}-{}", &digest[..16])
 }
+
+#[cfg(test)]
+#[path = "artifact_naming_tests.rs"]
+mod naming_tests;

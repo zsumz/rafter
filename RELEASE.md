@@ -8,10 +8,16 @@ map is [`docs/work-completion.md`](docs/work-completion.md); its references are
 checked by `scripts/work-completion-check`.
 
 The current publishable graph remains the ten crates listed in the historical
-0.0.1 section below. `rafter-sim` remains unpublished until its hidden
-`internal-test-hooks` dependency is replaced by a clean, intentional public
-surface. C1 streaming snapshots and C2 replication pipelining remain additive
-future work and are not preconditions smuggled into this preflight.
+0.0.1 section below. `rafter-sim`'s hidden `internal-test-hooks` dependency is
+gone, and that blocker is closed: the kernel self-check the simulator reached
+for is now the documented public `Node::validate_derived_state`, returning a
+typed `StateValidationError`, and the feature is deleted from `rafter`
+entirely. The design and what it deliberately defers are recorded in
+[`docs/api-promotions.md`](docs/api-promotions.md). Closing the blocker is not
+the same as deciding to publish `rafter-sim`; that decision has not been taken
+and the crate still carries `publish = false`. C1 streaming snapshots and C2
+replication pipelining remain additive future work and are not preconditions
+smuggled into this preflight.
 
 For a non-release completion run at one checked-out SHA, run and retain:
 
@@ -94,15 +100,33 @@ Naming a crate here is not the same as checking it. `rafter-fuzz` and
 command below reaches either one; the Verification section records what does
 reach them and what still does not.
 
-`rafter-sim` stays workspace-only until its dependency on the core crate's
-hidden `internal-test-hooks` feature is either removed or promoted into an
-intentional public simulation hook.
+`rafter-sim` stays workspace-only, but no longer because of a hidden surface.
+Its dependency on the core crate's `internal-test-hooks` feature is removed and
+the feature is deleted; the hook it needed was promoted into
+`Node::validate_derived_state`, a documented public kernel API. The crate is
+absent from the 0.0.1 list because that release publishes the embedding graph,
+and adding a simulation and model-checking harness to it is a separate decision
+nobody has taken.
 
 ### Publish Order
 
 For the first 0.0.1 release, publish in dependency order. Cargo checks versioned
 path dependencies against the registry when packaging, so dependent crates cannot
 fully package until their predecessors are live on crates.io.
+
+Registry state, verified 2026-08-15 against the live index: `rafter`,
+`rafter-runtime-api`, `rafter-storage`, `rafter-codec`,
+`rafter-transport-tcp-insecure`, `rafter-runtime`, `rafter-app`,
+`rafter-service`, and `rafter-multiraft` are already on crates.io at 0.0.1,
+published 2026-07-09. `rafter-crc32` is not there at all; its name is
+unclaimed. Those nine archives predate this checkout and cannot be replaced:
+the published `rafter-storage` and `rafter-codec` declare neither `rafter-crc32`
+nor `fs4`, and the published `rafter` has no `ClientProposalInput`. So 0.0.1 is
+spent. Publishing the current sources needs a new version across all ten
+crates; `cargo publish -p rafter` at 0.0.1 is rejected as already uploaded.
+Until that bump lands, a per-crate `cargo publish --dry-run` for any crate with
+a Rafter dependency fails, because Cargo resolves that dependency to the stale
+registry 0.0.1 instead of to this checkout.
 
 ```sh
 cargo publish --dry-run -p rafter
@@ -136,14 +160,31 @@ cargo publish --dry-run -p rafter-multiraft
 cargo publish -p rafter-multiraft
 ```
 
+That sequence is a valid dependency order and stays the order to publish in,
+but the `--dry-run` half of each pair only proves anything once the crates
+above it are live. The check a checkout can run today packages the whole set in
+one command, so Cargo verifies each archive against the sibling archives the
+same run just built rather than against the registry:
+
+```sh
+cargo package -p rafter -p rafter-runtime-api -p rafter-crc32 \
+  -p rafter-storage -p rafter-codec -p rafter-transport-tcp-insecure \
+  -p rafter-runtime -p rafter-app -p rafter-service -p rafter-multiraft
+```
+
+Run that and require it green before the first `cargo publish` of a release.
+
 ### Verification
 
 Cargo packages only files under a crate's own directory, so every publishable
 crate keeps a physical copy of the repository's `LICENSE` and `NOTICE` beside
 its manifest. The root files stay authoritative: the per-crate copies must match
 them byte for byte, and a copy that drifts ships a licence the project did not
-grant. Nothing enforces that today; comparing each copy against the root is a
-good CI check to add.
+grant. That is enforced: `cargo test -p rafter --test publish_metadata_contract`
+reads the publish list out of this file, compares every crate it names against
+the root `LICENSE` and `NOTICE` byte for byte, and holds those same crates to
+the description, readme, keywords, and categories a crates.io upload needs. It
+runs under `cargo test --workspace`.
 
 Before publishing, run:
 
@@ -164,11 +205,15 @@ scripts/reference-package-process-check
 ```
 
 `scripts/rustdoc-check` is the gate on the HTML that reaches docs.rs. It builds
-the publish list above by name as well as the whole workspace, because
-`rafter-sim` depends on `rafter` with the hidden `internal-test-hooks` feature
-and resolver 2 unifies that feature into every `--workspace` invocation: a
-workspace-only doc build documents `rafter` in a shape no published consumer
-can produce.
+the publish list above by name as well as the whole workspace, and both builds
+still earn their place: naming the publish list pins the exact set a crates.io
+reader lands on under `-D missing-docs`, while the workspace build also covers
+crates that never reach docs.rs but are still read here. The two no longer
+differ in the *shape* of `rafter`. They used to: `rafter-sim` depended on
+`rafter` with the hidden `internal-test-hooks` feature and resolver 2 unified
+it into every `--workspace` invocation, so a workspace-only doc build
+documented `rafter` in a shape no published consumer could produce. That
+feature no longer exists.
 
 `scripts/reference-package-check` and
 `scripts/reference-package-process-check` disable Cargo's per-archive
@@ -181,11 +226,16 @@ command also runs every reviewed ignored process suite from the unpacked set,
 then rebuilds and tests that same set in public-feature shape on Rust 1.88 with
 a process smoke. Archive creation remains on the newer packaging toolchain.
 
-These commands leave three things unchecked, none of which is implied away
-elsewhere in this file:
+These commands leave one thing unchecked, which is not implied away elsewhere
+in this file. Two prior gaps have closed. Per-crate `LICENSE` and `NOTICE`
+copies are now compared byte for byte against the root by the publish-metadata
+contract above. And `rafter` previously had no published-shape build outside
+`scripts/reference-package-check` phase 6, because every `--workspace`
+invocation resolved `rafter-sim` and turned the hidden feature on; with
+`internal-test-hooks` removed, `rafter` has no features, every check builds
+the shape a published consumer gets, and phase 6 is corroboration rather than
+the sole evidence.
 
-- **Per-crate `LICENSE` and `NOTICE` copies.** Nothing compares them against
-  the root, as the paragraph above says.
 - **`bench-compare` formatting, and its comparison binaries' lints.**
   `bench-compare` is not format-checked by any command here or in CI, and it is
   not currently `rustfmt` clean. Its `raft-rs` and `openraft` binaries sit
@@ -193,11 +243,6 @@ elsewhere in this file:
   that, and it compiles those binaries without linting them. The
   `--no-default-features` invocation above lints the Rafter-only binaries and
   the shared library, which is all of `bench-compare` except those two files.
-- **`rafter` in its published feature shape, outside the package lane.** Every
-  `--workspace` invocation resolves `rafter-sim` and therefore builds `rafter`
-  with `internal-test-hooks` on. `scripts/reference-package-check` phase 6 is
-  the only check that the crate composes with that feature off, which is the
-  shape a published consumer gets.
 
 Run `scripts/private-name-scan` with private downstream names supplied through
 `RAFTER_PRIVATE_NAME_PATTERNS` before tagging a public release. It reads every

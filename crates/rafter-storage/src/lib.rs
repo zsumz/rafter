@@ -15,6 +15,47 @@
 //! The exact version-1 bytes are specified in `STORAGE_FORMAT_V1.md`; durable
 //! publication and recovery ordering are specified in `DURABILITY_PROTOCOL.md`.
 //!
+//! # The two stores a replica cannot restart without
+//!
+//! The in-memory implementations satisfy the same trait contracts as the
+//! file-backed ones, which is what makes them usable as the durable half of a
+//! deterministic test. They are not durable, and nothing here makes them so.
+//!
+//! ```
+//! use rafter::{LogIndex, NodeId, Term};
+//! use rafter_storage::{
+//!     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, PersistedRaftLogEntry, RaftHardState,
+//!     RaftHardStateStore, RaftLogSegment,
+//! };
+//!
+//! // Hard state is the set of promises this replica has already made. A store
+//! // that returned Ok has made them durable, which is what stops a restarted
+//! // node from voting a second time in a term it has already voted in.
+//! let mut hard_state_store = InMemoryRaftHardStateStore::new();
+//! hard_state_store
+//!     .write_hard_state(RaftHardState {
+//!         current_term: Term(7),
+//!         voted_for: Some(NodeId(2)),
+//!         commit_index: LogIndex::ZERO,
+//!         committed_configuration: None,
+//!     })
+//!     .expect("in-memory hard-state write succeeds");
+//! assert_eq!(hard_state_store.current().voted_for, Some(NodeId(2)));
+//!
+//! // The log segment is append-only above its compacted prefix, and replay
+//! // hands back exactly what a restart would rebuild the kernel from.
+//! let mut log_segment = InMemoryRaftLogSegment::new();
+//! log_segment
+//!     .append_entries(&[PersistedRaftLogEntry::application(
+//!         LogIndex(1),
+//!         Term(7),
+//!         b"set alpha=one".to_vec(),
+//!     )])
+//!     .expect("the first entry starts at the segment's next index");
+//! assert_eq!(log_segment.next_index(), LogIndex(2));
+//! assert_eq!(log_segment.replay_entries().len(), 1);
+//! ```
+//!
 //! # Format Compatibility
 //!
 //! Current writers emit version 1 hard-state, log-entry, snapshot, and pending

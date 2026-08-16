@@ -6,10 +6,12 @@ pub(crate) fn expected_execution_contract(
     profile: &str,
     canonical_check: &str,
 ) -> Result<SimulatorExecutionContract, String> {
+    // Keyed by the model profile a lane invokes, not the lane: weekly runs
+    // nightly's profile until a >=32GB runner exists, so it emits nightly's
+    // soak identity and bounds. See `scheduled_model_profile`.
     let (profile_id, steps, maxima, tick_skew_weight) = match profile {
         "pr" => ("raft-soak", 320, [24, 12, 4, 8, 2, 2, 2], 3),
-        "nightly" => ("raft-nightly-soak", 1024, [64, 32, 4, 16, 2, 2, 2], 3),
-        "weekly" => ("raft-weekly-soak", 4096, [192, 96, 16, 48, 8, 8, 8], 5),
+        "nightly" | "weekly" => ("raft-nightly-soak", 1024, [64, 32, 4, 16, 2, 2, 2], 3),
         value => return Err(format!("unsupported simulator profile `{value}`")),
     };
     let (suffix, check_kind, node_config_id, node_count) = match canonical_check {

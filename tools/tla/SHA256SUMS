@@ -1,5 +1,22 @@
-# tla2tools.jar from https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/
-# GitHub release asset 481553986, updated 2026-07-18 and independently
-# identified by the official Releases API digest. The asset ID avoids the
-# mutable v1.8.0 browser-download URL used by prior pins.
-cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3  tla2tools.jar
+# tla2tools.jar from the repo-controlled mirror
+# https://github.com/zsumz/tla-tools/releases/tag/tla2tools-2026.08.11.125311
+# (asset 510788686), whose contract is that published assets are never
+# replaced or deleted.
+#
+# The mirror exists because upstream tlaplus/tlaplus publishes v1.8.0 as a
+# ROLLING NIGHTLY CHANNEL, not an immutable release: the tag stays fixed while
+# its assets are rebuilt, re-uploaded under fresh asset IDs, and the
+# predecessors deleted. Three distinct jar digests were observed in five
+# weeks, and two successively pinned upstream asset IDs (481553986, then
+# 510140106) went stale, so an upstream asset ID is a liveness pin, not an
+# identity pin. The mirrored bytes are the upstream asset 510140106 build,
+# pulled 2026-08-11, verified against the Releases API digest, reporting
+# TLC 2026.08.11.125311.
+#
+# The sha256 below remains the only trust anchor: scripts/tla-model-check
+# refuses any jar that does not match it, and the profile contract in
+# verification/raft-invariant-profiles.json pins the same digest
+# independently, so a swapped asset -- on the mirror or anywhere else --
+# fails closed instead of being accepted. The mirror solves liveness;
+# the digest solves identity.
+ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f  tla2tools.jar

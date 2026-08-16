@@ -278,7 +278,7 @@ pub(super) fn unfrozen_effective_membership_breaks_commit_witness_regression() {
     let mutated = replace_operator(
         &raft,
         "FrozenCommitContext(\n    leaderRole, leaderTerm, effectiveView, authorityView)",
-        "MatchingReplicasFrom(logs, snapshotIndexes, snapshotPrefixes, node, index)",
+        "MatchingReplicasFrom(logs, snapshotIndexes, node, index)",
         "[leaderRole |-> leaderRole,\n   leaderTerm |-> leaderTerm,\n   effectiveMembership |-> authorityView,\n   authorityMembership |-> authorityView]",
     );
     let detector =
@@ -331,7 +331,7 @@ pub(super) fn missing_effective_recomputation_breaks_overwrite_regression() {
     let mutated = replace_operator(
         &raft,
         "EffectiveConfiguration(node)",
-        "SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes, compactionPendings)",
+        "SnapshotIdentitySoundFor(logs, snapshotIndexes)",
         "AppliedConfiguration(node)",
     );
     let detector =
@@ -358,7 +358,7 @@ pub(super) fn follower_recomputation_breaks_delayed_heartbeat_regression() {
     let mutated = replace_operator(
         &raft,
         "EffectiveConfiguration(node)",
-        "SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes, compactionPendings)",
+        "SnapshotIdentitySoundFor(logs, snapshotIndexes)",
         "AppliedConfiguration(node)",
     );
     let detector =

@@ -3,12 +3,14 @@
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
+/// The chunked path follows the same sender rule as the whole-message one: the
+/// boundary a leader relays is not a statement about who may relay it.
 #[test]
-fn newly_added_leader_with_older_boundary_snapshot_chunk_is_rejected() {
+fn newly_added_leader_relays_an_older_boundary_snapshot_chunk() {
     let mut follower = node(2, &[1, 3, 4]);
     let payload = b"dynamic chunk snapshot".to_vec();
-    // Node 4 may be known to the embedding, but the snapshot boundary
-    // membership predates it and therefore does not authorize it as sender.
+    // Node 4 is a voter in this follower's current membership; the boundary
+    // membership it relays predates node 4.
     let snapshot = test_snapshot_with_committed_voters(3, 4, 5, &payload, &[1, 2, 3]);
 
     let outputs = follower.step(Input::Message {
@@ -16,6 +18,48 @@ fn newly_added_leader_with_older_boundary_snapshot_chunk_is_rejected() {
         message: Message::InstallSnapshotChunk(InstallSnapshotChunk {
             term: Term(5),
             leader_id: NodeId(4),
+            transfer_id: snapshot.transfer_id(),
+            metadata: snapshot.metadata,
+            total_payload_len: snapshot.application_payload_len,
+            application_payload_crc32: snapshot.application_payload_crc32,
+            offset: 0,
+            chunk: payload,
+            done: true,
+        }),
+    });
+
+    assert_eq!(follower.current_term(), Term(5));
+    assert_eq!(follower.leader_hint(), Some(NodeId(4)));
+    assert_eq!(follower.snapshot_index(), LogIndex(3));
+    assert!(outputs
+        .iter()
+        .any(|output| matches!(output, Output::ApplySnapshot { .. })));
+    let response = install_snapshot_response_from_outputs(&outputs);
+    assert!(response.success);
+    assert_eq!(response.last_included_index, LogIndex(3));
+    assert_eq!(
+        follower
+            .snapshot_transfer_status()
+            .rejected_chunks
+            .metadata_mismatch,
+        0
+    );
+}
+
+/// The sender check that survives: a node this follower cannot place in any
+/// membership it can currently see is still refused, and the refusal is still
+/// accounted as a metadata-mismatch rejection.
+#[test]
+fn sender_outside_every_visible_membership_is_rejected() {
+    let mut follower = node(2, &[1, 3]);
+    let payload = b"stranger chunk snapshot".to_vec();
+    let snapshot = test_snapshot_with_committed_voters(3, 4, 5, &payload, &[1, 2, 3]);
+
+    let outputs = follower.step(Input::Message {
+        from: NodeId(9),
+        message: Message::InstallSnapshotChunk(InstallSnapshotChunk {
+            term: Term(5),
+            leader_id: NodeId(9),
             transfer_id: snapshot.transfer_id(),
             metadata: snapshot.metadata,
             total_payload_len: snapshot.application_payload_len,

@@ -150,11 +150,16 @@ boundary it finds violated. `scripts/reference-package-process-check` uses the
 same materialization and rejection phases; it does not carry a second publish
 list or construct its own patch table.
 
-Step 7 is the only check anywhere that builds `rafter` in its published feature
-shape. `rafter-sim` depends on `rafter` with the hidden `internal-test-hooks`
-feature, and resolver 2 unifies features across every package one invocation
-selects, so every `--workspace` command over the root workspace compiles
-`rafter` with that hook on. Only this lane resolves a graph in which it is off.
+Step 7 used to be the only check anywhere that built `rafter` in its published
+feature shape. `rafter-sim` depended on `rafter` with the hidden
+`internal-test-hooks` feature, and resolver 2 unifies features across every
+package one invocation selects, so every `--workspace` command over the root
+workspace compiled `rafter` with that hook on. The hook is now the documented
+public `Node::validate_derived_state` and the feature is deleted, so `rafter`
+has no features and every command builds the published shape. Step 7 keeps its
+rejection rule: it is what stops a hidden feature from being reintroduced and
+reaching a consumer graph unnoticed, which is a standing boundary rather than a
+statement about today's manifests.
 
 The lanes package with Cargo's per-archive verification disabled, then perform
 the stronger portfolio checks themselves. Once a Rafter version exists on

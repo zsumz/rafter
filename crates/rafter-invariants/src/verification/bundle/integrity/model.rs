@@ -62,6 +62,13 @@ impl AuthenticatedArtifacts {
         }
     }
 
+    /// Builds a snapshot directly from bytes, for scenarios that exercise
+    /// binding classification rather than artifact authentication itself.
+    #[cfg(test)]
+    pub(crate) fn for_test(bytes_by_artifact: BTreeMap<ArtifactRef, Arc<[u8]>>) -> Self {
+        Self::new(bytes_by_artifact, Vec::new())
+    }
+
     pub(crate) fn bytes(&self, artifact: &ArtifactRef) -> Result<&[u8], AggregateError> {
         self.bytes_by_artifact
             .get(artifact)

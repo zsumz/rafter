@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{ArtifactRef, ExecutableReceipt, SimulatorLivenessBinding, SourceReceipt};
+use super::{
+    ArtifactRef, ExecutableReceipt, SimulatorLivenessBinding, SourceReceipt, TlaContinuationBinding,
+};
 use crate::contract::profile::ProfileContract;
 
 /// Current version of the hashed execution-plan contract.
@@ -88,6 +90,15 @@ pub struct CheckReceipt {
     pub observations: BTreeMap<String, u64>,
     #[serde(deserialize_with = "deserialize_present_option")]
     pub simulator_liveness: Option<SimulatorLivenessBinding>,
+    /// Primary-continuation policy and outcome, present on TLA+ receipts only.
+    ///
+    /// Unlike `simulator_liveness` this is additive rather than
+    /// present-but-nullable: adding a required key would rewrite every layer's
+    /// serialized receipts for a field only one layer uses. The TLA+ receipt
+    /// validator requires it, so the layer that needs it still fails closed
+    /// when it is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tla_continuation: Option<TlaContinuationBinding>,
     pub duration_ms: u64,
     pub peak_rss_kib: u64,
     pub artifacts: Vec<ArtifactRef>,
@@ -102,6 +113,20 @@ where
 }
 
 /// Exhaustive reasons why a deterministic check stopped.
+///
+/// `BudgetElapsedFrontierOpen` is a pass, and it is a separate variant from
+/// `FrontierExhausted` because those two are different facts and a receipt is
+/// read by people who did not write it. A reporting continuation that spends
+/// its budget with a healthy open frontier passes -- its obligations carried
+/// the gate -- but it did not drain anything, and its own
+/// `progress_states_left` observation says so. Recording it as
+/// `FrontierExhausted` made every scheduled receipt's primary field contradict
+/// the receipt's own numbers, recoverable only by a reader who knew to
+/// cross-check `tla_continuation`. The variant costs one enum arm and removes
+/// the need for that knowledge.
+///
+/// Variants are appended rather than inserted: `Ord` is derived, so declaration
+/// order is part of the type's behaviour.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckCompletion {
@@ -112,4 +137,5 @@ pub enum CheckCompletion {
     BudgetExhausted,
     Timeout,
     HarnessError,
+    BudgetElapsedFrontierOpen,
 }

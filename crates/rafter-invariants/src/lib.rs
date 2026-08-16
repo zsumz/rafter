@@ -33,9 +33,9 @@ pub use contract::catalog::{
     DetectorReplayBuild, DetectorReplayChallenge, DetectorReplayContract,
     DetectorReplayFixtureInventory, DetectorReplayPolicy, DetectorReplaySource,
     DetectorReplayTargetDirectory, EvidenceDescriptor, EvidenceLayer, EvidencePolicy,
-    EvidenceStrength, InvariantDescriptor, ProfileContract, ProfileManifest,
-    RequiredClauseStrength, RunnerContract, SimulatorCheckContract, SimulatorIdentity,
-    TestIdentity, VerifierContract,
+    EvidenceStrength, InvariantDescriptor, ObligationCompletion, ProfileContract, ProfileManifest,
+    ProofObligationContract, RequiredClauseStrength, RunnerContract, SimulatorCheckContract,
+    SimulatorIdentity, TestIdentity, VerifierContract,
 };
 pub use contract::registry::render_registry_markdown;
 pub use contract::registry::{
@@ -45,10 +45,11 @@ pub use contract::registry::{
 #[cfg(test)]
 pub(crate) use evidence::ResultBundle;
 pub use evidence::{
-    ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus, ExecutableReceipt,
-    ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvocationReceipt,
-    LauncherReceipt, PlanInput, ProducerBindingReceipt, SourceMaterializationReceipt,
-    SourceReceipt, ToolReceipt, PLAN_SCHEMA_VERSION,
+    ArtifactRef, CheckCompletion, CheckReceipt, ContinuationOutcome, EvidenceResult,
+    EvidenceStatus, ExecutableReceipt, ExecutionPlanReceipt, ExecutionReceipt,
+    FailureClassification, InvocationReceipt, LauncherReceipt, PlanInput, PrimaryCompletionPolicy,
+    ProducerBindingReceipt, SourceMaterializationReceipt, SourceReceipt, TlaContinuationBinding,
+    ToolReceipt, PLAN_SCHEMA_VERSION,
 };
 pub use gate::{
     current_source_ref, run_all, verify_and_write_report, verify_layer_evidence, verify_report_set,

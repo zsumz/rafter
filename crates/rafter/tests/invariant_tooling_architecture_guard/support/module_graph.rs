@@ -257,6 +257,101 @@ fn path_value(source: &Path, meta: &Meta) -> String {
     path.value()
 }
 
+/// Every `#[test]` the invariant crate declares, named the way libtest names
+/// it — the module path the crate mounts the file at, plus the function —
+/// mapped to whether `#[cfg(target_os = "linux")]` gates it.
+///
+/// This walks the declared module graph rather than the Rust files on disk
+/// because the crate mounts several test bodies through `include!`, and some of
+/// those fragments are `.inc` files that a Rust-file sweep would never open.
+pub(crate) fn declared_test_names(root: &Path) -> BTreeMap<String, bool> {
+    let graph = declared_module_graph_from_roots(root, &invariant_test_roots(root));
+    let root = std::fs::canonicalize(root)
+        .unwrap_or_else(|error| panic!("canonicalize test-name root {}: {error}", root.display()));
+    let mut names = BTreeMap::new();
+    for (relative, module) in &graph {
+        let file = syn::parse_file(&read(&root.join(relative)))
+            .unwrap_or_else(|error| panic!("{relative} must parse: {error}"));
+        collect_test_functions(&file.items, &module.path.join("::"), &mut names);
+    }
+    names
+}
+
+/// Every crate root Cargo compiles a test binary from for `-p
+/// rafter-invariants`: the library, the binary, and each integration-test
+/// target. A lane filter is applied to all of them, so a derivation that stops
+/// at the library would not see a scenario that joined the selection from an
+/// integration test.
+fn invariant_test_roots(root: &Path) -> Vec<PathBuf> {
+    let crate_root = root.join("crates/rafter-invariants");
+    let mut roots = vec![
+        crate_root.join("src/lib.rs"),
+        crate_root.join("src/main.rs"),
+    ];
+    let integration = crate_root.join("tests");
+    let mut targets = std::fs::read_dir(&integration)
+        .unwrap_or_else(|error| panic!("read {}: {error}", integration.display()))
+        .map(|entry| entry.expect("read integration test entry").path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|value| value == "rs"))
+        .collect::<Vec<_>>();
+    targets.sort();
+    roots.extend(targets);
+    roots
+}
+
+/// Collect the `#[test]` functions `items` declares under `module`, recursing
+/// through inline modules. `module` is empty at a crate root.
+pub(crate) fn collect_test_functions(
+    items: &[Item],
+    module: &str,
+    names: &mut BTreeMap<String, bool>,
+) {
+    for item in items {
+        match item {
+            Item::Fn(function)
+                if function
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("test")) =>
+            {
+                names.insert(
+                    qualify(module, &function.sig.ident.to_string()),
+                    is_linux_only(&function.attrs),
+                );
+            }
+            Item::Mod(inline) => {
+                if let Some((_, nested)) = &inline.content {
+                    collect_test_functions(
+                        nested,
+                        &qualify(module, &inline.ident.to_string()),
+                        names,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn qualify(module: &str, segment: &str) -> String {
+    if module.is_empty() {
+        segment.to_owned()
+    } else {
+        format!("{module}::{segment}")
+    }
+}
+
+/// The launcher lane is macOS and the Maelstrom lane is Linux, so a
+/// Linux-gated scenario belongs to one selection and not the other. Callers
+/// decide which; this only reports the gate.
+fn is_linux_only(attributes: &[Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && matches!(&attribute.meta, Meta::List(list)
+                if list.tokens.to_string().replace(' ', "").contains("target_os=\"linux\""))
+    })
+}
+
 pub(crate) fn is_declared_test_module(modules: &DeclaredModuleGraph, relative: &str) -> bool {
     const SOURCE_ROOT: &str = "crates/rafter-invariants/src/";
     if !relative.starts_with(SOURCE_ROOT) {

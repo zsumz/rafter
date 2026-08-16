@@ -22,8 +22,27 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends graphviz gnuplot-nox
+
+        # Three lanes across three rounds died in this composite's network
+        # fetches. Retries are bounded and fail closed, and change nothing
+        # about what is accepted: the Maelstrom archive is still checked
+        # against its pinned sha256 below, and apt still verifies its own
+        # package signatures.
+        retry() {
+          local attempt=1
+          until "$@"; do
+            if (( attempt >= 3 )); then
+              echo "fetch failed after ${attempt} attempts: $*" >&2
+              return 1
+            fi
+            echo "fetch attempt ${attempt} failed, retrying in 5s: $*" >&2
+            sleep 5
+            attempt=$(( attempt + 1 ))
+          done
+        }
+
+        retry sudo apt-get update
+        retry sudo apt-get install -y --no-install-recommends graphviz gnuplot-nox
     - name: Preflight Maelstrom analysis tools
       if: inputs.maelstrom == 'true'
       shell: bash
@@ -54,7 +73,24 @@ runs:
           fi
         done
         mkdir -m 0700 "$install_root"
-        curl -fsSL -o "$archive" \
+        # Bounded retries for the same reason as the apt step above. Nothing
+        # about acceptance changes: whatever lands here is still checked
+        # against the pinned sha256 below, so a corrupt or substituted archive
+        # fails exactly as it did before.
+        retry() {
+          local attempt=1
+          until "$@"; do
+            if (( attempt >= 3 )); then
+              echo "fetch failed after ${attempt} attempts: $*" >&2
+              return 1
+            fi
+            echo "fetch attempt ${attempt} failed, retrying in 5s: $*" >&2
+            sleep 5
+            attempt=$(( attempt + 1 ))
+          done
+        }
+
+        retry curl -fsSL -o "$archive" \
           "https://github.com/jepsen-io/maelstrom/releases/download/${version}/maelstrom.tar.bz2"
         actual="$(sha256sum "$archive" | awk '{ print $1 }')"
         if [[ "$actual" != "$expected" ]]; then

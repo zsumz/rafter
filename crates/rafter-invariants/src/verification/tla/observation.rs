@@ -7,6 +7,7 @@ use crate::{
         process::ProcessLog,
         tla::{parse_latest_progress, TlcProgress, TlcSummary, REQUIRED_MODEL_TRANSITIONS},
     },
+    evidence::PrimaryCompletionPolicy,
     verification::AggregateError,
 };
 
@@ -32,15 +33,35 @@ pub(super) fn parse_main_summary(
     }
 }
 
-pub(super) fn derive(
-    symbols: &[String],
-    trace_passed: bool,
-    detector_observations: BTreeMap<String, u64>,
-    checkpoint: Option<&RecoveryReport>,
-    main_progress: Option<TlcProgress>,
-    main: Option<&ProcessLog>,
-    main_summary: Option<&TlcSummary>,
-) -> BTreeMap<String, u64> {
+/// The independently verified inputs the observation frame is a function of.
+///
+/// Each field is produced by its own verification pass over its own artifacts;
+/// grouping them keeps that provenance readable and stops the frame from being
+/// assembled out of a long positional argument list.
+pub(super) struct DerivedObservations<'a> {
+    pub(super) symbols: &'a [String],
+    pub(super) trace_passed: bool,
+    pub(super) detector_observations: BTreeMap<String, u64>,
+    pub(super) obligation_observations: BTreeMap<String, u64>,
+    pub(super) checked_predicates_are_earned: bool,
+    pub(super) checkpoint: Option<&'a RecoveryReport>,
+    pub(super) main_progress: Option<TlcProgress>,
+    pub(super) main: Option<&'a ProcessLog>,
+    pub(super) main_summary: Option<&'a TlcSummary>,
+}
+
+pub(super) fn derive(inputs: DerivedObservations<'_>) -> BTreeMap<String, u64> {
+    let DerivedObservations {
+        symbols,
+        trace_passed,
+        detector_observations,
+        obligation_observations,
+        checked_predicates_are_earned,
+        checkpoint,
+        main_progress,
+        main,
+        main_summary,
+    } = inputs;
     let mut derived = BTreeMap::from([
         ("configured_invariants".to_owned(), symbols.len() as u64),
         ("tool_pin_verified".to_owned(), 1),
@@ -54,6 +75,7 @@ pub(super) fn derive(
         );
     }
     derived.extend(detector_observations);
+    derived.extend(obligation_observations);
     if let Some(checkpoint) = checkpoint {
         derived.extend([
             ("checkpoint_enabled".to_owned(), 1),
@@ -93,13 +115,36 @@ pub(super) fn derive(
             ("states_left_on_queue".to_owned(), summary.states_left),
             ("search_depth".to_owned(), summary.search_depth),
         ]);
-        if main.is_some_and(|log| successful_log(log) && successful_summary(summary)) {
-            for symbol in symbols.iter().filter(|symbol| symbol.as_str() != "TypeOK") {
-                derived.insert(format!("checked:{symbol}"), 1);
-            }
+    }
+    // Whether the predicates were checked over an exhausted space is decided by
+    // the caller from the pinned policy: the primary continuation under a
+    // gating policy, the obligations under a reporting one.
+    if checked_predicates_are_earned {
+        for symbol in symbols.iter().filter(|symbol| symbol.as_str() != "TypeOK") {
+            derived.insert(format!("checked:{symbol}"), 1);
         }
     }
     derived
+}
+
+/// Independent rederivation of the producer's `checked:` justification.
+///
+/// A gating profile earns it from its own primary continuation completing
+/// cleanly. A reporting profile earns it from every declared obligation
+/// discharging -- they bind the same predicates and they did drain.
+pub(super) fn checked_predicates_are_earned(
+    policy: PrimaryCompletionPolicy,
+    obligations_passed: bool,
+    main: Option<&ProcessLog>,
+    main_summary: Option<&TlcSummary>,
+) -> bool {
+    if !policy.gates() {
+        return obligations_passed;
+    }
+    match (main, main_summary) {
+        (Some(log), Some(summary)) => successful_log(log) && successful_summary(summary),
+        _ => false,
+    }
 }
 
 pub(super) fn timeout_progress(

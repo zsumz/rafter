@@ -1,11 +1,11 @@
-//! Scenarios: profile-v9 wire shape and cross-profile policy remain strict.
+//! Scenarios: profile-v10 wire shape and cross-profile policy remain strict.
 
 use std::path::PathBuf;
 
 use super::ProfileManifest;
 
 #[test]
-fn profile_v9_wire_round_trip_is_stable() {
+fn profile_v10_wire_round_trip_is_stable() {
     let manifest = load_manifest();
     let encoded = serde_json::to_value(&manifest).expect("encode profile manifest");
     let decoded: ProfileManifest = serde_json::from_value(encoded.clone()).expect("decode profile");
@@ -42,6 +42,108 @@ fn profile_models_reject_unknown_fields_and_preserve_the_reviewed_default() {
         serde_json::to_value(decoded).unwrap()["profiles"]["pr"]["runners"]["simulator"]
             .get("simulator_checks")
             .is_none()
+    );
+}
+
+/// Negative fixtures for the v9 -> v10 proof-obligation migration.
+///
+/// The migration is a contract identity change, so every retired identity must
+/// fail closed: the old manifest schema, the old TLA producer, and the deleted
+/// upstream tool pin. A checkout that still carries any of them must not be
+/// able to produce or accept TLA evidence under the new contract.
+#[test]
+fn profile_v10_migration_rejects_every_retired_v9_identity() {
+    let (catalog, manifest) = crate::tests::loaded();
+    manifest
+        .validate(&catalog)
+        .expect("the v10 manifest validates");
+    assert_eq!(manifest.schema_version, 10);
+
+    let mut retired_schema = manifest.clone();
+    retired_schema.schema_version = 9;
+    assert!(retired_schema.validate(&catalog).is_err());
+
+    let mut retired_producer = manifest.clone();
+    retired_producer
+        .profiles
+        .get_mut("pr")
+        .unwrap()
+        .runners
+        .get_mut("tla")
+        .unwrap()
+        .producer = "rafter-invariants-tla-v15".to_owned();
+    assert!(retired_producer.validate(&catalog).is_err());
+
+    for (key, retired) in [
+        ("tool_asset_id", "481553986"),
+        (
+            "tool_sha256",
+            "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3",
+        ),
+    ] {
+        let mut retired_pin = manifest.clone();
+        retired_pin
+            .profiles
+            .get_mut("nightly")
+            .unwrap()
+            .runners
+            .get_mut("tla")
+            .unwrap()
+            .configuration
+            .insert(key.to_owned(), retired.to_owned());
+        assert!(
+            retired_pin.validate(&catalog).is_err(),
+            "retired tool {key} must be rejected"
+        );
+    }
+}
+
+/// The obligation vocabulary must decode as absent-is-empty and re-encode as
+/// absent, so a manifest that predates it and one that declares an empty list
+/// are the same contract. Without that, the v10 bump would silently change
+/// every receipt that embeds a runner contract.
+#[test]
+fn an_absent_obligation_list_round_trips_as_empty() {
+    // Deliberately a synthetic obligation-free document rather than the live
+    // manifest: the property under test is what the *absence* of the key
+    // means, which stops being observable once real obligations are wired.
+    let mut obligation_free = load_manifest();
+    for profile in ["pr", "nightly", "weekly"] {
+        obligation_free
+            .profiles
+            .get_mut(profile)
+            .unwrap()
+            .runners
+            .get_mut("tla")
+            .unwrap()
+            .obligations
+            .clear();
+    }
+
+    let mut absent = serde_json::to_value(&obligation_free).unwrap();
+    for profile in ["pr", "nightly", "weekly"] {
+        assert!(
+            absent["profiles"][profile]["runners"]["tla"]
+                .get("obligations")
+                .is_none(),
+            "an empty obligation list must not serialize at all"
+        );
+        absent["profiles"][profile]["runners"]["tla"]
+            .as_object_mut()
+            .unwrap()
+            .insert("obligations".to_owned(), serde_json::json!([]));
+    }
+
+    let decoded: ProfileManifest = serde_json::from_value(absent).unwrap();
+    for profile in ["pr", "nightly", "weekly"] {
+        assert!(decoded.profiles[profile].runners["tla"]
+            .obligations
+            .is_empty());
+    }
+    assert_eq!(decoded, obligation_free);
+    assert_eq!(
+        serde_json::to_value(&decoded).unwrap(),
+        serde_json::to_value(&obligation_free).unwrap()
     );
 }
 

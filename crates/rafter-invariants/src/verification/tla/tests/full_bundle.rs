@@ -14,9 +14,9 @@ use super::verify;
 use crate::{
     evidence::format::process::{ProcessLog, TerminationReceipt},
     evidence::format::tla::{
-        detector_config_kind, detector_label, detector_log_kind, render_detector_config,
-        DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES, MUTATION_SUITE_ARTIFACT_KIND,
-        MUTATION_SUITE_LABEL,
+        detector_config_kind, detector_label, detector_log_kind, obligation_config_kind,
+        obligation_label, obligation_log_kind, render_detector_config, DetectorProbe,
+        DEFAULT_FIXTURE_MODE, DETECTOR_PROBES, MUTATION_SUITE_ARTIFACT_KIND, MUTATION_SUITE_LABEL,
     },
     provenance::invocation::digest_environment,
     verification::tla::REQUIRED_MUTATION_TESTS,
@@ -99,6 +99,133 @@ fn timed_out_tla_bundle_verifies_progress_without_terminal_proof() {
             && result.classification == Some(crate::FailureClassification::CoverageNotReached)
     }));
     verify(&fixture.bundle, &fixture.root).expect("timed-out TLA progress verifies");
+}
+
+/// The headline of the demotion: a scheduled continuation that spends its
+/// budget with the frontier still open is a green, fully verified receipt --
+/// and it still says so out loud in its continuation binding.
+#[test]
+fn reporting_continuation_with_an_open_frontier_verifies() {
+    let mut fixture = Fixture::new();
+    fixture.set_reporting_policy();
+
+    let check = &fixture.bundle.execution.checks[0];
+    let binding = check.tla_continuation.expect("continuation binding");
+    assert_eq!(
+        binding.policy,
+        crate::PrimaryCompletionPolicy::ReportingContinuation
+    );
+    assert_eq!(
+        binding.outcome,
+        crate::ContinuationOutcome::BudgetElapsedFrontierOpen
+    );
+    assert!(check.observations["progress_states_left"] > 0);
+    assert!(!check.observations.contains_key("states_left_on_queue"));
+    // The completion field alone is enough to read this receipt correctly. It
+    // does not claim a drained frontier that the very next observation refutes.
+    assert_eq!(
+        check.completion,
+        crate::CheckCompletion::BudgetElapsedFrontierOpen
+    );
+
+    verify(&fixture.bundle, &fixture.root).expect("reporting continuation verifies");
+}
+
+/// The inversion this variant exists to make impossible: a receipt whose
+/// primary completion claims a drained frontier while its own observations show
+/// an open one. Before the split there was no way to state the difference, so
+/// every scheduled receipt carried exactly this contradiction and nothing
+/// rejected it.
+#[test]
+fn a_reporting_receipt_may_not_claim_a_drained_frontier_over_an_open_one() {
+    let mut fixture = Fixture::new();
+    fixture.set_reporting_policy();
+    fixture.bundle.execution.checks[0].completion = crate::CheckCompletion::FrontierExhausted;
+
+    let error = verify(&fixture.bundle, &fixture.root)
+        .expect_err("a claimed drained frontier over progress counters must be rejected");
+    assert!(
+        error.to_string().contains("disagrees with proof artifacts"),
+        "{error}"
+    );
+}
+
+/// And the reverse: a run that genuinely drained may not record the elapsed
+/// completion either. The two facts are pinned in both directions, so neither
+/// can be used to launder the other.
+#[test]
+fn a_drained_continuation_may_not_claim_an_elapsed_budget() {
+    let mut fixture = Fixture::new();
+    fixture.bundle.execution.checks[0].completion =
+        crate::CheckCompletion::BudgetElapsedFrontierOpen;
+
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+/// A gating profile may never record the elapsed completion at all. Reporting
+/// mode is what makes an open frontier a pass; the PR tier gates on exhaustion,
+/// and a receipt that passes without draining is the one thing it may not do.
+#[test]
+fn a_gating_profile_may_not_record_an_elapsed_budget() {
+    let mut fixture = Fixture::new();
+    fixture.bundle.execution.checks[0].completion =
+        crate::CheckCompletion::BudgetElapsedFrontierOpen;
+    fixture.bundle.execution.checks[0]
+        .tla_continuation
+        .as_mut()
+        .expect("TLA fixture carries a continuation binding")
+        .outcome = crate::ContinuationOutcome::BudgetElapsedFrontierOpen;
+
+    assert_eq!(fixture.bundle.profile, "pr");
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+/// Demotion is about budget, not about safety. A counterexample found by a
+/// reporting continuation is still a counterexample, so a receipt that reports
+/// one while claiming a passing completion must fail closed.
+#[test]
+fn reporting_continuation_with_a_violation_is_still_red() {
+    let mut fixture = Fixture::new();
+    fixture.set_reporting_policy();
+    let mut log = fixture.read_log("tla-log");
+    log.timed_out = false;
+    log.exit_code = Some(12);
+    log.termination = Some(TerminationReceipt {
+        process_group: true,
+        term_signal_sent: false,
+        grace_ms: 30_000,
+        kill_signal_sent: false,
+    });
+    log.stdout = violation_output("ElectionSafety");
+    fixture.write_log("tla-log", &log);
+
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+/// Evidence integrity is not part of the demotion either. A timed-out
+/// continuation whose progress frame cannot be read proves nothing about the
+/// frontier it claims is healthy.
+#[test]
+fn reporting_continuation_with_a_malformed_log_is_still_red() {
+    let mut fixture = Fixture::new();
+    fixture.set_reporting_policy();
+    let mut log = fixture.read_log("tla-log");
+    log.stdout =
+        "@!@!@STARTMSG 2200:0 @!@!@\nmalformed progress\n@!@!@ENDMSG 2200 @!@!@\n".to_owned();
+    fixture.write_log("tla-log", &log);
+
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+/// The continuation binding is cross-checked against the log, so a receipt
+/// cannot quietly upgrade an elapsed run into a drained one.
+#[test]
+fn a_forged_exhausted_outcome_on_an_elapsed_continuation_fails_closed() {
+    let mut fixture = Fixture::new();
+    fixture.set_reporting_policy();
+    fixture.set_continuation_outcome(crate::ContinuationOutcome::FrontierExhausted);
+
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
 }
 
 #[test]
@@ -337,17 +464,28 @@ impl Fixture {
             artifact.path = format!("artifacts/{}", safe_name(&artifact.kind));
         }
         let mut fixture = Self { root, bundle };
+        // The obligation configurations are bound sources like any other, so
+        // the fixture checkout must carry the exact bytes the receipt claims
+        // TLC read. Which ones those are is whatever the profile declares.
+        let obligation_configs = fixture
+            .obligations()
+            .iter()
+            .map(|obligation| obligation.config.clone())
+            .collect::<Vec<_>>();
         for source in [
-            "Raft.tla",
-            "RafterInvariantDetectorNegative.tla",
-            "RafterInvariantDetectorNegative.cfg",
-            "RaftMembershipTraceSample.tla",
-            "RaftMembershipTraceSample.cfg",
-            "RaftCi.cfg",
-        ] {
+            "Raft.tla".to_owned(),
+            "RafterInvariantDetectorNegative.tla".to_owned(),
+            "RafterInvariantDetectorNegative.cfg".to_owned(),
+            "RaftMembershipTraceSample.tla".to_owned(),
+            "RaftMembershipTraceSample.cfg".to_owned(),
+            "RaftCi.cfg".to_owned(),
+        ]
+        .into_iter()
+        .chain(obligation_configs)
+        {
             fs::copy(
-                workspace.join("specs/tla/raft").join(source),
-                fixture.root.join("specs/tla/raft").join(source),
+                workspace.join("specs/tla/raft").join(&source),
+                fixture.root.join("specs/tla/raft").join(&source),
             )
             .expect("copy bound TLA source");
         }
@@ -409,11 +547,22 @@ impl Fixture {
             let rendered = render_detector_config(&template, probe).expect("render config");
             self.write_kind(&kind, rendered.as_bytes());
         }
+        // Terminal counters sit exactly at the pinned floors -- the weakest
+        // run the contract accepts -- so a floor recalibration needs no
+        // fixture edit and a floor regression cannot hide behind slack.
+        let generated_floor: u64 = self
+            .configuration("minimum_generated_states")
+            .parse()
+            .expect("profile pins a numeric state floor");
+        let distinct_floor: u64 = self
+            .configuration("minimum_distinct_states")
+            .parse()
+            .expect("profile pins a numeric state floor");
         self.write_process_log(
             "tla-log",
             "model-check",
             None,
-            success_output(130_000_000, 120_000_000, 1),
+            success_output(generated_floor, distinct_floor, 1),
             0,
         );
         self.write_process_log(
@@ -433,7 +582,95 @@ impl Fixture {
                 12,
             );
         }
+        self.write_obligation_evidence(workspace);
         self.write_mutation_log();
+    }
+
+    /// Models one discharged obligation per reviewed entry: the configuration
+    /// bytes TLC read, and a log whose terminal frames drain the queue and meet
+    /// that obligation's own calibrated floors exactly.
+    fn write_obligation_evidence(&mut self, workspace: &Path) {
+        for obligation in self.obligations().to_vec() {
+            let config = fs::read(workspace.join("specs/tla/raft").join(&obligation.config))
+                .expect("read bound TLA obligation config");
+            self.write_kind(&obligation_config_kind(&obligation.id), &config);
+            let summary = crate::tests::synthetic_obligation_summary(&obligation);
+            self.write_process_log(
+                &obligation_log_kind(&obligation.id),
+                &obligation_label(&obligation.id),
+                None,
+                success_output(
+                    summary.generated_states,
+                    summary.distinct_states,
+                    summary.search_depth,
+                ),
+                0,
+            );
+        }
+    }
+
+    /// Re-pins this fixture's profile onto a reporting continuation policy.
+    ///
+    /// The bundle keeps the PR primary configuration and is relabelled to a
+    /// scheduled profile, which isolates the policy change from the checkpoint
+    /// machinery a real nightly contract also carries -- that has its own
+    /// scenarios. What this models is the shape a reporting lane actually
+    /// produces: a continuation that spent its budget with the frontier still
+    /// open, whose predicates were checked by the obligations that did drain.
+    fn set_reporting_policy(&mut self) {
+        self.bundle.profile = "nightly".to_owned();
+        self.bundle
+            .execution
+            .plan
+            .contract
+            .runners
+            .get_mut("tla")
+            .expect("TLA runner contract")
+            .configuration
+            .insert(
+                crate::evidence::PRIMARY_COMPLETION_KEY.to_owned(),
+                "reporting-continuation".to_owned(),
+            );
+        self.set_timeout();
+        let symbols = self.bundle.execution.checks[0]
+            .evidence_ids
+            .iter()
+            .filter_map(|evidence_id| evidence_id.rsplit_once('#').map(|(_, s)| s.to_owned()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let check = &mut self.bundle.execution.checks[0];
+        // Not `FrontierExhausted`: nothing drained here. `set_timeout` gave the
+        // fixture a progress frame with an open queue, and the completion has
+        // to say the same thing the observations do.
+        check.completion = crate::CheckCompletion::BudgetElapsedFrontierOpen;
+        check.observations.extend(
+            symbols
+                .into_iter()
+                .map(|symbol| (format!("checked:{symbol}"), 1)),
+        );
+        check
+            .tla_continuation
+            .as_mut()
+            .expect("TLA fixture carries a continuation binding")
+            .policy = crate::PrimaryCompletionPolicy::ReportingContinuation;
+        for result in &mut self.bundle.results {
+            result.status = crate::EvidenceStatus::Pass;
+            result.classification = None;
+        }
+    }
+
+    /// Restates the continuation outcome the mutated log now shows. Fixtures
+    /// have to stay internally consistent: the verifier rederives the outcome
+    /// from the log and rejects a receipt whose binding disagrees.
+    fn set_continuation_outcome(&mut self, outcome: crate::ContinuationOutcome) {
+        let binding = self.bundle.execution.checks[0]
+            .tla_continuation
+            .as_mut()
+            .expect("TLA fixture carries a continuation binding");
+        binding.outcome = outcome;
+    }
+
+    fn obligations(&self) -> &[crate::ProofObligationContract] {
+        &self.bundle.execution.plan.contract.runners["tla"].obligations
     }
 
     fn set_counterexample(&mut self, predicate: &str) {
@@ -442,6 +679,7 @@ impl Fixture {
         log.stdout = violation_output(predicate);
         self.write_log("tla-log", &log);
         self.bundle.execution.checks[0].completion = crate::CheckCompletion::Counterexample;
+        self.set_continuation_outcome(crate::ContinuationOutcome::Counterexample);
         self.bundle.execution.checks[0]
             .observations
             .retain(|name, _| !name.starts_with("checked:"));
@@ -471,6 +709,7 @@ impl Fixture {
         log.exit_code = Some(12);
         log.stdout = violation_output(predicate);
         self.write_log("tla-log", &log);
+        self.set_continuation_outcome(crate::ContinuationOutcome::Counterexample);
         let check = &mut self.bundle.execution.checks[0];
         check.completion = crate::CheckCompletion::HarnessError;
         check
@@ -548,6 +787,7 @@ impl Fixture {
         });
         log.stdout = progress_output(181_490_601, 40_062_465, 19_012_042, 23);
         self.write_log("tla-log", &log);
+        self.set_continuation_outcome(crate::ContinuationOutcome::BudgetElapsedFrontierOpen);
 
         let check = &mut self.bundle.execution.checks[0];
         check.completion = crate::CheckCompletion::Timeout;
@@ -659,27 +899,44 @@ impl Fixture {
     }
 
     fn invocation(&self, label: &str, probe: Option<DetectorProbe>) -> InvocationReceipt {
-        let (config, module, workers) = match probe {
-            Some(probe) => (
+        // An obligation runs its own config under its own seed, and inherits
+        // the profile's worker and memory profile. Reconstructing that here
+        // from the pinned contract is what makes the fixture model the real
+        // argv rather than whatever the verifier happens to accept.
+        let obligation = self
+            .obligations()
+            .iter()
+            .find(|obligation| obligation_label(&obligation.id) == label);
+        let (config, module, workers, seed) = match (probe, obligation) {
+            (Some(probe), _) => (
                 self.canonical_kind(&detector_config_kind(probe).expect("registered probe")),
                 "RafterInvariantDetectorNegative.tla",
                 "1",
+                self.configuration("seed").to_owned(),
             ),
-            None if label == "trace-sample" => (
+            (None, Some(obligation)) => (
+                obligation.config.clone(),
+                "Raft.tla",
+                self.configuration("workers"),
+                obligation.seed.clone(),
+            ),
+            (None, None) if label == "trace-sample" => (
                 "RaftMembershipTraceSample.cfg".to_owned(),
                 "RaftMembershipTraceSample.tla",
                 "1",
+                self.configuration("seed").to_owned(),
             ),
-            None => (
+            (None, None) => (
                 self.configuration("config").to_owned(),
                 "Raft.tla",
                 self.configuration("workers"),
+                self.configuration("seed").to_owned(),
             ),
         };
         let configuration = &self.bundle.execution.plan.contract.runners["tla"].configuration;
-        let main_model_check = probe.is_none() && label != "trace-sample";
+        let memory_profile = probe.is_none() && label != "trace-sample";
         let mut arguments = Vec::new();
-        if main_model_check {
+        if memory_profile {
             if let Some(max_heap) = configuration.get("max_heap") {
                 arguments.push(format!("-Xmx{max_heap}"));
             }
@@ -696,11 +953,11 @@ impl Fixture {
             "-workers".to_owned(),
             workers.to_owned(),
             "-seed".to_owned(),
-            self.configuration("seed").to_owned(),
+            seed,
             "-fp".to_owned(),
             "0".to_owned(),
         ]);
-        if main_model_check {
+        if memory_profile {
             if let Some(fp_mem) = configuration.get("fp_mem") {
                 arguments.extend(["-fpmem".to_owned(), fp_mem.clone()]);
             }
@@ -749,6 +1006,9 @@ impl Fixture {
                     artifact.kind.as_str(),
                     "tla-log" | "tla-trace-log" | MUTATION_SUITE_ARTIFACT_KIND
                 ) || artifact.kind.starts_with("tla-detector-log")
+                    // Obligations are TLC processes too: they run in the same
+                    // producer checkout and must rebase with everything else.
+                    || artifact.kind.starts_with("tla-obligation-log")
             })
             .map(|artifact| artifact.kind.clone())
             .collect::<Vec<_>>();

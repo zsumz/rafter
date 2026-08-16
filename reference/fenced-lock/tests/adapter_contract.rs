@@ -8,7 +8,11 @@ mod support;
 
 use std::error::Error;
 
-use rafter::{LocalProposalId, LogIndex, NodeId, ProposalRejection, Term};
+use rafter::{
+    ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,
+    LocalProposalId, LogIndex, NodeId, ProposalRejection, RaftSnapshot, RaftSnapshotMetadata,
+    SnapshotGroupId, Term,
+};
 use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyEntry, ReadBarrier,
     ReplicatedStateMachine, SnapshotSupport,
@@ -434,15 +438,27 @@ fn a_snapshot_this_replica_cannot_reproduce_or_adopt_is_refused() {
         "an install must never lower the applied floor"
     );
 
-    // Rafter's own install path hands over a descriptor whose bytes live in the
-    // replica's snapshot store; this application cannot fetch them, so it
-    // refuses rather than installing an empty state over live marks.
+    // No bytes and no descriptor naming where the bytes went. There is nothing
+    // here to install, and installing nothing over live marks is how a token
+    // gets reissued.
     assert!(matches!(
         app.install_snapshot(ApplicationSnapshot {
             applied_index: LogIndex(9),
             payload: Vec::new(),
             raft_snapshot: None,
         }),
+        Err(ApplicationSnapshotError::StateMachine(
+            LockAdapterError::SnapshotPayloadUnavailable {
+                applied_index: LogIndex(9)
+            }
+        ))
+    ));
+
+    // A descriptor this replica's snapshot source has never been handed is the
+    // same nothing, said a longer way. The refusal here is honest rather than
+    // declared: it names a transfer, and this source does not hold it.
+    assert!(matches!(
+        app.install_snapshot(promoted(&descriptor(LogIndex(9), &[7, 7, 7]))),
         Err(ApplicationSnapshotError::StateMachine(
             LockAdapterError::SnapshotPayloadUnavailable {
                 applied_index: LogIndex(9)
@@ -470,6 +486,137 @@ fn a_snapshot_this_replica_cannot_reproduce_or_adopt_is_refused() {
         app.applied_index(),
         Ok(LogIndex(2)),
         "every refused install moved nothing"
+    );
+}
+
+/// The shape Rafter's own install path actually produces.
+///
+/// A Raft-driven install hands the application a descriptor and an empty
+/// payload, because the bytes were staged and promoted into the replica's
+/// snapshot store before the application was asked anything. This is the case
+/// the declaration on `SNAPSHOT_SUPPORT` is about: a machine that declared
+/// `Supported` and refused this shape would poison its group the first time a
+/// follower fell behind a compaction, and no local round-trip test would notice.
+#[test]
+fn a_promoted_snapshot_installs_through_the_validation_an_inline_one_takes() {
+    let mut app = LockStateMachine::new(config(4, 4));
+    apply(&mut app, 1, open_session(0, 1));
+    apply(&mut app, 2, submit(0, 1, 1, acquire(RESOURCE, 10)));
+    apply(&mut app, 3, submit(0, 1, 2, release(RESOURCE, 1)));
+    // The second tenure is what makes the mark outrun the first token, so a
+    // snapshot that lost the marks would be visible below rather than plausible.
+    apply(&mut app, 4, submit(0, 1, 3, acquire(RESOURCE, 10)));
+
+    let expected_view = app.service().view();
+    let built = app
+        .build_snapshot(LogIndex(4))
+        .expect("a state machine snapshots its own applied index");
+    let promoted_descriptor = descriptor(LogIndex(4), &built.payload);
+
+    let mut restored = LockStateMachine::new(config(4, 4));
+    restored
+        .register_promoted_snapshot(&promoted_descriptor, built.payload.clone())
+        .expect("the registered bytes are the descriptor's own");
+    restored
+        .install_snapshot(promoted(&promoted_descriptor))
+        .expect("a promoted payload installs");
+
+    assert_eq!(
+        restored.service().view(),
+        expected_view,
+        "the lock table, every high-water mark, sessions with their cached \
+         operation, fingerprint, and result, and logical time all survive the \
+         promoted form too"
+    );
+    assert_eq!(restored.applied_index(), Ok(LogIndex(4)));
+    assert_eq!(
+        restored.service().status(resource(RESOURCE)).token_floor,
+        Some(token(2)),
+        "the mark the second tenure issued came back off the promoted payload"
+    );
+}
+
+/// What the store says when it cannot serve the transfer, and what the machine
+/// does about it.
+///
+/// The refusals here are the ones that keep the fix from being a way around the
+/// discipline rather than a subject of it: bytes that are not the descriptor's
+/// bytes are refused at registration, a descriptor the source does not hold is
+/// refused at install, and an install that would lower the applied floor is
+/// refused whether its bytes came inline or off a store.
+#[test]
+fn a_promoted_install_the_source_cannot_serve_is_refused_and_changes_nothing() {
+    let mut app = LockStateMachine::new(config(4, 4));
+    apply(&mut app, 1, open_session(0, 1));
+    apply(&mut app, 2, submit(0, 1, 1, acquire(RESOURCE, 10)));
+
+    let built = app
+        .build_snapshot(LogIndex(2))
+        .expect("a state machine snapshots its own applied index");
+    let promoted_descriptor = descriptor(LogIndex(2), &built.payload);
+
+    let mut restored = LockStateMachine::new(config(4, 4));
+    // Registration is where a payload that contradicts its descriptor stops.
+    // Letting it through would leave the store answering for a transfer with
+    // bytes nobody checked.
+    let mut truncated = built.payload.clone();
+    truncated.pop();
+    assert!(matches!(
+        restored.register_promoted_snapshot(&promoted_descriptor, truncated),
+        Err(LockAdapterError::SnapshotPayloadUnavailable { .. })
+    ));
+
+    // Nothing registered under this transfer, so the source serves nothing.
+    assert!(matches!(
+        restored.install_snapshot(promoted(&promoted_descriptor)),
+        Err(ApplicationSnapshotError::StateMachine(
+            LockAdapterError::SnapshotPayloadUnavailable {
+                applied_index: LogIndex(2)
+            }
+        ))
+    ));
+    assert_eq!(
+        restored.applied_index(),
+        Ok(LogIndex::ZERO),
+        "a refused promoted install moved nothing"
+    );
+    assert_eq!(
+        restored.service().summary().tracked_resources,
+        0,
+        "and installed nothing"
+    );
+
+    // A registration under a different transfer does not answer for this one:
+    // the source is keyed by transfer id, not by "some snapshot arrived".
+    let other = descriptor(LogIndex(2), &[9, 9, 9]);
+    restored
+        .register_promoted_snapshot(&other, vec![9, 9, 9])
+        .expect("the registered bytes are that descriptor's own");
+    assert!(matches!(
+        restored.install_snapshot(promoted(&promoted_descriptor)),
+        Err(ApplicationSnapshotError::StateMachine(
+            LockAdapterError::SnapshotPayloadUnavailable { .. }
+        ))
+    ));
+
+    // Registered correctly, it installs — and then the applied floor is the
+    // rule again: the same promoted install a second time is behind the floor
+    // it just set, and refusing it is what keeps a token from being reissued.
+    restored
+        .register_promoted_snapshot(&promoted_descriptor, built.payload.clone())
+        .expect("the registered bytes are the descriptor's own");
+    restored
+        .install_snapshot(promoted(&promoted_descriptor))
+        .expect("a promoted payload installs");
+    apply(&mut restored, 3, submit(0, 1, 2, release(RESOURCE, 1)));
+    assert!(
+        matches!(
+            restored.install_snapshot(promoted(&promoted_descriptor)),
+            Err(ApplicationSnapshotError::StateMachine(
+                LockAdapterError::SnapshotBehindAppliedIndex { .. }
+            ))
+        ),
+        "a promoted install is refused behind the floor exactly as an inline one is"
     );
 }
 
@@ -660,6 +807,36 @@ fn entry(index: u64, command: Command) -> ApplyEntry<Command> {
         term: Term(1),
         command,
         local_proposal_id: None,
+    }
+}
+
+/// The Raft-visible descriptor a leader's compaction would publish for
+/// `payload`.
+///
+/// `writer_id` is deliberately a node other than the one installing: a promoted
+/// snapshot is by definition one this replica did not write.
+fn descriptor(at: LogIndex, payload: &[u8]) -> RaftSnapshot {
+    let metadata = RaftSnapshotMetadata::new(
+        SnapshotGroupId::new("fenced-lock").expect("a stable group id"),
+        NodeId(2),
+        at,
+        Term(1),
+        Term(1),
+        ApplicationSnapshotMetadata::new(
+            ApplicationSnapshotKind::new("fenced_lock").expect("a stable kind"),
+            ApplicationSnapshotVersion::new(1).expect("a non-zero version"),
+        ),
+    )
+    .expect("a snapshot boundary above zero in a visible term");
+    RaftSnapshot::from_payload(metadata, payload)
+}
+
+/// The install Rafter itself produces: the descriptor, and no bytes.
+fn promoted(descriptor: &RaftSnapshot) -> ApplicationSnapshot {
+    ApplicationSnapshot {
+        applied_index: descriptor.metadata.last_included_index,
+        payload: Vec::new(),
+        raft_snapshot: Some(descriptor.clone()),
     }
 }
 

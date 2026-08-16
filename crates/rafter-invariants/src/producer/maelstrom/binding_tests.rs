@@ -153,6 +153,7 @@ fn check(id: &str, completion: CheckCompletion, evidence: &[&str]) -> CheckRecei
         completion,
         observations: BTreeMap::new(),
         simulator_liveness: None,
+        tla_continuation: None,
         duration_ms: 1,
         peak_rss_kib: 1,
         artifacts: Vec::new(),

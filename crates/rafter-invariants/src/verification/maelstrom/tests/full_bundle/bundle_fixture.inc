@@ -78,6 +78,7 @@ fn maelstrom_contract() -> ProfileContract {
                 command: vec!["test".to_owned()],
                 configuration,
                 simulator_checks: BTreeMap::new(),
+                obligations: Vec::new(),
                 minimum_observed_checks: 1,
                 require_peak_rss: true,
             },
@@ -93,6 +94,7 @@ fn maelstrom_check(execution_id: &str) -> CheckReceipt {
         completion: CheckCompletion::Completed,
         observations: observations(),
         simulator_liveness: None,
+        tla_continuation: None,
         duration_ms: 1,
         peak_rss_kib: 1,
         artifacts: [

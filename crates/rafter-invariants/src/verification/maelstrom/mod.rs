@@ -1,6 +1,7 @@
 //! Independent acceptance of Maelstrom receipts and end-to-end artifacts.
 
 mod artifact;
+mod binding;
 mod configuration;
 mod invocation;
 mod lease;

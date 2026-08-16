@@ -146,6 +146,51 @@ publishes content-addressed process logs plus a replay report. CI seals that
 inventory into a deterministic archive, downloads it to a fresh path, and
 repeats digest, metadata, schema, and semantic readback.
 
+Captured inputs divide into two binding classes, because two different jobs
+can honestly re-derive two different things. A **checkout binding** names a
+version-controlled file — the Maelstrom runner script, the TLA+ specifications
+and configurations — and every context re-derives it the same way, by reading
+the reviewed commit and comparing bytes. A **build-output binding** names
+something a producer built: the Maelstrom node and proxy binaries. Only the job
+that ran `cargo build` has those files, and no other job can reproduce them
+byte-for-byte either, since each invariant job sets its own `CARGO_HOME` and
+`CARGO_TARGET_DIR` and debug binaries embed those paths.
+
+The two contexts therefore make two different claims about a build output, and
+it is worth being exact about which is which, because only one of them is
+evidence about the binary.
+
+- **The producing job is authoritative.** It compares the artifact against the
+  file at its checkout path, byte for byte, and fails closed if the file is
+  missing or altered. This is the claim that binds the published bytes to the
+  thing that actually ran.
+- **The aggregate asserts retention, and nothing more.** It confirms the
+  authenticated bundle is holding bytes for that artifact. It does not re-derive
+  their identity, because it cannot: it has no copy to compare against, and
+  re-hashing the retained bytes would only restate what bundle authentication
+  already enforced before retaining them — every artifact is streamed, checked
+  against its declared digest and length, and dropped if it disagrees. A second
+  hash of the same bytes has one possible answer.
+
+The aggregate's real independence lies elsewhere — it re-authenticates every
+artifact from disk on intake and again after publication, and newly observed
+drift reduces and republishes the report as red. What it does not do is
+independently verify that a build output is the binary someone built; that job
+belongs to the producer, and the chain from there is carried by the source
+receipt.
+
+Which context is running is decided by the invoking gate command and travels
+only in the verification request; a receipt cannot declare itself
+aggregate-context to excuse a check the producing job could have made.
+
+That distinction was missing until the scheduled lanes first went green
+together. The Maelstrom binaries were bound as if they were source files, which
+made aggregation unsatisfiable by construction — it asked a fresh checkout to
+read a build output it had never produced. Nothing caught it because no
+aggregate run had reached that far: the scheduled lanes had always failed
+earlier, for unrelated reasons, so the first end-to-end green run was also the
+first to reach the check and find it impossible.
+
 The threat model does not cover a malicious producer binary, compromised
 kernel or CI runner, hostile same-UID process, or SHA-256 compromise. Those
 claims require external build and host attestation.

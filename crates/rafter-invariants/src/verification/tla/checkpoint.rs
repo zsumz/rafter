@@ -196,6 +196,12 @@ fn verify_final_metadata(
         }
         return Ok(());
     }
+    // Only a run that ended badly abandons its final checkpoint. Both passing
+    // completions -- drained, and budget-elapsed with an open frontier -- keep
+    // publishing theirs; a reporting continuation that did not drain is the
+    // main reason the final checkpoint exists, since the next run resumes from
+    // it. `matches!` is not exhaustiveness-checked, so a new completion lands
+    // outside this list and keeps its checkpoint, which is the safe default.
     if main_has_violation
         && matches!(
             check.completion,

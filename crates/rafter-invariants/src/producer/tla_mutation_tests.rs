@@ -63,7 +63,7 @@ ignored_tlc_mutation_test!(
 );
 ignored_tlc_mutation_test!(
     lifecycle,
-    snapshot_compaction_pending_tracks_create_and_compact_transitions
+    snapshot_creation_atomically_advances_and_retains_the_snapshot_floor
 );
 ignored_tlc_mutation_test!(
     lifecycle,

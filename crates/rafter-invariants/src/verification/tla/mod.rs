@@ -3,9 +3,12 @@
 mod artifact;
 mod checkpoint;
 mod completion;
+mod continuation;
 mod detector;
 mod invocation;
+mod obligation;
 mod observation;
+mod proof_artifacts;
 mod receipt;
 mod source;
 mod verify;

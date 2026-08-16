@@ -4,10 +4,18 @@ use std::{collections::BTreeMap, path::Path};
 
 use crate::{
     evidence::{ArtifactRef, InvocationReceipt, ResultBundle},
-    verification::{script_invocation_matches_source, AggregateError, AuthenticatedArtifacts},
+    verification::{
+        script_invocation_matches_source, AggregateError, AuthenticatedArtifacts,
+        VerificationContext,
+    },
 };
 
-use super::{artifact::unique, configuration, scenario::Scenario};
+use super::{
+    artifact::unique,
+    binding::{verify_input_binding, InputBinding},
+    configuration,
+    scenario::Scenario,
+};
 
 pub(super) fn verify_process(
     bundle: &ResultBundle,
@@ -83,15 +91,22 @@ pub(super) fn verify_shared_inputs(
     root: &Path,
     source_root: &Path,
     authenticated: &AuthenticatedArtifacts,
+    context: VerificationContext,
 ) -> Result<(), AggregateError> {
-    super::artifact::verify_matches_file(
+    // The runner script is version controlled, so every context can re-derive
+    // it from the checkout. The node binary is a build output: see
+    // `verify_input_binding` for why byte-equality against a checkout path is
+    // a producer-local claim.
+    verify_input_binding(
         unique(artifacts, "maelstrom-runner")?,
-        source_root.join(scenario.script()),
+        &InputBinding::Checkout(source_root.join(scenario.script())),
+        context,
         authenticated,
     )?;
-    super::artifact::verify_matches_file(
+    verify_input_binding(
         unique(artifacts, "maelstrom-binary")?,
-        root.join("target/debug/rafter-maelstrom"),
+        &InputBinding::BuildOutput(root.join("target/debug/rafter-maelstrom")),
+        context,
         authenticated,
     )?;
     if unique(artifacts, "maelstrom-tool-jar")?.sha256
@@ -104,9 +119,12 @@ pub(super) fn verify_shared_inputs(
         .filter(|artifact| artifact.kind == "maelstrom-proxy-binary")
         .count();
     if scenario.requires_proxy() {
-        super::artifact::verify_matches_file(
+        verify_input_binding(
             unique(artifacts, "maelstrom-proxy-binary")?,
-            root.join("target/debug/rafter-maelstrom-leader-restart-proxy"),
+            &InputBinding::BuildOutput(
+                root.join("target/debug/rafter-maelstrom-leader-restart-proxy"),
+            ),
+            context,
             authenticated,
         )?;
     } else if proxies != 0 {

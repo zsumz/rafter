@@ -1,5 +1,5 @@
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "reviewed_ids": [
     "ST-01",
     "EL-01", "EL-02", "EL-03", "EL-04", "EL-05", "EL-06", "EL-07", "EL-08",
@@ -22,7 +22,7 @@
         "fixture_inventory": "all-profile-selected-direct-simulator-fixtures",
         "challenge": "inherited-descriptor-pre-body-secret-v3",
         "artifact_policy": "json-and-process-logs",
-        "required_inventory_sha256": "48f1e0eddcd6d5bebef0495280b74fdb9db49056727f0969eef2bc6c335c9cae",
+        "required_inventory_sha256": "c1ff2ad398f4654b7e65fd7966ace7163e6d8b9018820f8bb9ef8e2724b06780",
         "required_registry_packages": 256,
         "maximum_registry_archive_bytes": 268435456,
         "maximum_registry_expanded_bytes": 2147483648,
@@ -44,7 +44,7 @@
         "fixture_inventory": "all-profile-selected-direct-simulator-fixtures",
         "challenge": "inherited-descriptor-pre-body-secret-v3",
         "artifact_policy": "json-and-process-logs",
-        "required_inventory_sha256": "48f1e0eddcd6d5bebef0495280b74fdb9db49056727f0969eef2bc6c335c9cae",
+        "required_inventory_sha256": "c1ff2ad398f4654b7e65fd7966ace7163e6d8b9018820f8bb9ef8e2724b06780",
         "required_registry_packages": 256,
         "maximum_registry_archive_bytes": 268435456,
         "maximum_registry_expanded_bytes": 2147483648,
@@ -66,7 +66,7 @@
         "fixture_inventory": "all-profile-selected-direct-simulator-fixtures",
         "challenge": "inherited-descriptor-pre-body-secret-v3",
         "artifact_policy": "json-and-process-logs",
-        "required_inventory_sha256": "48f1e0eddcd6d5bebef0495280b74fdb9db49056727f0969eef2bc6c335c9cae",
+        "required_inventory_sha256": "c1ff2ad398f4654b7e65fd7966ace7163e6d8b9018820f8bb9ef8e2724b06780",
         "required_registry_packages": 256,
         "maximum_registry_archive_bytes": 268435456,
         "maximum_registry_expanded_bytes": 2147483648,
@@ -120,9 +120,13 @@
           "require_peak_rss": true
         },
         "tla": {
-          "producer": "rafter-invariants-tla-v15",
+          "producer": "rafter-invariants-tla-v16",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tla"],
-          "configuration": {"config": "RaftCi.cfg", "detector_negative": "required", "finalization_reserve": "2m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "8g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071101", "soft_timeout": "325m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "481553986", "tool_mode": "required", "tool_sha256": "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3", "total_timeout": "338m", "trace_sample": "required", "workers": "4"},
+          "configuration": {"config": "RaftCi.cfg", "detector_negative": "required", "finalization_reserve": "2m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "8g", "minimum_distinct_states": "36058645", "minimum_generated_states": "255177640", "module": "Raft.tla", "primary_completion": "gating-frontier-exhausted", "receipt_finalization_allowance": "5s", "seed": "2026071101", "soft_timeout": "310m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "510788686", "tool_mode": "required", "tool_sha256": "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f", "total_timeout": "338m", "trace_sample": "required", "workers": "4"},
+          "obligations": [
+            {"id": "core-replication", "config": "RaftCoreObligation.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 113201, "minimum_distinct_states": 20282, "soft_timeout": "4m", "seed": "2026081101"},
+            {"id": "read-fencing", "config": "RaftReadObligation.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 592279, "minimum_distinct_states": 98948, "soft_timeout": "6m", "seed": "2026081101"}
+          ],
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         }
@@ -152,9 +156,15 @@
           "require_peak_rss": true
         },
         "tla": {
-          "producer": "rafter-invariants-tla-v15",
+          "producer": "rafter-invariants-tla-v16",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "tla"],
-          "configuration": {"checkpoint_gzip": "required", "checkpoint_minutes": "30", "checkpoint_recovery": "strict-compatible-if-present", "config": "RaftNightly.cfg", "detector_negative": "required", "finalization_reserve": "10m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "8g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071102", "soft_timeout": "265m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "481553986", "tool_mode": "required", "tool_sha256": "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3", "total_timeout": "320m", "trace_sample": "required", "workers": "auto"},
+          "configuration": {"checkpoint_gzip": "required", "checkpoint_minutes": "30", "checkpoint_recovery": "strict-compatible-if-present", "config": "RaftNightly.cfg", "detector_negative": "required", "finalization_reserve": "10m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "8g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "primary_completion": "reporting-continuation", "receipt_finalization_allowance": "5s", "seed": "2026071102", "soft_timeout": "195m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "510788686", "tool_mode": "required", "tool_sha256": "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f", "total_timeout": "320m", "trace_sample": "required", "workers": "auto"},
+          "obligations": [
+            {"id": "core-replication-deep", "config": "RaftCoreObligationDeep.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 14734799, "minimum_distinct_states": 2004053, "soft_timeout": "35m", "seed": "2026081101"},
+            {"id": "membership-change", "config": "RaftMembershipObligationPair.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 1054317, "minimum_distinct_states": 162938, "soft_timeout": "4m", "seed": "2026081101"},
+            {"id": "read-fencing", "config": "RaftReadObligation.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 592279, "minimum_distinct_states": 98948, "soft_timeout": "6m", "seed": "2026081101"},
+            {"id": "snapshot-lifecycle", "config": "RaftSnapshotObligation.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 14119884, "minimum_distinct_states": 2002205, "soft_timeout": "25m", "seed": "2026081101"}
+          ],
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         },
@@ -186,14 +196,24 @@
         "simulator": {
           "producer": "rafter-invariants-simulator-v19",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "simulator"],
-          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "compile_timeout": "10m", "completion": "frontier-and-aggregate-state-floor", "detector_proof": "inherited-descriptor-pre-body-secret-v3", "execution_contract": "rafter-soak-execution-v1", "finalization_reserve": "10m", "kill_confirmation_timeout": "5s", "layer_timeout": "340m", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-weekly", "model_timeout_policy": "remaining-layer-budget", "receipt_finalization_allowance": "5s", "seed_count": "10", "seed_policy": "source-derived-sha256-v1", "soak_steps": "4096", "state_floors": "250000000-protocol-and-verifier", "termination_grace": "30s"},
+          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "compile_timeout": "10m", "completion": "frontier-and-aggregate-state-floor", "detector_proof": "inherited-descriptor-pre-body-secret-v3", "execution_contract": "rafter-soak-execution-v1", "finalization_reserve": "10m", "kill_confirmation_timeout": "5s", "layer_timeout": "170m", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-nightly", "model_timeout_policy": "remaining-layer-budget", "receipt_finalization_allowance": "5s", "seed_count": "6", "seed_policy": "source-derived-sha256-v1", "soak_steps": "1024", "state_floors": "13000000-protocol-and-verifier", "termination_grace": "30s"},
           "minimum_observed_checks": 79,
           "require_peak_rss": true
         },
         "tla": {
-          "producer": "rafter-invariants-tla-v15",
+          "producer": "rafter-invariants-tla-v16",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "tla"],
-          "configuration": {"checkpoint_gzip": "required", "checkpoint_minutes": "30", "checkpoint_recovery": "strict-compatible-if-present", "config": "Raft.cfg", "detector_negative": "required", "finalization_reserve": "10m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "4g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071103", "soft_timeout": "265m", "termination_grace": "30s", "tool_asset_id": "481553986", "tool_mode": "required", "tool_sha256": "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3", "total_timeout": "320m", "trace_sample": "required", "unsymmetrized_exploration": "required", "workers": "auto"},
+          "configuration": {"checkpoint_gzip": "required", "checkpoint_minutes": "30", "checkpoint_recovery": "strict-compatible-if-present", "config": "Raft.cfg", "detector_negative": "required", "finalization_reserve": "10m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "8g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "primary_completion": "reporting-continuation", "receipt_finalization_allowance": "5s", "seed": "2026071103", "soft_timeout": "110m", "termination_grace": "30s", "tool_asset_id": "510788686", "tool_mode": "required", "tool_sha256": "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f", "total_timeout": "320m", "trace_sample": "required", "unsymmetrized_exploration": "required", "workers": "auto"},
+          "obligations": [
+            {"id": "core-replication-deep", "config": "RaftCoreObligationDeep.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 14734799, "minimum_distinct_states": 2004053, "soft_timeout": "35m", "seed": "2026081101"},
+            {"id": "core-replication-unsymmetrized", "config": "RaftCoreObligationUnsymmetrized.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 452327, "minimum_distinct_states": 80977, "soft_timeout": "4m", "seed": "2026081101"},
+            {"id": "integration-unsymmetrized", "config": "RaftIntegrationUnsymmetrized.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 254211, "minimum_distinct_states": 49985, "soft_timeout": "4m", "seed": "2026081101"},
+            {"id": "membership-change", "config": "RaftMembershipObligationPair.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 1054317, "minimum_distinct_states": 162938, "soft_timeout": "4m", "seed": "2026081101"},
+            {"id": "read-fencing", "config": "RaftReadObligation.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 592279, "minimum_distinct_states": 98948, "soft_timeout": "6m", "seed": "2026081101"},
+            {"id": "read-fencing-unsymmetrized", "config": "RaftReadObligationUnsymmetrized.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 2368355, "minimum_distinct_states": 395573, "soft_timeout": "6m", "seed": "2026081101"},
+            {"id": "snapshot-lifecycle", "config": "RaftSnapshotObligation.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 14119884, "minimum_distinct_states": 2002205, "soft_timeout": "25m", "seed": "2026081101"},
+            {"id": "snapshot-lifecycle-unsymmetrized", "config": "RaftSnapshotObligationUnsymmetrized.cfg", "completion": "frontier-exhausted", "minimum_generated_states": 56476413, "minimum_distinct_states": 8008105, "soft_timeout": "70m", "seed": "2026081101"}
+          ],
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         },

@@ -1,6 +1,9 @@
 mod support;
 
-use rafter::{LogIndex, Term};
+use rafter::{
+    ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, LogIndex,
+    NodeId, RaftSnapshot, RaftSnapshotMetadata, SnapshotGroupId, Term,
+};
 use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyEntry, ReadBarrier,
     ReplicatedStateMachine,
@@ -274,7 +277,10 @@ fn snapshots_bind_their_payload_to_one_applied_index() {
             payload: Vec::new(),
             raft_snapshot: None,
         })
-        .expect_err("a descriptor-only install has no payload to read here");
+        .expect_err("no bytes and no descriptor is nothing to install");
+    restored
+        .install_snapshot(promoted(&descriptor(LogIndex(2), &snapshot.payload)))
+        .expect_err("a descriptor this replica's source has never held serves nothing");
     restored
         .install_snapshot(ApplicationSnapshot {
             applied_index: LogIndex(3),
@@ -303,6 +309,195 @@ fn snapshots_bind_their_payload_to_one_applied_index() {
         ),
         "an older snapshot would make acknowledged commands executable again"
     );
+}
+
+/// The shape Rafter's own install path actually produces.
+///
+/// A Raft-driven install hands the application a descriptor and an empty
+/// payload, because the bytes were staged and promoted into the replica's
+/// snapshot store before the application was asked anything. This is the case
+/// the declaration on `SNAPSHOT_SUPPORT` is about: a machine that declared
+/// `Supported` and refused this shape would poison its group the first time a
+/// follower fell behind a compaction, and no local round-trip test would notice.
+#[test]
+fn a_promoted_snapshot_installs_through_the_validation_an_inline_one_takes() {
+    let mut app = LedgerStateMachine::new(config(1, 4));
+    apply(
+        &mut app,
+        1,
+        &[
+            open_session(0, 1),
+            execute(
+                0,
+                1,
+                1,
+                Mutation::OpenAccount {
+                    account_id: ACCOUNT,
+                },
+            ),
+            execute(
+                0,
+                1,
+                2,
+                Mutation::Deposit {
+                    account_id: ACCOUNT,
+                    amount: amount(50),
+                },
+            ),
+        ],
+    );
+
+    let expected_view = app.ledger().view();
+    let built = app.build_snapshot(LogIndex(3)).expect("snapshot builds");
+    let promoted_descriptor = descriptor(LogIndex(3), &built.payload);
+
+    let mut restored = LedgerStateMachine::new(config(1, 4));
+    restored
+        .register_promoted_snapshot(&promoted_descriptor, built.payload.clone())
+        .expect("the registered bytes are the descriptor's own");
+    restored
+        .install_snapshot(promoted(&promoted_descriptor))
+        .expect("a promoted payload installs");
+
+    assert_eq!(
+        restored.ledger().view(),
+        expected_view,
+        "every account, session, and cached result survives the promoted form too"
+    );
+    assert_eq!(restored.applied_index(), Ok(LogIndex(3)));
+}
+
+/// What the source says when it cannot serve the transfer, and what the machine
+/// does about it.
+///
+/// The refusals here are what keep the fix from being a way around the
+/// discipline rather than a subject of it: bytes that are not the descriptor's
+/// bytes are refused at registration, a descriptor the source does not hold is
+/// refused at install, and an install that would lower the applied floor is
+/// refused whether its bytes came inline or off a store.
+#[test]
+fn a_promoted_install_the_source_cannot_serve_is_refused_and_changes_nothing() {
+    let mut app = LedgerStateMachine::new(config(1, 4));
+    apply(
+        &mut app,
+        1,
+        &[
+            open_session(0, 1),
+            execute(
+                0,
+                1,
+                1,
+                Mutation::OpenAccount {
+                    account_id: ACCOUNT,
+                },
+            ),
+        ],
+    );
+
+    let built = app.build_snapshot(LogIndex(2)).expect("snapshot builds");
+    let promoted_descriptor = descriptor(LogIndex(2), &built.payload);
+
+    let mut restored = LedgerStateMachine::new(config(1, 4));
+    // Registration is where a payload that contradicts its descriptor stops.
+    // Letting it through would leave the source answering for a transfer with
+    // bytes nobody checked.
+    let mut truncated = built.payload.clone();
+    truncated.pop();
+    assert!(matches!(
+        restored.register_promoted_snapshot(&promoted_descriptor, truncated),
+        Err(LedgerAdapterError::SnapshotPayloadUnavailable { .. })
+    ));
+
+    assert!(matches!(
+        restored.install_snapshot(promoted(&promoted_descriptor)),
+        Err(ApplicationSnapshotError::StateMachine(
+            LedgerAdapterError::SnapshotPayloadUnavailable {
+                applied_index: LogIndex(2)
+            }
+        ))
+    ));
+    assert_eq!(
+        restored.applied_index(),
+        Ok(LogIndex::ZERO),
+        "a refused promoted install moved nothing"
+    );
+    assert_eq!(
+        restored.ledger().view(),
+        LedgerStateMachine::new(config(1, 4)).ledger().view(),
+        "and installed nothing"
+    );
+
+    // A registration under a different transfer does not answer for this one:
+    // the source is keyed by transfer id, not by "some snapshot arrived".
+    let other = descriptor(LogIndex(2), &[9, 9, 9]);
+    restored
+        .register_promoted_snapshot(&other, vec![9, 9, 9])
+        .expect("the registered bytes are that descriptor's own");
+    assert!(matches!(
+        restored.install_snapshot(promoted(&promoted_descriptor)),
+        Err(ApplicationSnapshotError::StateMachine(
+            LedgerAdapterError::SnapshotPayloadUnavailable { .. }
+        ))
+    ));
+
+    restored
+        .register_promoted_snapshot(&promoted_descriptor, built.payload.clone())
+        .expect("the registered bytes are the descriptor's own");
+    restored
+        .install_snapshot(promoted(&promoted_descriptor))
+        .expect("a promoted payload installs");
+    apply(
+        &mut restored,
+        3,
+        &[execute(
+            0,
+            1,
+            2,
+            Mutation::Deposit {
+                account_id: ACCOUNT,
+                amount: amount(10),
+            },
+        )],
+    );
+    assert!(
+        matches!(
+            restored.install_snapshot(promoted(&promoted_descriptor)),
+            Err(ApplicationSnapshotError::StateMachine(
+                LedgerAdapterError::SnapshotBehindAppliedIndex { .. }
+            ))
+        ),
+        "a promoted install is refused behind the floor exactly as an inline one is"
+    );
+}
+
+/// The Raft-visible descriptor a leader's compaction would publish for
+/// `payload`.
+///
+/// `writer_id` is deliberately a node other than the one installing: a promoted
+/// snapshot is by definition one this replica did not write.
+fn descriptor(at: LogIndex, payload: &[u8]) -> RaftSnapshot {
+    let metadata = RaftSnapshotMetadata::new(
+        SnapshotGroupId::new("ledger").expect("a stable group id"),
+        NodeId(2),
+        at,
+        Term(1),
+        Term(1),
+        ApplicationSnapshotMetadata::new(
+            ApplicationSnapshotKind::new("ledger").expect("a stable kind"),
+            ApplicationSnapshotVersion::new(1).expect("a non-zero version"),
+        ),
+    )
+    .expect("a snapshot boundary above zero in a visible term");
+    RaftSnapshot::from_payload(metadata, payload)
+}
+
+/// The install Rafter itself produces: the descriptor, and no bytes.
+fn promoted(descriptor: &RaftSnapshot) -> ApplicationSnapshot {
+    ApplicationSnapshot {
+        applied_index: descriptor.metadata.last_included_index,
+        payload: Vec::new(),
+        raft_snapshot: Some(descriptor.clone()),
+    }
 }
 
 const fn barrier(required_applied_index: u64) -> ReadBarrier {

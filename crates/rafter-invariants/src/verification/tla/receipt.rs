@@ -3,15 +3,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::{catalog::EvidenceDescriptor, profile::RunnerContract};
-use crate::evidence::format::tla::checkpoint::{
-    CONTRACT_KIND, INVENTORY_KIND, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND,
-    RECOVERY_REPORT_KIND,
-};
 use crate::evidence::format::tla::{
-    detector_config_kind, detector_log_kind, detector_observation, DETECTOR_PROBES,
-    MUTATION_SUITE_ARTIFACT_KIND, REGISTERED_PREDICATES, REQUIRED_MODEL_TRANSITIONS,
+    detector_observation, REGISTERED_PREDICATES, REQUIRED_MODEL_TRANSITIONS,
 };
-use crate::evidence::{CheckCompletion, CheckReceipt, EvidenceStatus, ResultBundle};
+use crate::evidence::{
+    CheckCompletion, CheckReceipt, ContinuationOutcome, EvidenceStatus, PrimaryCompletionPolicy,
+    ResultBundle,
+};
+
+use super::{continuation, proof_artifacts::required_proof_artifact_kinds};
 
 pub(crate) fn validate(
     bundle: &ResultBundle,
@@ -43,9 +43,19 @@ pub(crate) fn validate(
     if !bundle.execution.source.tools.contains_key("java") {
         return Err("TLA receipt lacks Java executable provenance");
     }
+    let policy = continuation::pinned_policy(bundle, contract)?;
     match check.completion {
+        // The two pass shapes run the same validation and differ only in which
+        // continuation outcome they are allowed to carry. Passing that
+        // expectation in rather than reading it back off the binding is what
+        // makes the inversion detectable: a receipt that claims a drained
+        // frontier while its binding says the budget elapsed is rejected here,
+        // and the reverse claim is rejected too.
         CheckCompletion::FrontierExhausted => {
-            validate_pass(bundle, check, &required, contract)?;
+            validate_pass(bundle, check, &required, contract, policy, false)?;
+        }
+        CheckCompletion::BudgetElapsedFrontierOpen => {
+            validate_pass(bundle, check, &required, contract, policy, true)?;
         }
         CheckCompletion::Counterexample => validate_counterexample(bundle, &required)?,
         CheckCompletion::CoverageNotReached
@@ -118,13 +128,15 @@ fn validate_pass(
     check: &CheckReceipt,
     required: &BTreeMap<String, String>,
     contract: &RunnerContract,
+    policy: PrimaryCompletionPolicy,
+    completion_elapsed: bool,
 ) -> Result<(), &'static str> {
     if bundle
         .results
         .iter()
         .any(|result| result.status != EvidenceStatus::Pass)
     {
-        return Err("frontier-exhausted TLA check must pass every predicate clause binding");
+        return Err("passing TLA check must pass every predicate clause binding");
     }
     let minimum_generated = contract.configuration["minimum_generated_states"]
         .parse::<u64>()
@@ -132,15 +144,25 @@ fn validate_pass(
     let minimum_distinct = contract.configuration["minimum_distinct_states"]
         .parse::<u64>()
         .map_err(|_| "TLA distinct-state floor is invalid")?;
-    let mut expected_observations = BTreeSet::from([
-        "configured_invariants".to_owned(),
-        "tool_pin_verified".to_owned(),
-        "trace_sample_passed".to_owned(),
-        "generated_states".to_owned(),
-        "distinct_states".to_owned(),
-        "states_left_on_queue".to_owned(),
-        "search_depth".to_owned(),
-    ]);
+    // A continuation that elapsed publishes its progress frame instead of a
+    // terminal one. That shape is only admissible under a reporting policy;
+    // under a gating policy an elapsed run never reaches this function.
+    let elapsed = check
+        .tla_continuation
+        .ok_or("TLA receipt omitted its continuation binding")?
+        .outcome
+        == ContinuationOutcome::BudgetElapsedFrontierOpen;
+    // The completion field and the continuation outcome are two independent
+    // statements about the same run, and a receipt that disagrees with itself
+    // is exactly the shape this variant exists to make visible. Enforced in
+    // both directions.
+    if elapsed != completion_elapsed {
+        return Err("TLA receipt completion disagrees with its continuation outcome");
+    }
+    if elapsed && policy.gates() {
+        return Err("a gating TLA continuation cannot pass with an open frontier");
+    }
+    let mut expected_observations = continuation::expected_counter_frame(elapsed);
     expected_observations.extend(
         REGISTERED_PREDICATES
             .iter()
@@ -152,6 +174,7 @@ fn validate_pass(
             .map(|transition| format!("transition_covered:{transition}")),
     );
     expected_observations.extend(required.values().map(|symbol| format!("checked:{symbol}")));
+    expected_observations.extend(super::obligation::expected_observations(contract));
     let checkpoint_enabled = contract.configuration.contains_key("checkpoint_minutes");
     if checkpoint_enabled {
         expected_observations.extend([
@@ -172,14 +195,17 @@ fn validate_pass(
         || REQUIRED_MODEL_TRANSITIONS
             .iter()
             .any(|transition| observed(check, &format!("transition_covered:{transition}")) != 1)
-        || observed(check, "generated_states") < minimum_generated
-        || observed(check, "distinct_states") < minimum_distinct
-        || observed(check, "generated_states") < observed(check, "distinct_states")
-        || observed(check, "states_left_on_queue") != 0
-        || observed(check, "search_depth") == 0
+        || !continuation::counters_are_consistent(
+            check,
+            policy,
+            elapsed,
+            minimum_generated,
+            minimum_distinct,
+        )
         || required
             .values()
             .any(|symbol| observed(check, &format!("checked:{symbol}")) != 1)
+        || !super::obligation::floors_cleared(contract, &|name| observed(check, name))
     {
         return Err("passing TLA receipt lacks exact terminal frames or configured coverage");
     }
@@ -196,6 +222,7 @@ fn validate_pass(
     let required_artifacts = required_proof_artifact_kinds(
         checkpoint_enabled,
         observed(check, "checkpoint_candidate_present") == 1,
+        contract,
     );
     let actual_artifacts = check
         .artifacts
@@ -206,58 +233,6 @@ fn validate_pass(
         return Err("passing TLA receipt lacks the exact unique proof artifact set");
     }
     Ok(())
-}
-
-fn required_proof_artifact_kinds(
-    checkpoint_enabled: bool,
-    checkpoint_candidate_present: bool,
-) -> BTreeSet<String> {
-    let mut kinds = [
-        "tla-log",
-        "tla-trace-log",
-        "tla-tool",
-        "tla-spec",
-        "tla-trace-spec",
-        "tla-detector-spec",
-        "tla-runner",
-        "tla-tool-asset-id",
-        "tla-tool-checksums",
-        "tla-config",
-        "tla-trace-config",
-        "tla-detector-config",
-        MUTATION_SUITE_ARTIFACT_KIND,
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<BTreeSet<_>>();
-    for probe in DETECTOR_PROBES {
-        kinds.insert(detector_log_kind(probe).unwrap_or_else(|| {
-            format!(
-                "invalid-tla-detector-log:{}:{}",
-                probe.predicate, probe.mode
-            )
-        }));
-        kinds.insert(detector_config_kind(probe).unwrap_or_else(|| {
-            format!(
-                "invalid-tla-detector-config:{}:{}",
-                probe.predicate, probe.mode
-            )
-        }));
-    }
-    if checkpoint_enabled {
-        kinds.extend([
-            CONTRACT_KIND.to_owned(),
-            INVENTORY_KIND.to_owned(),
-            RECOVERY_REPORT_KIND.to_owned(),
-        ]);
-        if checkpoint_candidate_present {
-            kinds.extend([
-                RECOVERED_CONTRACT_KIND.to_owned(),
-                RECOVERED_INVENTORY_KIND.to_owned(),
-            ]);
-        }
-    }
-    kinds
 }
 
 fn observed(check: &CheckReceipt, name: &str) -> u64 {

@@ -40,6 +40,7 @@ mod output;
 mod poison;
 mod proposal;
 mod read;
+mod recovery;
 mod snapshot;
 mod transfer;
 mod types;

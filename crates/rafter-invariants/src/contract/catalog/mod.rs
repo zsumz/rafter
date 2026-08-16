@@ -9,8 +9,9 @@ pub use crate::contract::profile::{
     ClausePolicy, DetectorReplayArtifactPolicy, DetectorReplayBuild, DetectorReplayChallenge,
     DetectorReplayContract, DetectorReplayFixtureInventory, DetectorReplayPolicy,
     DetectorReplaySource, DetectorReplayTargetDirectory, EvidenceLayer, EvidencePolicy,
-    EvidenceStrength, ProfileContract, ProfileManifest, RequiredClauseStrength, RunnerContract,
-    SimulatorCheckContract, VerifierContract,
+    EvidenceStrength, ObligationCompletion, ProfileContract, ProfileManifest,
+    ProofObligationContract, RequiredClauseStrength, RunnerContract, SimulatorCheckContract,
+    VerifierContract,
 };
 pub use crate::contract::{SimulatorIdentity, TestIdentity};
 pub use model::{Catalog, ClauseDescriptor, EvidenceDescriptor, InvariantDescriptor};

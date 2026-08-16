@@ -116,6 +116,7 @@ fn verify_paths(fixture: &SimulatorFixture, paths: &[PathBuf]) -> EvidenceIntake
         &bundle.execution.plan,
         &bundle.source_ref,
         &fixture.root,
+        crate::verification::VerificationContext::ProducingJob,
     );
     crate::verification::verify_paths(request, paths, Vec::new())
         .expect("adversarial serialized evidence has a typed intake")

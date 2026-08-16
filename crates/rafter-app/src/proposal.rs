@@ -66,6 +66,13 @@ pub enum ProposalBegin<G, R> {
         /// Leader term that appended the entry.
         term: Term,
         /// Peer messages the caller must route.
+        ///
+        /// This list duplicates the step report's so that
+        /// `RaftGroup::begin_proposal_outcome` callers, who never see a
+        /// report, can route the append. A `RaftGroup::begin_proposal` or
+        /// `RaftGroup::begin_proposal_batch` caller must route the report's
+        /// list or this one, never both — routing both sends every frame
+        /// twice.
         peer_messages: Vec<PeerEnvelope<G>>,
     },
     /// A single-node group appended, committed, and applied the command.
@@ -81,6 +88,13 @@ pub enum ProposalBegin<G, R> {
         /// Application result returned by the state machine.
         result: R,
         /// Peer messages the caller must route.
+        ///
+        /// This list duplicates the step report's so that
+        /// `RaftGroup::begin_proposal_outcome` callers, who never see a
+        /// report, can route the completion. A `RaftGroup::begin_proposal` or
+        /// `RaftGroup::begin_proposal_batch` caller must route the report's
+        /// list or this one, never both — routing both sends every frame
+        /// twice.
         peer_messages: Vec<PeerEnvelope<G>>,
     },
     /// The local node proved the command was not appended.
@@ -105,6 +119,13 @@ pub enum ProposalBegin<G, R> {
         /// Diagnostic explanation for the lost outcome.
         reason: ProposalUnknownOutcomeReason,
         /// Peer messages still emitted by the submission step.
+        ///
+        /// This list duplicates the step report's so that
+        /// `RaftGroup::begin_proposal_outcome` callers, who never see a
+        /// report, can route what the step still emitted. A
+        /// `RaftGroup::begin_proposal` or `RaftGroup::begin_proposal_batch`
+        /// caller must route the report's list or this one, never both —
+        /// routing both sends every frame twice.
         peer_messages: Vec<PeerEnvelope<G>>,
     },
 }

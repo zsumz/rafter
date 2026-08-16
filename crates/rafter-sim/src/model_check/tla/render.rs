@@ -49,9 +49,7 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
     // `raft_trace_vars_name_every_raft_tla_state_variable` holds this against
     // Raft.tla itself rather than against a golden copy of this function.
     module.push_str("traceVars == << currentTerm, votedFor, role, log, commitIndex,\n");
-    module.push_str(
-        "               snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,\n",
-    );
+    module.push_str("               snapshotIndex, snapshotTransfer,\n");
     module.push_str("               applied, applicationBases, applicationTransitions,\n");
     module.push_str("               messages, readRequests, readBarrierViolationSeen,\n");
     module.push_str("               electedLeaders, logicalPrefixLedger, committedLedger,\n");

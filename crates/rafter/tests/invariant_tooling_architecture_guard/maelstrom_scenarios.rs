@@ -1,6 +1,13 @@
 //! Scenarios: Maelstrom verification remains independent, typed, and identity-stable.
 
-use super::architecture_support::{display_path, is_test_module, read, workspace_root};
+use std::collections::BTreeSet;
+
+use super::architecture_support::{
+    declared_test_names, display_path, is_test_module, read, workspace_root,
+};
+
+/// The bare substring the Maelstrom lane filters its selection with.
+const MAELSTROM_FILTER: &str = "maelstrom";
 
 #[test]
 fn maelstrom_acceptance_is_verifier_owned_without_producer_policy_edges() {
@@ -119,14 +126,6 @@ fn maelstrom_compatibility_mounts_preserve_ci_test_identities() {
 
     let inventory = read(&root.join("verification/maelstrom-test-inventory.txt"));
     let names = inventory.lines().collect::<Vec<_>>();
-    assert_eq!(names.len(), 50, "Maelstrom inventory must pin 50 names");
-    let mut canonical = names.clone();
-    canonical.sort_unstable();
-    canonical.dedup();
-    assert_eq!(
-        names, canonical,
-        "Maelstrom inventory must be sorted and unique"
-    );
     for prefix in [
         "artifact_verify_maelstrom::tests::",
         "artifact_verify_maelstrom_support::tests::",
@@ -159,4 +158,78 @@ fn maelstrom_compatibility_mounts_preserve_ci_test_identities() {
             "Maelstrom full-bundle fragment {fragment} exceeded 400 lines"
         );
     }
+}
+
+/// The Maelstrom lane runs an exact-count, exact-name selection over the
+/// `maelstrom` filter. A count cannot see a rename: c7f802f6 renamed a
+/// binding-class scenario, the selection stayed 61 tests, the length assertion
+/// that used to live above passed, and the lane's by-name check failed an hour
+/// later. This derives the real membership from the module graph, so adding,
+/// renaming, or removing a scenario fails here instead — and the set equality
+/// subsumes the count it replaced.
+#[test]
+fn the_maelstrom_selection_matches_its_reviewed_inventory() {
+    let root = workspace_root();
+    let inventory_path = "verification/maelstrom-test-inventory.txt";
+    let inventory = read(&root.join(inventory_path));
+    let reviewed = inventory.lines().collect::<Vec<_>>();
+
+    let mut canonical = reviewed.clone();
+    canonical.sort_unstable();
+    canonical.dedup();
+    assert_eq!(
+        reviewed, canonical,
+        "{inventory_path} must be sorted and free of duplicates"
+    );
+
+    let declared = declared_maelstrom_selection(&root);
+    let reviewed = reviewed
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let missing = declared.difference(&reviewed).collect::<Vec<_>>();
+    let stale = reviewed.difference(&declared).collect::<Vec<_>>();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "{inventory_path} disagrees with the compiled selection\n  missing: {missing:#?}\n  stale: {stale:#?}"
+    );
+
+    for pin in [
+        ".github/workflows/ci.yml",
+        "crates/rafter/tests/ci_test_inventory_contract.rs",
+        "crates/rafter/tests/invariant_ci_contract/pr_scenarios.rs",
+    ] {
+        assert!(
+            read(&root.join(pin)).contains(&format!(
+                "scripts/cargo-test-exact {} {MAELSTROM_FILTER} --inventory {inventory_path}",
+                declared.len()
+            )),
+            "{pin} must select exactly the {} reviewed Maelstrom scenarios by name",
+            declared.len()
+        );
+    }
+}
+
+/// Every `#[test]` the bare `maelstrom` filter matches in the invariant crate,
+/// named the way libtest names it. The filter is a substring of the whole test
+/// name rather than a module namespace, so a scenario joins this selection
+/// through its module path or through its own function name, and the sweep is
+/// crate-wide rather than scoped to the Maelstrom directories.
+fn declared_maelstrom_selection(root: &std::path::Path) -> BTreeSet<String> {
+    let declared = declared_test_names(root);
+    let gated = declared
+        .iter()
+        .filter(|(name, linux_only)| **linux_only && name.contains(MAELSTROM_FILTER))
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        gated.is_empty(),
+        "this lane runs on Linux, so a `cfg(target_os = \"linux\")` scenario would join its \
+         selection while this derivation drops it: {gated:#?}"
+    );
+    declared
+        .into_iter()
+        .filter(|(name, linux_only)| !*linux_only && name.contains(MAELSTROM_FILTER))
+        .map(|(name, _)| name)
+        .collect()
 }

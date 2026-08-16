@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Fail a scheduled TLA+ continuation before TLC starts when the restored
+# checkpoint leaves no room to write the next one.
+#
+# Usage:
+#   scripts/tla-checkpoint-disk-gate target/rafter-invariants/tla-checkpoint/nightly
+#
+# TLC does not overwrite a checkpoint in place. It writes a new generation
+# beside the recovered one and only then retires the predecessor, so peak disk
+# is the restored bytes plus a full successor plus whatever that successor grew
+# by. A continuation whose frontier is still expanding writes a successor
+# strictly larger than its parent, and the run also has to finalize evidence
+# and hold the workspace while it does.
+#
+# The invariant this enforces:
+#
+#   after restore, free disk must fit another full generation plus growth and
+#   finalization
+#
+# expressed as
+#
+#   free >= restored * 1.5 + 4 GiB
+#
+# The 1.5 factor is one successor generation plus a 50% growth allowance; the
+# 4 GiB constant is workspace and evidence-finalization overhead. Standard
+# GitHub-hosted runners are 4 vCPU / 16 GB RAM with roughly 14 GB free SSD, so
+# this bound is reachable and a restore that violates it would have died mid-run
+# with a corrupt or absent successor generation instead of failing here in
+# seconds.
+#
+# Failing here is deliberate. A continuation that cannot write its successor
+# does not merely fail: it breaks the checkpoint lineage, because the run saves
+# no new generation and the pruning step retains the old one only by accident.
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "usage: $0 CHECKPOINT_DIRECTORY" >&2
+    exit 2
+fi
+
+checkpoint="$1"
+
+# `du -sb` and `df -PB1` report exact bytes but are GNU extensions. Workflows
+# run on Linux where they are present; the POSIX 1-KiB fallbacks keep the gate
+# runnable on a developer macOS checkout, at kibibyte rather than byte
+# resolution, which is far below the granularity of the decision.
+directory_bytes() {
+    local path="$1"
+    if du -sb "$path" >/dev/null 2>&1; then
+        du -sb "$path" | awk '{ print $1 }'
+    else
+        echo $(( $(du -sk "$path" | awk '{ print $1 }') * 1024 ))
+    fi
+}
+
+free_bytes() {
+    local path="$1"
+    if df -PB1 "$path" >/dev/null 2>&1; then
+        df -PB1 "$path" | awk 'NR == 2 { print $4 }'
+    else
+        echo $(( $(df -Pk "$path" | awk 'NR == 2 { print $4 }') * 1024 ))
+    fi
+}
+
+# A cache miss is not a failure: the run simply starts a fresh lineage. The gate
+# still applies with a restored size of zero, which reduces to the 4 GiB floor
+# and catches a runner that arrived with its disk already consumed.
+if [[ -d "$checkpoint" ]]; then
+    restored="$(directory_bytes "$checkpoint")"
+else
+    restored=0
+    echo "no restored checkpoint at ${checkpoint}; gating a fresh lineage against the workspace floor"
+fi
+
+# `df` needs a path that exists. On a cache miss the checkpoint directory does
+# not, so walk up to the nearest ancestor that does -- it is the same
+# filesystem.
+probe="$checkpoint"
+while [[ ! -e "$probe" ]]; do
+    parent="$(dirname "$probe")"
+    if [[ "$parent" == "$probe" ]]; then
+        break
+    fi
+    probe="$parent"
+done
+free="$(free_bytes "$probe")"
+
+gibibyte=$((1024 * 1024 * 1024))
+overhead=$((4 * gibibyte))
+required=$((restored * 3 / 2 + overhead))
+
+report() {
+    printf '%s: %s bytes (%.2f GiB)\n' "$1" "$2" \
+        "$(awk -v bytes="$2" -v unit="$gibibyte" 'BEGIN { print bytes / unit }')"
+}
+
+report "restored checkpoint" "$restored"
+report "free on $(df -P "$probe" | awk 'NR == 2 { print $NF }')" "$free"
+report "required" "$required"
+
+if ((free < required)); then
+    cat >&2 <<EOF
+error: restored TLC checkpoint leaves too little free disk to continue safely
+
+  restored checkpoint : ${restored} bytes
+  free disk           : ${free} bytes
+  required free       : ${required} bytes  (restored * 1.5 + 4 GiB)
+  shortfall           : $((required - free)) bytes
+
+Invariant: after restore, free disk must fit another full generation plus
+growth and finalization. TLC writes its successor checkpoint beside the
+recovered one before retiring it, so a continuation started under this
+shortfall would exhaust the runner disk mid-run and break the checkpoint
+lineage rather than merely failing.
+
+Reduce the checkpoint, raise the runner disk, or retire this lineage
+deliberately -- do not bypass this gate.
+EOF
+    exit 1
+fi
+
+echo "checkpoint continuation has sufficient free disk"

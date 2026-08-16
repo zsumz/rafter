@@ -108,7 +108,7 @@ pub(crate) fn assert_unique_paths(paths: &[String]) -> Result<(), String> {
 pub(crate) fn assert_pr_launcher_inventories(workflow: &str) {
     let launcher = job_block(workflow, "invariants-launcher-macos");
     for exact_inventory in [
-        "scripts/cargo-test-exact 55 execution::process:: --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 64 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 8 artifact_verify::test_logs::tests --locked -p rafter-invariants -- --test-threads=1",
     ] {

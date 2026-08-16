@@ -248,9 +248,15 @@ fn retention_policy(runner: &str, kind: &str) -> Option<bool> {
             | "tla-checkpoint-recovered-contract"
             | "tla-checkpoint-recovered-inventory"
             | "tla-checkpoint-recovery-report" => Some(true),
+            // Per-obligation logs and configurations are text the verifier
+            // reads back and re-parses, exactly like the detector pair, so
+            // their semantic bytes are retained. They are named dynamically
+            // because the reviewed obligation set is profile data.
             dynamic
                 if dynamic.starts_with("tla-detector-log:")
-                    || dynamic.starts_with("tla-detector-config:") =>
+                    || dynamic.starts_with("tla-detector-config:")
+                    || dynamic.starts_with("tla-obligation-log:")
+                    || dynamic.starts_with("tla-obligation-config:") =>
             {
                 Some(true)
             }

@@ -66,6 +66,15 @@ then adopted the promoted mechanism through real three-node Rafter groups. The
 promotion and its first consumer therefore land as one vertical slice: neither
 an unused scheduler abstraction nor a consumer that proves only its own model.
 
+The final entry is the first one whose subject was already a public method. The
+simulator's well-formedness oracle had been reachable all along, behind a hidden
+feature and a `#[doc(hidden)]` attribute, and the whole repository paid for the
+concealment: every workspace command compiled the kernel in a shape no published
+consumer could produce. Promoting it deletes a named release blocker rather than
+adding a capability, and it is also the only entry that designs a change it does
+not make — the evidence layer's own source-contract label is reserved, so that
+correction is written out and handed off.
+
 The couplings are recorded in [Coupled designs](#coupled-designs), and the
 implementation sequence in [Adoption order](#adoption-order).
 
@@ -12936,6 +12945,387 @@ drives three independent three-node counter groups through the managed layer,
 and compares client-visible values and queue/fairness outcomes with its
 independent oracle. Source mode and exact-package mode both exercise that path.
 
+## Node State Validation Without a Hidden Feature
+
+### Origin
+
+`rafter-sim` could not be published, and the reason was one method. The
+simulator's model checker asserts after every explored transition that each
+node's own representation is still self-consistent — the ST-01 well-formedness
+obligation in [`verification/raft-invariants.yaml`](../verification/raft-invariants.yaml).
+It has exactly two call sites, both reading the same kernel method:
+
+- [`crates/rafter-sim/src/model_check/invariants/applied.rs:79`](../crates/rafter-sim/src/model_check/invariants/applied.rs),
+  which renders a violation into an `ST-01` `Failure`; and
+- [`crates/rafter-sim/src/model_check/state/coverage.rs:18`](../crates/rafter-sim/src/model_check/state/coverage.rs),
+  which marks the `WellFormedStatesChecked` observation when every node passes.
+
+Neither call branches on *which* rule failed. One needs `Display`, the other
+needs `is_ok`.
+
+The method they call was `Node::validate_derived_state`, declared
+`#[doc(hidden)] pub fn … -> Result<(), String>` inside a module gated
+`#[cfg(any(test, feature = "internal-test-hooks"))]`. So the simulator turned
+that feature on in its manifest, and under resolver 2 the feature unified into
+`rafter` for every command that selects `rafter-sim`. The cost was paid across
+the repository rather than by the simulator:
+
+- every `--workspace` invocation compiled `rafter` in a shape no published
+  consumer can produce;
+- `scripts/rustdoc-check` documented the publish list by name, because
+  `cargo doc --workspace` documented `rafter` with a feature nobody can turn on;
+- `scripts/reference-package-check` phase 6 was the *only* check anywhere that
+  built `rafter` in its published feature shape; and
+- `RELEASE.md` carried `rafter-sim` as a named release blocker.
+
+That is a large blast radius for a method that exists to answer one question.
+
+### Classification
+
+Raft mechanism, and specifically kernel mechanism a consumer cannot reproduce.
+The check reads `Node`'s private fields — the derived configuration index and
+its canonical log, the volatile commit/applied cursors against the installed
+snapshot boundary, the leader's pending read-index rounds, and the incoming
+snapshot transfer. Those are private by design, and correctly so. A caller
+holding only the public protocol queries can detect that a node's
+representation went wrong only when the corruption later changes an observable
+protocol answer — by which point the step that caused it is off the trace and
+the counterexample points at the wrong transition.
+
+This is the ordinary shape of a well-formedness oracle: the layer that owns the
+representation is the only layer that can check it. Hiding the check behind a
+feature did not make the surface smaller; it made it undocumented.
+
+Second plausible consumer: any embedder driving `rafter` from its own
+deterministic harness — the seven `PersistedRaftRuntime` implementations in
+this workspace, a fuzz target, or a debug-build assertion in an embedder's own
+step loop.
+
+### Design
+
+The method is promoted rather than replaced. Its name is unchanged, which is
+deliberate: `validate_derived_state` is ST-01's registered
+`negative_fixture_detector_bridge` in five catalog entries, and the invariant
+catalog guard proves the bridge is reachable from both the detector and the
+registered checker. Renaming would move evidence-graph identity for a cosmetic
+gain.
+
+What changes is everything that made it unpublishable — the gate, the
+`#[doc(hidden)]`, and the error type:
+
+```rust
+/// A node's internal representation contradicts itself.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct StateValidationError { /* private */ }
+
+impl fmt::Display for StateValidationError { … }
+impl Error for StateValidationError {}
+```
+
+```rust
+/// Checks that this node's internal state is structurally well formed, and
+/// returns the first violation found.
+///
+/// [six rule families, the single-node scope limit, and the cost note]
+///
+/// # Errors
+///
+/// Returns [`StateValidationError`] describing the first violated rule.
+pub fn validate_derived_state(&self) -> Result<(), StateValidationError>;
+```
+
+The module moves from `crates/rafter/src/node/state/derived/validate.rs` to
+`crates/rafter/src/node/validate.rs`, beside `observe.rs`. Its old home was
+accurate when the only rule was the derived-index rebuild; it now checks index
+geometry, both membership shapes, pending read rounds, and the incoming
+snapshot transfer, none of which is derived state. A node-level check belongs
+at node level.
+
+**Why the error type is opaque.** The rules are an internal consistency set
+that grows whenever the kernel gains state worth cross-checking. A public enum
+would make each new rule either a breaking change or a variant every existing
+caller silently ignores, and would have to name internal representation in its
+fields — the configuration index's offsets are the clearest example, and
+`ConfigurationIndex` is documented as their sole owner. The two real consumers
+discriminate nothing. An opaque type keeps the surface honest about what is
+promised: a verdict, and a diagnostic for the human reading the counterexample.
+
+**Why a type at all, rather than the `String` it replaced.** `String` is not
+`Error`, so it does not compose: no `?` into `Box<dyn Error>`, and no name for
+the failure domain in a caller's own error enum. Every other error in
+`crates/rafter` — `NodeConfigError`, `BootstrapValidationError`,
+`MembershipValidationError`, `LocalSnapshotInstallError` — is a named type with
+`Display` and `Error`. This one was the exception because it was hidden.
+
+The `Display` text is documented as a diagnostic and explicitly *not* a stable
+parse target, which is the licence to improve a diagnosis later without a
+release note.
+
+### Semantics and edge cases
+
+- **Scope.** Single-node and structural. It proves nothing about agreement
+  between nodes; a cluster of individually well-formed nodes can still violate
+  every Raft safety property. The rustdoc says so, because the name invites the
+  opposite reading.
+- **Cost.** Linear in the retained log — the derived rules rebuild each index
+  and compare. Documented as a test/simulation/debug assertion, not a step-loop
+  call.
+- **Unreachability.** A node driven only through this crate's public API cannot
+  produce an error. That is the point, and the rustdoc states it: reaching the
+  type means a Rafter bug, not a caller mistake or a protocol event.
+- **Diagnostic text is unchanged.** Every rule's message is byte-identical to
+  the hidden version, so the five registered negative fixtures keep asserting
+  the strings they already asserted.
+- **The feature is deleted, not emptied.** `internal-test-hooks` gated exactly
+  this module and nothing else. `rafter`'s own tests reached the rules through
+  the `test` half of the `cfg`, which the promotion makes unconditional, so no
+  in-crate use survives it. `DerivedState::push_configuration_offset_for_test`
+  stays `#[cfg(test)]`: it is a mutator for one negative fixture, has no
+  external consumer, and is not part of this surface.
+
+### Blast radius
+
+Breaking, pre-1.0: the return type of `Node::validate_derived_state` changes,
+and `rafter` loses a feature. Both breaks are the promotion working — the
+method was `#[doc(hidden)]` and the feature was undocumented, so no supported
+consumer can be relying on either.
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter/src/node/validate.rs`](../crates/rafter/src/node/validate.rs) | New home; add `StateValidationError`; document the method; ungate |
+| [`crates/rafter/src/node/state/derived.rs`](../crates/rafter/src/node/state/derived.rs) | Drop three `cfg` gates; `DerivedState::validate` becomes `pub(in crate::node)` |
+| [`crates/rafter/src/node/mod.rs`](../crates/rafter/src/node/mod.rs) | Declare `validate`; re-export the error |
+| [`crates/rafter/src/lib.rs`](../crates/rafter/src/lib.rs) | Re-export `StateValidationError` |
+| [`crates/rafter/Cargo.toml`](../crates/rafter/Cargo.toml) | Delete `[features]` |
+| [`crates/rafter-sim/Cargo.toml`](../crates/rafter-sim/Cargo.toml) | Depend on `rafter` with no features |
+| [`crates/rafter/src/node/tests/derived_state.rs`](../crates/rafter/src/node/tests/derived_state.rs) | Detector renders the error; five fixture bodies unchanged |
+| [`crates/rafter-invariants/src/contract/profile/replay.rs`](../crates/rafter-invariants/src/contract/profile/replay.rs) | Re-pin the reviewed detector replay inventory hash |
+| [`verification/raft-invariant-profiles.json`](../verification/raft-invariant-profiles.json) | The same hash, in the `pr`, `nightly`, and `weekly` contracts |
+
+The last two rows are the review mechanism working, and are worth stating
+plainly rather than burying. `REVIEWED_DETECTOR_REPLAY_INVENTORY_SHA256` is a
+content pin over the *whole source file* of every registered detector and
+fixture, so any edit to `derived_state.rs` moves it — including the comment
+above the detector. It exists to force exactly this disclosure when a negative
+control's source changes.
+
+What the pin protects is unchanged, and the identity test proves it in the same
+assertion block: 77 unique fixtures, 79 evidence bindings, 2 targets, each
+fixture still carrying its `expect-err:` witness for its registered identity.
+Those three counts are also cross-checked against the profile manifest by
+`validate_verifier`, and none of them moved. The detector still reaches
+`validate_derived_state`, which is what the catalog guard requires of the
+bridge. Only the bytes of a file this promotion legitimately edits are
+different.
+
+`rafter-sim`'s Rust source does not change at all. Both call sites already used
+`Display` and `is_ok`, which is the evidence that the simulator was using a
+legitimate API that had not been published as one.
+
+Three repository claims become false in the useful direction, and are corrected
+rather than left standing: `cargo doc --workspace` and `cargo doc -p rafter` now
+document the same crate; `scripts/reference-package-check` phase 6 is no longer
+the only check that builds `rafter` in its published feature shape, because
+every check now does; and `rafter-sim` is no longer blocked from publication by
+a hidden feature.
+
+### Focused-test plan
+
+The five existing detector fixtures in
+[`crates/rafter/src/node/tests/derived_state.rs`](../crates/rafter/src/node/tests/derived_state.rs)
+are the negative controls for the rules and are kept verbatim; they now exercise
+the public path, since the gate they compiled under is gone. The positive
+fixtures in the same file and the ten local-install fixtures in
+[`crates/rafter/src/node/tests/snapshot/install/local.rs`](../crates/rafter/src/node/tests/snapshot/install/local.rs)
+assert the method on post-states and likewise move to the public path unchanged.
+
+No new test proves "the surface is public", because the toolchain proves it
+better than a test could: `scripts/rustdoc-check` builds the publish list with
+`-D missing-docs`, so an undocumented public item fails the gate, and
+`crates/rafter/tests/public_api_docs_guard.rs` skips `#[doc(hidden)]` items —
+removing the attribute is what brings the method under the guard.
+
+### Rejected alternatives
+
+- **Keep the feature, private to `rafter`.** It gated nothing else, and its
+  `test` half already served the crate's own tests. An empty feature declaration
+  with no gated code and no consumer is worse than deleting it.
+- **A `#[non_exhaustive]` enum with one variant per rule.** Roughly eighteen
+  variants, no consumer matching on any of them, and several would have to
+  publish internal representation — the configuration index's raw offsets among
+  them. This is the shape the document's own rule rejects: a consumer reveals a
+  need, it does not dictate a shape, and the revealed need is a verdict plus a
+  diagnostic.
+- **Rename to match the widened scope.** `validate_derived_state` under-describes
+  what it checks, and a name like `validate_state` would read better. It is
+  ST-01's registered detector bridge in five catalog entries; moving evidence
+  identity to improve a name is the wrong trade. The rustdoc carries the honest
+  scope instead.
+- **Leave it hidden and publish `rafter-sim` anyway.** Publishing a crate whose
+  manifest turns on an undocumented feature of a published dependency exports
+  the problem to consumers rather than solving it.
+
+### Deferred: the simulator layer's source-contract label
+
+One coordinated change is designed here and deliberately not made.
+
+`rafter-invariants` records, for each evidence layer, an exact source contract
+that a receipt must match. The simulator layer's is:
+
+```rust
+"simulator" => Ok(LayerSourceContract {
+    build_profile: "release-and-test",
+    features: &["internal-test-hooks"],
+    tools: &[],
+    script_runtime: false,
+}),
+```
+
+declared twice by design — once producer-side as `LayerSourceContract` in
+[`crates/rafter-invariants/src/producer/source.rs:215-220`](../crates/rafter-invariants/src/producer/source.rs)
+and once verifier-side as the independently defined `LayerContract` in
+[`crates/rafter-invariants/src/verification/source/policy.rs:193-198`](../crates/rafter-invariants/src/verification/source/policy.rs).
+The duplication is the producer/verifier split, not an accident, so a
+correction has to land in both.
+
+The label is descriptive, not observed. The simulator layer builds with
+`cargo build --release --locked -p rafter-sim --bin rafter-model-check-fast`
+([`producer/simulator/model/build.rs:36-43`](../crates/rafter-invariants/src/producer/simulator/model/build.rs))
+and passes no `--features`; the feature reached `rafter` through `rafter-sim`'s
+manifest. With that dependency gone, the layer resolves no features and the
+label names a feature that no longer exists.
+
+Nothing fails today. Receipts are built from the contract and verified against
+the contract, so producer and verifier still agree, and no code reads
+`Cargo.toml` to cross-check the label. The staleness is a false claim in
+evidence prose, not a broken gate.
+
+The correction is small but not a global replace, because the same string
+appears in two different roles.
+
+Two declarations of the simulator contract change to `features: &[]`:
+`producer/source.rs:217` and `verification/source/policy.rs:195`. Two synthetic
+receipts that *stand for* a simulator receipt follow them —
+[`producer/source_identity_tests.rs:269`](../crates/rafter-invariants/src/producer/source_identity_tests.rs),
+which builds `source("release-and-test", &["internal-test-hooks"], &[])` to
+prove the `tests` contract rejects a cross-layer receipt, and
+[`src/tests.rs:622`](../crates/rafter-invariants/src/tests.rs), which builds the
+`simulator` runner's receipt. Both keep discriminating on `build_profile` after
+the change.
+
+The third occurrence must not be swept along.
+[`source_identity_tests.rs:263`](../crates/rafter-invariants/src/producer/source_identity_tests.rs)
+uses the string as an arbitrary *counterexample* — an altered feature list on a
+`tests`-layer receipt, asserting the contract rejects it. Replacing it with
+`&[]` leaves a passing test, since an empty list still differs from
+`["no-default-features"]`, but it names a feature that no longer exists and
+reads as if it were about the simulator. It should name some other plausible
+non-matching feature instead.
+
+It is deferred because simulator producer/verifier contract identity is
+reserved: it is what the 44-entry PR gate compares receipts against, and
+changing what a layer's evidence claims about its own build is a review that
+belongs to the evidence programme rather than to an API promotion. The
+promotion above is complete without it — `rafter-sim` no longer depends on the
+hidden feature, which is the release blocker — and this paragraph is the
+handoff, not a TODO.
+
+## The Restart Transaction
+
+The correction to [Declared Applied Floor Below the Snapshot
+Boundary](#declared-applied-floor-below-the-snapshot-boundary). That entry got
+the *permanent* verdict right and left one half of the seam open, and this one
+closes it.
+
+### Origin
+
+The earlier design placed the boundary verdict at every moment the state machine
+would answer for the replica — step, propose, read — and deliberately withheld it
+from `RaftGroup::apply_raft_outputs`, on the reasoning that the raw pump is what a
+crash-window replica drains *before* it restores. The table entry read
+"`apply_raft_outputs` | withdrawn".
+
+Applying is one of those moments, and it was the one left out. It is the moment
+the gap stops being recoverable and becomes durable:
+
+- `Node::from_bootstrap_applied_through` raises a declared floor of 3 to a
+  snapshot boundary of 5;
+- `DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through`
+  drains strictly above the raised floor, and `apply_committed_into` has no arm
+  that can emit `Output::ApplySnapshot`, so the batch can never carry the
+  install that would make it safe;
+- the raw pump applied index 6 onto an application at 3.
+
+The result is `{1,2,3,6}` in durable application state, replica Healthy,
+readiness satisfied, reads served. The applied index, the readiness predicate,
+and the metrics snapshot all compare numbers, and every number is right, so
+nothing later can find the hole. Both routes reach it: the crash between
+promoting an inbound snapshot and installing it, and `LockStore::discard_and_reseed`
+over a compacted log that has since committed one more entry — the case
+`gen6_reseed_compaction` claimed was unreachable because "minting a token needs
+a session, a session needs a proposal, and a proposal needs a step". No step is
+needed; the laundering happens inside the apply.
+
+### The shapes
+
+Three, and they are one design.
+
+1. **`PersistedRaftRuntime::snapshot() -> Option<RaftSnapshot>`**, provided,
+   defaulting to `None`. The composition cannot repair a state machine below the
+   boundary without the descriptor at that boundary, and `snapshot_index` alone
+   is a number. The default is the honest answer for a runtime that cannot
+   produce its own descriptor rather than a claim that none exists, and it fails
+   closed: a recovery that cannot obtain it refuses instead of applying over the
+   gap. `DurableRaftNode` forwards its inherent `snapshot()`, cloned, because the
+   caller holds the runtime mutably while it repairs the state machine beside it.
+
+2. **`GroupError::SnapshotRestoreRequired { app_applied_index, snapshot_index,
+   entry_index }`.** Distinct from `AppliedIndexBelowSnapshotBoundary` and not a
+   poison. The two name the same gap at two moments and differ in whether a
+   repair is still available: this one is raised before the application is
+   touched, while the snapshot is still installable. It names the entry it
+   stopped in front of so an operator can measure the gap.
+
+3. **`RaftGroup::apply_recovery_outputs(outputs) -> StepReportResult`.** Install
+   the snapshot the boundary names, then apply the suffix, in one operation and
+   one report. It performs the install through the existing
+   `RaftOutput::ApplySnapshot` path — support-declaration check, poison on
+   failure, `SnapshotEvent::Apply` in the routed report — by putting that output
+   ahead of the suffix in the vector the pump walks.
+
+### Why the ordering is structural rather than documented
+
+The guard that refuses an entry below the boundary sits in the shared apply
+path, on the one call site that reaches `ReplicatedStateMachine::apply_batch`.
+It is unconditional: the raw pump, an ordinary step, and the recovery operation
+all pass through it, and the operation is not exempted from it. It *earns* its
+way past — by the time the suffix reaches the guard the install has already
+lifted the state machine to the boundary. There is no flag, no argument, and no
+call order that reaches `apply_batch` with the gap open, which is the repo's
+standing preference for making a dangerous ordering unrepresentable rather than
+warning about it.
+
+### What is deliberately unchanged
+
+The operation restores exactly what it is about to endanger. A recovery batch
+carrying no committed application entry — the shape a fully compacted replica
+hands over, where the boundary *is* the last commit — installs nothing, and such
+a replica is left to the permanent verdict on its first step or read. Repairing
+it there would take a decision about discarded application state at a moment no
+operator is watching, and it would silently rewrite what `gen6_reseed_compaction`
+exists to refuse.
+
+### Blast radius
+
+`rafter-runtime-api` (one provided method), `rafter-runtime` (one forwarder),
+`rafter-app` (the typed error, the guard, `group/recovery.rs`), and the four
+shipped consumers of the recovery path: `rafter-service`'s
+`TransportDriverState::apply_recovery_outputs` — which both driver adoption paths
+route through, so `fenced-lock` migrates with it — and the `ledger-node` and
+`counter-node` binaries, each a one-call change. Every other caller of
+`apply_raft_outputs` is unaffected: the guard fires only when a committed
+application entry meets a state machine below the boundary.
+
 ## Coupled designs
 
 The promotions form coupled surfaces, not a list of independent additions. The
@@ -13287,3 +13677,17 @@ any one of the three lands alone.
     allocation, certificates, or retirement timing. The fenced-lock fixture
     owns all of that deployment policy. This step is additive and directly
     pinned by `rafter-service/tests/transport_membership.rs`.
+27. **Node state validation without a hidden feature.** Order matters here
+    because the manifest edit is what actually closes the blocker, and it must
+    not land before the surface it depends on exists. Add
+    `StateValidationError` and move the module to `node/validate.rs` with the
+    gate and `#[doc(hidden)]` removed; re-export from `node` and the crate
+    root; only then drop `features = ["internal-test-hooks"]` from
+    `rafter-sim` and delete `[features]` from `rafter`. Adapt the detector
+    helper in `derived_state.rs`, leaving the five fixture bodies alone, and
+    re-pin the detector replay inventory hash in both places that hold it.
+    Correct `RELEASE.md`, `docs/work-completion.md`,
+    `docs/reference-consumers.md`, `scripts/rustdoc-check`, and the two CI
+    comments, all of which assert the feature exists. The simulator layer's
+    source-contract label is deliberately left for the evidence programme; see
+    the entry's deferred section.

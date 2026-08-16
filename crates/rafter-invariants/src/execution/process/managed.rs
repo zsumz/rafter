@@ -14,6 +14,7 @@ use super::{
 };
 #[cfg(test)]
 pub(crate) use cleanup::force_next_cleanup_target_alive;
+pub(crate) use target::TargetObservation;
 use target::TargetPlacement;
 #[cfg(test)]
 pub(crate) use target::{

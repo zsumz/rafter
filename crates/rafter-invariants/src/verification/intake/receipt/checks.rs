@@ -75,11 +75,24 @@ pub(super) fn validate(
     Ok(())
 }
 
+/// Which result statuses each completion may carry.
+///
+/// `matches!` gets no exhaustiveness help from the compiler, so a new
+/// `CheckCompletion` variant must be added here by hand. It fails closed if it
+/// is not -- an unlisted completion allows no status at all -- but the failure
+/// arrives as the generic disagreement message, which is a bad way to learn
+/// about it. Every variant of the enum appears below.
+///
+/// `BudgetElapsedFrontierOpen` is a pass. That is the whole point of separating
+/// it from `FrontierExhausted`: the verdict semantics of a reporting
+/// continuation are unchanged, only the claim it records about its frontier.
 fn completion_allows(completion: CheckCompletion, status: EvidenceStatus) -> bool {
     matches!(
         (completion, status),
         (
-            CheckCompletion::Completed | CheckCompletion::FrontierExhausted,
+            CheckCompletion::Completed
+                | CheckCompletion::FrontierExhausted
+                | CheckCompletion::BudgetElapsedFrontierOpen,
             EvidenceStatus::Pass
         ) | (
             CheckCompletion::Counterexample,

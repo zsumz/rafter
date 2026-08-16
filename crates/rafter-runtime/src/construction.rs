@@ -267,6 +267,49 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore> DurableRaft
     /// for datastore embedders that persist their state-machine applied index
     /// separately from Raft hard state.
     ///
+    /// ```
+    /// use rafter::{Input, LogIndex, NodeConfig, NodeId, Output};
+    /// use rafter_runtime::DurableRaftNode;
+    /// use rafter_storage::InMemoryRaftHardStateStore;
+    ///
+    /// let config = NodeConfig::new(NodeId(1), Vec::new(), 3).expect("valid raft config");
+    /// let mut node = DurableRaftNode::new(config.clone(), InMemoryRaftHardStateStore::new())
+    ///     .expect("a fresh in-memory node opens");
+    /// for _ in 0..3 {
+    ///     node.step(Input::Tick).expect("each tick persists what it changed");
+    /// }
+    /// for command in [&b"set alpha=one"[..], &b"set beta=two"[..]] {
+    ///     node.step(Input::ClientProposal {
+    ///         payload: command.to_vec(),
+    ///     })
+    ///     .expect("the lone voter commits its own proposal");
+    /// }
+    /// let storage = node.into_storage();
+    ///
+    /// // Restart. The application declares how far its own durable state
+    /// // reached; the runtime replays what is above that floor and nothing at
+    /// // or below it, so a command already applied cannot be applied twice.
+    /// let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
+    ///     config,
+    ///     storage.hard_state_store,
+    ///     storage.log_segment,
+    ///     storage.snapshot_store,
+    ///     LogIndex(2),
+    /// )
+    /// .expect("the durable state is valid for this configuration");
+    /// let (node, recovery_outputs) = recovered.into_parts();
+    ///
+    /// let replayed = recovery_outputs
+    ///     .iter()
+    ///     .filter_map(|output| match output {
+    ///         Output::Apply { index, .. } => Some(*index),
+    ///         _ => None,
+    ///     })
+    ///     .collect::<Vec<_>>();
+    /// assert_eq!(replayed, vec![LogIndex(3)]);
+    /// assert_eq!(node.applied_index(), LogIndex(3));
+    /// ```
+    ///
     /// # Errors
     ///
     /// As the plain constructor, plus a bootstrap error when the floor lies

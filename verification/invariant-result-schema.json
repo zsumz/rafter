@@ -149,8 +149,45 @@
           "minProperties": 1,
           "additionalProperties": { "$ref": "#/$defs/simulator_check_contract" }
         },
+        "obligations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/proof_obligation_contract" }
+        },
         "minimum_observed_checks": { "type": "integer", "minimum": 1 },
         "require_peak_rss": { "type": "boolean" }
+      }
+    },
+    "tla_continuation_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "outcome"],
+      "properties": {
+        "policy": { "enum": ["gating-frontier-exhausted", "reporting-continuation"] },
+        "outcome": { "enum": ["frontier-exhausted", "counterexample", "budget-elapsed-frontier-open"] }
+      }
+    },
+    "proof_obligation_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "config",
+        "completion",
+        "minimum_generated_states",
+        "minimum_distinct_states",
+        "soft_timeout",
+        "seed"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "config": { "type": "string", "pattern": "^[A-Za-z0-9._-]+\\.cfg$" },
+        "completion": { "const": "frontier-exhausted" },
+        "minimum_generated_states": { "type": "integer", "minimum": 1 },
+        "minimum_distinct_states": { "type": "integer", "minimum": 1 },
+        "soft_timeout": { "type": "string", "pattern": "^[1-9][0-9]*m$" },
+        "seed": { "type": "string", "pattern": "^[0-9]+$" }
       }
     },
     "simulator_check_contract": {
@@ -370,8 +407,15 @@
         "execution_id": { "type": "string", "minLength": 1 },
         "check_id": { "type": "string", "minLength": 1 },
         "evidence_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-        "completion": { "enum": ["completed", "frontier_exhausted", "counterexample", "coverage_not_reached", "budget_exhausted", "timeout", "harness_error"] },
+        "completion": {
+          "$comment": "Why the check stopped. Two of these are passes and they are not interchangeable. 'frontier_exhausted' means the search space was drained: 'states_left_on_queue' is 0 and the terminal counters are published. 'budget_elapsed_frontier_open' means a TLA+ reporting continuation spent its time budget with a healthy open frontier: it publishes the 'progress_*' counters instead, 'progress_states_left' is greater than 0, and the layer's verdict was carried by its proof obligations rather than by this run. Reading 'completion' alone is sufficient; 'tla_continuation' repeats the same fact in the TLA+ layer's own vocabulary and must agree with it.",
+          "enum": ["completed", "frontier_exhausted", "counterexample", "coverage_not_reached", "budget_exhausted", "timeout", "harness_error", "budget_elapsed_frontier_open"]
+        },
         "observations": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "tla_continuation": {
+          "$comment": "TLA+ receipts only. 'policy' is pinned by the profile, not chosen by the producer. 'outcome' must agree with 'completion': 'budget-elapsed-frontier-open' pairs with 'budget_elapsed_frontier_open', 'frontier-exhausted' with 'frontier_exhausted', 'counterexample' with 'counterexample'.",
+          "$ref": "#/$defs/tla_continuation_binding"
+        },
         "simulator_liveness": {
           "oneOf": [
             { "type": "null" },

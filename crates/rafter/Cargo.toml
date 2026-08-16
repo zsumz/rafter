@@ -3,15 +3,34 @@ name = "rafter"
 version = "0.0.1"
 description = "Deterministic, sans-IO Raft protocol core."
 readme = "README.md"
+keywords = ["raft", "consensus", "distributed", "sans-io", "replication"]
+categories = ["algorithms", "network-programming", "database-implementations"]
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+# The published kernel archive carries the crate's own sources, docs, licence,
+# and its protocol tests. These test targets are repository infrastructure:
+# they assert on `.github/workflows`, `scripts/`, and `crates/rafter-invariants`
+# sources, none of which ship, so they can never run from an unpacked archive.
+exclude = [
+    "tests/ci_test_inventory_contract.rs",
+    "tests/invariant_ci_contract",
+    "tests/invariant_ci_contract.rs",
+    "tests/invariant_tooling_architecture_guard",
+    "tests/invariant_tooling_architecture_guard.rs",
+    "tests/publish_metadata_contract.rs",
+    "tests/support/invariant_tooling.rs",
+]
+
+# `internal-test-hooks` is a hidden, unstable hook that only the workspace's own
+# simulator turns on. docs.rs must render the crate in the shape a published
+# consumer actually gets, which is default features and nothing else.
+[package.metadata.docs.rs]
+all-features = false
+no-default-features = false
 
 [dependencies]
-
-[features]
-internal-test-hooks = []
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false }

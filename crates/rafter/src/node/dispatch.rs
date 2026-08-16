@@ -10,6 +10,37 @@ use super::{ClientProposalInput, Input, Node, Output};
 
 impl Node {
     /// Applies one input event and returns ordered side effects.
+    ///
+    /// A single-voter group is the smallest membership that can decide without
+    /// a peer, so it shows the whole write path in one sequence of steps: the
+    /// election, the proposal, and the commit that makes the payload the state
+    /// machine's to apply.
+    ///
+    /// ```
+    /// use rafter::{Input, LogIndex, Node, NodeConfig, NodeId, Output, Role};
+    ///
+    /// let config = NodeConfig::new(NodeId(1), Vec::new(), 3).expect("valid raft config");
+    /// let mut node = Node::new(config);
+    /// for _ in 0..3 {
+    ///     node.step(Input::Tick);
+    /// }
+    /// assert_eq!(node.role(), Role::Leader, "a lone voter wins its own election");
+    ///
+    /// let outputs = node.step(Input::ClientProposal {
+    ///     payload: b"set alpha=one".to_vec(),
+    /// });
+    /// let applied = outputs
+    ///     .iter()
+    ///     .find_map(|output| match output {
+    ///         Output::Apply { index, payload, .. } => Some((*index, payload.as_slice().to_vec())),
+    ///         _ => None,
+    ///     })
+    ///     .expect("a lone voter commits its own proposal");
+    ///
+    /// // Index 2, not 1: a new leader appends a no-op of its own term first,
+    /// // which is how Raft commits the entries it inherited (thesis 3.6.2).
+    /// assert_eq!(applied, (LogIndex(2), b"set alpha=one".to_vec()));
+    /// ```
     #[must_use]
     pub fn step(&mut self, input: Input) -> Vec<Output> {
         match input {

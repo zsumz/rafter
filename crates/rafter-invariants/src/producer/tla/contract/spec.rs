@@ -13,10 +13,10 @@ use super::super::tla_output::{
     render_detector_config, DETECTOR_PROBES, REGISTERED_PREDICATES, REQUIRED_MODEL_TRANSITIONS,
 };
 
-pub(super) const SPEC: &str = "specs/tla/raft/Raft.tla";
+pub(in crate::producer::tla::contract) const SPEC: &str = "specs/tla/raft/Raft.tla";
 pub(super) const TRACE_SPEC: &str = "specs/tla/raft/RaftMembershipTraceSample.tla";
 pub(super) const TRACE_CONFIG: &str = "specs/tla/raft/RaftMembershipTraceSample.cfg";
-const TRACE_SPEC_SHA256: &str = "6ed44f924f4a23dc507e76a4d8f540ecbb7c3689b319a9790cf5f210080132e8";
+const TRACE_SPEC_SHA256: &str = "c28b7e336153af62713ab0fa0a05b5a794ad378512d46d3fc42cacc57e2e0436";
 const TRACE_CONFIG_SHA256: &str =
     "1286edee2df96b702937d9c1340f8412c060a6e9a0df53dd46b0149d2027b96e";
 pub(super) const DETECTOR_SPEC: &str = "specs/tla/raft/RafterInvariantDetectorNegative.tla";
@@ -103,7 +103,7 @@ pub(super) fn validate_trace_contract_sources(
     let required_definitions = [
         "ReaddCheckpointReady ==",
         "ReaddCheckpointReached ==",
-        "TraceAction44 ==",
+        "TraceAction43 ==",
         "TraceSpec ==",
         "TraceComplete ==",
         "TraceCompletes ==",
@@ -128,9 +128,9 @@ pub(super) fn validate_trace_contract_sources(
     for required_line in [
         "EXTENDS Raft",
         "/\\ WF_traceVars(TraceNext)",
-        "TraceComplete == traceStep = 45",
+        "TraceComplete == traceStep = 44",
         "TraceCompletes == <>TraceComplete",
-        "\\/ /\\ traceStep = 45",
+        "\\/ /\\ traceStep = 44",
     ] {
         if !trace_spec.lines().any(|line| line.trim() == required_line) {
             return Err(
@@ -160,7 +160,7 @@ pub(super) fn validate_trace_contract_sources(
 fn validate_trace_transition_coverage(trace_spec: &str) -> Result<(), Box<dyn Error>> {
     let lines = trace_spec.lines().collect::<Vec<_>>();
     let mut blocks = BTreeMap::new();
-    for step in 0..=44 {
+    for step in 0..=43 {
         let definition = format!("TraceAction{step} ==");
         let start = lines
             .iter()
@@ -208,7 +208,7 @@ fn validate_trace_transition_coverage(trace_spec: &str) -> Result<(), Box<dyn Er
     Ok(())
 }
 
-pub(super) fn validate_symmetry_contract(
+pub(in crate::producer::tla::contract) fn validate_symmetry_contract(
     config_name: &str,
     config: &str,
 ) -> Result<(), Box<dyn Error>> {
@@ -232,7 +232,7 @@ pub(super) fn validate_symmetry_contract(
     }
 }
 
-pub(super) fn validate_safety_only_boundary(
+pub(in crate::producer::tla::contract) fn validate_safety_only_boundary(
     spec: &str,
     config: &str,
 ) -> Result<(), Box<dyn Error>> {
@@ -259,7 +259,7 @@ pub(super) fn validate_safety_only_boundary(
     Ok(())
 }
 
-pub(super) fn configured_invariants(source: &str) -> Vec<String> {
+pub(in crate::producer::tla::contract) fn configured_invariants(source: &str) -> Vec<String> {
     let mut invariants = Vec::new();
     let mut collecting = false;
     for line in source.lines() {

@@ -217,6 +217,7 @@ fn verify_fixture(
         &bundle.execution.plan,
         &bundle.source_ref,
         &fixture.root,
+        crate::verification::VerificationContext::ProducingJob,
     );
     let intake =
         crate::verification::verify_layer_paths(request, "simulator", fixture.bundle_path.clone())

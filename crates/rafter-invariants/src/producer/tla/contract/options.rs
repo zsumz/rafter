@@ -1,8 +1,74 @@
 //! Profile-specific TLA+ runner option constraints.
 
-use std::{collections::BTreeMap, error::Error};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+};
+
+use crate::contract::profile::{ObligationCompletion, ProofObligationContract};
 
 use super::{super::checkpoint, tool::required_configuration};
+
+/// Configurations that some profile owns as its primary model. The producer
+/// re-derives this locally rather than importing it: this allow-list is an
+/// independent gate, and sharing a constant with the contract layer would make
+/// one edit weaken both.
+const PRIMARY_CONFIGS: [&str; 3] = ["RaftCi.cfg", "RaftNightly.cfg", "Raft.cfg"];
+
+/// Producer-side gate on the obligation list.
+///
+/// This duplicates, on purpose, the shape the profile contract already
+/// enforces. The runner must not execute an obligation set it cannot itself
+/// justify: it refuses duplicate identities, primary configurations wearing an
+/// obligation's name, non-exhaustion completions, and budgets or floors that
+/// could let a vacuous run report success.
+pub(in crate::producer::tla) fn validate_obligation_options(
+    obligations: &[ProofObligationContract],
+) -> Result<(), Box<dyn Error>> {
+    let identities = obligations
+        .iter()
+        .map(|obligation| obligation.id.as_str())
+        .collect::<BTreeSet<_>>();
+    if identities.len() != obligations.len() {
+        return Err("TLA runner requires unique proof obligation identities".into());
+    }
+    for obligation in obligations {
+        if obligation.id.is_empty() {
+            return Err("TLA runner requires a named proof obligation".into());
+        }
+        if obligation.completion != ObligationCompletion::FrontierExhausted {
+            return Err(format!(
+                "TLA proof obligation {} must require frontier exhaustion",
+                obligation.id
+            )
+            .into());
+        }
+        if PRIMARY_CONFIGS.contains(&obligation.config.as_str())
+            // Case-sensitive on purpose: reviewed config names are exact
+            // identities, so this re-derives the contract layer's rule
+            // rather than a case-folded approximation of it.
+            || std::path::Path::new(&obligation.config)
+                .extension()
+                .is_none_or(|extension| extension != "cfg")
+            || obligation.config.contains('/')
+        {
+            return Err(format!(
+                "TLA proof obligation {} must name a non-primary configuration file",
+                obligation.id
+            )
+            .into());
+        }
+        if obligation.minimum_generated_states == 0 || obligation.minimum_distinct_states == 0 {
+            return Err(format!(
+                "TLA proof obligation {} must carry positive state floors",
+                obligation.id
+            )
+            .into());
+        }
+        super::parse_timeout(&obligation.soft_timeout)?;
+    }
+    Ok(())
+}
 
 pub(in crate::producer::tla) fn validate_runner_options(
     configuration: &BTreeMap<String, String>,
@@ -33,7 +99,7 @@ pub(in crate::producer::tla) fn validate_runner_options(
         (Some("RaftCi.cfg"), false) => {
             for (name, expected) in [
                 ("workers", "4"),
-                ("soft_timeout", "325m"),
+                ("soft_timeout", "310m"),
                 ("max_heap", "8g"),
                 ("fp_mem", "0.45"),
             ] {
@@ -45,7 +111,7 @@ pub(in crate::producer::tla) fn validate_runner_options(
         (Some("RaftNightly.cfg"), true) => {
             for (name, expected) in [
                 ("workers", "auto"),
-                ("soft_timeout", "265m"),
+                ("soft_timeout", "195m"),
                 ("checkpoint_minutes", "30"),
                 ("checkpoint_gzip", "required"),
                 ("max_heap", "8g"),
@@ -67,10 +133,10 @@ pub(in crate::producer::tla) fn validate_runner_options(
             "Raft.cfg" => {
                 for (name, expected) in [
                     ("workers", "auto"),
-                    ("soft_timeout", "265m"),
+                    ("soft_timeout", "110m"),
                     ("checkpoint_minutes", "30"),
                     ("checkpoint_gzip", "required"),
-                    ("max_heap", "4g"),
+                    ("max_heap", "8g"),
                     ("fp_mem", "0.45"),
                     ("checkpoint_recovery", "strict-compatible-if-present"),
                     ("unsymmetrized_exploration", "required"),

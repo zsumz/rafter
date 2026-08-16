@@ -59,7 +59,7 @@ const ALPHA: AccountId = AccountId::new(11);
 
 fn open(directory: &Path) -> DurableLedgerStateMachine {
     let store = LedgerStore::open(directory, config(2, 4)).expect("a ledger store opens");
-    DurableLedgerStateMachine::new(store)
+    DurableLedgerStateMachine::new(store, directory.join("raft/snapshots"))
 }
 
 fn commands(frames: usize) -> Vec<Command> {

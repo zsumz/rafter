@@ -6,39 +6,72 @@ use super::super::super::detector_qualified;
 use super::super::support::*;
 use crate::producer::tla_output::parse;
 
-pub(in crate::producer::tla_exec::mutation_tests) fn snapshot_compaction_pending_tracks_create_and_compact_transitions(
+/// Replaces the pair that used to mutate `compactionPending` in `CreateSnapshot`
+/// and `CompactSnapshot`. Those two actions are now one atomic action and the
+/// flag no longer exists, so neither original mutation is expressible. What the
+/// pair asserted was that the snapshot lifecycle is a handshake whose halves
+/// both have their effect: creation records that compaction is owed, compaction
+/// discharges it. Folded, the same contract is that the one action has both of
+/// its effects at once -- it advances the snapshot floor, and it retains the
+/// ghost logical history the floor now indexes into. The substitutes break one
+/// each. The first stalls the lifecycle exactly as the old first mutation did
+/// and is caught by the same liveness property; the second is caught as an
+/// invariant violation, because atomicity leaves no half-completed state for a
+/// liveness property to get stuck in.
+pub(in crate::producer::tla_exec::mutation_tests) fn snapshot_creation_atomically_advances_and_retains_the_snapshot_floor(
 ) {
     let root = workspace_root();
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
             .expect("read detector spec");
-    let mutations = [
-        (
-            "snapshot-create-does-not-mark-compaction-pending",
-            "/\\ compactionPending' = [compactionPending EXCEPT ![n] = TRUE]",
-            "/\\ compactionPending' = [compactionPending EXCEPT ![n] = FALSE]",
-        ),
-        (
-            "snapshot-compact-does-not-clear-compaction-pending",
-            "/\\ compactionPending' = [compactionPending EXCEPT ![n] = FALSE]",
-            "/\\ compactionPending' = [compactionPending EXCEPT ![n] = TRUE]",
-        ),
-    ];
 
-    for (name, source, replacement) in mutations {
-        let mutated = replace_exactly_once(&raft, source, replacement);
-        let result =
-            run_tlc_with_config(&root, name, &mutated, &detector, SNAPSHOT_LIFECYCLE_CONFIG);
-        let summary = parse(&result.stdout).expect("parse snapshot compaction mutation output");
-        assert_eq!(result.status.code(), Some(13), "{name} unexpectedly passed");
-        assert!(!summary.completed_without_error, "{name} qualified");
-        assert!(
-            String::from_utf8_lossy(&result.stdout).contains("SnapshotLifecycleCompletes"),
-            "{name} did not fail the lifecycle property: {}",
-            String::from_utf8_lossy(&result.stdout)
-        );
-    }
+    // The snapshot floor never advances, so `SnapshotLifecycleNext` can never
+    // leave its first disjunct and the lifecycle never completes.
+    let stalled = replace_exactly_once(
+        &raft,
+        "/\\ snapshotIndex' = [snapshotIndex EXCEPT ![n] = index]",
+        "/\\ snapshotIndex' = snapshotIndex",
+    );
+    let result = run_tlc_with_config(
+        &root,
+        "snapshot-create-does-not-advance-the-snapshot-floor",
+        &stalled,
+        &detector,
+        SNAPSHOT_LIFECYCLE_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse stalled snapshot creation output");
+    assert_eq!(result.status.code(), Some(13), "stalled mutation passed");
+    assert!(
+        !summary.completed_without_error,
+        "stalled mutation qualified"
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("SnapshotLifecycleCompletes"),
+        "stalled mutation did not fail the lifecycle property: {}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+
+    // The folded action performs physical compaction instead of retaining the
+    // ghost history, so the snapshot floor indexes past the end of the log.
+    let truncated = replace_exactly_once(
+        &raft,
+        "    /\\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,\n                    snapshotTransfer, messages,",
+        "    /\\ log' = [log EXCEPT ![n] = SubSeq(@, index + 1, Len(@))]\n    /\\ UNCHANGED <<currentTerm, votedFor, role, commitIndex,\n                    snapshotTransfer, messages,",
+    );
+    let result = run_tlc_with_config(
+        &root,
+        "snapshot-create-does-not-retain-the-ghost-history",
+        &truncated,
+        &detector,
+        SNAPSHOT_LIFECYCLE_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse truncating snapshot creation output");
+    assert_eq!(result.status.code(), Some(12), "truncating mutation passed");
+    // `TypeOK` and not `SnapshotLifecycleInvariant`: the bound this breaks is
+    // `snapshotIndex[n] <= Len(log[n])`, which both predicates carry, and the
+    // config checks `TypeOK` first.
+    assert_eq!(summary.violated_invariant.as_deref(), Some("TypeOK"));
 }
 
 pub(in crate::producer::tla_exec::mutation_tests) fn application_epoch_loss_replays_identically_without_erasing_history(
@@ -154,7 +187,7 @@ pub(in crate::producer::tla_exec::mutation_tests) fn corrupted_snapshot_restored
     let mutated = replace_exactly_once_in_operator(
         &raft,
         "InstallSnapshot",
-        "CompactSnapshot(n)",
+        "EnterJoint(n, newVoters)",
         "restoredState == StateAfterEntries(transfer.prefix)",
         "restoredState == InitialApplicationState",
     );

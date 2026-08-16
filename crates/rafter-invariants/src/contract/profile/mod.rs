@@ -12,7 +12,8 @@ mod validate;
 pub(crate) use liveness::expected_execution_contract;
 pub use liveness::{SimulatorExecutionContract, SimulatorLivenessContract};
 pub use model::{
-    ProfileContract, ProfileManifest, RunnerContract, SimulatorCheckContract, VerifierContract,
+    ObligationCompletion, ProfileContract, ProfileManifest, ProofObligationContract,
+    RunnerContract, SimulatorCheckContract, VerifierContract,
 };
 pub use policy::{
     ClausePolicy, EvidenceLayer, EvidencePolicy, EvidenceStrength, RequiredClauseStrength,
@@ -24,8 +25,8 @@ pub use replay::{
 };
 pub(crate) use simulator::{
     canonical_simulator_check_id, per_check_observation_key, per_check_protocol_states_key,
-    per_check_verifier_states_key, scheduled_simulator_seeds, SimulatorRunnerConfiguration,
-    SimulatorStateFloors,
+    per_check_verifier_states_key, scheduled_check_suffix, scheduled_model_profile,
+    scheduled_simulator_seeds, SimulatorRunnerConfiguration, SimulatorStateFloors,
 };
 
 #[cfg(test)]

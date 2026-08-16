@@ -217,6 +217,41 @@ pub enum GroupError<E, R> {
         /// Compacted snapshot boundary retained by the Raft runtime.
         snapshot_index: LogIndex,
     },
+    /// A committed application entry arrived for a state machine that has not
+    /// yet installed the snapshot underneath it.
+    ///
+    /// **The refusal that keeps a recovery from laundering a gap into durable
+    /// state.** Applying an entry above the boundary onto a state machine below
+    /// it produces exactly one artifact: an application holding a prefix, then
+    /// a hole where the compacted entries were, then the suffix — and every
+    /// index, every readiness probe, and every metrics snapshot reports it as
+    /// caught up, because each of them only ever compares numbers. Nothing
+    /// later can find the hole, so it has to be refused before the first entry
+    /// lands.
+    ///
+    /// This is not [`GroupError::AppliedIndexBelowSnapshotBoundary`] and it
+    /// does not poison. The two name the same *gap* at two different moments,
+    /// and the difference is whether a repair is still available. This one is
+    /// raised before the application is touched, while the snapshot the
+    /// boundary names is still installable; the repair is to install it and
+    /// apply the suffix afterwards, which is what
+    /// [`crate::group::RaftGroup::apply_recovery_outputs`] does as one
+    /// operation. The other is the permanent verdict taken when a state machine
+    /// that was never restored tries to answer for the replica.
+    ///
+    /// A caller reaching this from
+    /// [`crate::group::RaftGroup::apply_raft_outputs`] is draining a recovery
+    /// suffix through the raw pump. Route it through
+    /// [`crate::group::RaftGroup::apply_recovery_outputs`] instead. The
+    /// application is untouched either way.
+    SnapshotRestoreRequired {
+        /// Durable applied index reported by the state machine.
+        app_applied_index: LogIndex,
+        /// Compacted snapshot boundary retained by the Raft runtime.
+        snapshot_index: LogIndex,
+        /// Lowest committed entry the refused batch would have applied.
+        entry_index: LogIndex,
+    },
     /// The Raft runtime emitted snapshot metadata that the group cannot apply.
     MalformedSnapshot {
         /// Stable explanation of the invalid snapshot output.
@@ -336,6 +371,14 @@ where
                 formatter,
                 "state machine applied index {app_applied_index} is below the snapshot boundary {snapshot_index}, whose covered entries are compacted and can never be applied"
             ),
+            Self::SnapshotRestoreRequired {
+                app_applied_index,
+                snapshot_index,
+                entry_index,
+            } => write!(
+                formatter,
+                "refusing to apply committed entry {entry_index} onto a state machine at applied index {app_applied_index}, which is below the snapshot boundary {snapshot_index}: install the snapshot first"
+            ),
             Self::MalformedSnapshot { reason } => write!(formatter, "malformed snapshot: {reason}"),
             Self::SnapshotsUnsupported { snapshot_index } => write!(
                 formatter,
@@ -398,6 +441,7 @@ where
             | Self::ApplyEntryAlreadyApplied { .. }
             | Self::AppliedIndexBehind { .. }
             | Self::AppliedIndexBelowSnapshotBoundary { .. }
+            | Self::SnapshotRestoreRequired { .. }
             | Self::MalformedSnapshot { .. }
             | Self::SnapshotsUnsupported { .. }
             | Self::SnapshotSupportMisdeclared { .. }

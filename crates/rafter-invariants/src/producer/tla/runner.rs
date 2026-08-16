@@ -5,7 +5,8 @@ use std::{collections::BTreeSet, error::Error, path::Path};
 use crate::{
     contract::{catalog::Catalog, profile::ProfileContract},
     evidence::{
-        CheckReceipt, ExecutionReceipt, ResultBundle, SourceReceipt, RESULT_SCHEMA_VERSION,
+        CheckReceipt, ExecutionReceipt, ResultBundle, SourceReceipt, TlaContinuationBinding,
+        RESULT_SCHEMA_VERSION,
     },
 };
 
@@ -13,10 +14,11 @@ use super::{
     artifact,
     contract::{
         fetch_tool, parse_timeout, required_configuration, source_artifacts, validate_java,
-        validate_runner_options, validate_spec_contract,
+        validate_obligation_options, validate_obligation_specs, validate_runner_options,
+        validate_spec_contract,
     },
-    evaluation::{evaluate, observations},
-    execution::execute,
+    evaluation::{continuation_outcome, evaluate, observations, primary_completion_policy},
+    execution::{execute, ExecutionRequest},
     process,
     result::evidence_result,
     source, ProducerContext,
@@ -33,10 +35,17 @@ pub(in crate::producer) fn run(
     let runner = contract.runners.get("tla").ok_or("TLA runner missing")?;
     process::ensure_execution_deadline(profile, "tla", "TLA runner validation")?;
     validate_runner_options(&runner.configuration)?;
+    validate_obligation_options(&runner.obligations)?;
     validate_java(&source, &runner.configuration)?;
     fetch_tool()?;
     process::ensure_execution_deadline(profile, "tla", "TLA tool preparation")?;
-    let artifacts = source_artifacts(&runner.configuration, output_dir, profile, &source.commit)?;
+    let artifacts = source_artifacts(
+        &runner.configuration,
+        &runner.obligations,
+        output_dir,
+        profile,
+        &source.commit,
+    )?;
     process::ensure_execution_deadline(profile, "tla", "TLA input capture")?;
     let descriptors = catalog
         .required_evidence(contract)
@@ -50,20 +59,26 @@ pub(in crate::producer) fn run(
         .collect::<BTreeSet<_>>();
     let config_name = required_configuration(&runner.configuration, "config")?;
     let configured = validate_spec_contract(config_name, &symbols)?;
+    validate_obligation_specs(&runner.obligations, &symbols)?;
     process::ensure_execution_deadline(profile, "tla", "TLA specification validation")?;
     let timeout = parse_timeout(required_configuration(
         &runner.configuration,
         "soft_timeout",
     )?)?;
     let execution = execute(
-        profile,
-        &source.commit,
-        config_name,
-        &runner.configuration,
-        timeout,
-        output_dir,
+        &ExecutionRequest {
+            profile,
+            source_ref: &source.commit,
+            config: config_name,
+            configuration: &runner.configuration,
+            obligations: &runner.obligations,
+            timeout,
+            output_dir,
+        },
         artifacts,
     )?;
+    let policy = primary_completion_policy(&runner.configuration)
+        .ok_or("TLA runner configuration omitted a reviewed primary_completion policy")?;
     let verdict = evaluate(&execution, &symbols, &runner.configuration);
     let execution_id = artifact::stable_id("tla", &format!("{profile}/{config_name}"));
     let evidence_ids = descriptors
@@ -81,8 +96,15 @@ pub(in crate::producer) fn run(
         check_id: format!("tla/{config_name}#Spec"),
         evidence_ids,
         completion: verdict.completion(),
-        observations: observations(&execution, &symbols, configured.len()),
+        observations: observations(&execution, &symbols, configured.len(), policy),
         simulator_liveness: None,
+        // The receipt states the pinned policy and the continuation's actual
+        // ending side by side, so a green scheduled lane cannot read as a
+        // completed monolith.
+        tla_continuation: Some(TlaContinuationBinding {
+            policy,
+            outcome: continuation_outcome(&execution),
+        }),
         duration_ms: execution.duration_ms,
         peak_rss_kib: execution.peak_rss_kib,
         artifacts: execution.artifacts.clone(),

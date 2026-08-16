@@ -147,14 +147,16 @@ pub(super) fn execution_plan(
 ) -> Result<Vec<ModelRun>, Box<dyn Error>> {
     let runs = match profile {
         "pr" => vec![model_run("fast", None), model_run("raft-soak", None)],
-        "nightly" => vec![model_run(
-            "raft-nightly",
-            expected_scheduled_seeds(profile, source_ref),
-        )],
-        "weekly" => vec![model_run(
-            "raft-weekly",
-            expected_scheduled_seeds(profile, source_ref),
-        )],
+        // Which model profile a scheduled lane invokes is contract-owned;
+        // weekly currently shares nightly's, so it must not be spelled here.
+        "nightly" | "weekly" => {
+            let model_profile = crate::contract::profile::scheduled_model_profile(profile)
+                .ok_or_else(|| format!("unsupported simulator profile {profile}"))?;
+            vec![model_run(
+                model_profile,
+                expected_scheduled_seeds(profile, source_ref),
+            )]
+        }
         _ => return Err(format!("unsupported simulator profile {profile}").into()),
     };
     Ok(runs)
@@ -180,9 +182,11 @@ pub(crate) fn expected_scheduled_seeds_with_count(
 }
 
 pub(crate) fn expected_scheduled_seeds(profile: &str, source_ref: &str) -> Option<String> {
+    // Mirrors `seed_count` in each lane's reviewed simulator configuration.
+    // Weekly ran 10 seeds under its deep profile; it runs nightly's 6 while
+    // the deep bounds await a >=32GB runner.
     let count = match profile {
-        "nightly" => 6,
-        "weekly" => 10,
+        "nightly" | "weekly" => 6,
         _ => return None,
     };
     expected_scheduled_seeds_with_count(profile, source_ref, count)

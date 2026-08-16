@@ -229,7 +229,14 @@ fn request<'a>(
     source_ref: &'a str,
     root: &'a Path,
 ) -> VerificationRequest<'a> {
-    VerificationRequest::new(catalog, manifest, plan, source_ref, root)
+    VerificationRequest::new(
+        catalog,
+        manifest,
+        plan,
+        source_ref,
+        root,
+        crate::verification::VerificationContext::ProducingJob,
+    )
 }
 
 pub(super) fn unique_path(label: &str) -> PathBuf {

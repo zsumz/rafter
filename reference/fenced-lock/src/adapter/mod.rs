@@ -13,7 +13,7 @@ mod durable;
 
 use std::{error::Error, fmt};
 
-use rafter::LogIndex;
+use rafter::{InMemorySnapshotChunkSource, LogIndex, RaftSnapshot};
 use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
     ReplicatedStateMachine, SnapshotSupport,
@@ -97,7 +97,12 @@ pub enum LockAdapterError {
         snapshot_index: LogIndex,
         applied_index: LogIndex,
     },
-    /// An install carried no inline application payload.
+    /// An install's application bytes could not be obtained.
+    ///
+    /// Either it carried no inline payload and no descriptor naming a promoted
+    /// transfer, or this replica's snapshot source could not serve that
+    /// transfer. Both leave the same nothing to install, and installing nothing
+    /// over live high-water marks is how a fencing token gets reissued.
     SnapshotPayloadUnavailable { applied_index: LogIndex },
     /// An install's payload names a different index than its descriptor.
     SnapshotIndexMismatch {
@@ -142,7 +147,7 @@ impl fmt::Display for LockAdapterError {
             ),
             Self::SnapshotPayloadUnavailable { applied_index } => write!(
                 formatter,
-                "snapshot at index {applied_index} carries no inline application payload"
+                "snapshot at index {applied_index} has no inline payload and no promoted payload this replica can read"
             ),
             Self::SnapshotIndexMismatch {
                 payload_index,
@@ -189,6 +194,14 @@ pub struct LockStateMachine {
     config: LockConfig,
     service: LockService,
     applied_index: LogIndex,
+    /// Promoted snapshot payloads this embedding has handed over, by transfer.
+    ///
+    /// A Raft-driven install carries a descriptor rather than bytes, so an
+    /// in-memory embedding needs somewhere to put the bytes its snapshot store
+    /// promoted. This is that place, and it is the whole of this machine's
+    /// snapshot source — an embedding whose store is on disk uses
+    /// [`DurableLockStateMachine`] instead.
+    promoted: InMemorySnapshotChunkSource,
 }
 
 impl LockStateMachine {
@@ -199,7 +212,39 @@ impl LockStateMachine {
             config,
             service: LockService::new(config),
             applied_index: LogIndex::ZERO,
+            promoted: InMemorySnapshotChunkSource::new(),
         }
+    }
+
+    /// Registers bytes already promoted by the embedding's snapshot store.
+    ///
+    /// A Raft-driven install hands this machine a [`RaftSnapshot`] descriptor
+    /// and an empty payload, because the bytes were staged and promoted into
+    /// the replica's snapshot store before the application was ever asked. The
+    /// embedding resolves that descriptor and registers the exact payload here
+    /// before the group applies the snapshot output; the install then reads it
+    /// back through the same validation an inline payload takes.
+    ///
+    /// Registering is not installing. Nothing about the lock table, a fencing
+    /// high-water mark, or the applied floor moves here — those are decided by
+    /// [`ReplicatedStateMachine::install_snapshot`], which still refuses a
+    /// snapshot behind this replica's applied index whatever was registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockAdapterError::SnapshotPayloadUnavailable`] when the bytes
+    /// contradict the length the descriptor declares, because a payload that is
+    /// not the descriptor's payload is not one this replica may adopt.
+    pub fn register_promoted_snapshot(
+        &mut self,
+        snapshot: &RaftSnapshot,
+        payload: Vec<u8>,
+    ) -> Result<(), LockAdapterError> {
+        self.promoted.insert(snapshot, payload).map_err(|_| {
+            LockAdapterError::SnapshotPayloadUnavailable {
+                applied_index: snapshot.metadata.last_included_index,
+            }
+        })
     }
 
     /// Returns the configured resource bounds.
@@ -227,6 +272,11 @@ impl ReplicatedStateMachine for LockStateMachine {
     /// mark, sessions with their cached operation, fingerprint, and result, the
     /// replicated logical time, and the applied Raft index — through the
     /// adapter's own snapshot frame, and `adapter_contract.rs` proves it.
+    ///
+    /// The declaration covers the Raft-driven install too. That install carries
+    /// a descriptor and no bytes, so an embedding registers the promoted
+    /// payload through [`LockStateMachine::register_promoted_snapshot`] and the
+    /// install reads it back from there.
     const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Supported;
 
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
@@ -291,7 +341,8 @@ impl ReplicatedStateMachine for LockStateMachine {
         &mut self,
         snapshot: ApplicationSnapshot,
     ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
-        let service_snapshot = discipline::admit_install(&snapshot, self.applied_index)?;
+        let service_snapshot =
+            discipline::admit_install(&snapshot, self.applied_index, Some(&self.promoted))?;
         // The model's own validating restore decides whether these parts
         // describe a legal service; this adapter never reconstructs one itself.
         self.service = LockService::from_snapshot(self.config, service_snapshot)

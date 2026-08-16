@@ -14,19 +14,175 @@ is incomplete coverage, not a pass.
 The invariant gate's ownership, dependency rules, and trust boundaries live in
 [Invariant tooling architecture](invariant-tooling-architecture.md).
 
+## Weekly Simulator Demotion
+
+The weekly invariants lane invokes the `raft-nightly` profile, not
+`raft-weekly`. This is a demotion, not a tuning change: weekly's deep bounds
+have never completed on a GitHub-hosted runner. Three consecutive runs were
+killed by `The runner has received a shutdown signal` (exit 143) once the
+~15GiB-RSS explorer made the VM unhealthy enough for the service to reclaim
+it, and before the harness fixes two earlier runs died to observation stalls
+at 84m and 54m.
+
+Weekly therefore runs nightly's proven configuration on weekly's own
+source-derived seeds. The deep configuration is still the reviewed target and
+is restored once a >=32GB — likely self-hosted — runner exists:
+
+| Key | Interim, in effect today | Target |
+| --- | --- | --- |
+| `model_profile` | `raft-nightly` | `raft-weekly` |
+| `seed_count` | `6` | `10` |
+| `soak_steps` | `1024` | `4096` |
+| `state_floors` | `13000000-protocol-and-verifier` | `250000000-protocol-and-verifier` |
+| `layer_timeout` | `170m` | `340m` |
+
+Only the lane's choice of profile moved. The `raft-weekly` profile definition
+in `rafter-sim` is untouched and still carries the deep bounds, so restoring
+weekly is a one-line change to `scheduled_model_profile` in
+`crates/rafter-invariants/src/contract/profile/simulator/identity.rs` plus the
+weekly simulator map in `verification/raft-invariant-profiles.json`. Every
+check-id suffix, replay log line, and liveness execution contract follows the
+model profile a lane actually ran, which is why that mapping is the single
+place the lane-to-profile binding is written down.
+
+Two consequences are worth stating plainly. Weekly's simulator layer now adds
+seed diversity over nightly, not depth. And the three checks only the
+`raft-weekly` profile emits — `raft-commit-check-quorum`,
+`raft-membership-prevote`, and `raft-membership-check-quorum` — are not
+produced while the demotion holds; no registry evidence binds them, so the
+44-row aggregate is unaffected.
+
 ## TLA+ Tier Ladder
 
-Three tiers are wired, each pinned to one config by
+Three tiers are wired, each pinned to one primary config by
 `verification/raft-invariant-profiles.json` and by the profile contract in
-`crates/rafter-invariants`. A TLA+ tier passes only when TLC drains its queue
-(`states_left = 0`) and clears the shared floors of 120,000,000 generated and
-16,000,000 distinct states. A timeout is incomplete coverage, not a pass.
+`crates/rafter-invariants`, and each carrying a list of [focused proof
+obligations](#how-an-obligation-is-wired).
 
-| Tier | Config | Nodes | Values | MaxTerm | MaxLogLen | ReadRequests | Symmetry |
-| --- | --- | --- | --- | ---: | ---: | --- | --- |
-| PR | `RaftCi.cfg` | `{n1,n2}` | `{v1,v2}` | 2 | 2 | `{r1}` | yes |
-| Nightly | `RaftNightly.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | yes |
-| Weekly | `Raft.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | no |
+| Tier | Primary config | Nodes | Values | MaxTerm | MaxLogLen | ReadRequests | Symmetry | Primary continuation |
+| --- | --- | --- | --- | ---: | ---: | --- | --- | --- |
+| PR | `RaftCi.cfg` | `{n1,n2}` | `{v1,v2}` | 2 | 2 | `{r1}` | yes | gating |
+| Nightly | `RaftNightly.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | yes | reporting |
+| Weekly | `Raft.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | no | reporting |
+
+### What a green tier means
+
+The two answers differ, and the difference is pinned in the contract as
+`primary_completion` rather than left to a reader's assumption.
+
+**PR is gating.** `RaftCi.cfg` genuinely drains its queue, so the PR tier
+passes only when TLC reports `states_left = 0` and clears the calibrated
+floors of 255,177,640 generated and 36,058,645 distinct states — the exact
+counts of a measured post-reduction exhaustion (93 minutes at `-workers 4` on
+a 14-core host), pinned the way obligation floors are pinned. A timeout is
+incomplete coverage, not a pass. Nothing about the PR gate's semantics
+changed.
+
+**Nightly and weekly are reporting.** A green scheduled tier means: every wired
+proof obligation exhausted its frontier at its own calibrated floors, the
+trace-sample and negative-detector qualification passed, and the monolith
+continuation ran its full budget, checkpointed, recovered, and reported a
+healthy expanding frontier. It does **not** mean the monolith completed. The
+monolith has never completed, not once, and at a measured frontier fanout near
+2.85 with no inflection it is not going to; `scripts/tla-continuation-telemetry`
+classifies each run's trajectory and the nightly lineage currently reads
+`incomplete-expanding`.
+
+That is the honest statement of what was always true. Gating the scheduled
+lanes on an event that cannot occur produced a permanently red result that said
+nothing about the protocol, while the evidence those lanes do produce -- drained
+obligations over sound sub-relations, plus accumulated monolith coverage -- went
+unreported. The continuation is research and coverage accumulation. The
+obligations are the proof.
+
+Reporting relaxes the budget and nothing else. A counterexample found by a
+reporting continuation still fails the layer red; so does a malformed, missing,
+or unreadable artifact set, an incompatible checkpoint, a failed qualification
+probe, and an undischarged obligation. The pinned 120M/16M minimums remain in
+the contract for the scheduled profiles as the accumulation bar the lineage
+reports progress against, published beside the observed counters rather than
+enforced as a terminal condition.
+
+A green scheduled receipt cannot be read as a completed monolith, and that is
+true of its primary `completion` field on its own — not only of the TLA+
+specific binding beside it. A reporting continuation that spends its budget
+with a healthy open frontier records `completion: budget_elapsed_frontier_open`
+and publishes the `progress_*` counters, including a `progress_states_left`
+greater than zero. It records that instead of `frontier_exhausted`, which is
+reserved for a run that actually drained and publishes terminal counters with
+`states_left_on_queue` at zero. Both are passes and the verdict semantics are
+identical; the difference is only in what the receipt claims about its
+frontier, which is the part an external reader has no other way to learn.
+
+That mattered because the two used to share a variant. Every scheduled receipt
+recorded `frontier_exhausted` for a run whose own observations proved the
+frontier was open, recoverable only by a reader who knew to cross-check
+`tla_continuation` — and the schema published `frontier_exhausted` to external
+consumers with `tla_continuation` as a separate, optional-looking key.
+
+Every TLA+ receipt still carries that `tla_continuation` binding, naming its
+pinned policy and the continuation's actual ending -- `frontier-exhausted`,
+`counterexample`, or `budget-elapsed-frontier-open`. It now restates the
+completion rather than correcting it, and the verifier requires the two to
+agree: a receipt claiming a drained frontier alongside a budget-elapsed
+outcome is rejected, and so is the reverse. The policy is contract state: the
+verifier refuses a receipt whose declared policy disagrees with the profile it
+claims to come from, refuses outright any PR receipt claiming a reporting
+continuation, and refuses any gating profile that records
+`budget_elapsed_frontier_open` at all.
+
+A profile may only demote its primary when something else still exhausts: the
+contract rejects a reporting profile that declares no obligations.
+
+### Pinning the TLC tool
+
+Upstream `tlaplus/tlaplus` tag `v1.8.0` is a rolling nightly channel, not an
+immutable release: the tag stays fixed while its assets are rebuilt, uploaded
+under fresh IDs, and their predecessors deleted. Three distinct `tla2tools.jar`
+digests were observed in five weeks, and the asset ID pinned before this
+contract now 404s. `tools/tla/ASSET_ID` is therefore a liveness pin only.
+
+The identity pin is the SHA-256 in `tools/tla/SHA256SUMS`, which
+`scripts/tla-model-check` verifies before every run and which the profile
+contract repeats independently as `tool_sha256`, so a silently swapped upstream
+asset fails closed rather than being accepted. `tools/tla/VERSION` records the
+channel and the TLC build string it reported. A repo-controlled mirror of the
+reviewed jar is the durable fix for the liveness half; it is a maintainer
+decision and is not made here.
+
+#### TLA+ contract migration: v15 to v16
+
+`verification/model-check-contract-migrations.json` is the simulator's ledger,
+not this one: its entries pin `rafter-model-check-fast` profiles and require at
+least one monotone `configured_depth` increase measured from that binary's
+telemetry, so a TLA+ entry cannot be written there without breaking the
+simulator's overhead gate. The TLA+ runner contract records its migrations as a
+profile-manifest schema bump plus a producer identity bump, guarded by negative
+fixtures in `crates/rafter-invariants/src/contract/profile/tests.rs`.
+
+The v9/`rafter-invariants-tla-v15` to v10/`rafter-invariants-tla-v16` migration
+introduces the obligation vocabulary and re-pins the TLC tool. Because the
+checkpoint contract digests the runner's `configuration` map, and the tool pin
+lives in that map, this migration resets the accumulated TLC checkpoint lineage
+for every profile once. The affected `runner_contract_sha256` values are:
+
+| Profile | From | To |
+| --- | --- | --- |
+| PR | `84f4980f5963064f…` | `9bf4afe04e99fd9f…` |
+| Nightly | `4ca7833d8f558e44…` | `7b7e262c46961a7c…` |
+| Weekly | `8d09c27585de34fa…` | `8b79618f3368d415…` |
+
+Scheduled continuations restart from an empty queue at the next run and
+reaccumulate. Obligations themselves are outside that map by design, so future
+obligation edits do not repeat this reset.
+
+TLC's `-coverage` is deliberately not part of the contract. Measured on this
+repository's own trace-sample model, one coverage report costs about 790 KB of
+additional framed stdout (3,849 bytes without, 793,379 with). At the PR tier's
+310-minute budget, `-coverage 5` would emit roughly 62 reports — on the order
+of 50 MB against the producer's 64 MiB per-process stdout cap, all of it inside
+the receipt-bound, hashed, uploaded, and re-parsed `tla-log` artifact. It
+destabilizes more than it informs at these run lengths.
 
 ### What the ladder does not prove
 
@@ -95,22 +251,26 @@ neither required nor supported, because `EnterJoint` guards on
 configuration and then complete the change with a following stable entry. Run
 it with `scripts/tla-model-check --joint-quorum`.
 
-It is a manual-run artifact and not a fourth tier, for two independent reasons.
-
-**It cannot be registered as a tier.** The profile contract in
-`crates/rafter-invariants` maps exactly three profile names to exactly three
-config filenames and rejects everything else, and the state floors are pinned
-to the same two constants for all three. So a fourth tier cannot be added, and
-neither can an existing tier be repointed, without changing that contract.
-There is also a squeeze inside it: a model small enough to fit alongside an
-existing tier's budget would fail the 120,000,000-generated-state floor, while
-a model large enough to clear that floor needs a budget of its own, which is
-the thing that cannot be added.
+It is a manual-run artifact and not a wired obligation, for one reason that
+used to be two. The contract objection is gone: when this section was first
+written the profile contract admitted exactly three configs at one shared
+floor pair, and no fourth model could register at any budget. The obligations
+vocabulary removed that wall — an obligation registers any non-primary config
+at its own calibrated floors and budget, which is how eight of them are wired
+today. What survives is the empirical objection, and it is sufficient on its
+own:
 
 **It does not exhaust in a tier's budget.** Measured on a 14-core machine with
 `-workers 4 -Xmx8g`, the same flags `--joint-quorum` uses. State counts are
 independent of machine load; the wall times below were taken while the host was
 heavily contended and should be read as upper bounds.
+
+These rows were measured before the state-space reductions described in
+"Exact state-space reductions" below, and are left as they were taken. The
+two-voter row in particular no longer reproduces: the same model now exhausts
+at 127,112 generated and 24,995 distinct. The three- and four-voter rows are
+readings from runs that never exhausted, so the reductions do not give them a
+corrected value either — they would still be readings, just different ones.
 
 | Model | Generated | Distinct | Queue | Depth | Wall | Peak RSS | Exhausted |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
@@ -128,7 +288,513 @@ passes only on `states_left = 0`, so this model would have to drain a queue
 that was still getting longer after ten million generated states.
 
 The honest summary: joint-quorum intersection is checkable, cheaply witnessed,
-and not currently checked by anything that runs on a schedule.
+and not currently checked by anything that runs on a schedule. Restricting the
+transition relation was tried against exactly this problem and did not change
+that; the measurements are in the next section.
+
+### Focused proof obligations
+
+`Spec` checks all nine invariants against all of `Next`. `Raft.tla` also defines
+four narrower transition relations, each a strict disjunct-subset of `Next`
+composed from the same action operators under unmodified guards, so every
+behavior of a focused spec is a behavior of `Spec`:
+
+| Relation | Spec operator | Definition |
+| --- | --- | --- |
+| `AgreementNext` | — | `Timeout`, `SendRequestVote`, `DeliverRequestVote`, `BecomeLeader`, `SendAppend`, `DeliverAppend`, `Commit`, `Apply` |
+| `CoreNext` | `CoreSpec` | `AgreementNext` plus `ClientAppend` |
+| `MembershipNext` | `MembershipSpec` | `AgreementNext` plus `EnterJoint`, `LeaveJoint` |
+| `SnapshotNext` | `SnapshotSpec` | `CoreNext` plus `ApplicationStateLoss`, `Restart`, `CreateSnapshot`, `TransferSnapshot`, `InstallSnapshot` |
+| `ReadNext` | `ReadSpec` | `CoreNext` plus `RegisterRead`, `GrantRead` |
+| `Next` | `Spec` | `SnapshotNext` plus `RegisterRead`, `GrantRead`, `EnterJoint`, `LeaveJoint` |
+
+The subset property is by construction, not by inspection. Every obligation in
+this document rests on it — a focused relation that quietly gained a disjunct
+`Next` lacked would invalidate the containment argument for every theorem
+discharged against it — and it used to be maintained by eye across five
+hand-kept lists that restated the same nine core disjuncts verbatim. Nothing
+could have detected the divergence. The relations are now composed from one
+another, so `CoreNext` cannot acquire a disjunct `Next` lacks: `Next` is
+defined in terms of `CoreNext`. Each of the eighteen action disjuncts is
+written exactly once.
+
+That last point is load-bearing rather than tidy. `Next` could equally be
+written `SnapshotNext \/ ReadNext \/ EnterJoint \/ LeaveJoint`, which denotes
+the same relation, but TLC enumerates successors per disjunct rather than per
+distinct action, and the two relations overlap on all of `CoreNext`. Written
+that way `RaftIntegrationUnsymmetrized.cfg` reports 403,405 generated states
+for the same 49,985 distinct — the pinned generated floors are calibration, so
+the non-overlapping form is the one that keeps them meaningful.
+
+Composition is otherwise inert for TLC: definitions expand at evaluation, so
+every pinned count is unchanged. `RaftCoreObligation.cfg`, `RaftReadObligation.cfg`,
+`RaftIntegrationUnsymmetrized.cfg`, `RaftCoreObligationUnsymmetrized.cfg`,
+`RaftReadObligationUnsymmetrized.cfg` and the end-to-end trace sample were each
+measured before and after and report identical generated, distinct, and depth
+figures.
+
+`SnapshotNext` used to need an IF wrapper reproducing `Next`'s compaction-first
+branch, because `CompactSnapshot` was reachable only through it; folding
+creation and compaction into one action removed the branch, the wrapper, and
+the separate `ProtocolNext` name that existed to denote the disjunction without
+the branch. That fold is also what lets `SnapshotNext` be a plain extension of
+`CoreNext` today.
+
+`JointQuorumInit` is a focused initial state for the joint-quorum obligation: the
+exact post-state of `Timeout(L)`, three `SendRequestVote`/`DeliverRequestVote`
+pairs, and `BecomeLeader(L)` from `Init`, with every witness and monitor variable
+derived from the action that last writes it along that prefix rather than
+guessed. It is therefore a reachable state of `Spec`, and TLC reports no
+invariant violation on it. Because it names a leader, a config using it cannot
+declare `SYMMETRY ModelPermutations`; `RaftJointQuorumFocusedInit.cfg` omits
+symmetry, and `JointQuorumPermutations` is the sound reduced set (permutations
+fixing the distinguished leader) available if that trade is revisited.
+
+Two configs carry `RaftJointQuorum.cfg`'s constants and all nine invariants and
+change only the transition relation and initial state:
+
+| Config | Spec | Init | Symmetry |
+| --- | --- | --- | --- |
+| `RaftJointQuorumFocusedNext.cfg` | `MembershipSpec` | standard | yes |
+| `RaftJointQuorumFocusedInit.cfg` | `JointQuorumFocusedSpec` | `JointQuorumInit` | no |
+
+#### Measurements
+
+Same host and flags as the table above: 14 cores, `-workers 4 -Xmx8g`. Neither
+run reached a shrinking queue, so neither reports peak RSS, and both wall times
+should be read as upper bounds — the host was running an unrelated build
+throughout.
+
+| Model | Generated | Distinct | Queue | Depth | Wall | Exhausted |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 4 voters, full `Spec` (`--joint-quorum`, from the table above) | 10,073,549 | 2,551,776 | 1,397,208 | 20 | 45 min | no, still expanding |
+| 4 voters, `MembershipSpec` (`--joint-quorum-focused-next`) | 25,934,867 | 6,201,924 | 3,185,806 | 24 | 34 min | no, still expanding |
+| 4 voters, `JointQuorumFocusedSpec` (`--joint-quorum-focused-init`) | 8,109,085 | 2,040,484 | 1,004,645 | 20 | 13 min | no, still expanding |
+
+Sampled queue trajectories, both monotonically increasing from the first
+progress line to the last:
+
+| `--joint-quorum-focused-next` | Generated | Distinct | Queue | Depth |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 min | 39,396 | 11,157 | 5,724 | 15 |
+| 6 min | 5,067,921 | 1,363,929 | 730,788 | 22 |
+| 14 min | 10,352,918 | 2,663,185 | 1,407,124 | 23 |
+| 23 min | 15,695,471 | 3,923,771 | 2,042,022 | 24 |
+| 34 min | 25,934,867 | 6,201,924 | 3,185,806 | 24 |
+
+| `--joint-quorum-focused-init` | Generated | Distinct | Queue | Depth |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 min | 34,717 | 14,175 | 8,131 | 13 |
+| 2 min | 2,018,205 | 563,884 | 282,247 | 18 |
+| 7 min | 4,622,630 | 1,216,625 | 601,466 | 19 |
+| 11 min | 6,839,230 | 1,758,878 | 864,955 | 19 |
+| 13 min | 8,109,085 | 2,040,484 | 1,004,645 | 20 |
+
+Neither run was stopped by exhaustion. The focused-next run was stopped at a
+wall cap. The focused-init run ended earlier because the host filesystem filled
+and TLC's disk state queue failed to write; that is a host limit, not a result
+about the model, and its numbers are a truncated reading rather than a budget.
+No invariant was violated in either run.
+
+#### What this means
+
+**Restricting `Next` did not make the four-voter model exhaust.** The focused
+relations are cheaper per state — `--joint-quorum-focused-next` passed the full
+model's 45-minute counts in about 14 minutes — but cheaper per state is not the
+constraint. The frontier still grew monotonically for the whole of every run, and
+`--joint-quorum-focused-next` reached depth 24 against the full model's 20, so
+the extra throughput bought depth rather than closure. Dropping `ClientAppend`,
+reads, snapshots, restart, and application-state loss removes about eighteen
+action families down to ten and still leaves a state space that four voters, two
+log slots, and a set-valued `messages` variable blow past.
+
+**The focused initial state did not change that either**, and it costs a
+symmetry quotient to have. `ModelPermutations` was already collapsing the
+symmetric copies of the election that `JointQuorumInit` skips, so naming a
+leader trades a quotient the model had for a prefix it did not need. At equal
+wall time the two runs are within a small factor of each other, and neither
+shows a shrinking queue.
+
+So the first phase of this redesign answers its question in the negative:
+**focused proof obligations are not on their own sufficient to make the
+four-voter joint-quorum model a wired tier.** What they are is real and
+narrower: each relation states an obligation that is sound by construction and
+that TLC can discharge at smaller bounds — `CoreSpec` and `ReadSpec` both
+exhaust at two voters in seconds — so they are usable as tiers wherever the
+bounds are already tractable. Making four voters tractable needs a different
+lever than action-family selection: a smaller `messages` representation, a state
+constraint bounding in-flight messages, or a symmetry-preserving focused initial
+state. None of those is implemented here.
+
+### Exact state-space reductions
+
+Two changes to `Raft.tla` remove state the model was carrying without using.
+Both are exact: they change no reachable behavior, and each has an argument for
+why, stated at its definition in the spec and repeated here.
+
+#### Snapshot creation and compaction are one action
+
+`CreateSnapshot(n)` used to set `compactionPending[n]`, `Next` carried a
+compaction-first branch that disabled every protocol action while any flag was
+set, and `CompactSnapshot(n)` cleared the flag and wrote nothing else.
+
+**Why it is sound.** The intermediate state was unobservable. No protocol action
+was enabled in it; the only action that was, `CompactSnapshot`, agreed with its
+own successor on every variable except the flag; and no predicate outside the
+flag's own `TypeOK` conjunct read the flag. So for any old behavior, deleting
+the flag from every state turns the intermediate state into a stuttering step of
+the folded spec, which `[][Next]_vars` already admits, and leaves every other
+state unchanged. The two specs are therefore stuttering-equivalent for every
+property over the remaining variables, and no invariant loses a state it used to
+be checked on: the intermediate state and its successor agreed everywhere an
+invariant could look.
+
+This one reduces the state count, because the intermediate state was a distinct
+state.
+
+#### The snapshot prefix is derived, not stored
+
+`snapshotPrefix[n]` used to be a variable holding a copy of the log up to the
+snapshot floor. It is now `SnapshotPrefix(n) == Prefix(log[n], snapshotIndex[n])`.
+
+**Why it is sound.** `SnapshotIdentitySoundFor` asserted exactly that equality,
+and `LogMatching` checked it on every reachable state, so on every state the
+model reaches the derived value and the stored value were already the same
+sequence. The step that needs more than "the invariant held" is a recorder
+called with a primed log against an unprimed snapshot floor —
+`RecordLogicalPrefixes(log', snapshotIndex, ...)` in `ClientAppend` and
+`DeliverAppend` — where the derived form reads the successor log while the
+stored form still held the predecessor's prefix. These agree because no action
+rewrites a log at or below its own snapshot floor. `ClientAppend`, `EnterJoint`
+and `LeaveJoint` only append. `DeliverAppend` replaces the receiver's log
+wholesale, but only under `CanAdoptLog`, which requires every index up to
+`commitIndex[n]` to match what the receiver already has, and
+`snapshotIndex[n] <= commitIndex[n]` holds throughout: `CreateSnapshot` snapshots
+at `AppliedThrough(n)`, which `TypeOK` bounds by `commitIndex[n]`, and
+`InstallSnapshot` raises `commitIndex` to the transfer index in the same step.
+That bound is now a `TypeOK` conjunct, so the argument is machine-checked rather
+than asserted.
+
+The exception is deliberate and stayed materialized: a snapshot in flight
+carries `snapshotTransfer.prefix`, a copy frozen at send time. The sender's log
+may change before the receiver installs, so that field is a value and not a
+view, and it remains a stored field of the transfer record.
+
+**This one does not reduce the state count, and is not claimed to.** The removed
+variable was a function of two others, so no two reachable states ever differed
+in it alone; the distinct-state counts below are identical across it, which is
+the point rather than a disappointment — a component that cannot distinguish two
+states was not carrying verification. Peak RSS was also unchanged within noise
+(2.90–2.97 GiB across four runs of the `SnapshotSpec` model at `-Xmx8g`, with
+the two variants' wall times interleaving). What it buys is an obligation
+retired: three of the four conjuncts `SnapshotIdentitySoundFor` used to check
+are now definitional, and the way to violate them — writing the wrong prefix —
+no longer exists.
+
+#### Measurements
+
+Same host and flags as above: 14 cores, `-workers 4 -Xmx8g -seed 2026081101
+-fp 0 -fpmem 0.45`. Every run below exhausted on both sides. "Old" is the spec
+before both reductions; "new" is after both. Reported search depth is not
+deterministic under `-workers 4` — the `MembershipSpec` row read 23 and 24 on
+different runs of the *same* spec — so only the state counts are load-bearing.
+
+| Model | Old generated | Old distinct | New generated | New distinct | Distinct change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2 voters, full `Spec`, `MaxTerm=1`, `MaxLogLen=1` | 137,480 | 35,363 | 127,112 | 24,995 | −29.3% |
+| 2 voters, `SnapshotSpec`, `MaxLogLen=2` | 1,407,838 | 305,787 | 1,312,094 | 210,043 | −31.3% |
+| 2 voters, `SnapshotSpec`, `MaxLogLen=1` | 13,966 | 3,963 | 12,814 | 2,811 | −29.1% |
+| 2 voters, `CoreSpec` | 387 | 124 | 387 | 124 | none |
+| 3 voters, `CoreSpec` | 357,423 | 52,247 | 357,423 | 52,247 | none |
+| 2 voters, `ReadSpec` | 1,405 | 336 | 1,405 | 336 | none |
+| 3 voters, `ReadSpec` | 1,213,423 | 154,409 | 1,213,423 | 154,409 | none |
+| 2 voters, `MembershipSpec`, `MaxLogLen=2` | 7,215 | 1,708 | 7,215 | 1,708 | none |
+
+The four unchanged relations exclude the snapshot lifecycle entirely, so a
+reduction to snapshot machinery must leave them alone to the state. It does, on
+models up to 1.2 million generated states. That identity is the evidence the
+reductions touched only what they claim.
+
+Two smaller fixtures move by construction rather than by measurement.
+`RaftTraceSample` is unchanged at 5 generated and 4 distinct, and the negative
+detector still exits 12 naming `ElectionSafety` at the same 6 and 4. The
+detector's snapshot lifecycle fixture goes from 7 distinct states at depth 7 to
+6 at depth 6 — exactly the one intermediate state the fold removes, which is the
+fold's claim stated as a number. `RaftMembershipTraceSample` drops from 46
+states to 45 because it executed `CompactSnapshot` as a step and that step no
+longer exists; it still executes every transition the contract requires, and the
+producer's trace floors moved from 46 to 45 with it.
+
+#### How an obligation is wired
+
+The TLA+ runner contract is one primary configuration plus a list of proof
+obligations. Each profile's `tla` runner in
+`verification/raft-invariant-profiles.json` carries an `obligations` array whose
+entries pin an `id`, a `config` under `specs/tla/raft/`, a `completion` (only
+`frontier-exhausted` is legal), per-obligation `minimum_generated_states` and
+`minimum_distinct_states` floors, a whole-minute `soft_timeout`, and a `seed`.
+Workers, heap, and fingerprint memory are inherited from the parent
+configuration; an obligation is a different model on the same machine, not a
+different machine budget.
+
+Three rules make the vocabulary mean something.
+
+On the scheduled tiers the obligations are not an addition to the gate, they
+**are** the gate: the primary continuation there is reporting-only, so a green
+nightly or weekly lane rests on these exhausted frontiers and on qualification.
+The contract enforces that by refusing a reporting profile with an empty
+obligation list.
+
+**Obligations run before the primary configuration**, after the trace and
+detector qualification probes. A broken theorem is then red in minutes rather
+than after a five-hour continuation, and the primary run inherits whatever
+remains of the shared execution window. The contract refuses an obligation set
+the window cannot fund, so the ordering cannot silently truncate the monolith;
+[the budget model](#the-shared-execution-window) below states what "fund"
+means.
+
+An obligation is also started only when the window still holds its whole
+calibrated budget. Handing one a truncated clock would kill it at a wall it was
+never given, and the producer's diagnosis would then say the obligation did not
+exhaust its frontier — a statement about the model, made about a shortfall in
+this harness. The two outcomes therefore carry different messages into the
+receipt: `did not discharge` is about the theorem, `ran out of execution
+budget` is about the budget. On the scheduled tiers, where the obligations are
+the gate, that distinction is the difference between an operator reading a
+broken safety invariant and reading a mis-set number.
+
+**Obligations never checkpoint.** Each runs from scratch into an ephemeral
+state directory, writes no checkpoint, recovers none, and contributes to no
+cache key. An obligation that cannot exhaust its frontier in one bounded run is
+not an obligation but a second monolith, and belongs in the primary
+configuration's continuation instead. Keeping obligations out of the serialized
+`configuration` map is what enforces this: the checkpoint contract digests only
+that map, so adding, retuning, or removing an obligation cannot invalidate the
+primary configuration's accumulated TLC state.
+
+**An obligation passes only on frontier exhaustion** with zero invariant
+violations and both floors met. Any other outcome fails the layer red. The
+floors are per-obligation ratchets calibrated against the obligation's own
+measured state space; they are unrelated to the primary configuration's
+120M/16M monolith floors. Each obligation binds the same nine invariants as the
+primary configuration and is held to the same safety-only boundary, so a
+configuration that checks nothing cannot discharge by exiting cleanly.
+
+The negative-detector qualification stays bound once per layer, to the primary
+configuration. Obligations strengthen the layer; they do not add registry
+evidence rows, and a refutation inside one is reported as a red harness-level
+failure for a human to read rather than attached to a predicate the primary run
+never falsified.
+
+#### The shared execution window
+
+Every phase of the layer is paid out of one `execution_deadline`, which is
+`total_timeout` less `finalization_reserve`. There are four claimants, and the
+contract adds all four:
+
+| Phase | PR | Nightly | Weekly | Owner |
+| --- | ---: | ---: | ---: | --- |
+| Setup after the layer clock starts | 4m | 10m | 10m | workflow budget guard |
+| Trace, detector, and mutation qualification | 7m | 32m | 32m | `execution/budget.rs` |
+| Proof obligations | 10m | 70m | 154m | profile manifest |
+| Primary `soft_timeout` | 310m | 195m | 110m | profile manifest |
+| **Committed** | **331m** | **307m** | **306m** | |
+| Execution window | 336m | 310m | 310m | `total_timeout` less reserve |
+| Slack | 5m | 3m | 4m | |
+
+Qualification scales with the tier: twelve phases at a 15-second probe cap plus
+a 4-minute mutation suite on PR, at a 2-minute cap plus 8 minutes on the
+scheduled runners. The setup allowance is what the runner spends inside the
+window before the first TLC process starts.
+
+Only the PR primary is a requirement rather than a residual. It gates on
+frontier exhaustion, so a truncated run is a red merge gate, and `RaftCi`
+drains in 93 minutes at its pinned flags against CI hosts measured 1.3x to 1.5x
+slower than the calibration machine. The nightly and weekly primaries report
+rather than gate, so their budgets are whatever the other three claimants
+leave; a recalibration that lengthens an obligation shortens them and never
+breaches the window.
+
+Counting only the obligations and the primary run against the window is the
+bug this table exists to prevent. Every phase draws on the same deadline, so an
+inventory that overruns it does not fail loudly — it hands the primary run a
+`phase_timeout` shorter than its `soft_timeout`, and under the PR tier's gating
+policy TLC is then killed early and reported as a timeout on a model that would
+have drained.
+
+Two independent gates enforce the arithmetic. The contract layer re-derives the
+qualification and setup minutes and refuses a profile whose inventory overruns
+its window, and `workflow_caps_cover_the_exact_tla_phase_inventory` reads the
+same manifest against the workflow's own step and job caps. Both must move
+together with any budget edit.
+
+#### Calibrated obligations
+
+Calibration runs use the pinned jar and the wired flags (`-workers 4 -Xmx8g
+-seed 2026081101 -fp 0 -fpmem 0.45`, symmetric) on the same 14-core host as
+every table above. State counts are machine-independent; wall times are not,
+and the host ran an unrelated toolchain build during several of these runs, so
+read every wall figure as an upper bound.
+
+What exhausts, at which bounds:
+
+| Obligation config | Bounds | Generated | Distinct | Wall | Exhausted |
+| --- | --- | ---: | ---: | ---: | --- |
+| `RaftCoreObligation.cfg` | 2v, V2, T2, L2, R1 | 113,201 | 20,282 | 15 s | yes |
+| `RaftReadObligation.cfg` | 2v, V2, T2, L2, R1 | 592,279 | 98,948 | 30 s | yes |
+| `RaftCoreObligationDeep.cfg` | 2v, V2, T3, L3, R2 | 14,734,799 | 2,004,053 | 8.5 min | yes |
+| `RaftMembershipObligationPair.cfg` | 2v, V1, T3, L3, R1 | 1,054,317 | 162,938 | 27 s | yes |
+| `RaftSnapshotObligation.cfg` (folded spec) | 2v, V2, T2, L2, R1 | 14,119,884 | 2,002,205 | 6.7 min | yes |
+| `RaftCoreObligationUnsymmetrized.cfg` | 2v, V2, T2, L2, R1, no symmetry | 452,327 | 80,977 | 15 s | yes |
+| `RaftReadObligationUnsymmetrized.cfg` | 2v, V2, T2, L2, R1, no symmetry | 2,368,355 | 395,573 | 60 s | yes |
+| `RaftIntegrationUnsymmetrized.cfg` | full `Spec`, 2v, V1, T1, L1, R1, no symmetry | 254,211 | 49,985 | 15 s | yes |
+| `RaftSnapshotObligationUnsymmetrized.cfg` | 2v, V2, T2, L2, R1, no symmetry | 56,476,413 | 8,008,105 | 17 min | yes |
+
+The unsymmetrized family doubles as a standing symmetry audit, and the audit
+is a pair of numbers per config, not a round ratio. Each measured distinct
+count falls slightly short of the group order times its symmetric sibling's
+count — 80,977 against 4 x 20,282 = 81,128; 395,573 against 395,792; 49,985
+against 2 x 24,995 = 49,990; 8,008,105 against 4 x 2,002,205 = 8,008,820 —
+deficits of 151, 219, 5, and 715 states. The deficit is structural: a state
+fixed by some permutation has an orbit smaller than the full group, so the
+unquotiented count is the group order times the quotient count minus exactly
+the symmetric states' missing orbit mass. A future change in either number of
+any pair is evidence about symmetry soundness, which is what the weekly tier
+exists to supply.
+
+What does not, and how it fails to:
+
+| Model | Bounds | Generated | Distinct | Queue at kill | Verdict |
+| --- | --- | ---: | ---: | ---: | --- |
+| `CoreSpec`, 3 voters | T3, L3 | 12,975,580 | 4,210,497 | 2,699,386 ↑ | diverges, fanout ≈ 2.9 |
+| `CoreSpec`, 3 voters | T2, L2 | 24,590,487 | 5,443,386 | 2,557,643 ↑ | diverges, depth pinned at 21 |
+| `MembershipSpec`, 3 voters | T3, L3 | 52,410,403 | 9,935,434 | 3,959,098 ↑ | diverges, depth pinned at 24 |
+| `MembershipSpec`, 3 voters (folded spec) | T2, L2 | 46,023,230 | 7,526,805 | 2,416,633 ↑ | diverges, depth pinned at 26 |
+| `SnapshotSpec`, 2 voters (pre-fold spec) | T2, L3 | 50,137,394 | 13,356,326 | 4,992,419 ↑ | diverges, depth pinned at 26 |
+
+The pattern in the second table is one wall seen five ways: at three voters
+the set-valued `messages` variable dominates every relation that contains the
+core send/deliver actions, and at `MaxLogLen 3` the snapshot lifecycle
+recreated the same explosion at two. Dropping per-node bounds does not move
+the three-voter wall — core and membership both diverge at `MaxTerm 2 /
+MaxLogLen 2`, membership even on the folded spec — so the node count binds,
+not the bounds, and `ReadNext ⊇ CoreNext` settles read at three voters by
+containment. Every candidate membership bound at three or four voters has been
+measured and every one diverges; `RaftMembershipObligation.cfg` carries the
+`DO NOT WIRE` marker and the conclusion that exhausting it is a
+message-dimension redesign, not a bounds hunt.
+
+At two voters membership does drain, which is what
+`RaftMembershipObligationPair.cfg` wires, and it is worth being precise about
+what that buys. It exercises `EnterJoint` and `LeaveJoint` and their
+interaction with commit and apply — a configuration entry proposed, replicated,
+committed, applied, and left, under elections and re-elections, with all nine
+invariants checked at every state. It is **not** evidence about nondegenerate
+joint-quorum intersection: with `|Nodes| <= 3` and `OneVoterChange` every joint
+configuration keeps a non-empty quorum core, so the two-half conjunction never
+constrains more than a fixed set of nodes does. That gap is the one described
+at the top of this document and it remains open. The reason to wire the
+two-voter config anyway is narrower and still worth having: the nightly and
+weekly primaries are reporting-only, so their obligations are the green
+condition, and before this config was wired that condition was `CoreSpec`,
+`ReadSpec`, and `SnapshotSpec` — none of which contain a membership action at
+all. A scheduled tier was reporting green over a relation set that had never
+executed `EnterJoint`.
+
+The snapshot row moved between the tables, and that movement is the fold's
+payoff stated as a verdict rather than a percentage: the pre-fold spec
+diverged at two voters and `MaxLogLen 3`, and the folded spec at `MaxLogLen 2`
+drains in under seven minutes, which turned the snapshot lifecycle — atomic
+create-and-compact, transfer, install, restart, application-state loss — into
+a wired exhaustive theorem.
+
+The wired manifest, after calibration:
+
+| Profile | Obligation | Config | Floors (generated / distinct) | Budget |
+| --- | --- | --- | --- | --- |
+| pr | `core-replication` | `RaftCoreObligation.cfg` | 113,201 / 20,282 | 4m |
+| pr | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
+| nightly, weekly | `core-replication-deep` | `RaftCoreObligationDeep.cfg` | 14,734,799 / 2,004,053 | 35m |
+| nightly, weekly | `membership-change` | `RaftMembershipObligationPair.cfg` | 1,054,317 / 162,938 | 4m |
+| nightly, weekly | `read-fencing` | `RaftReadObligation.cfg` | 592,279 / 98,948 | 6m |
+| nightly, weekly | `snapshot-lifecycle` | `RaftSnapshotObligation.cfg` | 14,119,884 / 2,002,205 | 25m |
+| weekly | `core-replication-unsymmetrized` | `RaftCoreObligationUnsymmetrized.cfg` | 452,327 / 80,977 | 4m |
+| weekly | `integration-unsymmetrized` | `RaftIntegrationUnsymmetrized.cfg` | 254,211 / 49,985 | 4m |
+| weekly | `read-fencing-unsymmetrized` | `RaftReadObligationUnsymmetrized.cfg` | 2,368,355 / 395,573 | 6m |
+| weekly | `snapshot-lifecycle-unsymmetrized` | `RaftSnapshotObligationUnsymmetrized.cfg` | 56,476,413 / 8,008,105 | 70m |
+
+Budgets are set against measured CI wall time, not local wall time. The first
+nightly dispatch put CI runners at almost exactly twice the local calibration
+wall on the multi-minute models — the deep core obligation ran 16m26s against
+8.5 local minutes, the snapshot obligation 13m24s against 6.7 — and the
+snapshot obligation's original 12-minute budget was killed eighty seconds
+short of a drained queue, which is why every multi-minute budget now carries
+roughly 2x-of-CI-projection headroom. Heap is part of the calibration
+conditions too: the first weekly dispatch ran the 8M-distinct unsymmetrized
+snapshot obligation on the tier's old 4g heap — half the heap every
+calibration ran at — and could not drain it inside any budget, so weekly now
+runs the same 8g as nightly. The same dispatch discharged its other six
+obligations with distinct counts matching local calibration to the state,
+which is the cross-machine determinism the exact floors rely on, observed in
+production.
+
+Two dispatches of the same commit then showed the hosts themselves vary. Every
+obligation ran 1.3x to 1.5x slower on the second: the deep core obligation
+11m25s then 16m58s, the snapshot obligation 9m01s then 12m27s, the
+unsymmetrized read obligation 1m24s then 2m02s, and so on uniformly across
+seven obligations and both profiles. Nothing in the specification, the floors,
+or the producer changed between them -- the distinct counts matched to the
+state, as they always do -- so the difference is the machine.
+
+That is fatal to a budget calibrated from a single observation. The
+unsymmetrized snapshot obligation had discharged in 33m08s of a 45-minute
+budget, which reads like comfortable headroom and is in fact 26%: one host a
+third slower spends all of it, and the second dispatch was killed at the wall.
+Budgets are therefore set against **1.5x the fastest measured CI wall**, taking
+the fastest as the base because the variance is multiplicative. On that rule
+the deep core obligation needs 24m of its 25 -- sitting on the line rather than
+inside it -- so it moves to 35m, and the unsymmetrized snapshot obligation to
+70m, a little over twice its fastest observation. The small obligations run in
+seconds against four- and six-minute budgets and are already an order of
+magnitude clear.
+
+Weekly affords its unsymmetrized family by trading continuation time for it:
+its reporting primary runs 110 minutes against nightly's 195, and the
+recovered time funds the symmetry audit applied to every theorem that
+actually gates — all four gating obligation families now run both quotiented
+and unquotiented on the weekly tier, 150 obligation minutes against nightly's
+66. That trade is the reporting policy working as intended: the continuation
+accumulates coverage and the obligations decide the verdict, so when the
+variance rule above needed more obligation time, it came out of the primary
+rather than out of the gate.
+
+Obligation budgets are never trimmed to make an inventory fit. They are
+calibrated against measured CI wall time by the 1.5x rule above, and shrinking
+one below that line converts a host on the slow end of the observed spread into
+a red gate. The reporting primaries are the lever instead, which is why they
+are the shortest budgets of the three profiles despite running the largest
+models: they absorb whatever [the shared execution
+window](#the-shared-execution-window) has left after qualification, setup, and
+the obligation family are paid.
+
+Floors are the exact measured counts: TLC's breadth-first counts are
+deterministic for a fixed spec, config, and symmetry, so any deviation is a
+spec change and should be re-calibrated deliberately, not absorbed. The
+two-voter core and read counts were re-measured on the final spec, after the
+reductions, and match the pre-reduction calibration to the state — the
+reductions' identity guarantee observed end to end. The deep core floor was
+measured before the reductions; `CoreSpec` contains no snapshot action, the
+identity was verified exactly at four other core/read bound-sets, and the
+re-verified two-voter runs above confirm it on the wired configs themselves.
+
+The PR primary's floors are exact for the same reason. The post-reduction
+`RaftCi.cfg` exhaustion completed at 255,177,640 generated and 36,058,645
+distinct states with the queue drained, in 93 minutes at `-workers 4` on a
+14-core host, and those counts replaced the round pre-reduction floors of
+120,000,000 / 16,000,000 in the pinned contract. The search runs materially
+past its old slack bar — the frontier deepened from 28 to 39 in the final
+third — which is why a measured exhaustion, not an extrapolated one, is the
+only admissible calibration source.
 
 ### Correspondence to the implementation
 
@@ -185,10 +851,13 @@ Each exhaustive check reports two distinct cardinalities:
   unique-state-budget key.
 
 Profile totals add each check's independently explored cardinality. They are
-not a globally deduplicated union. The scheduled `raft-nightly` and
-`raft-weekly` gates enforce reviewed lower bounds on both totals: 13 million
-and 250 million states respectively. The floors are coverage ratchets; they do
-not control the configured exploration depth or workloads.
+not a globally deduplicated union. The scheduled gates enforce reviewed lower
+bounds on both totals. Nightly and weekly both enforce 13 million, because
+both lanes currently run the `raft-nightly` profile; the `raft-weekly`
+profile's 250 million floor is the target recorded in
+[Weekly simulator demotion](#weekly-simulator-demotion) and is not enforced by
+any lane today. The floors are coverage ratchets; they do not control the
+configured exploration depth or workloads.
 
 ## Retained Logical Prefixes
 

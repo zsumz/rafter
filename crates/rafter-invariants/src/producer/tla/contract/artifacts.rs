@@ -7,7 +7,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::evidence::ArtifactRef;
+use crate::{
+    contract::profile::ProofObligationContract,
+    evidence::{format::tla::obligation_config_kind, ArtifactRef},
+};
 
 use super::{
     super::artifact,
@@ -17,6 +20,7 @@ use super::{
 
 pub(in crate::producer::tla) fn source_artifacts(
     configuration: &BTreeMap<String, String>,
+    obligations: &[ProofObligationContract],
     output_dir: &Path,
     profile: &str,
     source_ref: &str,
@@ -31,7 +35,12 @@ pub(in crate::producer::tla) fn source_artifacts(
     {
         return Err("TLC asset ID does not match the profile contract".into());
     }
-    Ok(vec![
+    // Every obligation configuration is captured beside the primary inputs so
+    // the verifier can bind the exact bytes TLC read. They are deliberately
+    // absent from the checkpoint contract's input set: obligations never write
+    // or recover checkpoint state, so their bytes must not be able to
+    // invalidate the primary configuration's accumulated lineage.
+    let mut artifacts = vec![
         jar,
         artifact::capture(output_dir, &namespace, Path::new(SPEC), "tla-spec")?,
         artifact::capture(
@@ -82,7 +91,16 @@ pub(in crate::producer::tla) fn source_artifacts(
             Path::new(DETECTOR_CONFIG),
             "tla-detector-config",
         )?,
-    ])
+    ];
+    for obligation in obligations {
+        artifacts.push(artifact::capture(
+            output_dir,
+            &namespace,
+            &Path::new("specs/tla/raft").join(&obligation.config),
+            &obligation_config_kind(&obligation.id),
+        )?);
+    }
+    Ok(artifacts)
 }
 
 fn input_namespace(profile: &str, source_ref: &str) -> PathBuf {

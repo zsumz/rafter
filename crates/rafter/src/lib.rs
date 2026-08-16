@@ -12,6 +12,59 @@
 //! ordering, applied-index ownership, authenticated transport identity, and
 //! removed-peer fencing.
 //!
+//! # Driving the kernel
+//!
+//! Logical time, message delivery, and durability are all the caller's. A step
+//! takes one [`Input`] and returns the ordered [`Output`] values that step
+//! produced; nothing else happens.
+//!
+//! ```
+//! use rafter::{Input, Message, Node, NodeConfig, NodeId, Output, PreVoteResponse, Role, Term};
+//!
+//! let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3)
+//!     .expect("valid raft config");
+//! let mut node = Node::new(config);
+//! assert_eq!(node.role(), Role::Follower);
+//!
+//! // Three ticks reach the election timeout. Pre-vote polls the peers first
+//! // (thesis 9.6), so nothing durable has changed yet: the term is untouched.
+//! let mut outputs = Vec::new();
+//! for _ in 0..3 {
+//!     outputs = node.step(Input::Tick);
+//! }
+//! assert_eq!(node.role(), Role::PreCandidate);
+//! assert_eq!(node.current_term(), Term(0));
+//! let polls = outputs
+//!     .iter()
+//!     .filter(|output| {
+//!         matches!(output, Output::Send { message: Message::PreVote(_), .. })
+//!     })
+//!     .count();
+//! assert_eq!(polls, 2, "one poll per peer, for the caller's transport to route");
+//!
+//! // Feed one granted poll back. Two of three voters now agree the election
+//! // could be won, so the node raises its term and campaigns for real — and
+//! // that term must reach durable storage before the request leaves.
+//! let outputs = node.step(Input::Message {
+//!     from: NodeId(2),
+//!     message: Message::PreVoteResponse(PreVoteResponse {
+//!         term: Term(1),
+//!         voter_id: NodeId(2),
+//!         vote_granted: true,
+//!     }),
+//! });
+//! assert_eq!(node.role(), Role::Candidate);
+//! assert_eq!(node.current_term(), Term(1));
+//! assert_eq!(node.voted_for(), Some(NodeId(1)));
+//! assert!(outputs.iter().any(|output| matches!(
+//!     output,
+//!     Output::Send {
+//!         message: Message::RequestVote(_),
+//!         ..
+//!     }
+//! )));
+//! ```
+//!
 //! # Public Message Buffers
 //!
 //! [`AppendEntries::entries`] is [`SharedEntries`], an immutable shared slice of
@@ -75,7 +128,7 @@ pub use node::{
     ConfigurationProposalRejection, Input, LeadershipTransferRejection, LocalProposalDropReason,
     LocalSnapshotInstallError, Node, NodeConfig, NodeConfigError, Output,
     PendingSnapshotTransferResumeError, ProposalRejection, ReadIndexCancelReason,
-    ReadIndexRejection, Role,
+    ReadIndexRejection, Role, StateValidationError,
 };
 pub use types::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,

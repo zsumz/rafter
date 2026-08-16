@@ -19,7 +19,7 @@ pub(crate) use rafter::{
 pub(crate) use rafter_app::error::{ErrorCause, GroupError, StateMachineOperation};
 pub(crate) use rafter_app::group::{
     GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, PoisonedWaiters,
-    RaftGroup, ReadReport, StepReportOptions,
+    RaftGroup, RaftGroupParts, ReadReport, StepReportOptions,
 };
 pub(crate) use rafter_app::membership::{MembershipChange, MembershipEvent, NodeInfo};
 pub(crate) use rafter_app::proposal::{
@@ -76,6 +76,18 @@ impl fmt::Display for RecordingStateMachineError {
 
 impl Error for RecordingStateMachineError {}
 
+/// One state-machine mutation, in the order the group asked for it.
+///
+/// `installed_snapshots` and `batches` each record their own callback, so a
+/// test can prove *that* both happened but not which came first — and "which
+/// came first" is the entire content of the recovery contract. This is the one
+/// trace that can state it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RecordedOperation {
+    InstallSnapshot(LogIndex),
+    ApplyBatch(Vec<LogIndex>),
+}
+
 /// Independent fault switches rather than a fault enum, because a fixture arms
 /// more than one at a time — a snapshot install that fails while the applied
 /// index is also refused is a real shape — and each switch names one callback.
@@ -97,6 +109,9 @@ pub(crate) struct RecordingStateMachine {
     pub(crate) fail_applied_index: bool,
     pub(crate) reported_applied_index: Option<LogIndex>,
     pub(crate) installed_snapshots: Vec<ApplicationSnapshot>,
+    /// Installs and applies interleaved in call order. See
+    /// [`RecordedOperation`].
+    pub(crate) operations: Vec<RecordedOperation>,
 }
 
 impl ReplicatedStateMachine for RecordingStateMachine {
@@ -139,8 +154,13 @@ impl ReplicatedStateMachine for RecordingStateMachine {
             return Err(RecordingStateMachineError::Apply);
         }
 
-        self.batches
-            .push(batch.entries.iter().map(|entry| entry.index).collect());
+        let indexes = batch
+            .entries
+            .iter()
+            .map(|entry| entry.index)
+            .collect::<Vec<_>>();
+        self.batches.push(indexes.clone());
+        self.operations.push(RecordedOperation::ApplyBatch(indexes));
         let mut results = Vec::new();
         for entry in batch.entries {
             self.applied_index = entry.index;
@@ -204,6 +224,8 @@ impl ReplicatedStateMachine for RecordingStateMachine {
             return Err(RecordingStateMachineError::InstallSnapshot.into());
         }
         self.applied_index = snapshot.applied_index;
+        self.operations
+            .push(RecordedOperation::InstallSnapshot(snapshot.applied_index));
         self.installed_snapshots.push(snapshot);
         Ok(())
     }
@@ -269,6 +291,10 @@ impl PersistedRaftRuntime for KernelRuntime {
 
     fn snapshot_index(&self) -> LogIndex {
         self.node.snapshot_index()
+    }
+
+    fn snapshot(&self) -> Option<RaftSnapshot> {
+        self.node.snapshot().cloned()
     }
 
     /// This fake owns a real kernel, so it answers from the kernel's own log:
@@ -342,6 +368,12 @@ pub(crate) struct ScriptedRuntime {
     pub(crate) commit_index: LogIndex,
     pub(crate) last_log_index: LogIndex,
     pub(crate) snapshot_index: LogIndex,
+    /// The promoted descriptor this fake hands back, if a fixture gave it one.
+    ///
+    /// Independent of `snapshot_index` on purpose. A runtime that reports a
+    /// boundary it cannot describe is exactly the shape a recovery must refuse
+    /// rather than work around, so the fake has to be able to model it.
+    pub(crate) snapshot: Option<RaftSnapshot>,
     /// Indexes whose log entry carries an application payload, since this fake
     /// models no log. `None` — the default — models a log in which every index
     /// is an application entry, so a floor is exactly its own bound; that is
@@ -373,6 +405,7 @@ impl ScriptedRuntime {
             commit_index: LogIndex::ZERO,
             last_log_index: LogIndex::ZERO,
             snapshot_index: LogIndex::ZERO,
+            snapshot: None,
             application_entries: None,
             membership: membership(&[1], &[]),
             committed_membership: membership(&[1], &[]),
@@ -436,6 +469,10 @@ impl PersistedRaftRuntime for ScriptedRuntime {
 
     fn snapshot_index(&self) -> LogIndex {
         self.snapshot_index
+    }
+
+    fn snapshot(&self) -> Option<RaftSnapshot> {
+        self.snapshot.clone()
     }
 
     /// The fake holds no log, so it answers from the application-entry set it

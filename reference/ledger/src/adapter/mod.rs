@@ -14,7 +14,7 @@ mod durable;
 
 use std::{error::Error, fmt};
 
-use rafter::LogIndex;
+use rafter::{InMemorySnapshotChunkSource, LogIndex, RaftSnapshot};
 use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
     ReplicatedStateMachine, SnapshotSupport,
@@ -67,12 +67,12 @@ pub enum LedgerAdapterError {
         snapshot_index: LogIndex,
         applied_index: LogIndex,
     },
-    /// A snapshot install carried no inline payload.
+    /// A snapshot install's application bytes could not be obtained.
     ///
-    /// Rafter's own install path supplies a descriptor whose application bytes
-    /// live in the replica's snapshot store rather than in the message, and
-    /// this application has no path to fetch them. It refuses rather than
-    /// installing an empty ledger over live state.
+    /// Either it carried no inline payload and no descriptor naming a promoted
+    /// transfer, or this replica's snapshot source could not serve that
+    /// transfer. Both leave the same nothing to install, and it refuses rather
+    /// than installing an empty ledger over live state.
     SnapshotPayloadUnavailable { applied_index: LogIndex },
     /// A decoded snapshot violated a model resource or supply invariant.
     Snapshot(SnapshotError),
@@ -119,7 +119,7 @@ impl fmt::Display for LedgerAdapterError {
             ),
             Self::SnapshotPayloadUnavailable { applied_index } => write!(
                 formatter,
-                "snapshot install at applied index {applied_index} carried no inline payload"
+                "snapshot install at applied index {applied_index} has no inline payload and no promoted payload this replica can read"
             ),
             Self::Snapshot(error) => write!(formatter, "invalid ledger snapshot: {error:?}"),
         }
@@ -153,6 +153,14 @@ pub struct LedgerStateMachine {
     config: LedgerConfig,
     ledger: Ledger,
     applied_index: LogIndex,
+    /// Promoted snapshot payloads this embedding has handed over, by transfer.
+    ///
+    /// A Raft-driven install carries a descriptor rather than bytes, so an
+    /// in-memory embedding needs somewhere to put the bytes its snapshot store
+    /// promoted. This is that place, and it is the whole of this machine's
+    /// snapshot source — an embedding whose store is on disk uses
+    /// [`DurableLedgerStateMachine`] instead.
+    promoted: InMemorySnapshotChunkSource,
 }
 
 impl LedgerStateMachine {
@@ -163,7 +171,39 @@ impl LedgerStateMachine {
             config,
             ledger: Ledger::new(config),
             applied_index: LogIndex::ZERO,
+            promoted: InMemorySnapshotChunkSource::new(),
         }
+    }
+
+    /// Registers bytes already promoted by the embedding's snapshot store.
+    ///
+    /// A Raft-driven install hands this machine a [`RaftSnapshot`] descriptor
+    /// and an empty payload, because the bytes were staged and promoted into
+    /// the replica's snapshot store before the application was ever asked. The
+    /// embedding resolves that descriptor and registers the exact payload here
+    /// before the group applies the snapshot output; the install then reads it
+    /// back through the same validation an inline payload takes.
+    ///
+    /// Registering is not installing. No account, session, or applied floor
+    /// moves here — those are decided by
+    /// [`ReplicatedStateMachine::install_snapshot`], which still refuses a
+    /// snapshot behind this replica's applied index whatever was registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LedgerAdapterError::SnapshotPayloadUnavailable`] when the
+    /// bytes contradict the length the descriptor declares, because a payload
+    /// that is not the descriptor's payload is not one this replica may adopt.
+    pub fn register_promoted_snapshot(
+        &mut self,
+        snapshot: &RaftSnapshot,
+        payload: Vec<u8>,
+    ) -> Result<(), LedgerAdapterError> {
+        self.promoted.insert(snapshot, payload).map_err(|_| {
+            LedgerAdapterError::SnapshotPayloadUnavailable {
+                applied_index: snapshot.metadata.last_included_index,
+            }
+        })
     }
 
     /// Returns the configured resource bounds.
@@ -188,6 +228,11 @@ impl ReplicatedStateMachine for LedgerStateMachine {
 
     /// Declared `Supported`: both methods below round-trip the whole ledger
     /// through the adapter's own frames, and `adapter_contract.rs` proves it.
+    ///
+    /// The declaration covers the Raft-driven install too. That install carries
+    /// a descriptor and no bytes, so an embedding registers the promoted
+    /// payload through [`LedgerStateMachine::register_promoted_snapshot`] and
+    /// the install reads it back from there.
     const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Supported;
 
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
@@ -247,7 +292,8 @@ impl ReplicatedStateMachine for LedgerStateMachine {
         &mut self,
         snapshot: ApplicationSnapshot,
     ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
-        let ledger_snapshot = discipline::admit_install(&snapshot, self.applied_index)?;
+        let ledger_snapshot =
+            discipline::admit_install(&snapshot, self.applied_index, Some(&self.promoted))?;
         self.ledger = Ledger::from_snapshot(self.config, ledger_snapshot)
             .map_err(LedgerAdapterError::Snapshot)?;
         self.applied_index = snapshot.applied_index;

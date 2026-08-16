@@ -95,7 +95,9 @@ impl Node {
 /// snapshot identity, authorization, and length checks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PendingSnapshotTransferResumeError {
-    /// Snapshot membership does not authorize the recorded leader.
+    /// No membership this node can see recognizes the recorded leader as a
+    /// replica — neither its current effective membership nor the boundary
+    /// membership the transfer's own descriptor carries.
     LeaderNotAuthorized {
         /// Leader recorded in the pending transfer.
         leader_id: NodeId,
@@ -136,8 +138,8 @@ impl fmt::Display for PendingSnapshotTransferResumeError {
             Self::LeaderNotAuthorized { leader_id } => write!(
                 formatter,
                 concat!(
-                    "pending snapshot transfer leader {leader_id} is not authorized by ",
-                    "the snapshot membership"
+                    "pending snapshot transfer leader {leader_id} is not a replica of any ",
+                    "membership this node can see"
                 ),
                 leader_id = leader_id,
             ),

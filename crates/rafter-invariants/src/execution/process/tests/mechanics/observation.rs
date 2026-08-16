@@ -60,8 +60,16 @@ fn internal_observer_kills_pipe_holding_descendants_within_its_deadline() {
     let script = format!("(sleep {}) & exit 0", RUNAWAY_DESCENDANT_LIFETIME.as_secs());
     let error = bounded_internal_output("/bin/sh", &["-c", &script], Duration::from_millis(50))
         .expect_err("pipe-holding descendant must not outlive the observer deadline");
+    // Two classifications truthfully describe the deadline firing. The plain
+    // timeout is the common case; on a loaded host the kill can land while
+    // post-kill cleanup itself overruns, and the same event then surfaces as
+    // the cleanup escalation that hands the leaked descendant to the reaper.
+    // Both prove the deadline cut the observer off; anything else -- success,
+    // or an unrelated failure -- is still a wrong classification.
+    let classification = error.to_string();
     assert!(
-        error.to_string().contains("timed out"),
+        classification.contains("timed out")
+            || classification.contains("did not close its process group and output"),
         "unexpected pipe-descendant classification: {error}"
     );
     assert!(started.elapsed() < RUNAWAY_DESCENDANT_LIFETIME);
@@ -163,10 +171,15 @@ fn internal_observer_read_failure_retains_process_group_cleanup_ownership() {
         );
         assert!(snapshot.failures.is_empty());
     } else {
-        assert_eq!(
-            process_group_state(process_group).expect("probe observer process group"),
-            ProcessGroupState::Absent
-        );
+        // The group is cleaned up, but the kernel reaps it on its own schedule:
+        // sampling once immediately after SIGKILL asserts *when* rather than
+        // *whether*, and a loaded macOS runner reports Alive for a few more
+        // milliseconds. Bound the same claim by the production confirmation
+        // primitive, which still fails closed if absence never arrives.
+        confirm_process_group_absent_with(DEFAULT_KILL_CONFIRMATION_TIMEOUT, || {
+            process_group_state(process_group)
+        })
+        .expect("observer process group is cleaned up");
     }
     std::fs::remove_file(process_group_path).expect("remove observer receipt");
 }

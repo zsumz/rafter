@@ -1,8 +1,10 @@
 [package]
 name = "rafter-crc32"
 version = "0.0.1"
-description = "Small table-driven CRC32 implementation shared by Rafter codecs."
+description = "Table-driven CRC-32/IEEE for Rafter's corruption-detection envelopes."
 readme = "README.md"
+keywords = ["crc32", "crc", "checksum", "hashing", "raft"]
+categories = ["algorithms", "encoding"]
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

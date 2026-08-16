@@ -57,6 +57,7 @@ fn check() -> CheckReceipt {
         completion: CheckCompletion::Counterexample,
         observations: BTreeMap::new(),
         simulator_liveness: None,
+        tla_continuation: None,
         duration_ms: 1,
         peak_rss_kib: 1,
         artifacts: Vec::new(),

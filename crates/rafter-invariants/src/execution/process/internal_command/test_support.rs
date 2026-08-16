@@ -17,8 +17,8 @@ use super::super::ManagedInternalProcess;
 const INTERNAL_CLEANUP_ALLOWANCE: Duration = Duration::from_secs(10);
 
 thread_local! {
-    static INJECT_NEXT_DRAIN_ERROR: std::cell::Cell<bool> = const {
-        std::cell::Cell::new(false)
+    static INJECT_NEXT_DRAIN_ERROR: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
     };
     static AWAIT_NEXT_COMPLETION_AFTER_DEADLINE: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
@@ -26,7 +26,13 @@ thread_local! {
 }
 
 pub(crate) fn inject_next_internal_drain_error() {
-    INJECT_NEXT_DRAIN_ERROR.with(|inject| inject.set(true));
+    inject_next_internal_drain_errors(1);
+}
+
+/// Fails the next `count` internal drains, so a scenario can distinguish a
+/// transient stall from a persistent one.
+pub(crate) fn inject_next_internal_drain_errors(count: usize) {
+    INJECT_NEXT_DRAIN_ERROR.with(|inject| inject.set(count));
 }
 
 /// Hold the next completion check until the child has exited and its execution
@@ -115,10 +121,11 @@ pub(super) fn await_completion_boundary_if_requested(
 
 pub(super) fn inject_drain_error_if_requested() -> std::io::Result<()> {
     INJECT_NEXT_DRAIN_ERROR.with(|inject| {
-        if inject.replace(false) {
-            Err(std::io::Error::other("injected internal drain failure"))
-        } else {
-            Ok(())
+        let remaining = inject.get();
+        if remaining == 0 {
+            return Ok(());
         }
+        inject.set(remaining - 1);
+        Err(std::io::Error::other("injected internal drain failure"))
     })
 }

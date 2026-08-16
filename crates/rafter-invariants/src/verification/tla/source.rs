@@ -16,6 +16,18 @@ pub(super) fn verify_source_binding(
     authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     let config = configuration(bundle, "config")?;
+    // Every obligation binds the exact configuration bytes TLC read back to
+    // the reviewed file in the source checkout, on the same footing as the
+    // primary configuration.
+    let obligations = super::obligation::contracted(bundle)?
+        .iter()
+        .map(|obligation| {
+            (
+                crate::evidence::format::tla::obligation_config_kind(&obligation.id),
+                format!("specs/tla/raft/{}", obligation.config),
+            )
+        })
+        .collect::<Vec<_>>();
     for (kind, source) in [
         ("tla-spec", "specs/tla/raft/Raft.tla".to_owned()),
         (
@@ -38,8 +50,12 @@ pub(super) fn verify_source_binding(
             "tla-trace-config",
             "specs/tla/raft/RaftMembershipTraceSample.cfg".to_owned(),
         ),
-    ] {
-        let artifact = read_kind(check, kind, authenticated)?;
+    ]
+    .into_iter()
+    .map(|(kind, source)| (kind.to_owned(), source))
+    .chain(obligations)
+    {
+        let artifact = read_kind(check, &kind, authenticated)?;
         let source = fs::read_to_string(root.join(&source)).map_err(|error| {
             AggregateError::new(format!("read TLA source binding {source}: {error}"))
         })?;

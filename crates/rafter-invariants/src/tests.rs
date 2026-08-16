@@ -19,6 +19,69 @@ pub(crate) fn loaded() -> (Catalog, ProfileManifest) {
     (catalog, manifest)
 }
 
+/// Proof obligations the profile actually declares.
+///
+/// Synthetic TLA+ evidence is built from whatever the reviewed manifest asks
+/// for rather than from a list frozen into the fixtures, so wiring a new
+/// obligation cannot silently leave the fixtures modelling the old contract.
+pub(crate) fn tla_obligations<'a>(
+    manifest: &'a ProfileManifest,
+    profile: &str,
+) -> &'a [ProofObligationContract] {
+    manifest.profiles[profile]
+        .runners
+        .get("tla")
+        .map_or(&[], |runner| runner.obligations.as_slice())
+}
+
+/// The continuation policy the profile pins, decoded the way the runners do.
+pub(crate) fn tla_policy(manifest: &ProfileManifest, profile: &str) -> PrimaryCompletionPolicy {
+    PrimaryCompletionPolicy::parse(
+        &manifest.profiles[profile].runners["tla"].configuration
+            [crate::evidence::PRIMARY_COMPLETION_KEY],
+    )
+    .expect("profile pins a reviewed primary_completion policy")
+}
+
+/// Synthetic continuation binding for the profile's pinned policy.
+///
+/// A gating profile models a drained monolith; a reporting profile models the
+/// shape its lane actually produces -- a continuation that spent its budget
+/// with the frontier still open. Both are honest receipts for their contract.
+pub(crate) fn synthetic_continuation_binding(
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> TlaContinuationBinding {
+    let policy = tla_policy(manifest, profile);
+    TlaContinuationBinding {
+        policy,
+        outcome: if policy.gates() {
+            ContinuationOutcome::FrontierExhausted
+        } else {
+            ContinuationOutcome::BudgetElapsedFrontierOpen
+        },
+    }
+}
+
+/// The terminal frame an obligation reports when it discharges.
+///
+/// The queue is drained and both calibrated ratchets are met exactly. That is
+/// the weakest run the contract accepts, so it is the honest fixture: anything
+/// larger would let a floor regression pass unnoticed.
+pub(crate) fn synthetic_obligation_summary(
+    obligation: &ProofObligationContract,
+) -> crate::producer::tla_output::TlcSummary {
+    crate::producer::tla_output::TlcSummary {
+        generated_states: obligation.minimum_generated_states,
+        distinct_states: obligation.minimum_distinct_states,
+        states_left: 0,
+        search_depth: 1,
+        completed_without_error: true,
+        process_finished: true,
+        violated_invariant: None,
+    }
+}
+
 pub(crate) fn aggregate_unverified(
     catalog: &Catalog,
     manifest: &ProfileManifest,
@@ -33,6 +96,7 @@ pub(crate) fn aggregate_unverified(
         &plan,
         source_ref,
         Path::new("."),
+        crate::verification::VerificationContext::ProducingJob,
     );
     let intake = crate::verification::verify_receipts_for_test(request, bundles, Vec::new())?;
     crate::verdict::reduce(catalog, manifest, &intake)
@@ -62,6 +126,7 @@ fn verify_layer_bundle(
         &plan,
         &bundle.source_ref,
         Path::new("."),
+        crate::verification::VerificationContext::ProducingJob,
     );
     let intake = crate::verification::verify_receipts_for_test(
         request,
@@ -184,6 +249,82 @@ fn synthetic_check_id(descriptor: &EvidenceDescriptor) -> String {
         .map_or_else(|| descriptor.evidence_id(), TestIdentity::check_id)
 }
 
+/// The TLA+ layer's synthetic observation frame.
+///
+/// Split out because it is the one layer whose frame depends on the profile's
+/// continuation policy: a gating profile publishes the terminal counters of a
+/// drained monolith, a reporting one the progress frame of a continuation that
+/// spent its budget with the frontier still open.
+fn synthetic_tla_observations(
+    descriptors: &[EvidenceDescriptor],
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> std::collections::BTreeMap<String, u64> {
+    let mut observations = std::collections::BTreeMap::from([
+        ("configured_invariants".to_owned(), 9),
+        ("tool_pin_verified".to_owned(), 1),
+        ("trace_sample_passed".to_owned(), 1),
+    ]);
+    // A gating profile publishes the terminal frame of a drained
+    // monolith. A reporting profile publishes the progress frame of a
+    // continuation that spent its budget with the frontier still open,
+    // which is the shape its lane actually produces.
+    if tla_policy(manifest, profile).gates() {
+        // Counters sit exactly at the pinned floors -- the weakest run
+        // the contract accepts -- so a floor regression cannot hide
+        // behind a generous fixture, and a floor recalibration needs
+        // no fixture edit.
+        let configuration = &manifest.profiles[profile].runners["tla"].configuration;
+        let floor = |key: &str| -> u64 {
+            configuration[key]
+                .parse()
+                .expect("profile pins a numeric state floor")
+        };
+        observations.extend([
+            (
+                "generated_states".to_owned(),
+                floor("minimum_generated_states"),
+            ),
+            (
+                "distinct_states".to_owned(),
+                floor("minimum_distinct_states"),
+            ),
+            ("states_left_on_queue".to_owned(), 0),
+            ("search_depth".to_owned(), 1),
+        ]);
+    } else {
+        observations.extend([
+            ("progress_generated_states".to_owned(), 23_784_130),
+            ("progress_distinct_states".to_owned(), 6_246_309),
+            ("progress_states_left".to_owned(), 3_294_097),
+            ("progress_depth".to_owned(), 21),
+        ]);
+    }
+    observations.extend(
+        crate::producer::tla_output::REGISTERED_PREDICATES
+            .into_iter()
+            .map(|predicate| (format!("detector_qualified:{predicate}"), 1)),
+    );
+    observations.extend(
+        descriptors
+            .iter()
+            .map(|descriptor| (format!("checked:{}", descriptor.symbol), 1)),
+    );
+    observations.extend(
+        crate::producer::tla_output::REQUIRED_MODEL_TRANSITIONS
+            .into_iter()
+            .map(|transition| (format!("transition_covered:{transition}"), 1)),
+    );
+    for obligation in tla_obligations(manifest, profile) {
+        observations.extend(crate::producer::tla_output::obligation_observations(
+            &obligation.id,
+            &synthetic_obligation_summary(obligation),
+            true,
+        ));
+    }
+    observations
+}
+
 fn synthetic_observations(
     descriptors: &[EvidenceDescriptor],
     manifest: &ProfileManifest,
@@ -202,31 +343,7 @@ fn synthetic_observations(
     }
     let Some(identity) = &descriptor.simulator else {
         if descriptor.layer == "tla" {
-            let mut observations = std::collections::BTreeMap::from([
-                ("configured_invariants".to_owned(), 9),
-                ("tool_pin_verified".to_owned(), 1),
-                ("trace_sample_passed".to_owned(), 1),
-                ("generated_states".to_owned(), 130_000_000),
-                ("distinct_states".to_owned(), 120_000_000),
-                ("states_left_on_queue".to_owned(), 0),
-                ("search_depth".to_owned(), 1),
-            ]);
-            observations.extend(
-                crate::producer::tla_output::REGISTERED_PREDICATES
-                    .into_iter()
-                    .map(|predicate| (format!("detector_qualified:{predicate}"), 1)),
-            );
-            observations.extend(
-                descriptors
-                    .iter()
-                    .map(|descriptor| (format!("checked:{}", descriptor.symbol), 1)),
-            );
-            observations.extend(
-                crate::producer::tla_output::REQUIRED_MODEL_TRANSITIONS
-                    .into_iter()
-                    .map(|transition| (format!("transition_covered:{transition}"), 1)),
-            );
-            return observations;
+            return synthetic_tla_observations(descriptors, manifest, profile);
         }
         return std::collections::BTreeMap::new();
     };
@@ -371,6 +488,17 @@ fn synthetic_artifacts(
                     crate::producer::tla_output::detector_config_kind(probe)
                         .expect("registered detector probe"),
                 );
+            }
+            // Two artifacts per obligation, and only two: the configuration TLC
+            // read and the log it produced. Obligations never checkpoint, so
+            // there is no recovery vocabulary to synthesize.
+            for obligation in tla_obligations(manifest, profile) {
+                kinds.push(crate::producer::tla_output::obligation_log_kind(
+                    &obligation.id,
+                ));
+                kinds.push(crate::producer::tla_output::obligation_config_kind(
+                    &obligation.id,
+                ));
             }
             kinds
                 .into_iter()
@@ -604,6 +732,8 @@ fn synthetic_checks(
                 },
                 observations: synthetic_observations(&descriptors, manifest, profile),
                 simulator_liveness: synthetic_liveness_binding(&descriptors[0], profile),
+                tla_continuation: (runner == "tla")
+                    .then(|| synthetic_continuation_binding(manifest, profile)),
                 duration_ms: 1,
                 peak_rss_kib: 1,
                 artifacts: synthetic_artifacts(&descriptors[0], manifest, profile),
@@ -1323,6 +1453,7 @@ fn evidence_load_error_still_emits_exactly_44_red_verdicts() {
         &plan,
         "abc",
         Path::new("."),
+        crate::verification::VerificationContext::ProducingJob,
     );
     let intake = crate::verification::verify_receipts_for_test(
         request,

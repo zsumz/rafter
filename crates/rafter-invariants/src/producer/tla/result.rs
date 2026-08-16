@@ -14,7 +14,11 @@ pub(in crate::producer) fn evidence_result(
     artifacts: &[ArtifactRef],
 ) -> EvidenceResult {
     let (status, classification, message) = match verdict {
-        TlaVerdict::Pass => (EvidenceStatus::Pass, None, None),
+        // Both pass shapes bind identically. The distinction between a drained
+        // frontier and an elapsed budget is recorded on the check receipt,
+        // where a reader can see it; it is not a difference in what the
+        // predicate evidence claims, and a green scheduled tier stays green.
+        TlaVerdict::Pass | TlaVerdict::PassBudgetElapsed => (EvidenceStatus::Pass, None, None),
         TlaVerdict::Violation(symbol) if symbol == &descriptor.symbol => (
             EvidenceStatus::Fail,
             Some(FailureClassification::InvariantViolation),

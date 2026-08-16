@@ -4,7 +4,7 @@ use std::{collections::BTreeSet, path::Path};
 
 use crate::{
     evidence::{format::maelstrom::MaelstromSummary, CheckReceipt, ResultBundle},
-    verification::{AggregateError, AuthenticatedArtifacts},
+    verification::{AggregateError, AuthenticatedArtifacts, VerificationContext},
 };
 
 use super::{
@@ -20,13 +20,22 @@ pub(crate) fn verify_authenticated(
     root: &Path,
     source_root: &Path,
     authenticated: &AuthenticatedArtifacts,
+    context: VerificationContext,
 ) -> Result<Vec<String>, AggregateError> {
     let trials = configuration::value(bundle, "trials")?
         .parse::<u64>()
         .map_err(|parse_error| error(format!("parse Maelstrom trial count: {parse_error}")))?;
     let mut diagnostics = Vec::new();
     for check in &bundle.execution.checks {
-        if verify_check(bundle, check, trials, root, source_root, authenticated)? {
+        if verify_check(
+            bundle,
+            check,
+            trials,
+            root,
+            source_root,
+            authenticated,
+            context,
+        )? {
             diagnostics.push(format!(
                 "{} preserved a Maelstrom counterexample alongside a harness error",
                 check.check_id
@@ -39,7 +48,13 @@ pub(crate) fn verify_authenticated(
 #[cfg(test)]
 pub(crate) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
     let authenticated = crate::verification::snapshot_available_artifacts(bundle, root)?;
-    verify_authenticated(bundle, root, root, &authenticated)
+    verify_authenticated(
+        bundle,
+        root,
+        root,
+        &authenticated,
+        VerificationContext::ProducingJob,
+    )
 }
 
 fn verify_check(
@@ -49,6 +64,7 @@ fn verify_check(
     root: &Path,
     source_root: &Path,
     authenticated: &AuthenticatedArtifacts,
+    context: VerificationContext,
 ) -> Result<bool, AggregateError> {
     let scenario = Scenario::from_check_id(&check.check_id)?;
     let grouped = group_trials(check)?;
@@ -63,6 +79,7 @@ fn verify_check(
         root,
         source_root,
         authenticated,
+        context,
     )?;
     let runner = unique(&grouped.shared, "maelstrom-runner")?;
 

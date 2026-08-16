@@ -47,7 +47,7 @@ fn typeok_violation_verifies_as_a_harness_class_violation() {
     let mut fixture = Fixture::new();
     fixture.set_harness_violation("TypeOK");
     let (intake, report) = fixture.load_and_aggregate();
-    assert!(intake.defects().is_empty());
+    assert!(intake.defects().is_empty(), "{:#?}", intake.defects());
     assert_eq!(report.summary.total, 44);
     assert_eq!(report.summary.green, 0);
     assert_eq!(report.summary.red, 44);
@@ -162,6 +162,7 @@ impl Fixture {
             &self.bundle.execution.plan,
             &self.bundle.source_ref,
             &self.root,
+            crate::verification::VerificationContext::ProducingJob,
         );
         let intake = crate::verification::verify_layer_paths(request, "tla", bundle_path.clone())
             .expect("verify serialized TLA fixture");
@@ -378,6 +379,9 @@ fn is_tla_process_artifact(kind: &str) -> bool {
         kind,
         "tla-log" | "tla-trace-log" | MUTATION_SUITE_ARTIFACT_KIND
     ) || kind.starts_with("tla-detector-log")
+        // Obligation logs are TLC process logs like any other and must be
+        // rebound to the materialized source identity with the rest.
+        || kind.starts_with("tla-obligation-log")
 }
 
 fn copy_tracked_workspace(from: &Path, to: &Path) -> Vec<String> {

@@ -57,6 +57,7 @@ pub(crate) use identity::run_identity_command_in;
 use internal_command::{
     await_next_internal_completion_after_deadline, bounded_internal_output,
     bounded_internal_output_with_reaper, inject_next_internal_drain_error,
+    inject_next_internal_drain_errors,
 };
 use internal_process::ManagedInternalProcess;
 #[cfg(test)]
@@ -79,6 +80,8 @@ use model::{
 };
 #[cfg(test)]
 pub(crate) use output::await_next_target_stdout_prefix;
+#[cfg(test)]
+use output::hold_next_poll_until_the_execution_window_closes;
 use process_group::await_target_process_group;
 #[cfg(test)]
 use process_group::{
@@ -103,11 +106,12 @@ use spawn::{
 };
 #[cfg(test)]
 use telemetry::{
-    delay_next_process_group_observation, omit_anchor_from_next_process_group_observation,
+    delay_next_process_group_observation, fail_next_process_group_observation_command,
+    omit_anchor_from_next_process_group_observation,
     omit_target_rows_from_process_group_observations, parse_process_group_observation,
     process_observer_path,
 };
-use telemetry::{parse_peak_rss, process_group_observation, ProcessObserver};
+use telemetry::{parse_peak_rss, process_group_observation, GroupObservation, ProcessObserver};
 use termination::terminate_after_timeout;
 #[cfg(test)]
 use test_support::induce_fallback_cleanup_failure;

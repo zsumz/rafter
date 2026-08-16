@@ -28,6 +28,33 @@ use crate::{
 /// [`FileRaftNodeStores::into_parts`]. Opening the bundle acquires exclusive
 /// cooperating-process ownership of the directory before any store can repair
 /// or publish bytes.
+///
+/// The example is `no_run` because opening the bundle takes that ownership lock
+/// on a real replica directory and replays whatever bytes it finds there; a
+/// documentation example has no such directory, and this crate carries no
+/// temporary-directory dependency to give it one.
+///
+/// ```no_run
+/// use rafter_storage::{FileRaftNodeStores, RaftHardStateStore, RaftLogSegment};
+///
+/// let stores = FileRaftNodeStores::open("/var/lib/rafter/replica-1")
+///     .expect("replica directory opens");
+/// let (hard_state_store, log_segment, snapshot_store) = stores.into_parts();
+///
+/// // What survived the last process: the promises, and where replay resumes.
+/// let durable = hard_state_store.current();
+/// assert!(log_segment.next_index() > log_segment.compacted_through());
+/// println!(
+///     "term {} committed through {}, log resumes at {}",
+///     durable.current_term.0,
+///     durable.commit_index.0,
+///     log_segment.next_index().0,
+/// );
+///
+/// // These three are the whole durable truth of a replica. `rafter-runtime`
+/// // recovers a node from them; nothing here interprets them as Raft state.
+/// drop(snapshot_store);
+/// ```
 #[derive(Debug)]
 pub struct FileRaftNodeStores {
     hard_state: FileRaftHardStateStore,

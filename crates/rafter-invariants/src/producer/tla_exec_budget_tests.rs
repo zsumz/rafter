@@ -10,10 +10,13 @@ use std::{
 
 use serde_json::Value;
 
+use crate::contract::profile::{ObligationCompletion, ProofObligationContract};
+
 use super::{
     complete_main_execution, configured_budget_duration, maximum_qualification_time,
-    mutation_suite_timeout, probe_timeout, process, DetectorProbes, ExecutionBudget,
-    MainCompletion, TlcRun, FINALIZATION_RESERVE_KEY, QUALIFICATION_PHASE_COUNT, TOTAL_TIMEOUT_KEY,
+    mutation_suite_timeout, probe_timeout, process, run_obligations, undischarged, DetectorProbes,
+    ExecutionBudget, MainCompletion, ObligationFailure, ObligationOutcome, ProbeStatus, TlcRun,
+    FINALIZATION_RESERVE_KEY, QUALIFICATION_PHASE_COUNT, TOTAL_TIMEOUT_KEY,
 };
 
 fn pr_budget() -> BTreeMap<String, String> {
@@ -32,12 +35,14 @@ fn shared_pr_budget_reduces_the_main_timeout_and_preserves_the_reserve() {
         budget.phase_timeout_at(started, probe_timeout("pr")),
         Some(probe_timeout("pr"))
     );
+    // 4m setup plus 7m qualification, then 10m of obligations, leaves the
+    // primary continuation the whole 310m it is pinned to.
     assert_eq!(
         budget.phase_timeout_at(
-            started + Duration::from_secs(11 * 60),
-            Duration::from_secs(325 * 60),
+            started + Duration::from_secs(21 * 60),
+            Duration::from_secs(310 * 60),
         ),
-        Some(Duration::from_secs(325 * 60))
+        Some(Duration::from_secs(310 * 60))
     );
     assert_eq!(
         budget.phase_timeout_at(
@@ -46,6 +51,104 @@ fn shared_pr_budget_reduces_the_main_timeout_and_preserves_the_reserve() {
         ),
         None
     );
+}
+
+/// Truncation is right for a probe and wrong for an obligation. A phase whose
+/// contract is "drain this frontier inside a calibrated budget" either gets
+/// that budget or must not start, because a shortened clock turns a budget
+/// shortfall into a theorem that appears not to hold.
+#[test]
+fn a_whole_phase_timeout_is_granted_in_full_or_refused() {
+    let started = std::time::Instant::now();
+    let budget = ExecutionBudget::at("pr", &pr_budget(), started).expect("valid PR budget");
+    let cap = Duration::from_secs(25 * 60);
+
+    assert_eq!(
+        budget.whole_phase_timeout_at(started + Duration::from_secs(311 * 60), cap),
+        Some(cap)
+    );
+    assert_eq!(
+        budget.whole_phase_timeout_at(started + Duration::from_secs(312 * 60), cap),
+        None
+    );
+    // The behaviour this replaces: the same instant still yields a truncated
+    // 24m clock under the phase rule the primary run uses.
+    assert_eq!(
+        budget.phase_timeout_at(started + Duration::from_secs(312 * 60), cap),
+        Some(Duration::from_secs(24 * 60))
+    );
+}
+
+/// The failure this distinction exists for. An obligation entered with less
+/// than its calibrated cap is a budget shortfall, and must not be dressed up
+/// as a frontier the model failed to exhaust -- on the scheduled tiers the
+/// obligations are the gate, so that misreading is an operator being told a
+/// safety invariant broke when nothing about the model changed.
+#[test]
+fn an_underfunded_obligation_reports_a_budget_shortfall_not_a_refuted_theorem() {
+    let (_, manifest) = crate::tests::loaded();
+    let runner = &manifest.profiles["pr"].runners["tla"];
+    let _guard =
+        process::LayerBudgetGuard::enter("pr", "tla", runner).expect("install TLA layer budget");
+    let started = Instant::now();
+    let obligations = [obligation_contract("snapshot-lifecycle", "25m")];
+    // One minute of window against a twenty-five minute obligation: the old
+    // rule would have started it under a 1m clock and killed it at the wall.
+    let budget = ExecutionBudget {
+        execution_deadline: started + Duration::from_secs(60),
+        total_deadline: started + Duration::from_secs(120),
+    };
+
+    let outcome = run_obligations(
+        "pr",
+        "abc123",
+        &BTreeMap::from([("workers".to_owned(), "4".to_owned())]),
+        &obligations,
+        Path::new("target/rafter-invariants/underfunded-obligation"),
+        budget,
+    )
+    .expect("an underfunded obligation is an outcome, not a producer error");
+
+    assert_eq!(outcome.status, ProbeStatus::Failed);
+    let Some(ObligationFailure::Underfunded(detail)) = &outcome.failure else {
+        panic!("an underfunded obligation must not be reported as undischarged");
+    };
+    assert!(detail.contains("snapshot-lifecycle"), "{detail}");
+    assert!(detail.contains("25m"), "{detail}");
+    assert!(!detail.contains("exhaust"), "{detail}");
+    // Nothing ran, so nothing may be framed about the model.
+    assert!(outcome.observations.is_empty());
+    assert!(outcome.artifacts.is_empty());
+}
+
+/// The other half of the distinction: an obligation that did receive its whole
+/// budget and still hit the wall is a statement about the model, and keeps the
+/// non-discharge wording an operator reads as one.
+#[test]
+fn an_obligation_that_times_out_at_its_full_cap_is_still_a_non_discharge() {
+    let obligation = obligation_contract("snapshot-lifecycle", "25m");
+
+    let failure = undischarged(&obligation, true, None);
+
+    let ObligationFailure::Undischarged(detail) = &failure else {
+        panic!("a timed-out obligation at its full cap is a non-discharge");
+    };
+    assert!(
+        detail.contains("did not exhaust its frontier within 25m"),
+        "{detail}"
+    );
+}
+
+fn obligation_contract(id: &str, soft_timeout: &str) -> ProofObligationContract {
+    ProofObligationContract {
+        id: id.to_owned(),
+        config: "RaftSnapshotObligation.cfg".to_owned(),
+        completion: ObligationCompletion::FrontierExhausted,
+        minimum_generated_states: 14_119_884,
+        minimum_distinct_states: 2_002_205,
+        soft_timeout: soft_timeout.to_owned(),
+        seed: "2026081101".to_owned(),
+    }
 }
 
 #[test]
@@ -293,6 +396,7 @@ fn main_counterexample_abandons_checkpoint_before_expired_finalization() {
         MainCompletion {
             trace: &trace,
             detectors: DetectorProbes::default(),
+            obligations: ObligationOutcome::default(),
             artifacts: inputs,
             checkpoint: Some(preparation),
             checkpoint_report: None,
@@ -374,8 +478,14 @@ fn assert_profile_workflow_budget(
     let qualification_phases =
         maximum_qualification_time(profile).expect("profile qualification phase duration");
     let main = required_budget_duration(&configuration, "soft_timeout");
+    // Obligations are a phase of this layer like any other: they run inside the
+    // same execution window, before the primary configuration, out of the same
+    // deadline. Omitting them is what let this guard stay green while the PR
+    // window was six minutes short and the scheduled tiers nearly half an hour.
+    let obligations = profile_tla_obligation_budget(manifest, profile);
     let inventory = qualification_phases
-        .checked_add(main)
+        .checked_add(obligations)
+        .and_then(|sum| sum.checked_add(main))
         .expect("phase inventory duration");
     let total = required_budget_duration(&configuration, TOTAL_TIMEOUT_KEY);
     let reserve = required_budget_duration(&configuration, FINALIZATION_RESERVE_KEY);
@@ -461,6 +571,29 @@ fn profile_tla_configuration(manifest: &Value, profile: &str) -> BTreeMap<String
             )
         })
         .collect()
+}
+
+/// Total whole-minute budget the profile's proof obligations claim from the
+/// shared execution window. Read straight from the manifest rather than from
+/// the parsed contract: this guard is the independent reading of the same
+/// profile data the contract layer validates.
+fn profile_tla_obligation_budget(manifest: &Value, profile: &str) -> Duration {
+    manifest["profiles"][profile]["runners"]["tla"]["obligations"]
+        .as_array()
+        .map_or(Duration::ZERO, |obligations| {
+            obligations
+                .iter()
+                .map(|obligation| {
+                    let budget = obligation["soft_timeout"]
+                        .as_str()
+                        .expect("obligation soft_timeout");
+                    required_budget_duration(
+                        &BTreeMap::from([("soft_timeout".to_owned(), budget.to_owned())]),
+                        "soft_timeout",
+                    )
+                })
+                .sum()
+        })
 }
 
 fn required_budget_duration(configuration: &BTreeMap<String, String>, key: &str) -> Duration {

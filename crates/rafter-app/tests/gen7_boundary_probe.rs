@@ -13,6 +13,25 @@
 //! moment the group would let the state machine answer for this replica, that
 //! state machine is at or above its own Raft snapshot boundary. Stepping and
 //! reading are those moments; draining outputs and reporting metrics are not.
+//!
+//! # The correction this file carries
+//!
+//! Deferring the *permanent* verdict past the output pump was right. Deferring
+//! everything past it was not, and this file used to pin the mistake by name:
+//! `the_recovery_batch_a_crash_window_replica_drains_is_accepted` asserted that
+//! a committed entry at 6 lands on a state machine at 3 under a boundary of 5,
+//! and called the resulting group healthy. It was. It was also holding
+//! `{1,2,3,6}` and reporting itself caught up, because the applied index, the
+//! readiness predicate, and the metrics snapshot all compare numbers and all
+//! three numbers were right.
+//!
+//! Applying is a moment too — it is the moment the gap stops being recoverable
+//! and becomes durable — so the pump refuses it, with
+//! `GroupError::SnapshotRestoreRequired` and without poisoning, because the
+//! repair is still available. `RaftGroup::apply_recovery_outputs` performs it:
+//! install the snapshot the boundary names, then apply the suffix, in one
+//! operation. What is still deferred past the pump is only the permanent
+//! verdict, and only for a batch that would apply nothing.
 
 mod support;
 
@@ -20,10 +39,26 @@ use support::*;
 
 /// The exact fixture from the K2 regression test: a runtime whose snapshot
 /// boundary is 5 over a state machine that only reached 3. The entries 4..=5
-/// are compacted out of the log and nothing will ever supply them.
+/// are compacted out of the log and nothing will ever supply them — except the
+/// snapshot at the boundary, which is the one thing that can, and which the
+/// runtime therefore hands back.
 fn below_boundary_group() -> RaftGroup<u64, RecordingStateMachine, ScriptedRuntime> {
+    group_below_boundary(Some(test_snapshot(5)))
+}
+
+/// The same fixture with the descriptor withheld, modelling a runtime that
+/// reports a boundary whose snapshot it cannot produce.
+fn below_boundary_group_without_descriptor(
+) -> RaftGroup<u64, RecordingStateMachine, ScriptedRuntime> {
+    group_below_boundary(None)
+}
+
+fn group_below_boundary(
+    snapshot: Option<RaftSnapshot>,
+) -> RaftGroup<u64, RecordingStateMachine, ScriptedRuntime> {
     let mut runtime = ScriptedRuntime::with_step_outputs([Vec::new()]);
     runtime.snapshot_index = LogIndex(5);
+    runtime.snapshot = snapshot;
     RaftGroup::with_applied_index(
         7,
         NodeId(1),
@@ -326,28 +361,221 @@ fn the_verdict_does_not_depend_on_how_the_caller_chunks_the_batch() {
     }
 }
 
-/// PROBE E, and the third boundary of the scope — the severe one. The recovery
-/// batch this refusal's own design says it accommodates is
-/// `RecoveredDurableRaftNode::into_parts`' `recovery_outputs`, and
+/// PROBE E, and the third boundary of the scope — the severe one, and the one
+/// this file used to get backwards.
+///
+/// The batch is `RecoveredDurableRaftNode::into_parts`' `recovery_outputs`, and
 /// `apply_committed_into` never pushes an `Output::ApplySnapshot` — the kernel
 /// holds a descriptor rather than payload bytes — so such a batch can never
-/// carry an install. Both reference drivers pump it one line after
-/// construction, ahead of any chance to restore. It must not poison the group.
+/// carry the install that would make it safe. It is drained one line after
+/// construction, ahead of any chance to restore. Accepting it wrote the gap
+/// into the application: `{1,2,3}` then nothing for `4..=5` then `6`, durable,
+/// with every index agreeing the replica was current.
+///
+/// So the raw pump refuses it, and refuses it *before* `apply_batch` is called
+/// — the application must come out of this untouched, because a partial write
+/// here is the same corruption arriving through the error path.
 #[test]
-fn the_recovery_batch_a_crash_window_replica_drains_is_accepted() {
+fn the_recovery_batch_a_crash_window_replica_drains_is_refused_by_the_raw_pump() {
     let mut group = below_boundary_group();
 
     // A recovery batch of the shape `drain_committed_outputs` actually
     // produces: committed applies above the boundary, no install.
     let recovery_outputs = vec![apply_output(6, b"committed-after-the-boundary", None)];
 
-    group
+    let error = group
         .apply_raft_outputs(recovery_outputs)
-        .expect("a recovering replica must not be poisoned before it can restore");
-    assert!(matches!(group.fatal_state(), GroupFatalState::Healthy));
+        .expect_err("the raw pump must not lay a committed suffix over a gap");
+    assert!(
+        matches!(
+            error,
+            GroupError::SnapshotRestoreRequired {
+                app_applied_index: LogIndex(3),
+                snapshot_index: LogIndex(5),
+                entry_index: LogIndex(6),
+            }
+        ),
+        "the refusal names the gap and the entry it stopped in front of, got {error:?}"
+    );
+
+    let app = group.state_machine();
+    assert_eq!(
+        app.applied,
+        vec![b"stale".to_vec()],
+        "the application must hold exactly what it opened with"
+    );
+    assert_eq!(app.applied_index, LogIndex(3), "and still report 3");
+    assert!(
+        app.batches.is_empty(),
+        "apply_batch must never have been called"
+    );
+    assert!(
+        app.installed_snapshots.is_empty(),
+        "and the raw pump installs nothing on its own"
+    );
+
+    assert!(
+        matches!(group.fatal_state(), GroupFatalState::Healthy),
+        "the refusal is recoverable, so it must not poison the group that can still be repaired"
+    );
+}
+
+/// PROBE E, the other half: the same fixture, through the operation that owns
+/// the ordering. The claim is not "it works" but *what order it worked in* —
+/// install at the boundary, then the suffix, one call, one report.
+#[test]
+fn the_recovery_operation_installs_the_boundary_before_it_applies_the_suffix() {
+    let mut group = below_boundary_group();
+
+    let report = group
+        .apply_recovery_outputs(vec![apply_output(6, b"committed-after-the-boundary", None)])
+        .expect("the ordered recovery restores the state machine and then applies");
+
+    assert_eq!(
+        group.state_machine().operations,
+        vec![
+            RecordedOperation::InstallSnapshot(LogIndex(5)),
+            RecordedOperation::ApplyBatch(vec![LogIndex(6)]),
+        ],
+        "the install must precede the apply, and this is the only assertion that can say so"
+    );
+    assert_eq!(
+        group.state_machine().applied_index,
+        LogIndex(6),
+        "and the state machine ends where the committed suffix ends"
+    );
+
+    // The install travels in the same report the caller routes, so a driver
+    // that forwards snapshot events sees this one.
+    assert!(
+        report.snapshot_events.iter().any(
+            |event| matches!(event, SnapshotEvent::Apply { snapshot, .. }
+                if snapshot.metadata.last_included_index == LogIndex(5))
+        ),
+        "the routed report must carry the install it performed, got {:?}",
+        report.snapshot_events
+    );
+    assert_eq!(
+        report.applied.len(),
+        1,
+        "and the applied entry, once: {:?}",
+        report.applied
+    );
+
     group
         .step(GroupInput::Tick)
-        .expect("and it runs once it is no longer short of the boundary");
+        .expect("a replica restored through the operation runs");
+    assert!(matches!(group.fatal_state(), GroupFatalState::Healthy));
+}
+
+/// A restart after a successful recovery re-installs nothing and re-applies
+/// nothing. The second incarnation opens over a state machine that is already
+/// at the boundary, so the restore is not owed — which is the property that
+/// makes the operation safe to put on an unconditional restart path rather than
+/// behind a caller's judgement about whether this boot needs it.
+#[test]
+fn a_second_recovery_over_a_restored_state_machine_does_nothing() {
+    let mut group = below_boundary_group();
+    group
+        .apply_recovery_outputs(vec![apply_output(6, b"committed-after-the-boundary", None)])
+        .expect("the first recovery restores and applies");
+
+    let RaftGroupParts {
+        runtime,
+        state_machine,
+        ..
+    } = group.into_parts();
+    let applied_index = state_machine
+        .applied_index()
+        .expect("the state machine reports where it ended up");
+    let mut reopened =
+        RaftGroup::with_applied_index(7, NodeId(1), runtime, state_machine, applied_index);
+
+    // The suffix is not re-emitted after a restart — the kernel's floor is at
+    // 6 — so the honest second-boot batch is empty.
+    let report = reopened
+        .apply_recovery_outputs(Vec::new())
+        .expect("a restored replica recovers into a no-op");
+
+    assert_eq!(
+        reopened.state_machine().operations,
+        vec![
+            RecordedOperation::InstallSnapshot(LogIndex(5)),
+            RecordedOperation::ApplyBatch(vec![LogIndex(6)]),
+        ],
+        "the second boot must add nothing to the trace the first one left"
+    );
+    assert!(report.applied.is_empty() && report.snapshot_events.is_empty());
+    assert!(matches!(reopened.fatal_state(), GroupFatalState::Healthy));
+}
+
+/// The install is the transaction's first act, so a failure in it must end the
+/// operation with the suffix unapplied. A failed install legitimately poisons —
+/// that is existing snapshot-install semantics and stays — but the entry the
+/// batch carried must never have reached the application.
+#[test]
+fn a_failed_restore_leaves_the_suffix_unapplied() {
+    let mut group = below_boundary_group();
+    group.state_machine_mut().fail_install_snapshot = true;
+
+    let error = group
+        .apply_recovery_outputs(vec![apply_output(6, b"committed-after-the-boundary", None)])
+        .expect_err("an install that fails ends the recovery");
+    assert!(
+        matches!(
+            error,
+            GroupError::StateMachine {
+                operation: StateMachineOperation::InstallSnapshot,
+                ..
+            }
+        ),
+        "the install failure travels as itself, got {error:?}"
+    );
+
+    let app = group.state_machine();
+    assert_eq!(
+        app.applied,
+        vec![b"stale".to_vec()],
+        "the suffix must not have been applied over the gap the install failed to close"
+    );
+    assert_eq!(app.applied_index, LogIndex(3));
+    assert!(app.batches.is_empty(), "apply_batch was never called");
+    assert!(
+        matches!(group.fatal_state(), GroupFatalState::Poisoned { .. }),
+        "and a failed install poisons, as it does on every other path"
+    );
+}
+
+/// A runtime that reports a boundary it cannot describe cannot be recovered
+/// past, and the composition says so instead of applying the suffix anyway.
+/// This is the missing-or-unreadable snapshot case as the group sees it: the
+/// descriptor never arrives, so the install cannot even be attempted.
+#[test]
+fn a_boundary_without_a_descriptor_refuses_rather_than_applies() {
+    let mut group = below_boundary_group_without_descriptor();
+
+    let error = group
+        .apply_recovery_outputs(vec![apply_output(6, b"committed-after-the-boundary", None)])
+        .expect_err("a restore that cannot be performed must not be skipped");
+    assert!(
+        matches!(
+            error,
+            GroupError::SnapshotRestoreRequired {
+                app_applied_index: LogIndex(3),
+                snapshot_index: LogIndex(5),
+                entry_index: LogIndex(6),
+            }
+        ),
+        "got {error:?}"
+    );
+
+    let app = group.state_machine();
+    assert!(app.batches.is_empty() && app.installed_snapshots.is_empty());
+    assert_eq!(app.applied_index, LogIndex(3));
+    assert!(
+        matches!(group.fatal_state(), GroupFatalState::Healthy),
+        "an operator who repairs the snapshot store can retry, so this does not poison"
+    );
 }
 
 /// PROBE E, the empty case — the shape a fully compacted replica actually

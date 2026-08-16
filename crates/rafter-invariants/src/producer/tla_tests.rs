@@ -3,16 +3,18 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use super::{
-    evaluate, evidence_result, observations, MainStatus, ProbeStatus, TlaExecution, TlaVerdict,
+    evaluate, evidence_result, observations, MainStatus, ObligationFailure, ProbeStatus,
+    TlaExecution, TlaVerdict,
 };
 use crate::{
     producer::tla_exec::parse_main_summary,
     producer::tla_output::{TlcProgress, TlcSummary, REQUIRED_MODEL_TRANSITIONS},
-    Catalog, CheckCompletion, EvidenceStatus, FailureClassification,
+    Catalog, CheckCompletion, EvidenceStatus, FailureClassification, PrimaryCompletionPolicy,
 };
 
-fn complete_execution(exit_succeeded: bool) -> TlaExecution {
+pub(super) fn complete_execution(exit_succeeded: bool) -> TlaExecution {
     TlaExecution {
+        obligations: super::ObligationOutcome::default(),
         main: Some(TlcSummary {
             generated_states: 130_000_001,
             distinct_states: 16_284_977,
@@ -53,6 +55,10 @@ fn successful_frames_with_nonzero_exit_are_a_harness_error() {
             "120000000".to_owned(),
         ),
         ("minimum_distinct_states".to_owned(), "16000000".to_owned()),
+        (
+            "primary_completion".to_owned(),
+            "gating-frontier-exhausted".to_owned(),
+        ),
     ]);
 
     assert!(matches!(
@@ -71,6 +77,10 @@ fn coverage_floor_uses_generated_and_distinct_state_counters() {
             "120000000".to_owned(),
         ),
         ("minimum_distinct_states".to_owned(), "16000000".to_owned()),
+        (
+            "primary_completion".to_owned(),
+            "gating-frontier-exhausted".to_owned(),
+        ),
     ]);
     assert!(matches!(
         evaluate(&execution, &symbols, &passing),
@@ -95,7 +105,12 @@ fn observations_report_each_detector_qualification_independently() {
         .into_iter()
         .map(str::to_owned)
         .collect();
-    let observed = observations(&execution, &symbols, 9);
+    let observed = observations(
+        &execution,
+        &symbols,
+        9,
+        PrimaryCompletionPolicy::GatingFrontierExhausted,
+    );
     assert!(!observed.contains_key("detector_negative_passed"));
     for predicate in crate::producer::tla_output::REGISTERED_PREDICATES {
         assert_eq!(observed[&format!("detector_qualified:{predicate}")], 1);
@@ -256,13 +271,22 @@ fn timeout_reports_progress_without_claiming_terminal_proof() {
         depth: 23,
     });
     let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
-    let verdict = evaluate(&execution, &symbols, &BTreeMap::new());
+    let verdict = evaluate(
+        &execution,
+        &symbols,
+        &super::policy_tests::gating_configuration(),
+    );
     assert!(matches!(
         verdict,
         TlaVerdict::Incomplete(CheckCompletion::Timeout, _)
     ));
 
-    let observed = observations(&execution, &symbols, 9);
+    let observed = observations(
+        &execution,
+        &symbols,
+        9,
+        PrimaryCompletionPolicy::GatingFrontierExhausted,
+    );
     assert_eq!(observed["progress_generated_states"], 181_490_601);
     assert_eq!(observed["progress_distinct_states"], 40_062_465);
     assert_eq!(observed["progress_states_left"], 19_012_042);
@@ -276,4 +300,81 @@ fn timeout_reports_progress_without_claiming_terminal_proof() {
     ] {
         assert!(!observed.contains_key(terminal));
     }
+}
+
+/// An undischarged obligation is red before the primary configuration's own
+/// verdict is even consulted: the main run never happened, so a clean main
+/// summary in the same frame must not be able to rescue the layer.
+#[test]
+fn an_undischarged_obligation_fails_the_layer_before_the_primary_verdict() {
+    let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
+    let configuration = BTreeMap::from([
+        (
+            "minimum_generated_states".to_owned(),
+            "120000000".to_owned(),
+        ),
+        ("minimum_distinct_states".to_owned(), "16000000".to_owned()),
+        (
+            "primary_completion".to_owned(),
+            "gating-frontier-exhausted".to_owned(),
+        ),
+    ]);
+
+    let mut execution = complete_execution(true);
+    assert!(matches!(
+        evaluate(&execution, &symbols, &configuration),
+        TlaVerdict::Pass
+    ));
+
+    execution.obligations.status = ProbeStatus::Failed;
+    execution.obligations.failure = Some(ObligationFailure::Undischarged(
+        "proof obligation focused refuted LogMatching".to_owned(),
+    ));
+    let TlaVerdict::Error(message) = evaluate(&execution, &symbols, &configuration) else {
+        panic!("an undischarged obligation must fail the layer");
+    };
+    assert!(message.contains("refuted LogMatching"), "{message}");
+    assert!(message.contains("did not discharge"), "{message}");
+
+    // The same red, a different sentence: a shortfall in this harness's own
+    // budget must never reach an operator wearing a refuted theorem's words.
+    execution.obligations.failure = Some(ObligationFailure::Underfunded(
+        "proof obligation focused was not started".to_owned(),
+    ));
+    let TlaVerdict::Error(message) = evaluate(&execution, &symbols, &configuration) else {
+        panic!("an underfunded obligation must fail the layer");
+    };
+    assert!(message.contains("ran out of execution budget"), "{message}");
+    assert!(!message.contains("did not discharge"), "{message}");
+}
+
+/// Observations from executed obligations reach the receipt frame verbatim, so
+/// the verifier can rederive them from the same logs.
+#[test]
+fn obligation_observations_are_framed_in_the_receipt() {
+    let mut execution = complete_execution(true);
+    let symbols: std::collections::BTreeSet<String> =
+        ["ElectionSafety".to_owned()].into_iter().collect();
+    assert!(!observations(
+        &execution,
+        &symbols,
+        9,
+        PrimaryCompletionPolicy::GatingFrontierExhausted
+    )
+    .keys()
+    .any(|key| key.starts_with("obligation_")));
+
+    execution.obligations.status = ProbeStatus::Passed;
+    execution.obligations.observations = BTreeMap::from([
+        ("obligation_generated_states:focused".to_owned(), 4_242),
+        ("obligation_frontier_exhausted:focused".to_owned(), 1),
+    ]);
+    let framed = observations(
+        &execution,
+        &symbols,
+        9,
+        PrimaryCompletionPolicy::GatingFrontierExhausted,
+    );
+    assert_eq!(framed["obligation_generated_states:focused"], 4_242);
+    assert_eq!(framed["obligation_frontier_exhausted:focused"], 1);
 }

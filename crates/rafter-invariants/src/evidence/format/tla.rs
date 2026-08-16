@@ -18,7 +18,7 @@ pub(crate) const REGISTERED_PREDICATES: [&str; 8] = [
     "ReadBarrierLinearizability",
 ];
 
-pub(crate) const REQUIRED_MODEL_TRANSITIONS: [&str; 19] = [
+pub(crate) const REQUIRED_MODEL_TRANSITIONS: [&str; 18] = [
     "Timeout",
     "SendRequestVote",
     "DeliverRequestVote",
@@ -33,15 +33,18 @@ pub(crate) const REQUIRED_MODEL_TRANSITIONS: [&str; 19] = [
     "CreateSnapshot",
     "TransferSnapshot",
     "InstallSnapshot",
-    "CompactSnapshot",
     "EnterJoint",
     "LeaveJoint",
     "RegisterRead",
     "GrantRead",
 ];
 
-pub(crate) const MEMBERSHIP_TRACE_MIN_DISTINCT_STATES: u64 = 46;
-pub(crate) const MEMBERSHIP_TRACE_MIN_DEPTH: u64 = 46;
+// One lower than they were: folding snapshot creation and compaction into one
+// atomic action removed `CompactSnapshot` from the model, and with it the trace
+// step that executed it. The trace is one step shorter, not one step weaker --
+// it still executes every transition in REQUIRED_MODEL_TRANSITIONS.
+pub(crate) const MEMBERSHIP_TRACE_MIN_DISTINCT_STATES: u64 = 45;
+pub(crate) const MEMBERSHIP_TRACE_MIN_DEPTH: u64 = 45;
 pub(crate) const DEFAULT_FIXTURE_MODE: &str = "Default";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,6 +118,80 @@ pub(crate) fn detector_config_kind(probe: DetectorProbe) -> Option<String> {
 
 pub(crate) fn detector_observation(predicate: &str) -> Option<String> {
     is_registered_predicate(predicate).then(|| format!("detector_qualified:{predicate}"))
+}
+
+/// Observation metrics every executed proof obligation contributes to the
+/// layer receipt, in the order a reader wants them: what it explored, how deep
+/// it went, and whether it actually drained its queue.
+pub(crate) const OBLIGATION_METRICS: [&str; 4] = [
+    "generated_states",
+    "distinct_states",
+    "search_depth",
+    "frontier_exhausted",
+];
+
+/// Process label and log identity for one obligation. Obligations are named
+/// rather than positional so a receipt stays readable when the reviewed set
+/// changes, and so producer and verifier agree without sharing an index.
+pub(crate) fn obligation_label(id: &str) -> String {
+    format!("obligation-{id}")
+}
+
+pub(crate) fn obligation_log_kind(id: &str) -> String {
+    format!("tla-obligation-log:{id}")
+}
+
+pub(crate) fn obligation_config_kind(id: &str) -> String {
+    format!("tla-obligation-config:{id}")
+}
+
+pub(crate) fn obligation_observation(id: &str, metric: &str) -> String {
+    format!("obligation_{metric}:{id}")
+}
+
+/// Independent acceptance predicate for one obligation summary, shared as a
+/// serialized-vocabulary helper so producer and verifier cannot drift on what
+/// "discharged" means. Both call it on evidence they parsed themselves.
+pub(crate) fn obligation_discharged(
+    summary: &TlcSummary,
+    minimum_generated_states: u64,
+    minimum_distinct_states: u64,
+) -> bool {
+    summary.completed_without_error
+        && summary.process_finished
+        && summary.violated_invariant.is_none()
+        && summary.states_left == 0
+        && summary.search_depth > 0
+        && summary.generated_states >= minimum_generated_states
+        && summary.distinct_states >= minimum_distinct_states
+}
+
+/// Observation frame for one executed obligation, derived only from its parsed
+/// TLC summary so that the producer's frame and the verifier's rederivation are
+/// the same function of the same bytes.
+pub(crate) fn obligation_observations(
+    id: &str,
+    summary: &TlcSummary,
+    discharged: bool,
+) -> [(String, u64); OBLIGATION_METRICS.len()] {
+    [
+        (
+            obligation_observation(id, "generated_states"),
+            summary.generated_states,
+        ),
+        (
+            obligation_observation(id, "distinct_states"),
+            summary.distinct_states,
+        ),
+        (
+            obligation_observation(id, "search_depth"),
+            summary.search_depth,
+        ),
+        (
+            obligation_observation(id, "frontier_exhausted"),
+            u64::from(discharged),
+        ),
+    ]
 }
 
 fn is_registered_predicate(predicate: &str) -> bool {

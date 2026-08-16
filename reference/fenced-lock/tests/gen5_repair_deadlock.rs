@@ -53,7 +53,7 @@ const RESOURCE: &str = "orders/shard-0";
 fn open(directory: &Path, faults: FaultPlan) -> DurableLockStateMachine {
     let store = LockStore::open_with_faults(directory, config(2, 4), faults)
         .expect("a lock store opens under a plan that only fires on a publication");
-    DurableLockStateMachine::new(store)
+    DurableLockStateMachine::new(store, directory.join("raft/snapshots"))
 }
 
 fn apply_one(

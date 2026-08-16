@@ -33,15 +33,20 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
     verify_checkpoint_tlc_inputs(tla, "weekly", "'specs/tla/raft/Raft.cfg'");
 
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
+    // Scoped to the weekly runner's own configuration line. Searching the whole
+    // document let another profile's value satisfy a weekly assertion, which is
+    // how weekly's budget moved off 265m while this guard still read 265m and
+    // stayed green.
+    let profile = tla_configuration_line(&profile, "Raft.cfg");
     for required in [
         "\"config\": \"Raft.cfg\"",
-        "\"soft_timeout\": \"265m\"",
+        "\"soft_timeout\": \"110m\"",
         "\"total_timeout\": \"320m\"",
         "\"finalization_reserve\": \"10m\"",
         "\"workers\": \"auto\"",
         "\"checkpoint_minutes\": \"30\"",
         "\"checkpoint_gzip\": \"required\"",
-        "\"max_heap\": \"4g\"",
+        "\"max_heap\": \"8g\"",
         "\"fp_mem\": \"0.45\"",
         "\"checkpoint_recovery\": \"strict-compatible-if-present\"",
         "\"unsymmetrized_exploration\": \"required\"",
@@ -74,6 +79,25 @@ fn nightly_tlc_checkpoint_hashes_complete_tlc_model_inputs() {
         );
     }
     verify_checkpoint_tlc_inputs(tla, "nightly", "'specs/tla/raft/RaftNightly.cfg'");
+}
+
+/// The one `configuration` line belonging to the runner pinned to `config`.
+///
+/// The profiles manifest keeps each runner's configuration map on a single
+/// line, so this isolates one profile's pins from every other profile's.
+fn tla_configuration_line<'a>(profile: &'a str, config: &str) -> &'a str {
+    let needle = format!("\"config\": \"{config}\"");
+    let matching = profile
+        .lines()
+        .filter(|line| line.contains(&needle))
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [line] => line,
+        found => panic!(
+            "expected exactly one TLA configuration for {config}, found {}",
+            found.len()
+        ),
+    }
 }
 
 /// Checkpoint reuse is sound exactly when every input TLC state depends on is

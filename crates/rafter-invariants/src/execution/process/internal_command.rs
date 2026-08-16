@@ -28,6 +28,7 @@ use super::{
 pub(crate) use test_support::{
     await_next_internal_completion_after_deadline, bounded_internal_output,
     bounded_internal_output_with_reaper, inject_next_internal_drain_error,
+    inject_next_internal_drain_errors,
 };
 
 const INTERNAL_OUTPUT_MAX_BYTES: usize = 16 * 1024 * 1024;

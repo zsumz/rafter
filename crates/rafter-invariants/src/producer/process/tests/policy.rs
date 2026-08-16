@@ -41,6 +41,7 @@ fn layer_budget_consumes_validated_runner_durations_without_profile_tables() {
             ("receipt_finalization_allowance".to_owned(), "4s".to_owned()),
         ]),
         simulator_checks: BTreeMap::new(),
+        obligations: Vec::new(),
         minimum_observed_checks: 1,
         require_peak_rss: true,
     };

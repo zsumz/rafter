@@ -12,7 +12,7 @@ mod verify;
 
 #[cfg(test)]
 pub(crate) use model::IntakeDefectKind;
-pub(crate) use model::{EvidenceIntake, IntakeDefect, VerificationRequest};
+pub(crate) use model::{EvidenceIntake, IntakeDefect, VerificationContext, VerificationRequest};
 #[cfg(test)]
 pub(crate) use paths::verify_paths;
 pub(crate) use paths::{verify_aggregate_paths, verify_layer_paths};

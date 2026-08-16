@@ -18,6 +18,25 @@ impl NodeConfig {
     /// but makes check-quorum and lease reads ineffective because a leader has
     /// no tick on which to refresh quorum evidence before the window closes.
     ///
+    /// ```
+    /// use rafter::{NodeConfig, NodeConfigError, NodeId};
+    ///
+    /// // The local node is always a voter; `peers` names only the others, so
+    /// // this is a three-voter group whose quorum is two.
+    /// let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 10)
+    ///     .expect("valid raft config");
+    /// assert_eq!(config.quorum_size(), 2);
+    /// assert!(config.pre_vote(), "pre-vote and check-quorum are on by default");
+    /// assert!(config.check_quorum());
+    ///
+    /// // Listing the local node among its own peers is a deployment mistake
+    /// // rather than a two-voter group, so it is refused instead of deduplicated.
+    /// assert_eq!(
+    ///     NodeConfig::new(NodeId(1), vec![NodeId(1)], 10),
+    ///     Err(NodeConfigError::SelfPeer { id: NodeId(1) }),
+    /// );
+    /// ```
+    ///
     /// # Errors
     ///
     /// Returns [`NodeConfigError`] when `peers` contains the local node ID,

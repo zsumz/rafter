@@ -161,8 +161,13 @@ fn tla_tuple_members(source: &str, name: &str) -> Vec<String> {
 fn raft_trace_vars_name_every_raft_tla_state_variable() {
     let raft_tla = include_str!("../../../../../specs/tla/raft/Raft.tla");
     let mut expected = tla_tuple_members(raft_tla, "vars");
+    // Guards the parse, not the count: a broken `tla_tuple_members` returns
+    // nothing or one member, and the equality below is what actually holds the
+    // renderer to the specification. The count is not pinned here because it
+    // legitimately moves -- it went from 22 to 20 when `compactionPending` and
+    // `snapshotPrefix` were removed.
     assert!(
-        expected.len() > 20,
+        expected.len() > 15,
         "parsed Raft.tla vars tuple looks wrong: {expected:?}"
     );
     // The trace wrapper adds its own program counter to the end of the tuple.

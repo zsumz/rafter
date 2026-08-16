@@ -1,12 +1,12 @@
 //! Scenarios: each runner contract rejects policy and configuration drift.
 
-use super::super::RunnerContract;
+use super::super::{ObligationCompletion, ProofObligationContract, RunnerContract};
 use super::validate_runner;
 
 fn runner(layer: &str, configuration: serde_json::Value) -> RunnerContract {
     let producer = match layer {
         "tests" => "rafter-invariants-tests-v14",
-        "tla" => "rafter-invariants-tla-v15",
+        "tla" => "rafter-invariants-tla-v16",
         "maelstrom" => "rafter-invariants-maelstrom-v10",
         _ => unreachable!(),
     };
@@ -35,6 +35,7 @@ fn runner(layer: &str, configuration: serde_json::Value) -> RunnerContract {
         .to_vec(),
         configuration: serde_json::from_value(configuration).expect("string map"),
         simulator_checks: std::collections::BTreeMap::new(),
+        obligations: Vec::new(),
         minimum_observed_checks,
         require_peak_rss: true,
     }
@@ -100,20 +101,202 @@ fn tla_contract_rejects_weakened_state_floor() {
             "minimum_distinct_states": "1",
             "minimum_generated_states": "120000000",
             "module": "Raft.tla",
+            "primary_completion": "gating-frontier-exhausted",
             "receipt_finalization_allowance": "5s",
             "seed": "2026071101",
             "soft_timeout": "115m",
             "symmetry": "nodes-values-read-requests-product",
             "termination_grace": "30s",
-            "tool_asset_id": "481553986",
+            "tool_asset_id": "510788686",
             "tool_mode": "required",
-            "tool_sha256": "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3",
+            "tool_sha256": "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f",
             "total_timeout": "155m",
             "trace_sample": "required",
             "workers": "4"
         }),
     );
     assert!(validate_runner("pr", "tla", &contract).is_err());
+}
+
+fn canonical_pr_tla_configuration() -> serde_json::Value {
+    serde_json::json!({
+        "config": "RaftCi.cfg",
+        "detector_negative": "required",
+        "finalization_reserve": "2m",
+        "fp": "0",
+        "fp_mem": "0.45",
+        "java_major": "21",
+        "kill_confirmation_timeout": "5s",
+        "max_heap": "8g",
+        "minimum_distinct_states": "36058645",
+        "minimum_generated_states": "255177640",
+        "module": "Raft.tla",
+        "primary_completion": "gating-frontier-exhausted",
+        "receipt_finalization_allowance": "5s",
+        "seed": "2026071101",
+        "soft_timeout": "310m",
+        "symmetry": "nodes-values-read-requests-product",
+        "termination_grace": "30s",
+        "tool_asset_id": "510788686",
+        "tool_mode": "required",
+        "tool_sha256": "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f",
+        "total_timeout": "338m",
+        "trace_sample": "required",
+        "workers": "4"
+    })
+}
+
+fn obligation(id: &str, config: &str, soft_timeout: &str) -> ProofObligationContract {
+    ProofObligationContract {
+        id: id.to_owned(),
+        config: config.to_owned(),
+        completion: ObligationCompletion::FrontierExhausted,
+        minimum_generated_states: 4_000,
+        minimum_distinct_states: 900,
+        soft_timeout: soft_timeout.to_owned(),
+        seed: "2026081101".to_owned(),
+    }
+}
+
+fn tla_runner_with(obligations: Vec<ProofObligationContract>) -> RunnerContract {
+    let mut contract = runner("tla", canonical_pr_tla_configuration());
+    contract.obligations = obligations;
+    contract
+}
+
+/// The canonical PR configuration with no obligations must stay valid: the
+/// empty list is the identity, and the deterministic gate depends on it.
+#[test]
+fn tla_contract_accepts_an_empty_obligation_list() {
+    validate_runner("pr", "tla", &tla_runner_with(Vec::new()))
+        .expect("empty obligations must remain canonical");
+}
+
+#[test]
+fn tla_contract_accepts_sorted_focused_obligations() {
+    validate_runner(
+        "pr",
+        "tla",
+        &tla_runner_with(vec![
+            obligation(
+                "joint-quorum-focused-init",
+                "RaftJointQuorumFocusedInit.cfg",
+                "4m",
+            ),
+            obligation(
+                "joint-quorum-focused-next",
+                "RaftJointQuorumFocusedNext.cfg",
+                "6m",
+            ),
+        ]),
+    )
+    .expect("sorted, budgeted obligations are canonical");
+}
+
+#[test]
+fn tla_contract_rejects_duplicate_and_unsorted_obligation_identities() {
+    let duplicate = tla_runner_with(vec![
+        obligation("focused", "RaftJointQuorumFocusedInit.cfg", "4m"),
+        obligation("focused", "RaftJointQuorumFocusedNext.cfg", "4m"),
+    ]);
+    assert!(validate_runner("pr", "tla", &duplicate).is_err());
+
+    let unsorted = tla_runner_with(vec![
+        obligation("zebra", "RaftJointQuorumFocusedNext.cfg", "4m"),
+        obligation("alpha", "RaftJointQuorumFocusedInit.cfg", "4m"),
+    ]);
+    assert!(validate_runner("pr", "tla", &unsorted).is_err());
+
+    let shouting = tla_runner_with(vec![obligation(
+        "Focused_Init",
+        "RaftJointQuorumFocusedInit.cfg",
+        "4m",
+    )]);
+    assert!(validate_runner("pr", "tla", &shouting).is_err());
+}
+
+/// An obligation may not smuggle a profile's primary configuration back in
+/// under a shorter timeout, and may not escape the specification directory.
+#[test]
+fn tla_contract_rejects_primary_and_escaping_obligation_configs() {
+    for config in [
+        "RaftCi.cfg",
+        "RaftNightly.cfg",
+        "Raft.cfg",
+        "../secrets/Raft.cfg",
+        "RaftJointQuorumFocusedInit.tla",
+    ] {
+        let contract = tla_runner_with(vec![obligation("focused", config, "4m")]);
+        assert!(
+            validate_runner("pr", "tla", &contract).is_err(),
+            "obligation config {config} must be rejected"
+        );
+    }
+}
+
+/// Obligations are paid out of the same window as every other phase. A set
+/// that would starve the continuation is a contract error, not a runtime
+/// surprise.
+#[test]
+fn tla_contract_rejects_obligations_that_starve_the_primary_run() {
+    // The PR window is 338m total less a 2m reserve. Qualification and setup
+    // claim 11m of it and the primary run 310m, so 15m is the entire remaining
+    // budget.
+    let affordable = tla_runner_with(vec![obligation(
+        "focused",
+        "RaftJointQuorumFocusedInit.cfg",
+        "15m",
+    )]);
+    validate_runner("pr", "tla", &affordable).expect("15m fits the PR window exactly");
+
+    let overcommitted = tla_runner_with(vec![obligation(
+        "focused",
+        "RaftJointQuorumFocusedInit.cfg",
+        "16m",
+    )]);
+    assert!(validate_runner("pr", "tla", &overcommitted).is_err());
+}
+
+/// The phases that are neither an obligation nor the primary run draw on the
+/// same execution deadline, so the check must count them. Before it did, an
+/// obligation set could be accepted whose whole inventory overran the window
+/// and truncated the monolith -- reported, under the PR tier's gating policy,
+/// as a timeout on a model that would have drained.
+#[test]
+fn tla_contract_counts_qualification_and_setup_against_the_window() {
+    // 15m of obligations is the documented ceiling above. Without the 11m
+    // qualification-and-setup charge the same window would appear to afford
+    // 26m, so an obligation set between the two must be refused.
+    for budget in ["16m", "20m", "26m"] {
+        let contract = tla_runner_with(vec![obligation(
+            "focused",
+            "RaftJointQuorumFocusedInit.cfg",
+            budget,
+        )]);
+        let error = validate_runner("pr", "tla", &contract)
+            .expect_err("qualification and setup are not free");
+        assert!(error.contains("qualification and setup"), "{error}");
+    }
+}
+
+#[test]
+fn tla_contract_rejects_vacuous_obligation_floors_and_budgets() {
+    let mut zero_floor = obligation("focused", "RaftJointQuorumFocusedInit.cfg", "4m");
+    zero_floor.minimum_distinct_states = 0;
+    assert!(validate_runner("pr", "tla", &tla_runner_with(vec![zero_floor])).is_err());
+
+    let mut inverted = obligation("focused", "RaftJointQuorumFocusedInit.cfg", "4m");
+    inverted.minimum_generated_states = 10;
+    inverted.minimum_distinct_states = 11;
+    assert!(validate_runner("pr", "tla", &tla_runner_with(vec![inverted])).is_err());
+
+    let mut instant = obligation("focused", "RaftJointQuorumFocusedInit.cfg", "0m");
+    instant.seed = "2026081101".to_owned();
+    assert!(validate_runner("pr", "tla", &tla_runner_with(vec![instant])).is_err());
+
+    let mut unseeded = obligation("focused", "RaftJointQuorumFocusedInit.cfg", "4m");
+    unseeded.seed = "auto".to_owned();
+    assert!(validate_runner("pr", "tla", &tla_runner_with(vec![unseeded])).is_err());
 }
 
 #[test]
@@ -155,4 +338,58 @@ fn maelstrom_contract_rejects_pr_profile() {
         }),
     );
     assert!(validate_runner("pr", "maelstrom", &contract).is_err());
+}
+
+/// Demoting a primary continuation to reporting only makes sense when
+/// something else still exhausts. A reporting profile with no obligations
+/// would gate on nothing at all and report itself green.
+#[test]
+fn a_reporting_profile_must_declare_at_least_one_obligation() {
+    let (_, manifest) = crate::tests::loaded();
+    for profile in ["nightly", "weekly"] {
+        let runner = &manifest.profiles[profile].runners["tla"];
+        assert_eq!(
+            runner.configuration["primary_completion"],
+            "reporting-continuation"
+        );
+        validate_runner(profile, "tla", runner).expect("the reviewed reporting profile validates");
+
+        let mut ungated = runner.clone();
+        ungated.obligations.clear();
+        assert!(validate_runner(profile, "tla", &ungated).is_err());
+    }
+}
+
+/// The deterministic PR lane genuinely drains, so its policy is pinned to
+/// gating and neither value may drift.
+#[test]
+fn the_pr_profile_pins_a_gating_continuation() {
+    let (_, manifest) = crate::tests::loaded();
+    let runner = &manifest.profiles["pr"].runners["tla"];
+    assert_eq!(
+        runner.configuration["primary_completion"],
+        "gating-frontier-exhausted"
+    );
+    validate_runner("pr", "tla", runner).expect("the reviewed PR profile validates");
+
+    for (profile, wrong) in [
+        ("pr", "reporting-continuation"),
+        ("nightly", "gating-frontier-exhausted"),
+        ("weekly", "gating-frontier-exhausted"),
+    ] {
+        let mut swapped = manifest.profiles[profile].runners["tla"].clone();
+        swapped
+            .configuration
+            .insert("primary_completion".to_owned(), wrong.to_owned());
+        assert!(
+            validate_runner(profile, "tla", &swapped).is_err(),
+            "{profile} must not accept {wrong}"
+        );
+    }
+
+    let mut unreviewed = manifest.profiles["pr"].runners["tla"].clone();
+    unreviewed
+        .configuration
+        .insert("primary_completion".to_owned(), "advisory".to_owned());
+    assert!(validate_runner("pr", "tla", &unreviewed).is_err());
 }

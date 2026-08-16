@@ -57,7 +57,7 @@ fn workload() -> Vec<Command> {
 
 fn open(directory: &Path) -> DurableLedgerStateMachine {
     let store = LedgerStore::open(directory, config(2, 4)).expect("a ledger store opens");
-    DurableLedgerStateMachine::new(store)
+    DurableLedgerStateMachine::new(store, directory.join("raft/snapshots"))
 }
 
 fn commit_workload(directory: &Path) -> Vec<u8> {

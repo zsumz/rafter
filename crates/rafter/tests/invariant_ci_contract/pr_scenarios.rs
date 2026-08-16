@@ -53,7 +53,7 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
     assert!(maelstrom.contains("Validate scheduled Maelstrom evidence contract"));
     assert!(maelstrom.contains("cargo fetch --locked"));
     assert!(
-        maelstrom.contains("scripts/cargo-test-exact 50 maelstrom --inventory verification/maelstrom-test-inventory.txt --locked -p rafter-invariants")
+        maelstrom.contains("scripts/cargo-test-exact 61 maelstrom --inventory verification/maelstrom-test-inventory.txt --locked -p rafter-invariants")
     );
     assert!(!maelstrom.contains("--profile pr --layer maelstrom"));
 
@@ -91,7 +91,7 @@ fn assert_pr_tla_contract(root: &Path, workflow: &str) {
 
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
     for required in [
-        "\"soft_timeout\": \"325m\"",
+        "\"soft_timeout\": \"310m\"",
         "\"total_timeout\": \"338m\"",
         "\"finalization_reserve\": \"2m\"",
         "\"max_heap\": \"8g\"",

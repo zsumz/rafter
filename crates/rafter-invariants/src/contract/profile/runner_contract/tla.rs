@@ -1,12 +1,49 @@
 //! Canonical configuration for the TLA+ evidence runner.
 
-use std::collections::BTreeMap;
-
 use serde::Deserialize;
 
+use super::super::RunnerContract;
+use super::tla_obligations::{self, PrimaryBudget};
 use super::validate::decode_configuration;
 
-const TLA_TOOL_SHA256: &str = "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3";
+const TLA_TOOL_SHA256: &str = "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f";
+const TLA_TOOL_ASSET_ID: &str = "510788686";
+
+/// Configurations that are the profile-owned monolith for some profile. An
+/// obligation may never name one: obligations exist to state theorems the
+/// primary run cannot reach, and a "focused" run of the monolith under a
+/// shorter timeout would only ever fail.
+pub(super) const PRIMARY_CONFIGS: [&str; 3] = ["RaftCi.cfg", "RaftNightly.cfg", "Raft.cfg"];
+
+/// Exhaustion floors for the PR primary configuration.
+///
+/// These are the only state floors that gate anything. `RaftCi.cfg` genuinely
+/// drains its queue, so its continuation decides the PR layer and these two
+/// numbers are the calibrated bar it must clear. They are the exact counts of
+/// a measured post-reduction exhaustion (255,177,640 generated, 36,058,645
+/// distinct, queue drained; TLC 2026.08.11.125311, seed 2026071101, fp 0,
+/// 4 workers, symmetric), matching the obligation-floor philosophy: counts
+/// are deterministic for a fixed spec, config, and symmetry, so a deviation
+/// is a spec change and wants deliberate recalibration, not slack. A `RaftCi`
+/// recalibration is exactly this edit and nothing else.
+const PR_MINIMUM_GENERATED_STATES: &str = "255177640";
+const PR_MINIMUM_DISTINCT_STATES: &str = "36058645";
+
+/// Accumulation bar the scheduled continuations report progress against.
+///
+/// Nightly and weekly run their primary in reporting mode, where these are
+/// published as context beside the observed counters rather than enforced as a
+/// terminal condition. They document the bar the lineage is accumulating
+/// toward; they do not decide a verdict.
+const REPORTING_MINIMUM_GENERATED_STATES: &str = "120000000";
+const REPORTING_MINIMUM_DISTINCT_STATES: &str = "16000000";
+
+/// Contract vocabulary for the primary-continuation policy. Re-derived here
+/// rather than imported: `contract` sits upstream of `evidence` in the domain
+/// graph, and pinning the wire strings independently keeps this gate honest
+/// even if the producer-side vocabulary drifts.
+const GATING_FRONTIER_EXHAUSTED: &str = "gating-frontier-exhausted";
+const REPORTING_CONTINUATION: &str = "reporting-continuation";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +58,7 @@ struct Configuration {
     minimum_distinct_states: String,
     minimum_generated_states: String,
     module: String,
+    primary_completion: String,
     receipt_finalization_allowance: String,
     seed: String,
     soft_timeout: String,
@@ -48,21 +86,17 @@ struct Configuration {
     unsymmetrized_exploration: Option<String>,
 }
 
-pub(super) fn validate(
-    profile: &str,
-    configuration: &BTreeMap<String, String>,
-) -> Result<(), String> {
+pub(super) fn validate(profile: &str, runner: &RunnerContract) -> Result<(), String> {
+    let configuration = &runner.configuration;
     let contract: Configuration = decode_configuration(configuration)?;
     if contract.detector_negative != "required"
         || contract.fp != "0"
         || contract.java_major != "21"
-        || contract.minimum_distinct_states != "16000000"
-        || contract.minimum_generated_states != "120000000"
         || contract.module != "Raft.tla"
         || contract.kill_confirmation_timeout != "5s"
         || contract.receipt_finalization_allowance != "5s"
         || contract.termination_grace != "30s"
-        || contract.tool_asset_id != "481553986"
+        || contract.tool_asset_id != TLA_TOOL_ASSET_ID
         || contract.tool_mode != "required"
         || contract.tool_sha256 != TLA_TOOL_SHA256
         || contract.trace_sample != "required"
@@ -76,15 +110,36 @@ pub(super) fn validate(
         "weekly" => valid_weekly(&contract),
         _ => false,
     };
-    valid
-        .then_some(())
-        .ok_or_else(|| "profile-specific TLA+ runner configuration is not canonical".to_owned())
+    if !valid {
+        return Err("profile-specific TLA+ runner configuration is not canonical".to_owned());
+    }
+    tla_obligations::validate(
+        PrimaryBudget {
+            profile,
+            reporting: contract.primary_completion == REPORTING_CONTINUATION,
+            soft_timeout: &contract.soft_timeout,
+            total_timeout: contract.total_timeout.as_deref(),
+            finalization_reserve: contract.finalization_reserve.as_deref(),
+        },
+        &runner.obligations,
+    )
 }
 
 fn valid_pr(contract: &Configuration) -> bool {
     contract.config == "RaftCi.cfg"
+        && contract.primary_completion == GATING_FRONTIER_EXHAUSTED
+        && contract.minimum_generated_states == PR_MINIMUM_GENERATED_STATES
+        && contract.minimum_distinct_states == PR_MINIMUM_DISTINCT_STATES
         && contract.seed == "2026071101"
-        && contract.soft_timeout == "325m"
+        // The only primary budget that has to be *sufficient* rather than
+        // merely affordable: PR gates on frontier exhaustion, so a truncated
+        // run is a red merge gate. `RaftCi` drains in 93 minutes at these
+        // flags on the calibration host and CI runs 1.3x to 1.5x slower, so
+        // this is better than twice the projected wall. Everything else in the
+        // window -- qualification, setup, the two obligations, the
+        // finalization reserve -- is subtracted from `total_timeout` first;
+        // see the phase-inventory check in `tla_obligations`.
+        && contract.soft_timeout == "310m"
         && contract.workers == "4"
         && contract.finalization_reserve.as_deref() == Some("2m")
         && contract.max_heap.as_deref() == Some("8g")
@@ -96,8 +151,16 @@ fn valid_pr(contract: &Configuration) -> bool {
 
 fn valid_nightly(contract: &Configuration) -> bool {
     contract.config == "RaftNightly.cfg"
+        && contract.primary_completion == REPORTING_CONTINUATION
+        && contract.minimum_generated_states == REPORTING_MINIMUM_GENERATED_STATES
+        && contract.minimum_distinct_states == REPORTING_MINIMUM_DISTINCT_STATES
         && contract.seed == "2026071102"
-        && contract.soft_timeout == "265m"
+        // A reporting continuation, so this is the residual and not a
+        // requirement: qualification, setup, and the obligation family are
+        // funded first out of the execution window, and the continuation
+        // accumulates coverage in whatever is left. Nightly's obligations are
+        // the cheaper symmetric family, so more remains here than on weekly.
+        && contract.soft_timeout == "195m"
         && contract.workers == "auto"
         && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
         && contract.checkpoint_gzip.as_deref() == Some("required")
@@ -112,13 +175,30 @@ fn valid_nightly(contract: &Configuration) -> bool {
 
 fn valid_weekly(contract: &Configuration) -> bool {
     contract.config == "Raft.cfg"
+        && contract.primary_completion == REPORTING_CONTINUATION
+        && contract.minimum_generated_states == REPORTING_MINIMUM_GENERATED_STATES
+        && contract.minimum_distinct_states == REPORTING_MINIMUM_DISTINCT_STATES
         && contract.seed == "2026071103"
-        && contract.soft_timeout == "265m"
+        // The smallest primary of the three, and deliberately so. Weekly runs
+        // both the symmetric obligation family and its unquotiented mirror --
+        // the symmetry audit this tier exists to provide, applied to the
+        // theorems that actually gate -- which is roughly twice nightly's
+        // obligation minutes out of the same execution window. Because the
+        // continuation reports rather than gates, this number is the residual
+        // of that window and never a floor: obligation budgets are calibrated
+        // against measured CI wall time and the primary absorbs whatever they
+        // and the qualification, setup, and finalization phases leave. A
+        // recalibration that lengthens an obligation is expected to shorten
+        // this value, not to breach the window.
+        && contract.soft_timeout == "110m"
         && contract.workers == "auto"
         && contract.checkpoint_gzip.as_deref() == Some("required")
         && contract.checkpoint_minutes.as_deref() == Some("30")
         && contract.checkpoint_recovery.as_deref() == Some("strict-compatible-if-present")
-        && contract.max_heap.as_deref() == Some("4g")
+        // 8g, matching nightly and the calibration conditions: the first weekly
+        // dispatch ran the 8M-distinct unsymmetrized snapshot obligation on 4g
+        // and could not drain it inside any defensible budget.
+        && contract.max_heap.as_deref() == Some("8g")
         && contract.fp_mem.as_deref() == Some("0.45")
         && contract.unsymmetrized_exploration.as_deref() == Some("required")
         && contract.finalization_reserve.as_deref() == Some("10m")

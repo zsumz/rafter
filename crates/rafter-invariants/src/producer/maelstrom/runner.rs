@@ -1,8 +1,8 @@
 //! Maelstrom trial orchestration, evidence assembly, and scenario reduction.
 
-use std::{error::Error, path::Path};
+use std::{collections::BTreeSet, error::Error, path::Path};
 
-use crate::evidence::RESULT_SCHEMA_VERSION;
+use crate::evidence::{ArtifactRef, RESULT_SCHEMA_VERSION};
 use crate::{
     contract::{catalog::Catalog, profile::ProfileContract},
     evidence::{CheckReceipt, ExecutionReceipt, ResultBundle, SourceReceipt},
@@ -74,10 +74,11 @@ pub(in crate::producer) fn run(
             .iter()
             .map(|descriptor| descriptor.evidence_id())
             .collect::<Vec<_>>();
-        let artifacts = outcomes
-            .iter()
-            .flat_map(|outcome| outcome.artifacts.iter().cloned())
-            .collect::<Vec<_>>();
+        let artifacts = deduplicated(
+            outcomes
+                .iter()
+                .flat_map(|outcome| outcome.artifacts.iter().cloned()),
+        );
         results.extend(
             evidence
                 .iter()
@@ -90,6 +91,7 @@ pub(in crate::producer) fn run(
             completion: verdict.completion(),
             observations: observations(&outcomes),
             simulator_liveness: None,
+            tla_continuation: None,
             duration_ms: outcomes.iter().map(|outcome| outcome.duration_ms).sum(),
             peak_rss_kib: outcomes
                 .iter()
@@ -120,3 +122,29 @@ pub(in crate::producer) fn run(
         results,
     })
 }
+
+/// Collapses repeated references to one artifact into a single entry.
+///
+/// Tool inputs -- the runner script, the Maelstrom jar, the node and proxy
+/// binaries -- are captured once per source tree into a shared, content
+/// addressed namespace, but the capture runs once per trial. A single-trial
+/// check therefore lists each of them once and a three-trial check listed each
+/// of them three times, describing one file as three artifacts.
+///
+/// That is a defect in the claim, not in the verifier that rejected it: an
+/// artifact reference *is* its (kind, path, digest, size) identity, so
+/// repeating one conveys nothing, spends the receipt's reference budget three
+/// times over, and makes "exactly one runner per check" unsatisfiable. Order is
+/// preserved and single-trial receipts are unchanged, since they contain no
+/// duplicates to collapse.
+fn deduplicated(artifacts: impl IntoIterator<Item = ArtifactRef>) -> Vec<ArtifactRef> {
+    let mut seen = BTreeSet::new();
+    artifacts
+        .into_iter()
+        .filter(|artifact| seen.insert(artifact.clone()))
+        .collect()
+}
+
+#[cfg(test)]
+#[path = "runner_tests.rs"]
+mod tests;

@@ -36,7 +36,7 @@ pub use detector::{
 pub(crate) use error::AggregateError;
 pub(crate) use intake::{
     require_passing_layer, verify_aggregate_paths, verify_layer_paths, EvidenceIntake,
-    IntakeDefect, VerificationRequest,
+    IntakeDefect, VerificationContext, VerificationRequest,
 };
 #[cfg(test)]
 pub(crate) use intake::{verify_paths, verify_receipts_for_test, IntakeDefectKind};

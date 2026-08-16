@@ -64,8 +64,6 @@ BaseApplicationBases ==
   {ApplicationBase(n, 0, InitialApplicationState) : n \in Nodes}
 BaseApplicationTransitions == {}
 BaseSnapshotIndex == [n \in Nodes |-> 0]
-BaseSnapshotPrefix == [n \in Nodes |-> <<>>]
-BaseCompactionPending == [n \in Nodes |-> FALSE]
 
 ApplicationConfig ==
   JointMembership(Nodes, {FixtureA, FixtureB})
@@ -149,14 +147,6 @@ InitialSnapshotIndex ==
   THEN [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
   ELSE BaseSnapshotIndex
 
-InitialSnapshotPrefix ==
-  IF IsMode("LogMatching", SnapshotPrefixRecorderMode)
-  THEN [n \in Nodes |->
-    IF n = FixtureA THEN <<Entry(1, FixtureValueA)>> ELSE <<>>]
-  ELSE BaseSnapshotPrefix
-
-InitialCompactionPending == BaseCompactionPending
-
 InitialEffectiveMembership ==
   IF TargetPredicate = "StateMachineSafety" /\
        FixtureMode # ApplicationEpochRecorderMode
@@ -200,8 +190,6 @@ FixtureInit ==
   /\ log = InitialLog
   /\ commitIndex = InitialCommit
   /\ snapshotIndex = InitialSnapshotIndex
-  /\ snapshotPrefix = InitialSnapshotPrefix
-  /\ compactionPending = InitialCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -328,7 +316,7 @@ FaultyApplicationEpochReplay ==
 FaultyLogMatchingRecorder ==
   /\ logicalPrefixLedger = {}
   /\ RecordLogicalPrefixes(
-       DivergentLogs, BaseSnapshotIndex, BaseSnapshotPrefix, currentTerm)
+       DivergentLogs, BaseSnapshotIndex, currentTerm)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   messages, readRequests, readBarrierViolationSeen,
                   electedLeaders,
@@ -339,8 +327,7 @@ FaultyLogMatchingRecorder ==
 
 ObserveSnapshotSource ==
   /\ logicalPrefixLedger = {}
-  /\ RecordLogicalPrefixes(
-       log, snapshotIndex, snapshotPrefix, currentTerm)
+  /\ RecordLogicalPrefixes(log, snapshotIndex, currentTerm)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   messages, readRequests, readBarrierViolationSeen,
                   electedLeaders,
@@ -358,7 +345,7 @@ FaultySnapshotTransfer ==
         from |-> FixtureA, to |-> FixtureB, index |-> 1,
         prefix |-> <<Entry(1, FixtureValueB)>>]
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  snapshotIndex, snapshotPrefix, compactionPending,
+                  snapshotIndex,
                   messages, readRequests, readBarrierViolationSeen,
                   electedLeaders>>
   /\ UNCHANGED applicationVars
@@ -368,8 +355,7 @@ FaultySnapshotTransfer ==
 FaultyLeaderCompletenessRecorder ==
   /\ committedLedger = {}
   /\ RecordCommittedEntries(
-       SingleAEntryLogs, BaseSnapshotIndex, BaseSnapshotPrefix,
-       FixtureA, 0, 1, 1)
+       SingleAEntryLogs, BaseSnapshotIndex, FixtureA, 0, 1, 1)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   messages, readRequests, readBarrierViolationSeen,
                   electedLeaders,
@@ -381,7 +367,7 @@ FaultyLeaderCompletenessRecorder ==
 FaultyCommittedPrefixRecorder ==
   /\ Cardinality(committedLedger) = 1
   /\ RecordCommittedEntries(
-       SingleBEntryLogs, BaseSnapshotIndex, BaseSnapshotPrefix,
+       SingleBEntryLogs, BaseSnapshotIndex,
        FixtureB, 0, 1, 1)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   messages, readRequests, readBarrierViolationSeen,
@@ -820,14 +806,10 @@ CommittedLedgerCanonicalizationLogs ==
 CommittedLedgerCanonicalizationSnapshotIndex ==
   [node \in Nodes |-> 0]
 
-CommittedLedgerCanonicalizationSnapshotPrefix ==
-  [node \in Nodes |-> <<>>]
-
 RecordCanonicalizationCommit(term) ==
   /\ RecordCommittedEntries(
        CommittedLedgerCanonicalizationLogs,
        CommittedLedgerCanonicalizationSnapshotIndex,
-       CommittedLedgerCanonicalizationSnapshotPrefix,
        FixtureA, 0, 1, term)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   messages, readRequests, readBarrierViolationSeen,
@@ -977,8 +959,6 @@ RemovedCandidateVoteGuardInvariant ==
 
 BaseExtendedState ==
   /\ snapshotIndex = BaseSnapshotIndex
-  /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -1048,8 +1028,6 @@ ClosedLogicalPrefixLifecycleInit ==
   /\ log = BaseLog
   /\ commitIndex = BaseCommit
   /\ snapshotIndex = BaseSnapshotIndex
-  /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -1107,8 +1085,6 @@ ClosedTermPrefixConflictInit ==
   /\ log = BaseLog
   /\ commitIndex = BaseCommit
   /\ snapshotIndex = BaseSnapshotIndex
-  /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -1131,7 +1107,7 @@ ClosedTermPrefixConflictInit ==
 RecordClosedTermPrefixConflict ==
   /\ ~higherTermStepDownFailed
   /\ RecordLogicalPrefixes(
-       DivergentLogs, BaseSnapshotIndex, BaseSnapshotPrefix, currentTerm)
+       DivergentLogs, BaseSnapshotIndex, currentTerm)
   /\ higherTermStepDownFailed' = TRUE
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   messages, readRequests, readBarrierViolationSeen,
@@ -1252,8 +1228,6 @@ SnapshotLifecycleInit ==
        IF n \in {FixtureA, FixtureB} THEN <<SnapshotLifecycleEntry>> ELSE <<>>]
   /\ commitIndex = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
   /\ snapshotIndex = BaseSnapshotIndex
-  /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA
@@ -1278,16 +1252,16 @@ SnapshotLifecycleInit ==
   /\ staleAuthorityAccepted = FALSE
   /\ frozenAppendAuthorityFailed = FALSE
 
+\* Creation and compaction are one atomic step, so this drives one transition
+\* where it used to drive two. The post-state conjunct on the first disjunct is
+\* what the old `compactionPending'[FixtureA]` conjunct was: the fixture's
+\* assertion that the action it just took actually had its effect, and the hook
+\* the mutation suite uses to stall this lifecycle.
 SnapshotLifecycleNext ==
   \/ /\ snapshotIndex[FixtureA] = 0
      /\ CreateSnapshot(FixtureA)
-     /\ compactionPending'[FixtureA]
+     /\ snapshotIndex'[FixtureA] = 1
   \/ /\ snapshotIndex[FixtureA] = 1
-     /\ compactionPending[FixtureA]
-     /\ CompactSnapshot(FixtureA)
-     /\ ~compactionPending'[FixtureA]
-  \/ /\ snapshotIndex[FixtureA] = 1
-     /\ ~compactionPending[FixtureA]
      /\ snapshotIndex[FixtureB] = 0
      /\ ~snapshotTransfer.active
      /\ TransferSnapshot(FixtureA, FixtureB)
@@ -1312,8 +1286,7 @@ SnapshotLifecycleSpec ==
   /\ WF_vars(SnapshotLifecycleNext)
 
 SnapshotLifecycleInvariant ==
-  /\ SnapshotIdentitySoundFor(
-       log, snapshotIndex, snapshotPrefix, compactionPending)
+  /\ SnapshotIdentitySoundFor(log, snapshotIndex)
   /\ LogMatching
   /\ LeaderCompleteness
   /\ CommittedPrefixStability
@@ -1322,8 +1295,6 @@ SnapshotLifecycleInvariant ==
 
 SnapshotLifecycleComplete ==
   /\ snapshotIndex[FixtureB] = 1
-  /\ ~compactionPending[FixtureA]
-  /\ ~compactionPending[FixtureB]
   /\ ApplicationEpoch(FixtureB) = 1
   /\ ApplicationObservationWitnesses(FixtureB) = {}
   /\ currentTerm[FixtureB] = 2
@@ -1340,8 +1311,6 @@ ApplicationEpochLifecycleInit ==
        IF n \in {FixtureA, FixtureB} THEN <<SnapshotLifecycleEntry>> ELSE <<>>]
   /\ commitIndex = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
   /\ snapshotIndex = BaseSnapshotIndex
-  /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationBases = BaseApplicationBases
@@ -1440,8 +1409,6 @@ SelfRemovalCommitInit ==
        <<SelfRemovalJointEntry, SelfRemovalStableEntry>>]
   /\ commitIndex = [n \in Nodes |-> 1]
   /\ snapshotIndex = BaseSnapshotIndex
-  /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA
@@ -1650,8 +1617,7 @@ PrepareEffectiveOverwriteLeader ==
   /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Leader ELSE Follower]
   /\ log' = [log EXCEPT ![FixtureB] = <<Entry(2, FixtureValueA)>>]
   /\ electedLeaders' = [electedLeaders EXCEPT ![2] = @ \cup {FixtureB}]
-  /\ RecordLogicalPrefixes(
-       log', snapshotIndex, snapshotPrefix, currentTerm')
+  /\ RecordLogicalPrefixes(log', snapshotIndex, currentTerm')
   /\ UNCHANGED <<commitIndex, messages, readRequests,
                   readBarrierViolationSeen, committedLedger, commitWitnesses>>
   /\ UNCHANGED snapshotVars
