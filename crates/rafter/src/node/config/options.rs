@@ -212,10 +212,6 @@ impl NodeConfig {
         self.static_voters.iter().copied()
     }
 
-    pub(in crate::node) fn is_peer(&self, node_id: NodeId) -> bool {
-        self.peers.contains(&node_id)
-    }
-
     pub(in crate::node) fn static_membership(&self) -> MembershipConfig {
         self.static_membership.clone()
     }

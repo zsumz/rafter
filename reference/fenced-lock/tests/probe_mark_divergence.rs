@@ -67,7 +67,7 @@ fn workload() -> Vec<Command> {
 
 fn open(directory: &Path) -> DurableLockStateMachine {
     let store = LockStore::open(directory, config(2, 4)).expect("a lock store opens");
-    DurableLockStateMachine::new(store)
+    DurableLockStateMachine::new(store, directory.join("raft/snapshots"))
 }
 
 fn apply_one(

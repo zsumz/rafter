@@ -108,8 +108,11 @@ fn follower_installs_snapshot_committed_configuration_identity_and_next_id_advan
         ConfigurationId(10)
     );
 }
+/// With no boundary membership declared, the author is judged against the
+/// static membership this process was configured with. Node 99 is not in it as
+/// a voter or as a learner, so it is not an author this follower will accept.
 #[test]
-fn follower_rejects_install_snapshot_written_by_non_voter() {
+fn follower_rejects_install_snapshot_written_by_non_replica() {
     let mut follower = node(2, &[1, 3]);
     let metadata = crate::RaftSnapshotMetadata::new(
         crate::SnapshotGroupId::new("data-group-10").expect("valid snapshot group"),
@@ -143,12 +146,19 @@ fn follower_rejects_install_snapshot_written_by_non_voter() {
         }] if !response.success && response.last_included_index == LogIndex::ZERO
     ));
 }
+/// A leader relays the snapshot it holds, which is whatever boundary it
+/// installed or compacted — not one chosen to name the leader itself. Requiring
+/// the sender to appear in that historical boundary wedged the pair: the
+/// follower rejected, and the leader-side response path rewinds a rejected
+/// transfer to offset zero and restreams it, forever.
 #[test]
-fn newly_added_leader_with_older_boundary_snapshot_is_rejected() {
+fn newly_added_leader_relays_an_older_boundary_snapshot() {
     let mut follower = node(2, &[1, 3, 4]);
-    // Node 4 is a known peer in the current embedding, but this older
-    // snapshot boundary still authorizes only voters 1, 2, and 3.
-    let snapshot = test_snapshot_with_committed_voters(3, 4, 5, b"dynamic snapshot", &[1, 2, 3]);
+    // Node 4 is a voter in this follower's current membership. The older
+    // boundary it is relaying predates node 4 and says nothing about who may
+    // send it.
+    let payload = b"dynamic snapshot".to_vec();
+    let snapshot = test_snapshot_with_committed_voters(3, 4, 5, &payload, &[1, 2, 3]);
 
     let outputs = follower.step(Input::Message {
         from: NodeId(4),
@@ -156,24 +166,19 @@ fn newly_added_leader_with_older_boundary_snapshot_is_rejected() {
             term: Term(5),
             leader_id: NodeId(4),
             metadata: snapshot.metadata,
-            application_payload: b"dynamic snapshot".to_vec(),
+            application_payload: payload,
         }),
     });
 
     assert_eq!(follower.current_term(), Term(5));
-    assert_eq!(follower.leader_hint(), None);
-    assert_eq!(follower.snapshot_index(), LogIndex::ZERO);
-    assert!(outputs.iter().all(|output| !matches!(
-        output,
-        Output::StageSnapshotChunk { .. } | Output::ApplySnapshot { .. }
-    )));
-    assert!(matches!(
-        outputs.as_slice(),
-        [Output::Send {
-            to: NodeId(4),
-            message: Message::InstallSnapshotResponse(response),
-        }] if !response.success && response.last_included_index == LogIndex::ZERO
-    ));
+    assert_eq!(follower.leader_hint(), Some(NodeId(4)));
+    assert_eq!(follower.snapshot_index(), LogIndex(3));
+    assert!(outputs
+        .iter()
+        .any(|output| matches!(output, Output::ApplySnapshot { .. })));
+    let response = install_snapshot_response_from_outputs(&outputs);
+    assert!(response.success);
+    assert_eq!(response.last_included_index, LogIndex(3));
 }
 #[test]
 fn same_term_install_snapshot_step_down_preserves_recorded_vote() {

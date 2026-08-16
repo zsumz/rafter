@@ -591,11 +591,24 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// replication streams the persisted payload from the snapshot store to
     /// followers whose `next_index` falls behind the compacted prefix.
     ///
-    /// Snapshot receivers authorize the sender against the snapshot boundary
-    /// membership recorded in Raft metadata. A leader added after an older
-    /// snapshot boundary must not be served that older descriptor from a
-    /// reusable snapshot store; compact or select a snapshot whose boundary
-    /// membership includes the leader before it streams to followers.
+    /// A snapshot's **author** and its **sender** are judged separately, and
+    /// only the author rule constrains what this call may write. The author —
+    /// `writer_id` — must be a replica, voter or learner, of the membership
+    /// committed at the boundary; this runtime stamps that membership into a
+    /// descriptor that carries none, so the ordinary call, signing with this
+    /// node's own id, satisfies it whenever this node is still in the
+    /// configuration. A node already removed from the configuration cannot
+    /// compact: the kernel refuses, which is the outcome to want, because
+    /// installing such a descriptor would leave the process unable to hydrate
+    /// it at the next restart.
+    ///
+    /// Senders are no longer required to appear in the boundary they relay, so
+    /// a leader added after an older snapshot boundary may serve that older
+    /// descriptor from a reusable snapshot store. Receivers still refuse a
+    /// sender they cannot place in any membership they can see — their own
+    /// current one, or the descriptor's — so a replica joining the cluster
+    /// should be configured with peers that the descriptor's boundary
+    /// membership or its own bootstrap set will recognize.
     ///
     /// # Errors
     ///
@@ -611,7 +624,9 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// [`RaftRuntimeError::SnapshotMembershipMismatch`] or
     /// [`RaftRuntimeError::SnapshotCommittedConfigurationMismatch`] when
     /// caller-provided committed configuration metadata disagrees with the
-    /// local boundary. Nothing is written on any of those. A fatal persistence
+    /// local boundary, and [`RaftRuntimeError::SnapshotRefusedByKernel`] when
+    /// the descriptor's `writer_id` is not a replica of the boundary
+    /// membership. Nothing is written on any of those. A fatal persistence
     /// error is returned, and poisons, when the snapshot or the compaction
     /// cannot be written.
     pub fn compact_log_with_snapshot(

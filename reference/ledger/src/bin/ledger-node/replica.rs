@@ -304,7 +304,12 @@ impl Replica {
             ));
         }
 
-        let app = DurableLedgerStateMachine::new(store);
+        // The machine is handed the same `snapshots` directory the runtime's
+        // own snapshot store owns, because a Raft-driven install gives the
+        // application a descriptor rather than bytes and this is where the
+        // bytes have already been promoted. It is a read-only second view: the
+        // runtime below still owns the writing handle.
+        let app = DurableLedgerStateMachine::new(store, raft_dir.join("snapshots"));
         let applied_index = app.applied_index().map_err(|error| OpenError::Store {
             detail: error.to_string(),
         })?;
@@ -341,10 +346,13 @@ impl Replica {
             next_read_id: 1,
         };
         // The recovery outputs are consumed before anything else touches the
-        // group, which is what makes the applied floor below meaningful.
+        // group, which is what makes the applied floor below meaningful — and
+        // through the ordered operation, so a replica that opened below its own
+        // snapshot boundary installs that snapshot before the committed suffix
+        // lands on top of it rather than after.
         let report = replica
             .group
-            .apply_raft_outputs(recovery_outputs)
+            .apply_recovery_outputs(recovery_outputs)
             .map_err(|error| OpenError::Runtime {
                 detail: error.to_string(),
             })?;

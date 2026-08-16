@@ -7,7 +7,8 @@
 
 use rafter::{
     ClientProposalInput, Input as RaftInput, LogIndex, MembershipConfig, NodeId as RaftNodeId,
-    Output as RaftOutput, ReplicationProgress, Role as RaftRole, SnapshotChunkSource, Term,
+    Output as RaftOutput, RaftSnapshot, ReplicationProgress, Role as RaftRole, SnapshotChunkSource,
+    Term,
 };
 use rafter_storage::{RaftHardStateStore, RaftLogSegment, RaftSnapshotStore};
 
@@ -44,6 +45,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
 
     fn snapshot_index(&self) -> LogIndex {
         DurableRaftNode::snapshot_index(self)
+    }
+
+    /// Clones rather than borrows, because the trait's caller holds the runtime
+    /// mutably while it repairs the state machine beside it.
+    fn snapshot(&self) -> Option<RaftSnapshot> {
+        DurableRaftNode::snapshot(self).cloned()
     }
 
     fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {

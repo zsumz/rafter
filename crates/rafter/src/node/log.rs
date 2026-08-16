@@ -5,7 +5,9 @@
 
 use std::{error::Error, fmt};
 
-use crate::{CommittedConfiguration, LogEntry, LogIndex, MembershipConfig, SharedEntries, Term};
+use crate::{
+    CommittedConfiguration, LogEntry, LogIndex, MembershipConfig, NodeId, SharedEntries, Term,
+};
 
 use super::state::LocalProposalTracker;
 use super::{LocalProposalDropReason, Node, Output};
@@ -16,7 +18,7 @@ use super::{LocalProposalDropReason, Node, Output};
 /// nothing was compacted, and no output was emitted.
 ///
 /// This enum is `#[non_exhaustive]`. It was exhaustive when a local install was
-/// closed over one precondition; it is closed over six, and the set is the
+/// closed over one precondition; it is closed over seven, and the set is the
 /// list of facts a descriptor asserts that the local node can check for itself
 /// — which grows as the descriptor carries more.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,6 +99,24 @@ pub enum LocalSnapshotInstallError {
         /// Configuration identity declared by the snapshot.
         actual: Option<CommittedConfiguration>,
     },
+    /// The descriptor's author is not a replica — voter or learner — of the
+    /// membership committed at its boundary.
+    ///
+    /// Bootstrap validation refuses to hydrate such a descriptor, so installing
+    /// it would trade a refusal now for an unbootable node at the next restart:
+    /// the snapshot would be durable, the log below it compacted away, and the
+    /// process unable to come up without discarding both. It is also
+    /// untransferable — a receiver applies the same author rule. Refusing at the
+    /// call that produced it is the only refusal that leaves a caller something
+    /// to do.
+    WriterNotBoundaryReplica {
+        /// Boundary proposed by the caller.
+        snapshot_index: LogIndex,
+        /// Author named by the descriptor.
+        writer_id: NodeId,
+        /// Membership this node derives at the boundary.
+        membership: Box<MembershipConfig>,
+    },
 }
 
 impl fmt::Display for LocalSnapshotInstallError {
@@ -154,6 +174,14 @@ impl fmt::Display for LocalSnapshotInstallError {
             } => write!(
                 formatter,
                 "local snapshot boundary {snapshot_index} records committed configuration {actual:?} but the local committed configuration is {expected:?}"
+            ),
+            Self::WriterNotBoundaryReplica {
+                snapshot_index,
+                writer_id,
+                membership,
+            } => write!(
+                formatter,
+                "local snapshot boundary {snapshot_index} names writer {writer_id}, which is not a replica of the boundary membership {membership:?}"
             ),
         }
     }
@@ -355,11 +383,22 @@ impl Node {
     ///    the installed boundary, the installed descriptor's own term.
     /// 5. The descriptor's committed configuration, **when it carries one**,
     ///    matches what this node derives at the boundary.
+    /// 6. The descriptor's **author is a replica** — voter or learner — of the
+    ///    membership at the boundary.
     ///
     /// Rule 3 subsumes rule 2, because the applied index never exceeds the
     /// commit index. They stay separate errors because they are separate
     /// mistakes, and a caller that hits the first has a safety problem while a
     /// caller that hits the second has a recovery-ordering one.
+    ///
+    /// Rule 6 is the one rule here that is not about this node's history: it is
+    /// what bootstrap validation and the leader-sent receive path both check,
+    /// restated at the only entry point that used to skip it. Without it a
+    /// caller could install a descriptor that is durable, compacts the log below
+    /// it, and then refuses to hydrate at the next restart — a node that accepts
+    /// its way into being unbootable. A learner authoring its own snapshot is
+    /// the ordinary case and is accepted; what is refused is an author the
+    /// boundary membership does not contain at all.
     ///
     /// # Idempotency at the installed boundary
     ///
@@ -467,12 +506,12 @@ impl Node {
         }
 
         let committed_configuration = self.committed_configuration_state_at(snapshot_index);
+        let boundary_membership = self.membership_at_index(snapshot_index);
         if let Some(declared) = snapshot.metadata.committed_configuration.as_ref() {
-            let expected_membership = self.membership_at_index(snapshot_index);
-            if declared.membership != expected_membership {
+            if declared.membership != boundary_membership {
                 return Err(LocalSnapshotInstallError::CommittedMembershipMismatch {
                     snapshot_index,
-                    expected: Box::new(expected_membership),
+                    expected: Box::new(boundary_membership),
                     actual: Box::new(declared.membership.clone()),
                 });
             }
@@ -483,6 +522,20 @@ impl Node {
                     actual: declared.configuration,
                 });
             }
+        }
+
+        // Last, and against the *derived* membership: rule 5 has already proven
+        // any declared copy equal to it, and a descriptor that declares none is
+        // still judged against the boundary the runtime would have stamped in.
+        // A membership disagreement is the more fundamental mistake, so it is
+        // reported first.
+        let writer_id = snapshot.metadata.writer_id;
+        if !boundary_membership.contains_replica(writer_id) {
+            return Err(LocalSnapshotInstallError::WriterNotBoundaryReplica {
+                snapshot_index,
+                writer_id,
+                membership: Box::new(boundary_membership),
+            });
         }
         Ok(committed_configuration)
     }

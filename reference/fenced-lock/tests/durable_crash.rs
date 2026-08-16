@@ -365,7 +365,10 @@ fn a_failed_durability_barrier_is_refused_by_open_and_resolved_only_by_the_repai
         .expect("the repair reports what it gave up");
     assert_eq!(repair.slot(), stale, "under `{plan}`");
     assert_eq!(repair.adopted(), stale.other(), "under `{plan}`");
-    let recovered = durable_state(&DurableLockStateMachine::new(repaired));
+    let recovered = durable_state(&DurableLockStateMachine::new(
+        repaired,
+        scratch.path().join("raft/snapshots"),
+    ));
     assert_eq!(
         recovered, before,
         "the repair resolves a failed barrier to the pre-transaction state (`{plan}`)"
@@ -443,7 +446,10 @@ fn a_whole_image_that_was_never_sealed_is_not_resolved_by_a_read() {
         .expect("the repair entry point resolves it");
     assert_eq!(repaired.live_slot(), Some(live), "under `{plan}`");
     assert_eq!(
-        durable_state(&DurableLockStateMachine::new(repaired)),
+        durable_state(&DurableLockStateMachine::new(
+            repaired,
+            scratch.path().join("raft/snapshots")
+        )),
         before,
         "the repair resolves the written-but-not-committed window to the pre-transaction state \
          (`{plan}`)"
@@ -2052,7 +2058,7 @@ fn open(directory: &Path, faults: FaultPlan) -> DurableLockStateMachine {
                 directory.display()
             )
         });
-    DurableLockStateMachine::new(store)
+    DurableLockStateMachine::new(store, directory.join("raft/snapshots"))
 }
 
 /// Applies one command at `index`, returning its outcome.

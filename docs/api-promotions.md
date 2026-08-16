@@ -13230,6 +13230,102 @@ promotion above is complete without it — `rafter-sim` no longer depends on the
 hidden feature, which is the release blocker — and this paragraph is the
 handoff, not a TODO.
 
+## The Restart Transaction
+
+The correction to [Declared Applied Floor Below the Snapshot
+Boundary](#declared-applied-floor-below-the-snapshot-boundary). That entry got
+the *permanent* verdict right and left one half of the seam open, and this one
+closes it.
+
+### Origin
+
+The earlier design placed the boundary verdict at every moment the state machine
+would answer for the replica — step, propose, read — and deliberately withheld it
+from `RaftGroup::apply_raft_outputs`, on the reasoning that the raw pump is what a
+crash-window replica drains *before* it restores. The table entry read
+"`apply_raft_outputs` | withdrawn".
+
+Applying is one of those moments, and it was the one left out. It is the moment
+the gap stops being recoverable and becomes durable:
+
+- `Node::from_bootstrap_applied_through` raises a declared floor of 3 to a
+  snapshot boundary of 5;
+- `DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through`
+  drains strictly above the raised floor, and `apply_committed_into` has no arm
+  that can emit `Output::ApplySnapshot`, so the batch can never carry the
+  install that would make it safe;
+- the raw pump applied index 6 onto an application at 3.
+
+The result is `{1,2,3,6}` in durable application state, replica Healthy,
+readiness satisfied, reads served. The applied index, the readiness predicate,
+and the metrics snapshot all compare numbers, and every number is right, so
+nothing later can find the hole. Both routes reach it: the crash between
+promoting an inbound snapshot and installing it, and `LockStore::discard_and_reseed`
+over a compacted log that has since committed one more entry — the case
+`gen6_reseed_compaction` claimed was unreachable because "minting a token needs
+a session, a session needs a proposal, and a proposal needs a step". No step is
+needed; the laundering happens inside the apply.
+
+### The shapes
+
+Three, and they are one design.
+
+1. **`PersistedRaftRuntime::snapshot() -> Option<RaftSnapshot>`**, provided,
+   defaulting to `None`. The composition cannot repair a state machine below the
+   boundary without the descriptor at that boundary, and `snapshot_index` alone
+   is a number. The default is the honest answer for a runtime that cannot
+   produce its own descriptor rather than a claim that none exists, and it fails
+   closed: a recovery that cannot obtain it refuses instead of applying over the
+   gap. `DurableRaftNode` forwards its inherent `snapshot()`, cloned, because the
+   caller holds the runtime mutably while it repairs the state machine beside it.
+
+2. **`GroupError::SnapshotRestoreRequired { app_applied_index, snapshot_index,
+   entry_index }`.** Distinct from `AppliedIndexBelowSnapshotBoundary` and not a
+   poison. The two name the same gap at two moments and differ in whether a
+   repair is still available: this one is raised before the application is
+   touched, while the snapshot is still installable. It names the entry it
+   stopped in front of so an operator can measure the gap.
+
+3. **`RaftGroup::apply_recovery_outputs(outputs) -> StepReportResult`.** Install
+   the snapshot the boundary names, then apply the suffix, in one operation and
+   one report. It performs the install through the existing
+   `RaftOutput::ApplySnapshot` path — support-declaration check, poison on
+   failure, `SnapshotEvent::Apply` in the routed report — by putting that output
+   ahead of the suffix in the vector the pump walks.
+
+### Why the ordering is structural rather than documented
+
+The guard that refuses an entry below the boundary sits in the shared apply
+path, on the one call site that reaches `ReplicatedStateMachine::apply_batch`.
+It is unconditional: the raw pump, an ordinary step, and the recovery operation
+all pass through it, and the operation is not exempted from it. It *earns* its
+way past — by the time the suffix reaches the guard the install has already
+lifted the state machine to the boundary. There is no flag, no argument, and no
+call order that reaches `apply_batch` with the gap open, which is the repo's
+standing preference for making a dangerous ordering unrepresentable rather than
+warning about it.
+
+### What is deliberately unchanged
+
+The operation restores exactly what it is about to endanger. A recovery batch
+carrying no committed application entry — the shape a fully compacted replica
+hands over, where the boundary *is* the last commit — installs nothing, and such
+a replica is left to the permanent verdict on its first step or read. Repairing
+it there would take a decision about discarded application state at a moment no
+operator is watching, and it would silently rewrite what `gen6_reseed_compaction`
+exists to refuse.
+
+### Blast radius
+
+`rafter-runtime-api` (one provided method), `rafter-runtime` (one forwarder),
+`rafter-app` (the typed error, the guard, `group/recovery.rs`), and the four
+shipped consumers of the recovery path: `rafter-service`'s
+`TransportDriverState::apply_recovery_outputs` — which both driver adoption paths
+route through, so `fenced-lock` migrates with it — and the `ledger-node` and
+`counter-node` binaries, each a one-call change. Every other caller of
+`apply_raft_outputs` is unaffected: the guard fires only when a committed
+application entry meets a state machine below the boundary.
+
 ## Coupled designs
 
 The promotions form coupled surfaces, not a list of independent additions. The

@@ -215,7 +215,10 @@ fn torn_replica(
     compact: bool,
 ) -> TornReplica {
     let store = LedgerStore::open(scratch.path(), ledger_config).expect("a fresh store opens");
-    let mut group = open_group(DurableLedgerStateMachine::new(store), empty_storage());
+    let mut group = open_group(
+        DurableLedgerStateMachine::new(store, scratch.path().join("raft/snapshots")),
+        empty_storage(),
+    );
     become_leader(&mut group);
     for (offset, command) in workload().into_iter().enumerate() {
         commit(&mut group, base_id + offset as u64, command);
@@ -289,8 +292,11 @@ fn gen6_a_zero_tail_on_a_compacted_replica_is_refused_rather_than_silently_lost(
     // Draining the recovery outputs is not the seam: it supplies nothing here,
     // because every frame the tear cost is below the boundary and compacted
     // away. The seam is the first use of what it left behind.
-    let mut group = try_open_group(DurableLedgerStateMachine::new(torn.store), torn.storage)
-        .expect("the recovery pump takes no boundary verdict");
+    let mut group = try_open_group(
+        DurableLedgerStateMachine::new(torn.store, scratch.path().join("raft/snapshots")),
+        torn.storage,
+    )
+    .expect("the recovery pump takes no boundary verdict");
     assert_eq!(
         group
             .state_machine()
@@ -328,8 +334,11 @@ fn gen6_a_zero_tail_on_a_compacted_replica_cannot_report_the_short_balance() {
     let torn = torn_replica(&scratch, ledger_config, 400, true);
     let acknowledged_balance = torn.acknowledged_balance;
 
-    let mut group = try_open_group(DurableLedgerStateMachine::new(torn.store), torn.storage)
-        .expect("the recovery pump takes no boundary verdict");
+    let mut group = try_open_group(
+        DurableLedgerStateMachine::new(torn.store, scratch.path().join("raft/snapshots")),
+        torn.storage,
+    )
+    .expect("the recovery pump takes no boundary verdict");
     // The truncated store really is short: this is the answer a served read
     // would have carried.
     let short_balance = balance(&group);
@@ -368,7 +377,10 @@ fn gen6_a_zero_tail_on_an_uncompacted_replica_is_re_applied() {
     let ledger_config: LedgerConfig = config(2, 4);
     let torn = torn_replica(&scratch, ledger_config, 200, false);
 
-    let mut group = open_group(DurableLedgerStateMachine::new(torn.store), torn.storage);
+    let mut group = open_group(
+        DurableLedgerStateMachine::new(torn.store, scratch.path().join("raft/snapshots")),
+        torn.storage,
+    );
     become_leader(&mut group);
     for _ in 0..32 {
         tick(&mut group);

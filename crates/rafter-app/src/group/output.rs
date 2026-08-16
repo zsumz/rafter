@@ -221,24 +221,36 @@ where
     /// protocol and application semantics.
     ///
     /// This never returns
-    /// [`GroupError::AppliedIndexBelowSnapshotBoundary`]. A state machine
-    /// below the runtime's snapshot boundary is a legitimate transient here:
-    /// an inbound snapshot is promoted durably before the application installs
-    /// it, so a replica that crashed between those two writes opens short of a
-    /// boundary its Raft state already carries, and this pump is what it
-    /// drains before restoring. The verdict is taken instead by
-    /// [`RaftGroup::step`], [`RaftGroup::begin_proposal`],
-    /// [`RaftGroup::begin_proposal_batch`], and [`RaftGroup::read`], which is
-    /// where a state machine that was never restored would first answer for
-    /// the replica, and which no live replica can avoid reaching. Taking it
-    /// here would also make it depend on how a caller split one runtime step's
-    /// outputs across calls.
+    /// [`GroupError::AppliedIndexBelowSnapshotBoundary`]. That verdict is
+    /// permanent, and a state machine below the runtime's snapshot boundary is
+    /// a legitimate *transient* here: an inbound snapshot is promoted durably
+    /// before the application installs it, so a replica that crashed between
+    /// those two writes opens short of a boundary its Raft state already
+    /// carries. The permanent verdict is taken instead by [`RaftGroup::step`],
+    /// [`RaftGroup::begin_proposal`], [`RaftGroup::begin_proposal_batch`], and
+    /// [`RaftGroup::read`], which is where a state machine that was never
+    /// restored would first answer for the replica.
+    ///
+    /// **It does return [`GroupError::SnapshotRestoreRequired`], and that is
+    /// not the same statement.** This pump used to accept a committed suffix
+    /// on top of that transient, which is how a replica ended up with a
+    /// prefix, a hole where the compacted entries were, and a suffix — while
+    /// reporting itself caught up. So the transient is tolerated and applying
+    /// *through* it is refused: the refusal is raised before the application
+    /// is touched, names the entry it stopped in front of, and does not
+    /// poison, because the repair is still available. Perform it with
+    /// [`RaftGroup::apply_recovery_outputs`], which is the operation a restart
+    /// path should be draining its recovery outputs through in the first
+    /// place. A batch carrying no committed application entry — the shape a
+    /// fully compacted replica hands over — is unaffected.
     ///
     /// # Errors
     ///
-    /// Returns a group error when the group is poisoned, output handling
-    /// detects malformed snapshot data, command decode fails, the state
-    /// machine apply/install path fails, or completed reads cannot be served.
+    /// Returns a group error when the group is poisoned, a committed
+    /// application entry would land on a state machine still short of the
+    /// snapshot boundary, output handling detects malformed snapshot data,
+    /// command decode fails, the state machine apply/install path fails, or
+    /// completed reads cannot be served.
     pub fn apply_raft_outputs(&mut self, outputs: Vec<RaftOutput>) -> StepReportResult<G, A, R> {
         self.reject_if_poisoned()?;
         self.apply_outputs(outputs, false, StepReportOptions::default())
@@ -315,7 +327,7 @@ where
     /// order — `record_committed_configuration` never wrote into the report,
     /// only into the queue that `record_membership_changes` drains at the end —
     /// so this moves *when* the fact becomes owed and nothing else.
-    fn apply_outputs(
+    pub(super) fn apply_outputs(
         &mut self,
         outputs: Vec<RaftOutput>,
         membership_request: bool,

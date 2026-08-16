@@ -493,7 +493,12 @@ impl Replica {
 
         announce_recovery(node_id, &app_dir, store.recovery());
 
-        let app = DurableLockStateMachine::new(store);
+        // The machine is handed the same `snapshots` directory the runtime's
+        // own snapshot store owns, because a Raft-driven install gives the
+        // application a descriptor rather than bytes and this is where the
+        // bytes have already been promoted. It is a read-only second view: the
+        // runtime below still owns the writing handle.
+        let app = DurableLockStateMachine::new(store, raft_dir.join("snapshots"));
         let applied_index = app.applied_index().map_err(|error| OpenError::Store {
             detail: error.to_string(),
         })?;
@@ -543,7 +548,13 @@ impl Replica {
 
         // The driver takes the recovery *outputs* rather than an already-applied
         // group, so the recovery report's peer messages and snapshot directives
-        // are routed by the driver instead of being dropped outside it.
+        // are routed by the driver instead of being dropped outside it — and so
+        // the ordering travels with them. The driver drains this through
+        // `RaftGroup::apply_recovery_outputs`, which installs the snapshot a
+        // replica opened below before applying the committed suffix above it.
+        // Handing over an already-applied group would put that decision back on
+        // this call site, where `RecoveryMode::Reseed` is one line away from
+        // producing exactly the state it guards against.
         let group = RaftGroup::with_applied_index(GROUP_ID, node_id, raft, app, applied_index);
         let driver = NodeDriver::with_control_plane_checkpoint(
             group,
