@@ -313,7 +313,10 @@ fn establish_with_commit_above_the_boundary(
     let established = establish(scratch, lock_config, base_id, true);
 
     let store = LockStore::open(scratch.path(), lock_config).expect("the compacted store reopens");
-    let mut group = open_group(DurableLockStateMachine::new(store), established.storage);
+    let mut group = open_group(
+        DurableLockStateMachine::new(store, scratch.path().join("raft/snapshots")),
+        established.storage,
+    );
     become_leader(&mut group);
     commit(&mut group, base_id + 90, open_session(2, 1));
 
@@ -490,8 +493,11 @@ fn gen6_a_reseed_with_a_commit_above_the_boundary_is_refused_before_it_applies()
     assert_eq!(reseeded.applied_index(), LogIndex::ZERO);
 
     let boundary = established.boundary;
-    let error = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
-        .expect_err("a committed suffix must not be applied over the deleted prefix");
+    let error = try_open_group(
+        DurableLockStateMachine::new(reseeded, scratch.path().join("raft/snapshots")),
+        established.storage,
+    )
+    .expect_err("a committed suffix must not be applied over the deleted prefix");
     assert!(
         matches!(
             &error,
