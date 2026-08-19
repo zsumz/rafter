@@ -599,9 +599,7 @@ impl ProcessCluster {
     ) {
         PROCESS_WAIT
             .until(
-                format!(
-                    "node {node_id} group {group}/{incarnation} to apply through {expected}"
-                ),
+                format!("node {node_id} group {group}/{incarnation} to apply through {expected}"),
                 || {
                     let response = self
                         .nodes
