@@ -135,10 +135,11 @@ globs=(
   --glob 'crates/**/*.md'
   --glob 'crates/**/LICENSE'
   --glob 'crates/**/NOTICE'
-  # The codec and storage conformance vectors. These are plaintext, they carry
-  # `#` comments, and `cargo package` ships every one of them.
+  # The codec and storage conformance vectors and TLS certificate fixtures.
+  # These are plaintext, and `cargo package` ships every one of them.
   --glob 'crates/**/*.hex'
   --glob 'crates/**/*.inc'
+  --glob 'crates/**/*.pem'
   # The catalogs and lockfiles the invariant machinery reads. Not shipped in an
   # archive, but a repository visitor reads them.
   --glob 'verification/**'
