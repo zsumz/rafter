@@ -1,6 +1,6 @@
 [package]
 name = "rafter-app"
-version = "0.0.1"
+version = "0.0.2-alpha.1"
 description = "Synchronous embedded replicated-state-machine layer for Rafter."
 readme = "README.md"
 keywords = ["raft", "consensus", "state-machine", "replication", "embedded"]
@@ -11,13 +11,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rafter = { path = "../rafter", version = "0.0.1" }
-rafter-runtime-api = { path = "../rafter-runtime-api", version = "0.0.1" }
+rafter = { path = "../rafter", version = "=0.0.2-alpha.1" }
+rafter-runtime-api = { path = "../rafter-runtime-api", version = "=0.0.2-alpha.1" }
 
 [dev-dependencies]
 rafter-invariant-test = { path = "../rafter-invariant-test" }
-rafter-runtime = { path = "../rafter-runtime", version = "0.0.1" }
-rafter-storage = { path = "../rafter-storage", version = "0.0.1" }
+rafter-runtime = { path = "../rafter-runtime", version = "=0.0.2-alpha.1" }
+rafter-storage = { path = "../rafter-storage", version = "=0.0.2-alpha.1" }
 
 [lints]
 workspace = true

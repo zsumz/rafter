@@ -590,6 +590,32 @@ impl ProcessCluster {
             .unwrap_or_else(|error| panic!("{error}"));
     }
 
+    pub fn wait_applied_at_least(
+        &mut self,
+        node_id: u64,
+        group: u32,
+        incarnation: u32,
+        expected: u64,
+    ) {
+        PROCESS_WAIT
+            .until(
+                format!(
+                    "node {node_id} group {group}/{incarnation} to apply through {expected}"
+                ),
+                || {
+                    let response = self
+                        .nodes
+                        .get_mut(&node_id)
+                        .expect("live node")
+                        .request(&format!("VALUE {group} {incarnation}"))
+                        .ok()?;
+                    let applied = field(&response, "applied")?.parse::<u64>().ok()?;
+                    (applied >= expected).then_some(())
+                },
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
     pub fn wait_all_values(&mut self, expected: &BTreeMap<(u32, u32), i64>) {
         for node_id in self.live_node_ids() {
             for (&(group, incarnation), &value) in expected {

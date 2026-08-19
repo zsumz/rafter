@@ -7,17 +7,17 @@ engineering milestone, not as a release candidate. The stable capability-to-job
 map is [`docs/work-completion.md`](docs/work-completion.md); its references are
 checked by `scripts/work-completion-check`.
 
-The current publishable graph remains the ten crates listed in the historical
-0.0.1 section below. `rafter-sim`'s hidden `internal-test-hooks` dependency is
-gone, and that blocker is closed: the kernel self-check the simulator reached
-for is now the documented public `Node::validate_derived_state`, returning a
-typed `StateValidationError`, and the feature is deleted from `rafter`
-entirely. The design and what it deliberately defers are recorded in
-[`docs/api-promotions.md`](docs/api-promotions.md). Closing the blocker is not
-the same as deciding to publish `rafter-sim`; that decision has not been taken
-and the crate still carries `publish = false`. C1 streaming snapshots and C2
-replication pipelining remain additive future work and are not preconditions
-smuggled into this preflight.
+The current publishable graph is the eleven-crate product family listed in the
+0.0.2-alpha.1 section below. It adds `rafter-transport-tls` to the historical
+ten-crate embedding graph without publishing the simulator, invariant tooling,
+Maelstrom harness, or trusted detector-test helpers. `rafter-sim`'s hidden
+`internal-test-hooks` dependency is gone, and that blocker is closed: the
+kernel self-check the simulator reached for is now the documented public
+`Node::validate_derived_state`, returning a typed `StateValidationError`, and
+the feature is deleted from `rafter` entirely. The design and what it
+deliberately defers are recorded in [`docs/api-promotions.md`](docs/api-promotions.md).
+C1 streaming snapshots and C2 replication pipelining remain additive future
+work and are not preconditions smuggled into this preflight.
 
 For a non-release completion run at one checked-out SHA, run and retain:
 
@@ -42,13 +42,95 @@ scripts/counter-profile counter-weekly
 The scheduled `invariants-nightly`, `invariants-weekly`, and pinned Maelstrom
 jobs remain the authoritative Linux evidence for their full profiles. The
 fenced-lock and sharded-counter authenticated transport cases are included in
-the reviewed process inventories. `rafter-transport-tls` is built as an exact
-consumer-only archive by the package lanes while it remains unpublished; the
-fixtures prove bounded composability and are not a generic server, certificate
-platform, or deployment controller.
+the reviewed process inventories. `rafter-transport-tls` is now part of the
+exact publishable archive set; the fixtures prove bounded composability and are
+not a generic server, certificate platform, or deployment controller.
 
 This section does not authorize a version change, RC, `1.0.0`, tag, publish,
 mandatory release workflow, or mixed-version compatibility claim.
+
+## 0.0.2-alpha.1 Product Preview
+
+Rafter 0.0.2-alpha.1 is the first coordinated prerelease of the current product
+graph. It publishes the production TLS transport with the embedding crates it
+actually compiles against, while preserving the explicit alpha status of the
+public API, wire formats, storage formats, and operational contracts.
+
+Every Rafter dependency inside this family is exact-pinned to
+`=0.0.2-alpha.1`. A package archive therefore cannot silently combine this
+source generation with the spent 0.0.1 registry generation or a later alpha.
+
+Publish these crates for 0.0.2-alpha.1:
+
+```text
+rafter
+rafter-runtime-api
+rafter-crc32
+rafter-storage
+rafter-codec
+rafter-transport-tcp-insecure
+rafter-runtime
+rafter-app
+rafter-service
+rafter-multiraft
+rafter-transport-tls
+```
+
+Do not publish these crates for 0.0.2-alpha.1:
+
+```text
+rafter-sim
+rafter-maelstrom
+rafter-invariants
+rafter-invariant-test
+rafter-invariant-test-macros
+rafter-fuzz
+bench-compare
+```
+
+The first list is the complete versioned dependency closure a public product
+consumer can reach. The second list contains repository-only verification,
+simulation, fuzzing, and benchmark tooling; each package remains guarded by
+`publish = false`.
+
+### Publish Order
+
+Publish one verified archive at a time in this dependency order:
+
+```text
+rafter
+rafter-runtime-api
+rafter-crc32
+rafter-storage
+rafter-codec
+rafter-transport-tcp-insecure
+rafter-runtime
+rafter-app
+rafter-service
+rafter-multiraft
+rafter-transport-tls
+```
+
+Run `cargo publish --dry-run -p <crate>` immediately before each matching
+`cargo publish -p <crate>`. Do not advance after either command fails. The
+release is complete only after all eleven registry records, owners, checksums,
+downloaded archives, and docs.rs builds are independently verified.
+
+### Release Notes
+
+Use explicit alpha wording:
+
+```text
+Rafter 0.0.2-alpha.1 is a coordinated product-family preview.
+
+It includes the deterministic sans-I/O Raft core, current peer and storage
+formats, durable runtime and application layers, managed multi-Raft hosting,
+the insecure TCP demonstration transport, and the bounded mutually
+authenticated TLS transport.
+
+It does not promise stable public API, wire compatibility, storage
+compatibility, operational compatibility, or performance leadership.
+```
 
 ## 0.0.1 Preview
 
@@ -127,6 +209,9 @@ crates; `cargo publish -p rafter` at 0.0.1 is rejected as already uploaded.
 Until that bump lands, a per-crate `cargo publish --dry-run` for any crate with
 a Rafter dependency fails, because Cargo resolves that dependency to the stale
 registry 0.0.1 instead of to this checkout.
+
+`rafter-crc32` 0.0.1 was subsequently published on 2026-08-19 as the first
+prerequisite for the coordinated 0.0.2-alpha.1 product release.
 
 ```sh
 cargo publish --dry-run -p rafter

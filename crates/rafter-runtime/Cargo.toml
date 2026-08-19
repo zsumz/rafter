@@ -1,6 +1,6 @@
 [package]
 name = "rafter-runtime"
-version = "0.0.1"
+version = "0.0.2-alpha.1"
 description = "Persist-before-output durable runtime wrapper for Rafter."
 readme = "README.md"
 keywords = ["raft", "consensus", "runtime", "durability", "replication"]
@@ -11,13 +11,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rafter = { path = "../rafter", version = "0.0.1" }
-rafter-runtime-api = { path = "../rafter-runtime-api", version = "0.0.1" }
-rafter-storage = { path = "../rafter-storage", version = "0.0.1" }
+rafter = { path = "../rafter", version = "=0.0.2-alpha.1" }
+rafter-runtime-api = { path = "../rafter-runtime-api", version = "=0.0.2-alpha.1" }
+rafter-storage = { path = "../rafter-storage", version = "=0.0.2-alpha.1" }
 
 [dev-dependencies]
 rafter-invariant-test = { path = "../rafter-invariant-test" }
-rafter-transport-tcp-insecure = { path = "../rafter-transport-tcp-insecure", version = "0.0.1" }
+rafter-transport-tcp-insecure = { path = "../rafter-transport-tcp-insecure", version = "=0.0.2-alpha.1" }
 
 [lints]
 workspace = true

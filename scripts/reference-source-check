@@ -62,12 +62,6 @@ patched_crates=(
     rafter-service
     rafter-storage
     rafter-transport-tcp-insecure
-)
-
-# Unpublished crates may still have an exact acceptance consumer before release
-# promotion. They are patched from this checkout but deliberately excluded from
-# the publishable-set closure assertion below.
-consumer_only_patched_crates=(
     rafter-transport-tls
 )
 
@@ -97,7 +91,6 @@ fi
 
 patched_dependency_crates=(
     "${patched_crates[@]}"
-    "${consumer_only_patched_crates[@]}"
 )
 config_args=()
 for crate in "${patched_dependency_crates[@]}"; do

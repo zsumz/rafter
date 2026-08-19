@@ -39,7 +39,7 @@ fn release_publish_list_matches_the_workspace_crates_without_publish_false() {
 
     assert_eq!(
         declared, publishable,
-        "RELEASE.md's 0.0.1 publish list and the workspace crates without \
+        "RELEASE.md's current publish list and the workspace crates without \
          `publish = false` have diverged; update whichever one is wrong"
     );
 }
@@ -160,7 +160,7 @@ fn publishable_crates_ship_the_root_licence_texts_unchanged() {
 /// "Publish these crates" heading, which is the release document's own
 /// authoritative inventory.
 fn release_publish_list(root: &Path) -> BTreeSet<String> {
-    const MARKER: &str = "Publish these crates for 0.0.1:";
+    const MARKER: &str = "Publish these crates for 0.0.2-alpha.1:";
     let release = read(&root.join("RELEASE.md"));
     let start = release
         .lines()

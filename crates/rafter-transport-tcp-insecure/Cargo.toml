@@ -1,6 +1,6 @@
 [package]
 name = "rafter-transport-tcp-insecure"
-version = "0.0.1"
+version = "0.0.2-alpha.1"
 description = "Blocking insecure demo-only TCP transport for Rafter peer messages."
 readme = "README.md"
 keywords = ["raft", "tcp", "transport", "consensus", "demo"]
@@ -11,8 +11,8 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rafter = { path = "../rafter", version = "0.0.1" }
-rafter-codec = { path = "../rafter-codec", version = "0.0.1" }
+rafter = { path = "../rafter", version = "=0.0.2-alpha.1" }
+rafter-codec = { path = "../rafter-codec", version = "=0.0.2-alpha.1" }
 
 [lints]
 workspace = true

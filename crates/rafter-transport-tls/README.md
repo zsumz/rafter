@@ -327,11 +327,11 @@ See [`FORMAT.md`](FORMAT.md). Golden version-1 examples live under `format/`.
 ## Status
 
 The production implementation and both reference adoptions are complete. The
-exact-package runner builds this crate as a consumer-only archive and exercises
-it in the Rust 1.88 MSRV and reviewed process lanes. Hello and data-frame fuzz
-targets live in the repository fuzz workspace, and frozen version-1 vectors and
-process coverage pin the compatibility boundary.
+exact-package runner builds this crate as part of the coordinated public archive
+set and exercises it in the Rust 1.88 MSRV and reviewed process lanes. Hello and
+data-frame fuzz targets live in the repository fuzz workspace, and frozen
+version-1 vectors and process coverage pin the compatibility boundary.
 
-The crate remains `publish = false`. Publication is a separate release-policy
-decision; implementation completion does not authorize a version change, tag,
-or registry publish.
+Version 0.0.2-alpha.1 is the first public preview. It is exact-pinned to the
+same Rafter product-family prerelease and does not promise stable public API,
+wire compatibility, storage compatibility, or operational compatibility.

@@ -38,10 +38,10 @@ fn canonical_consumer_manifest_has_no_checkout_or_internal_hook_dependency() {
 #[test]
 fn rafter_dependencies_are_versioned_registry_requirements() {
     for requirement in [
-        "rafter = \"0.0.1\"",
-        "rafter-app = \"0.0.1\"",
-        "rafter-service = \"0.0.1\"",
-        "rafter-transport-tls = \"0.0.1\"",
+        "rafter = \"=0.0.2-alpha.1\"",
+        "rafter-app = \"=0.0.2-alpha.1\"",
+        "rafter-service = \"=0.0.2-alpha.1\"",
+        "rafter-transport-tls = \"=0.0.2-alpha.1\"",
     ] {
         assert!(
             FENCED_LOCK_MANIFEST.contains(requirement),

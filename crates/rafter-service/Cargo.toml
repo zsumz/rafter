@@ -1,6 +1,6 @@
 [package]
 name = "rafter-service"
-version = "0.0.1"
+version = "0.0.2-alpha.1"
 description = "Async managed service layer and integration traits for Rafter."
 readme = "README.md"
 keywords = ["raft", "consensus", "async", "replication", "service"]
@@ -11,13 +11,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rafter = { path = "../rafter", version = "0.0.1" }
-rafter-app = { path = "../rafter-app", version = "0.0.1" }
-rafter-runtime-api = { path = "../rafter-runtime-api", version = "0.0.1" }
+rafter = { path = "../rafter", version = "=0.0.2-alpha.1" }
+rafter-app = { path = "../rafter-app", version = "=0.0.2-alpha.1" }
+rafter-runtime-api = { path = "../rafter-runtime-api", version = "=0.0.2-alpha.1" }
 
 [dev-dependencies]
-rafter-runtime = { path = "../rafter-runtime", version = "0.0.1" }
-rafter-storage = { path = "../rafter-storage", version = "0.0.1" }
+rafter-runtime = { path = "../rafter-runtime", version = "=0.0.2-alpha.1" }
+rafter-storage = { path = "../rafter-storage", version = "=0.0.2-alpha.1" }
 
 [lints]
 workspace = true

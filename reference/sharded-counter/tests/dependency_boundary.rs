@@ -75,7 +75,7 @@ fn the_real_adapter_uses_only_versioned_public_rafter_crates() {
         "rafter-storage",
         "rafter-transport-tls",
     ] {
-        let requirement = format!("{dependency} = \"0.0.1\"");
+        let requirement = format!("{dependency} = \"=0.0.2-alpha.1\"");
         assert!(
             SHARDED_COUNTER_MANIFEST
                 .lines()

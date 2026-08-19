@@ -10,10 +10,10 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-rafter = { path = "../rafter", version = "0.0.1" }
-rafter-codec = { path = "../rafter-codec", version = "0.0.1" }
-rafter-runtime = { path = "../rafter-runtime", version = "0.0.1" }
-rafter-storage = { path = "../rafter-storage", version = "0.0.1" }
+rafter = { path = "../rafter", version = "=0.0.2-alpha.1" }
+rafter-codec = { path = "../rafter-codec", version = "=0.0.2-alpha.1" }
+rafter-runtime = { path = "../rafter-runtime", version = "=0.0.2-alpha.1" }
+rafter-storage = { path = "../rafter-storage", version = "=0.0.2-alpha.1" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

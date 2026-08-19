@@ -1,6 +1,6 @@
 [package]
 name = "rafter-storage"
-version = "0.0.1"
+version = "0.0.2-alpha.1"
 description = "Durable storage traits and file-backed stores for Rafter."
 readme = "README.md"
 keywords = ["raft", "storage", "durability", "snapshot", "consensus"]
@@ -12,8 +12,8 @@ rust-version.workspace = true
 
 [dependencies]
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
-rafter = { path = "../rafter", version = "0.0.1" }
-rafter-crc32 = { path = "../rafter-crc32", version = "0.0.1" }
+rafter = { path = "../rafter", version = "=0.0.2-alpha.1" }
+rafter-crc32 = { path = "../rafter-crc32", version = "=0.0.2-alpha.1" }
 
 [dev-dependencies]
 rafter-invariant-test = { path = "../rafter-invariant-test" }

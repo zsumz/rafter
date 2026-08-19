@@ -65,7 +65,7 @@ jobs:
         # escalates them (and rustc warnings) to errors.
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: rustdoc
-        # The ten crates in RELEASE.md's publish list reach docs.rs, and until
+        # The eleven crates in RELEASE.md's publish list reach docs.rs, and until
         # this step nothing built their documentation at all. The script
         # explains why the published set is documented by name instead of
         # relying on --workspace, which also documents crates that never ship.

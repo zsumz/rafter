@@ -465,8 +465,9 @@ are labeled integration evidence only.
 
 ### Production composition
 
-The unpublished `rafter-transport-tls` crate closes this composition criterion
-through two structurally different bounded process consumers. The fenced-lock
+The `rafter-transport-tls` crate, first published with the coordinated
+0.0.2-alpha.1 product preview, closes this composition criterion through two
+structurally different bounded process consumers. The fenced-lock
 `lock-production-node` fixture proves:
 
 - durable per-group monotonic identity allocation and per-replica identity

@@ -10,17 +10,17 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-rafter = "0.0.1"
-rafter-app = "0.0.1"
-rafter-codec = "0.0.1"
-rafter-crc32 = "0.0.1"
+rafter = "=0.0.2-alpha.1"
+rafter-app = "=0.0.2-alpha.1"
+rafter-codec = "=0.0.2-alpha.1"
+rafter-crc32 = "=0.0.2-alpha.1"
 rafter-reference-harness.workspace = true
-rafter-runtime = "0.0.1"
-rafter-runtime-api = "0.0.1"
-rafter-service = "0.0.1"
-rafter-storage = "0.0.1"
-rafter-transport-tcp-insecure = "0.0.1"
-rafter-transport-tls = "0.0.1"
+rafter-runtime = "=0.0.2-alpha.1"
+rafter-runtime-api = "=0.0.2-alpha.1"
+rafter-service = "=0.0.2-alpha.1"
+rafter-storage = "=0.0.2-alpha.1"
+rafter-transport-tcp-insecure = "=0.0.2-alpha.1"
+rafter-transport-tls = "=0.0.2-alpha.1"
 
 [dev-dependencies]
 rustls = { version = "0.23.42", default-features = false, features = ["ring", "std"] }
@@ -42,4 +42,4 @@ workspace = true
 # `rafter-transport-tcp-insecure` remains the deliberately insecure demo link.
 # `rafter-transport-tls` supplies the production-composition process's complete
 # bounded authenticated link. Source mode patches it from the checkout and the
-# package lane builds its exact unpublished archive; release promotion is Slice 8.
+# package lane builds its exact public archive from the coordinated prerelease set.

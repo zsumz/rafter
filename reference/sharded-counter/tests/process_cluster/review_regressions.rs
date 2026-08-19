@@ -169,6 +169,10 @@ fn authoritative_rejection_reconciles_exact_outstanding_before_reply() {
         cluster.request_on(leader, &format!("OPEN {group} 1 {client} 2")),
         "OK SESSION replaced"
     );
+    let replacement_applied = number_field(
+        &cluster.request_on(leader, &format!("VALUE {group} 1")),
+        "applied",
+    );
     cluster.restart(old_leader);
     assert_eq!(
         cluster.request_on(old_leader, "PAUSE_RECOVERY"),
@@ -176,6 +180,7 @@ fn authoritative_rejection_reconciles_exact_outstanding_before_reply() {
     );
     cluster.wait_ready();
     cluster.wait_status_at_least(old_leader, "recovery_deferred", 1);
+    cluster.wait_applied_at_least(old_leader, group, 1, replacement_applied);
     let before = cluster.request_on(old_leader, "STATUS");
     assert_eq!(
         number_field(&before, "durable_outstanding"),
