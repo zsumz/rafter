@@ -174,8 +174,9 @@ bench-compare
 
 Together the two lists cover every crate in the repository: the workspace
 members plus `rafter-fuzz` and `bench-compare`, which keep their own manifests
-outside the workspace. Every crate in the second list carries `publish = false`;
-no crate in the first list does.
+outside the workspace. For the 0.0.1 release, every crate in the second list
+carried `publish = false`; `rafter-transport-tls` is promoted only by the
+0.0.2-alpha.1 section above. No crate in the first list carries the guard.
 
 Naming a crate here is not the same as checking it. `rafter-fuzz` and
 `bench-compare` are outside the workspace, so no `--workspace` or `--all`
