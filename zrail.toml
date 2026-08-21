@@ -1,0 +1,727 @@
+# Rafter's executable architecture, checked by zrail (https://github.com/zsumz/zrail).
+#
+# This contract transcribes conventions the repository already enforces through
+# hand-rolled guard tests — crates/rafter/tests/{dependency_boundary,
+# source_boundary, readability_architecture_guard, file_size_guard,
+# test_location_guard}.rs — into declarative, lock-bound policy. The guards
+# remain in force; zrail adds exact dependency identity, shrink-only ratchets,
+# and semantic diffs of architecture changes. Where policy is looser than the
+# ambition (module_docs, facades, entrypoints), the tightening path is written
+# at the decision.
+#
+# Everyday commands:
+#   zrail check                     # read-only architecture check
+#   zrail diff --base HEAD          # classify uncommitted architecture changes
+#   zrail update                    # refresh zrail.lock after reviewed changes
+#
+# The adoption debt ledger (per-file shrink-only ratchets) lives in
+# zrail-baseline.toml so this file stays the readable architecture document.
+
+schema = 1
+adapters = ["rust"]
+imports = ["zrail-baseline.toml"]
+
+[repository]
+roots = ["crates"]
+exclude = [
+  # trybuild UI cases: compile-fail/pass sources built by the trybuild harness
+  # at test runtime, never by a Cargo target of this workspace.
+  "crates/rafter-invariant-test/tests/ui/**",
+  # Nested build directory produced by exact-package evidence runs.
+  "crates/rafter-invariants/target/**",
+  # Independent Cargo workspaces beside the product workspace: the reference
+  # consumers, the fuzz harness, and the benchmark comparison harness. Each
+  # keeps its own manifest graph and its own qualification lanes.
+  "reference/**",
+  "fuzz/**",
+  "bench-compare/**",
+]
+workspace_members = "exact"
+nested_git = "deny"
+submodules = "deny"
+symlinks = "inside"
+
+# ---------------------------------------------------------------------------
+# Dependency identity. The workspace DAG itself is layered below; the guard
+# test workspace_dependency_boundary_matches_declared_crate_graph additionally
+# pins exact per-crate edges with per-edge reasons, including the normal/dev
+# distinction that layer edges deliberately do not model.
+# ---------------------------------------------------------------------------
+
+[dependencies]
+mode = "locked"
+unassigned_packages = "deny"
+cycles = "deny"
+
+[[dependencies.crate_root]]
+package = "serde"
+root = "serde"
+reason = "The published serde library exposes the serde crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "1"
+
+[[dependencies.crate_root]]
+package = "serde_json"
+root = "serde_json"
+reason = "The published serde_json library exposes the serde_json crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "1"
+
+[[dependencies.crate_root]]
+package = "clap"
+root = "clap"
+reason = "The published clap library exposes the clap crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "4"
+
+[[dependencies.crate_root]]
+package = "proptest"
+root = "proptest"
+reason = "The published proptest library exposes the proptest crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "1"
+
+[[dependencies.crate_root]]
+package = "criterion"
+root = "criterion"
+reason = "The published criterion library exposes the criterion crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "0.5"
+
+[[dependencies.crate_root]]
+package = "syn"
+root = "syn"
+reason = "The published syn library exposes the syn crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "2"
+
+[[dependencies.crate_root]]
+package = "quote"
+root = "quote"
+reason = "The published quote library exposes the quote crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "1"
+
+# ---------------------------------------------------------------------------
+# Source policy.
+#
+# module_docs stays "allow" until the module-contract convention that
+# readability_architecture_guard enforces for rafter, rafter-codec, and
+# rafter-storage has been extended to the remaining crates (378 files lack a
+# leading //! contract today); the flip to "required" is that campaign's
+# completion gate. facades and entrypoints stay "allow" because 20 crate roots
+# and mod.rs files still hold implementation items (rafter-runtime/src/lib.rs
+# alone is ~1,000 lines); the guard test architectural_facades_remain_declarative
+# already holds the 127 reviewed facades declarative, and the flip to
+# "declarative" is the extraction campaign's completion gate.
+# ---------------------------------------------------------------------------
+
+[source.rust]
+module_docs = "allow"
+facades = "allow"
+entrypoints = "allow"
+tests = "sibling"
+
+[source.rust.macros]
+# "allow", found rather than chosen: this adoption authored a complete
+# deny-unreviewed allowlist (58 reviewed expansions; see this branch's history),
+# and zrail 0.0.1 could not bind it. The engine resolves macro names
+# conservatively wherever a glob import is in scope, and conservative
+# observations carry an unresolved origin that no allowance is permitted to
+# match, so every `use super::*` test module makes its macros unreviewable by
+# policy. Sibling-test files here open with `use super::*` by convention,
+# which put ~3,700 reviewed invocations beyond reach. Flip to
+# "deny-unreviewed" and restore the allowlist once zrail can bind
+# glob-imported names.
+mode = "allow"
+
+# Item-position expansions still need per-file graph exemptions regardless of
+# macro mode; scripts/zrail-reconcile regenerates the block between the
+# markers from `zrail check --format json`.
+# >>> generated: observed spellings
+
+[[source.rust.item_macros]]
+path = "crates/rafter-codec/benches/codec.rs"
+name = "criterion::criterion_group"
+reason = "The reviewed `criterion_group` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-codec/benches/codec.rs"
+name = "criterion::criterion_main"
+reason = "The reviewed `criterion_main` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-codec/tests/properties.rs"
+name = "proptest"
+reason = "The reviewed `proptest` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariant-test/src/detector/session.rs"
+name = "std::thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariant-test/src/oracle/call.rs"
+name = "impl_oracle_call"
+reason = "The reviewed `impl_oracle_call` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/anchor.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/internal_command/test_support.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/launch/program.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/managed/cleanup.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/managed/target.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/output/test_support.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/process_group.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/reaper.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/signal.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/spawn/lease.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/telemetry/test_support.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/producer/process/budget/active.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/producer/tla_mutation_tests.rs"
+name = "ignored_tlc_mutation_test"
+reason = "The reviewed `ignored_tlc_mutation_test` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/verification/detector/source_tests.rs"
+name = "identity_and_resolution_tests"
+reason = "The reviewed `identity_and_resolution_tests` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/verification/detector/source_tests/call_flow.rs"
+name = "delegated_test"
+reason = "The reviewed `delegated_test` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-multiraft/src/managed/error.rs"
+name = "debug_display"
+reason = "The reviewed `debug_display` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter/benches/kernel.rs"
+name = "criterion::criterion_group"
+reason = "The reviewed `criterion_group` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter/benches/kernel.rs"
+name = "criterion::criterion_main"
+reason = "The reviewed `criterion_main` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter/tests/leader_append_only_property.rs"
+name = "proptest"
+reason = "The reviewed `proptest` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter/tests/properties.rs"
+name = "proptest"
+reason = "The reviewed `proptest` expansion declares items in this file."
+
+# <<< generated: observed spellings
+
+[source.rust.hygiene]
+# Production reach only; sibling tests and #[cfg(test)] modules are exempt.
+# `expect` with a message is the house style for impossible states, so it is
+# deliberately absent from deny_methods; `panic!`/`unreachable!` likewise
+# remain reviewed per use rather than denied.
+unsafe = "deny"
+lint_suppressions = "reasoned"
+deny_methods = ["unwrap"]
+deny_macros = ["todo", "unimplemented", "dbg"]
+
+# File-size budgets transcribe file_size_guard.rs: 300-line implementation
+# target with a 1,000-line hard stop, facade target 100, scenario-suite target
+# 400, harness target 600. The hard values are class backstops; the per-file
+# teeth are the shrink-only ratchets in zrail-baseline.toml, which pin every
+# over-target file at its adoption size.
+
+[source.rust.size.facade]
+target = 100
+hard = 1000
+
+[source.rust.size.implementation]
+target = 300
+hard = 1000
+
+[source.rust.size.test]
+target = 400
+hard = 1500
+
+[source.rust.size.auxiliary]
+target = 600
+hard = 1500
+
+# ---------------------------------------------------------------------------
+# Effects. Layers marked no-ambient-services may not reach the network, an
+# async runtime, a database, a container runtime, or ambient entropy from any
+# file, tests included. Filesystem, process, clock, and thread effects are not
+# denied here because guard tests legitimately spawn cargo and git; the
+# per-directory scopes below hold the production kernel to the stricter rule.
+# ---------------------------------------------------------------------------
+
+[profiles.no-ambient-services]
+[profiles.no-ambient-services.effects]
+deny = [
+  "network",
+  "async-runtime",
+  "database",
+  "container-runtime",
+  "randomness",
+]
+
+# ---------------------------------------------------------------------------
+# Layers. Arrows follow the README's model: a sans-IO kernel, a
+# persist-before-output runtime boundary, durable storage, an embedded
+# application layer, service/multiraft embeddings, and transports at the edge.
+# Layer edges cover every Cargo edge kind, so dev-only test-toolkit and
+# harness edges appear here too; the dependency_boundary guard keeps the
+# normal/dev distinction exact.
+# ---------------------------------------------------------------------------
+
+[[layer]]
+name = "checksum"
+packages = ["rafter-crc32"]
+may_depend_on = []
+profiles = ["no-ambient-services"]
+reason = "A dependency-free CRC32C primitive shared by storage and wire formats."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "kernel"
+packages = ["rafter"]
+may_depend_on = ["test-toolkit"]
+profiles = ["no-ambient-services"]
+reason = "The deterministic sans-IO protocol kernel; its only workspace edge is the dev-only invariant-test toolkit."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "runtime-boundary"
+packages = ["rafter-runtime-api"]
+may_depend_on = ["kernel"]
+profiles = ["no-ambient-services"]
+reason = "The persist-before-output contract between the kernel and any runtime."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "durability"
+packages = ["rafter-storage"]
+may_depend_on = ["kernel", "checksum", "test-toolkit"]
+profiles = ["no-ambient-services"]
+reason = "Hard-state, log, and snapshot stores beneath the runtime."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "wire"
+packages = ["rafter-codec"]
+may_depend_on = ["kernel", "checksum"]
+profiles = ["no-ambient-services"]
+reason = "The versioned peer-message wire format, independent of storage formats."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "runtime"
+packages = ["rafter-runtime"]
+may_depend_on = [
+  "kernel",
+  "runtime-boundary",
+  "durability",
+  "test-toolkit",
+  "transport-dev",
+]
+reason = "The durable persist-before-output node; its examples exercise the dev transport, so that edge is dev-only."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "application"
+packages = ["rafter-app"]
+may_depend_on = [
+  "kernel",
+  "runtime-boundary",
+  "runtime",
+  "durability",
+  "test-toolkit",
+]
+profiles = ["no-ambient-services"]
+reason = "The embedded replicated state machine; runtime and durability edges are dev-only acceptance harnesses."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "embedding"
+packages = ["rafter-service", "rafter-multiraft"]
+may_depend_on = [
+  "kernel",
+  "application",
+  "runtime-boundary",
+  "runtime",
+  "durability",
+]
+profiles = ["no-ambient-services"]
+reason = "Async service handles and the many-group host; runtime and durability edges are dev-only acceptance harnesses."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "transport-dev"
+packages = ["rafter-transport-tcp-insecure"]
+may_depend_on = ["kernel", "wire"]
+reason = "The deliberately insecure TCP transport for examples, tests, and local clusters."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "transport"
+packages = ["rafter-transport-tls"]
+may_depend_on = [
+  "kernel",
+  "wire",
+  "checksum",
+  "embedding",
+  "application",
+  "runtime",
+  "durability",
+]
+reason = "The authenticated production transport; application, runtime, and durability edges are dev-only composition fixtures."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "test-toolkit"
+packages = ["rafter-invariant-test", "rafter-invariant-test-macros"]
+may_depend_on = []
+reason = "The detector/oracle toolkit and its proc macros, shared by every crate's invariant tests; its lifecycle suites exercise Unix sockets, so it carries no purity profile."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "verification"
+packages = ["rafter-sim", "rafter-maelstrom"]
+may_depend_on = ["kernel", "wire", "runtime", "durability", "test-toolkit"]
+profiles = ["no-ambient-services"]
+reason = "Deterministic simulation, model checking, and the Maelstrom process harness."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "evidence-tooling"
+packages = ["rafter-invariants"]
+may_depend_on = ["kernel", "verification"]
+reason = "The invariant evidence pipeline; it spawns bounded verifier processes and reaches Unix sockets, so it carries no purity profile."
+
+[layer.dependencies]
+external = "locked"
+
+# ---------------------------------------------------------------------------
+# Format isolation. Disk formats and wire formats evolve independently; these
+# denies keep either from quietly borrowing the other, in any dependency kind.
+# ---------------------------------------------------------------------------
+
+[[dependency]]
+name = "storage-owns-disk-formats"
+from = "rafter-storage"
+deny = ["rafter-codec"]
+reason = "Durable formats must not couple to the peer wire format."
+
+[[dependency]]
+name = "codec-owns-wire-formats"
+from = "rafter-codec"
+deny = ["rafter-storage"]
+reason = "The peer wire format must not couple to durable storage formats."
+
+[[dependency]]
+name = "runtime-boundary-stays-minimal"
+from = "rafter-runtime-api"
+deny = ["rafter-storage", "rafter-codec", "tokio"]
+reason = "The runtime contract stays a kernel-only boundary with no storage, wire, or async-runtime reach."
+
+# ---------------------------------------------------------------------------
+# Source scopes transcribe source_boundary.rs, tightened to everything the
+# code already avoids. They cover sibling tests inside src too: the kernel's
+# own tests stay deterministic.
+# ---------------------------------------------------------------------------
+
+[[scope]]
+name = "kernel-sans-io"
+include = ["crates/rafter/src/**"]
+reason = "The protocol kernel is sans-IO and deterministic: no filesystem, network, process, thread, clock, environment, or async runtime."
+
+[scope.symbols]
+deny = [
+  "std::fs",
+  "std::net",
+  "std::io",
+  "std::process",
+  "std::thread",
+  "std::time",
+  "std::env",
+  "tokio",
+  "async_trait",
+]
+
+[[scope]]
+name = "runtime-boundary-sans-io"
+include = ["crates/rafter-runtime-api/src/**"]
+reason = "The runtime contract defines persistence obligations without performing IO or binding an async runtime."
+
+[scope.symbols]
+deny = [
+  "std::fs",
+  "std::net",
+  "std::io",
+  "std::process",
+  "std::thread",
+  "std::time",
+  "std::env",
+  "tokio",
+  "async_trait",
+]
+
+[[scope]]
+name = "application-io-free"
+include = ["crates/rafter-app/src/**"]
+reason = "The embedded state-machine layer stays deterministic; durability and IO belong to the runtime beneath it."
+
+[scope.symbols]
+deny = [
+  "std::fs",
+  "std::net",
+  "std::io",
+  "std::process",
+  "std::thread",
+  "std::time",
+  "std::env",
+  "tokio",
+]
+
+[[scope]]
+name = "multiraft-io-free"
+include = ["crates/rafter-multiraft/src/**"]
+reason = "The many-group host schedules deterministically; sockets, clocks, and disks stay with its embedder."
+
+[scope.symbols]
+deny = [
+  "std::fs",
+  "std::net",
+  "std::io",
+  "std::process",
+  "std::thread",
+  "std::time",
+  "std::env",
+  "tokio",
+]
+
+# ---------------------------------------------------------------------------
+# Owners.
+# ---------------------------------------------------------------------------
+
+[[owner]]
+name = "adversarial-fixtures"
+kind = "directory"
+match = "**/fixtures"
+allow = [
+  "crates/rafter-transport-tls/tests/fixtures",
+  "crates/rafter-sim/src/tests/dynamic_membership/fixtures",
+  "crates/rafter-invariants/src/evidence/fixtures",
+  "crates/rafter-invariants/src/verdict/fixtures",
+  "crates/rafter-invariants/src/verdict/report/fixtures",
+  "crates/rafter-invariants/src/verification/simulator/schedule/tests/fixtures",
+]
+reason = "Deliberately broken or data-only fixture trees have named, reviewed owners."
+
+[[owner]]
+name = "process-launch-capability"
+kind = "capability"
+within = ["crates/rafter-invariants/src/**"]
+match = "std::process::Command"
+allow = [
+  "crates/rafter-invariants/src/execution/filesystem/tests.rs",
+  "crates/rafter-invariants/src/execution/process/anchor.rs",
+  "crates/rafter-invariants/src/execution/process/internal_command.rs",
+  "crates/rafter-invariants/src/execution/process/launch.rs",
+  "crates/rafter-invariants/src/execution/process/spawn.rs",
+  "crates/rafter-invariants/src/execution/process/test_support.rs",
+  "crates/rafter-invariants/src/execution/process/tests/mechanics/reaper.rs",
+  "crates/rafter-invariants/src/execution/process/tests/support.rs",
+  "crates/rafter-invariants/src/producer/source_identity_tests.rs",
+  "crates/rafter-invariants/src/producer/test_exec/detector_proof.rs",
+  "crates/rafter-invariants/src/producer/test_exec/fixtures.rs",
+  "crates/rafter-invariants/src/producer/tla_exec_budget_tests.rs",
+  "crates/rafter-invariants/src/producer/tla_mutation_tests/support/runtime.rs",
+  "crates/rafter-invariants/src/provenance/image.rs",
+  "crates/rafter-invariants/src/provenance/source/checkout/cargo_graph_tests.rs",
+  "crates/rafter-invariants/src/provenance/source/checkout/config_tests.rs",
+  "crates/rafter-invariants/src/provenance/source/checkout/materialization_tests.rs",
+  "crates/rafter-invariants/src/provenance/source/checkout/observation_tests.rs",
+  "crates/rafter-invariants/src/provenance/source/checkout/rust_inputs/tests.rs",
+  "crates/rafter-invariants/src/provenance/source/tracked.rs",
+  "crates/rafter-invariants/src/verification/detector/source_tests.rs",
+  "crates/rafter-invariants/src/verification/intake/tests/resource_limits.rs",
+  "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle.rs",
+  "crates/rafter-invariants/src/verification/simulator/schedule/tests/fixtures/checkout.rs",
+  "crates/rafter-invariants/src/verification/simulator/schedule/tests/fixtures/compile.rs",
+  "crates/rafter-invariants/src/verification/simulator/schedule/tests/fixtures/io.rs",
+  "crates/rafter-invariants/src/verification/simulator/schedule/tests/intake.rs",
+  "crates/rafter-invariants/src/verification/tla/tests/full_bundle/serialized_tests.rs",
+]
+reason = "Verifier subprocesses launch only through the bounded descriptor-anchored execution path and its reviewed provenance probes."
+
+# ---------------------------------------------------------------------------
+# Qualification gates and the architecture invariants they enforce. The
+# machine-readable completion manifest in docs/work-completion.md remains the
+# authority for the full evidence pipeline; these entries bind the
+# architecture-guard subset to its tests and hosted gate.
+# ---------------------------------------------------------------------------
+
+[[gate]]
+name = "rustdoc"
+kind = "local"
+path = "scripts/rustdoc-check"
+reason = "Builds the publishable crates under -D warnings -D missing-docs; the local half of the public-surface guarantee."
+
+[[gate]]
+name = "ci"
+kind = "ci"
+path = ".github/workflows/ci.yml"
+inputs = [
+  ".github/actions/setup-rust/action.yml",
+  ".github/actions/configure-invariant-cargo/action.yml",
+  ".github/actions/setup-invariant-verifier/action.yml",
+]
+requires = ["rustdoc"]
+reason = "Pull-request qualification: lint, workspace tests, reference consumers, and the deterministic invariant aggregate."
+
+[[invariant]]
+id = "RAFTER-KERNEL-01"
+title = "The protocol kernel stays sans-IO with an empty dependency section"
+status = "enforced"
+document = "README.md#boundaries"
+evidence = [
+  "rust-test:crates/rafter/tests/dependency_boundary.rs::rafter_core_dependency_boundary_has_no_higher_layer_dependencies",
+  "rust-test:crates/rafter/tests/source_boundary.rs::source_boundary_guard_enforces_lower_layer_source_rules",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-GRAPH-01"
+title = "Every workspace dependency edge is declared and reasoned"
+status = "enforced"
+document = "README.md#crates"
+evidence = [
+  "rust-test:crates/rafter/tests/dependency_boundary.rs::workspace_dependency_boundary_matches_declared_crate_graph",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-READ-01"
+title = "Reviewed modules open with architectural contracts"
+status = "enforced"
+document = "docs/work-completion.md#public-surface-and-architecture-completion"
+evidence = [
+  "rust-test:crates/rafter/tests/readability_architecture_guard.rs::production_modules_begin_with_an_architectural_contract",
+  "rust-test:crates/rafter/tests/readability_architecture_guard.rs::test_modules_begin_with_a_scenario_contract",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-READ-02"
+title = "File sizes ratchet downward under reviewed limits"
+status = "enforced"
+document = "docs/work-completion.md#public-surface-and-architecture-completion"
+evidence = [
+  "rust-test:crates/rafter/tests/file_size_guard.rs::file_size_guard_enforces_module_size_limits",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-READ-03"
+title = "Inline test modules stay small or move to sibling files"
+status = "enforced"
+document = "docs/work-completion.md#public-surface-and-architecture-completion"
+evidence = [
+  "rust-test:crates/rafter/tests/test_location_guard.rs::test_location_guard_limits_large_inline_test_modules",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-DOC-01"
+title = "Published crates document their entire public surface"
+status = "enforced"
+document = "docs/work-completion.md#public-surface-and-architecture-completion"
+evidence = [
+  "rust-test:crates/rafter/tests/public_api_docs_guard.rs::public_api_docs_guard_detects_missing_docs_and_enum_policy",
+  "gate:rustdoc",
+  "gate:ci",
+]

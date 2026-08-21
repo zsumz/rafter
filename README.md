@@ -119,7 +119,14 @@ scripts/maelstrom-lin-kv
 scripts/reference-source-check
 scripts/reference-package-check
 scripts/reference-package-process-check
+zrail check
 ```
+
+The workspace architecture — layers, source boundaries, capability owners,
+and shrink-only file-size ratchets — is declared in [`zrail.toml`](./zrail.toml)
+and verified by [zrail](https://github.com/zsumz/zrail) (`cargo install zrail
+--locked`). `zrail check` compares the working tree against the locked
+contract; CI runs it on every pull request.
 
 The reference consumers live in their own Cargo workspace, which the root
 `Cargo.toml` excludes, so `cargo test --workspace` above does not reach them.

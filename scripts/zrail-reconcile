@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Regenerate the generated block of zrail.toml from `zrail check` output.
+
+zrail 0.0.1 resolves macro invocations conservatively under glob imports, so
+one reviewed macro is observed under many module-qualified spellings
+(`super::assert_eq`, `support::vec`, ...), and item-position macros need
+per-file exemptions. This script rewrites everything between the
+`>>> generated: observed spellings` markers in zrail.toml from a fresh
+`zrail check --format json` run.
+
+Safety property: a generated allowance is emitted only when the observed
+spelling's final path segment matches a macro name that is already
+hand-reviewed above the marker. Unknown macros are reported and stay errors;
+granting them is a human policy decision, never a regeneration side effect.
+
+Usage: scripts/zrail-reconcile [--dry-run]
+Exits 0 when the block is stable, 2 when it rewrote zrail.toml (run again
+after `zrail check` to confirm convergence), 1 on unknown macros.
+"""
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+CONTRACT = Path(__file__).resolve().parent.parent / "zrail.toml"
+BEGIN = "# >>> generated: observed spellings\n"
+END = "# <<< generated: observed spellings\n"
+
+# Built-in data macros are handled directly by zrail at exact resolution and
+# never need allowances there; only their conservative glob-import spellings
+# surface as findings, so those spellings are implicitly reviewed.
+BUILTIN_DATA = {
+    "cfg", "column", "compile_error", "concat", "env", "file", "include",
+    "include_bytes", "include_str", "line", "module_path", "option_env",
+    "stringify",
+}
+
+
+def check_findings() -> list:
+    result = subprocess.run(
+        ["zrail", "check", "--format", "json"], capture_output=True, text=True
+    )
+    try:
+        return json.loads(result.stdout)["findings"]
+    except (json.JSONDecodeError, KeyError):
+        sys.stderr.write(result.stdout[-2000:] + result.stderr[-2000:])
+        raise SystemExit("zrail check produced no parsable JSON report")
+
+
+def hand_sections(text: str) -> tuple:
+    begin = text.index(BEGIN)
+    end = text.index(END)
+    return text[: begin + len(BEGIN)], text[begin + len(BEGIN) : end], text[end:]
+
+
+def hand_allowances(hand_text: str) -> dict:
+    """Map hand-reviewed macro names to whether their input tokens are opaque."""
+    reviewed = {}
+    for block in hand_text.split("[[source.rust.macros.allow]]")[1:]:
+        name = re.search(r'name = "([^"]+)"', block)
+        if name:
+            reviewed[name.group(1)] = 'inputs = "opaque"' in block
+    return reviewed
+
+
+def main() -> int:
+    dry_run = "--dry-run" in sys.argv[1:]
+    text = CONTRACT.read_text()
+    head, current, tail = hand_sections(text)
+    reviewed = hand_allowances(head)
+    reviewed_suffixes = {name.rsplit("::", 1)[-1]: opaque for name, opaque in reviewed.items()}
+
+    macros_denied = 'mode = "deny-unreviewed"' in head
+    findings = check_findings()
+    spellings = {}
+    item_sites = set()
+    include_sites = set()
+    stale = set()
+    stale_items = set()
+    unknown = set()
+    for f in findings:
+        message = f.get("message") or ""
+        if f["id"] == "RUST-GRAPH-005":
+            m = re.search(r"item macro exemption (\S+)! ", message)
+            if m and f.get("path"):
+                stale_items.add((f["path"], m.group(1)))
+        elif not macros_denied and f["id"].startswith("RUST-MACRO"):
+            continue
+        elif f["id"] == "RUST-MACRO-001":
+            m = re.search(r"macro expansion (\S+)", message)
+            if m:
+                name = m.group(1)
+                suffix = name.rsplit("::", 1)[-1]
+                if name in reviewed:
+                    pass
+                elif suffix in reviewed_suffixes:
+                    spellings.setdefault(name, reviewed_suffixes[suffix])
+                elif suffix in BUILTIN_DATA and "::" in name:
+                    spellings.setdefault(name, False)
+                else:
+                    unknown.add(name)
+        elif f["id"] == "RUST-MACRO-003":
+            m = re.search(r"macro (\S+) has unreviewed opaque input", message)
+            if m:
+                name = m.group(1)
+                if name in reviewed:
+                    pass  # the hand entry owns its opaque decision
+                elif name.rsplit("::", 1)[-1] in reviewed_suffixes:
+                    spellings[name] = True
+        elif f["id"] == "RUST-MACRO-002":
+            m = re.search(r'allowed macro expansion "([^"]+)"', message)
+            if m:
+                stale.add(m.group(1))
+        elif f["id"] == "RUST-GRAPH-003":
+            m = re.search(r"item-position macro (\S+)!", message)
+            if m and f.get("path"):
+                if (f["path"], m.group(1)) not in stale_items:
+                    item_sites.add((f["path"], m.group(1)))
+            elif "literal include" in message and f.get("path"):
+                include_sites.add(f["path"])
+
+    # Carry forward existing generated entries that zrail did not mark stale.
+    for block in current.split("[[source.rust.macros.allow]]")[1:]:
+        name = re.search(r'name = "([^"]+)"', block)
+        if (
+            name
+            and name.group(1) not in stale
+            and name.group(1) not in spellings
+            and name.group(1) not in reviewed
+        ):
+            spellings[name.group(1)] = 'inputs = "opaque"' in block
+    for block in current.split("[[source.rust.item_macros]]")[1:]:
+        path = re.search(r'path = "([^"]+)"', block)
+        name = re.search(r'name = "([^"]+)"', block)
+        if path and name:
+            if (path.group(1), name.group(1)) in stale_items:
+                continue
+            if name.group(1) == "include":
+                include_sites.add(path.group(1))
+            else:
+                item_sites.add((path.group(1), name.group(1)))
+
+    lines = []
+    for name in sorted(spellings):
+        lines.append("\n[[source.rust.macros.allow]]")
+        lines.append(f'name = "{name}"')
+        if spellings[name]:
+            lines.append('inputs = "opaque"')
+        suffix = name.rsplit("::", 1)[-1]
+        lines.append(
+            f'reason = "Observed conservative spelling of the reviewed `{suffix}` expansion under glob imports."'
+        )
+    for path, name in sorted(item_sites):
+        lines.append("\n[[source.rust.item_macros]]")
+        lines.append(f'path = "{path}"')
+        lines.append(f'name = "{name}"')
+        suffix = name.rsplit("::", 1)[-1]
+        lines.append(
+            f'reason = "The reviewed `{suffix}` expansion declares items in this file."'
+        )
+    for path in sorted(include_sites):
+        lines.append("\n[[source.rust.item_macros]]")
+        lines.append(f'path = "{path}"')
+        lines.append('name = "include"')
+        lines.append(
+            'reason = "This suite includes reviewed non-module Rust fragments at item position."'
+        )
+    generated = "\n".join(lines) + ("\n\n" if lines else "")
+
+    for name in sorted(unknown):
+        print(f"unreviewed macro needs a hand decision: {name}", file=sys.stderr)
+
+    if generated == current:
+        print(f"generated block stable: {len(spellings)} spellings, "
+              f"{len(item_sites) + len(include_sites)} item exemptions")
+        return 1 if unknown else 0
+    if dry_run:
+        print("generated block would change (dry run)")
+        return 2
+    CONTRACT.write_text(head + generated + tail)
+    print(f"rewrote generated block: {len(spellings)} spellings, "
+          f"{len(item_sites) + len(include_sites)} item exemptions "
+          f"({len(stale)} stale removed)")
+    return 1 if unknown else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

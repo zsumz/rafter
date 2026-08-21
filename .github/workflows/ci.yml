@@ -107,6 +107,33 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/verify-action-pins
 
+  zrail:
+    name: zrail
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          # zrail's canonical qualification toolchain; the workspace default
+          # (1.88) predates zrail's own 1.96 source floor. The contract is
+          # static analysis, so this toolchain never builds rafter itself.
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: install the pinned zrail release
+        run: cargo install zrail --version 0.0.1 --locked
+      - name: architecture contract
+        # zrail.toml is the declarative architecture (layers, scopes, owners,
+        # size ratchets); zrail.lock binds it to exact repository state. Any
+        # drift — a new dependency edge, a grown ratcheted file, a changed
+        # gate input (including this workflow) — fails here and is refreshed
+        # with a reviewed `zrail update`.
+        run: zrail check
+
   test:
     name: test
     runs-on: ubuntu-24.04
