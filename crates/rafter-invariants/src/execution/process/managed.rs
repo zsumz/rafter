@@ -67,7 +67,10 @@ pub(crate) struct ManagedProcess {
 }
 
 impl ManagedProcess {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+    )]
     pub(crate) fn new(
         child: Child,
         anchor: ProcessGroupAnchor,

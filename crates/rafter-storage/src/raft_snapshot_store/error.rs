@@ -193,7 +193,10 @@ pub enum OpenRaftSnapshotStoreError {
 }
 
 impl fmt::Display for RaftSnapshotStoreWriteError {
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the rendering match enumerates every write-error variant in one reviewed place"
+    )]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EncodeSnapshot(error) => write!(

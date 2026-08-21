@@ -178,7 +178,10 @@ fn evaluate_request(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+)]
 fn execute_exact(
     request: EvaluationRequest<'_>,
     program: &str,

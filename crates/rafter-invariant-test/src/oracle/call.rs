@@ -36,7 +36,7 @@ macro_rules! impl_oracle_call {
         {
             type Output = Output;
 
-            #[allow(non_snake_case)]
+            #[allow(non_snake_case, reason = "the generated tuple bindings reuse the macro caller's type parameter names")]
             fn __oracle_call(self, ($($value,)+): ($($argument,)+)) -> Self::Output {
                 self($($value),+)
             }

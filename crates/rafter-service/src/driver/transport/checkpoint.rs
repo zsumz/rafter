@@ -1,4 +1,7 @@
-#![allow(clippy::wildcard_imports)]
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 //! The peer-control-plane record a restarted process reads back, and the one
 //! merge every pair of observations goes through.

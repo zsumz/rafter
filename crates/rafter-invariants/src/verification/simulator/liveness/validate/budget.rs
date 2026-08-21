@@ -102,7 +102,10 @@ pub(super) fn validate_round_budget(
         .ok_or_else(|| "round limit overflowed".to_owned())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+)]
 fn derive_base_rounds(
     contract: &SimulatorLivenessContract,
     node_count: u64,

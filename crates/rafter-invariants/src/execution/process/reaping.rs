@@ -13,7 +13,10 @@ use super::{
     SignalDelivery, PROCESS_POLL_INTERVAL,
 };
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+)]
 pub(super) fn kill_process_group_after_grace(
     process: &mut ManagedProcess,
     term_signal_sent: bool,

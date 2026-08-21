@@ -1,4 +1,7 @@
-#![allow(clippy::wildcard_imports)]
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 //! What one driver is allowed to accumulate before it refuses.
 //!

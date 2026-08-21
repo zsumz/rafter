@@ -315,7 +315,10 @@ impl StableLeaderGuard {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "held as the documented driver entry for liveness scenarios that attach on demand"
+)]
 pub(in crate::model_check::liveness) fn drive_liveness_rounds_until(
     state: &mut ExplorationState,
     config: SoakConfig,

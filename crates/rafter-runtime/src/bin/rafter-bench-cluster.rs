@@ -15,7 +15,8 @@
 #![allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    reason = "counts stay far below the 52-bit mantissa and ranks are bounded by the sample count"
 )]
 
 use std::collections::BTreeMap;

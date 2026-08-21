@@ -17,7 +17,10 @@ const SCHEDULED_SEED_NAMESPACE: &str = "scheduled-simulator-seed-v1";
 // The two scheduled arms are kept apart on purpose: they agree only because
 // weekly is demoted, not because weekly is defined as nightly. Merging them
 // would erase the seam that has to be reopened to promote weekly back.
-#[allow(clippy::match_same_arms)]
+#[allow(
+    clippy::match_same_arms,
+    reason = "identical arms keep each simulator identity separately named and separately reviewable"
+)]
 pub(crate) fn scheduled_model_profile(profile: &str) -> Option<&'static str> {
     match profile {
         "nightly" => Some("raft-nightly"),

@@ -205,7 +205,10 @@ struct EvidenceWitness {
 }
 
 impl EvidenceWitness {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+    )]
     const fn test(
         invariant_id: &'static str,
         clause: &'static str,

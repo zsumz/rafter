@@ -8,7 +8,13 @@ pub(crate) enum LivenessReportErrorKind {
 
 #[derive(Debug)]
 pub(crate) struct LivenessReportError {
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "the kind is read by test assertions; production callers format the message"
+        )
+    )]
     pub kind: LivenessReportErrorKind,
     pub message: String,
 }
