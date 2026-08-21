@@ -16,6 +16,7 @@ use super::protocol::{
     node_restart_stagger, reports_leader, role_state,
 };
 
+#[path = "io_threads.rs"]
 mod io_threads;
 
 use io_threads::{spawn_line_reader, spawn_stdin_reader, Event};

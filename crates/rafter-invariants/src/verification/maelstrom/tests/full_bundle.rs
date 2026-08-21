@@ -22,6 +22,6 @@ const VALID: &str = r"{
     0 {:linearizable {:valid? true}}}}
   :valid? true}";
 
-include!("full_bundle/scenarios.inc");
-include!("full_bundle/serialized_fixture.inc");
-include!("full_bundle/bundle_fixture.inc");
+include!("full_bundle/scenarios.rs");
+include!("full_bundle/serialized_fixture.rs");
+include!("full_bundle/bundle_fixture.rs");
