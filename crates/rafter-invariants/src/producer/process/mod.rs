@@ -18,6 +18,7 @@ pub(crate) use crate::execution::process::base_environment;
 pub(super) use crate::execution::process::duration_ms;
 use crate::execution::process::{FinalizationPolicy, TerminationPolicy};
 
+#[cfg(test)]
 pub(super) use adapter::timed_with_timeout;
 #[cfg(test)]
 pub(in crate::producer) use adapter::timed_with_timeout_after_stdout_ready;

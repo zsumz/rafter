@@ -9,6 +9,7 @@ use crate::execution::process::ProcessDeadlines;
 
 use super::{bind_invocation, bind_process_output, ProcessOutput, ProcessPolicy, ProcessSchedule};
 
+#[cfg(test)]
 pub(in crate::producer) fn timed_with_timeout(
     program: &str,
     arguments: &[OsString],

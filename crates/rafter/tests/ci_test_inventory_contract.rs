@@ -119,13 +119,13 @@ fn every_invariant_aggregate_primes_and_replays_authenticated_sources_offline() 
 
 #[test]
 fn verifier_jobs_share_runtime_class_and_use_reviewed_tool_actions() {
-    let root = workspace_root();
     const TLA_TOOLS: &str = "zactionsz/tla-tools@71c0d7d618cd49aa957740719d66a164a170bb70";
     const SETUP_MAELSTROM: &str =
         "zactionsz/setup-maelstrom@8a9d98910169eaa2ad22a8e7a46ca8a72e9e8e2b";
     const TLA_SHA256: &str = "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f";
     const MAELSTROM_SHA256: &str =
         "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799";
+    let root = workspace_root();
 
     let ci = read(&root.join(".github/workflows/ci.yml"));
     for job in ["invariants-tla", "invariants-tla-validation"] {
