@@ -55,21 +55,22 @@ fn hosted_jobs_use_explicit_supported_os_versions() {
 #[test]
 fn every_tla_runtime_uses_the_exact_reviewed_jdk_build() {
     let root = workspace_root();
-    for relative in [
-        ".github/actions/setup-invariant-verifier/action.yml",
-        ".github/workflows/ci.yml",
-    ] {
+    let mut identities = 0;
+    for relative in WORKFLOWS {
         let source = read(&root.join(relative));
         for line in source.lines().filter(|line| line.contains("java-version:")) {
+            identities += 1;
             assert_eq!(
                 line.trim(),
                 "java-version: \"21.0.11+10.0.LTS\"",
                 "{relative} contains an unreviewed JDK identity"
             );
         }
-        assert!(source.contains("architecture: x64"));
-        assert!(source.contains("check-latest: false"));
     }
+    assert_eq!(
+        identities, 8,
+        "reviewed invariant JDK identity inventory drifted"
+    );
 }
 
 #[test]
@@ -324,32 +325,28 @@ fn cargo_isolation_action_creates_once_and_rejects_stale_roots() {
 }
 
 #[test]
-fn maelstrom_setup_preflights_tools_and_uses_a_fresh_extraction_root() {
+fn repository_delegates_invariant_tool_installation_to_external_actions() {
     let root = workspace_root();
-    let action = read(&root.join(".github/actions/setup-invariant-verifier/action.yml"));
-    for required in [
-        "sudo apt-get update",
-        "sudo apt-get install -y --no-install-recommends graphviz gnuplot-nox",
-        "command -v dot",
-        "command -v gnuplot",
-        "dot -V",
-        "gnuplot --version",
-        "${GITHUB_RUN_ID}-${GITHUB_JOB}-${GITHUB_RUN_ATTEMPT}",
-        "$RUNNER_TEMP/rafter-maelstrom-$identity",
-        "[[ -e \"$path\" || -L \"$path\" ]]",
-        "tar -xjf \"$archive\" -C \"$install_root\"",
-        "maelstrom_root=\"$install_root/maelstrom\"",
-    ] {
-        assert!(
-            action.contains(required),
-            "Maelstrom setup omitted {required}"
-        );
+    assert!(!root
+        .join(".github/actions/setup-invariant-verifier/action.yml")
+        .exists());
+    for relative in WORKFLOWS {
+        let workflow = read(&root.join(relative));
+        for retired in [
+            "Cache tla2tools.jar",
+            "sudo apt-get install -y --no-install-recommends graphviz gnuplot-nox",
+            "jepsen-io/maelstrom/releases/download",
+        ] {
+            assert!(
+                !workflow.contains(retired),
+                "{relative} retained delegated installer work: {retired}"
+            );
+        }
     }
-    let forbidden = "-C \"$RUNNER_TEMP\"";
-    assert!(
-        !action.contains(forbidden),
-        "Maelstrom setup must not contain {forbidden}"
-    );
+    let runner = read(&root.join("scripts/tla-model-check"));
+    assert!(!runner.contains("--fetch-tool"));
+    assert!(!runner.contains("curl "));
+    assert!(runner.contains("TLA2TOOLS_JAR"));
 }
 
 fn action_steps<'a>(source: &'a str, action: &str) -> Vec<(usize, &'a str)> {

@@ -13,7 +13,7 @@ use crate::{
 use super::{
     artifact,
     contract::{
-        fetch_tool, parse_timeout, required_configuration, source_artifacts, validate_java,
+        parse_timeout, required_configuration, source_artifacts, validate_java,
         validate_obligation_options, validate_obligation_specs, validate_runner_options,
         validate_spec_contract,
     },
@@ -37,8 +37,6 @@ pub(in crate::producer) fn run(
     validate_runner_options(&runner.configuration)?;
     validate_obligation_options(&runner.obligations)?;
     validate_java(&source, &runner.configuration)?;
-    fetch_tool()?;
-    process::ensure_execution_deadline(profile, "tla", "TLA tool preparation")?;
     let artifacts = source_artifacts(
         &runner.configuration,
         &runner.obligations,

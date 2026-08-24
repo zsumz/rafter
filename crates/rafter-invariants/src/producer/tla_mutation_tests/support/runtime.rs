@@ -2,12 +2,9 @@
 
 use std::{fs, path::Path, process::Command, sync::OnceLock};
 
-use crate::producer::{
-    tla::contract,
-    tla_output::{render_detector_config, DetectorProbe},
-};
+use crate::producer::tla_output::{render_detector_config, DetectorProbe};
 
-static TLA_TOOL_FETCH: OnceLock<Result<(), String>> = OnceLock::new();
+static TLA_TOOL_READY: OnceLock<Result<(), String>> = OnceLock::new();
 
 pub(in crate::producer::tla_exec::mutation_tests) const ELECTION_PROBE: DetectorProbe =
     DetectorProbe {
@@ -173,9 +170,14 @@ pub(in crate::producer::tla_exec::mutation_tests) fn run_tlc_with_config(
 }
 
 fn ensure_tla_tool(root: &Path) {
-    if let Err(error) = TLA_TOOL_FETCH.get_or_init(|| {
-        contract::fetch_tool_at(root)
-            .map_err(|error| format!("fetch and verify pinned TLC jar: {error}"))
+    if let Err(error) = TLA_TOOL_READY.get_or_init(|| {
+        let jar = root.join("tools/cache/tla2tools.jar");
+        jar.is_file().then_some(()).ok_or_else(|| {
+            format!(
+                "pinned TLC tool is missing at {}; provision it with zactionsz/tla-tools",
+                jar.display()
+            )
+        })
     }) {
         panic!("{error}");
     }

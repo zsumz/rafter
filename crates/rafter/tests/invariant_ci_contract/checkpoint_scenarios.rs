@@ -117,9 +117,8 @@ fn verify_checkpoint_tlc_inputs(tla_job: &str, profile: &str, config: &str) {
         ("'specs/tla/raft/RafterInvariantDetectorNegative.tla'", 3),
         ("'specs/tla/raft/RafterInvariantDetectorNegative.cfg'", 3),
         ("'scripts/tla-model-check'", 3),
-        // The tool pins also key the tla2tools.jar download cache.
-        ("'tools/tla/ASSET_ID'", 4),
-        ("'tools/tla/SHA256SUMS'", 4),
+        ("'tools/tla/ASSET_ID'", 3),
+        ("'tools/tla/SHA256SUMS'", 3),
     ] {
         assert_eq!(
             tla_job.matches(tlc_input).count(),

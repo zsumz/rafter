@@ -57,27 +57,6 @@ pub(in crate::producer) fn timed_for_with_cap_and_descriptors(
     )
 }
 
-pub(in crate::producer) fn timed_with_optional_layer_budget(
-    kind: ProcessKind,
-    program: &str,
-    arguments: &[OsString],
-    environment: &BTreeMap<String, String>,
-    current_dir: &Path,
-    requested_cap: Duration,
-) -> Result<ProcessOutput, Box<dyn Error>> {
-    if has_active_layer_budget() {
-        return timed_for_with_cap(
-            kind,
-            program,
-            arguments,
-            environment,
-            current_dir,
-            Some(requested_cap),
-        );
-    }
-    super::timed_with_timeout(program, arguments, environment, current_dir, requested_cap)
-}
-
 pub(crate) fn identity_command_in(
     program: &str,
     arguments: &[&str],

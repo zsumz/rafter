@@ -165,7 +165,7 @@ fn every_maelstrom_scenario_builds_from_the_source_bound_workspace() {
 }
 
 #[test]
-fn tla_fetch_can_resolve_pins_when_the_runner_is_descriptor_bound() {
+fn tla_runner_can_resolve_pins_when_descriptor_bound() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let source = fs::read_to_string(root.join("scripts/tla-model-check")).expect("read TLA runner");
 

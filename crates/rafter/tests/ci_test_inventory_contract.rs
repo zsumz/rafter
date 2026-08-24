@@ -118,35 +118,33 @@ fn every_invariant_aggregate_primes_and_replays_authenticated_sources_offline() 
 }
 
 #[test]
-fn verifier_jobs_share_runtime_class_and_provision_profile_tools() {
+fn verifier_jobs_share_runtime_class_and_use_reviewed_tool_actions() {
     let root = workspace_root();
-    let setup = read(&root.join(".github/actions/setup-invariant-verifier/action.yml"));
-    for required in [
-        "uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9",
-        "distribution: temurin",
-        "java-version: \"21.0.11+10.0.LTS\"",
-        "architecture: x64",
-        "check-latest: false",
-        "command -v dot",
-        "command -v gnuplot",
-        "dot -V",
-        "gnuplot --version",
-        "version=v0.2.4",
-        "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799",
-    ] {
-        assert!(
-            setup.contains(required),
-            "verifier setup omitted required identity fragment: {required}"
-        );
-    }
+    const TLA_TOOLS: &str = "zactionsz/tla-tools@71c0d7d618cd49aa957740719d66a164a170bb70";
+    const SETUP_MAELSTROM: &str =
+        "zactionsz/setup-maelstrom@b2d7032d3c93ab76b2005bfceb470675786c40ad";
+    const TLA_SHA256: &str = "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f";
+    const MAELSTROM_SHA256: &str =
+        "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799";
 
     let ci = read(&root.join(".github/workflows/ci.yml"));
-    for job in ["invariants-tla", "invariants-pr"] {
-        assert!(
-            workflow_job(&ci, job).contains("./.github/actions/setup-invariant-verifier"),
-            "PR job {job} must independently provision Java"
-        );
+    for job in ["invariants-tla", "invariants-tla-validation"] {
+        let block = workflow_job(&ci, job);
+        for required in [
+            "uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9",
+            "distribution: temurin",
+            "java-version: \"21.0.11+10.0.LTS\"",
+            "architecture: x64",
+            "check-latest: false",
+            TLA_TOOLS,
+            "version: \"2026.08.11.125311\"",
+            TLA_SHA256,
+            "install -D -m 0444 \"$TLA2TOOLS_JAR\" tools/cache/tla2tools.jar",
+        ] {
+            assert!(block.contains(required), "PR job {job} omitted {required}");
+        }
     }
+    assert!(!ci.contains("./.github/actions/setup-invariant-verifier"));
 
     for (workflow, profile) in [("nightly.yml", "nightly"), ("weekly.yml", "weekly")] {
         let contents = read(&root.join(".github/workflows").join(workflow));
@@ -162,22 +160,36 @@ fn verifier_jobs_share_runtime_class_and_provision_profile_tools() {
                 "{workflow} job {job} crosses the reviewed runtime identity class"
             );
         }
-        for job in [
-            "invariants-tla",
-            "invariants-maelstrom",
-            &format!("invariants-{profile}"),
+        let tla = workflow_job(&contents, "invariants-tla");
+        for required in [
+            "uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9",
+            "java-version: \"21.0.11+10.0.LTS\"",
+            TLA_TOOLS,
+            "version: \"2026.08.11.125311\"",
+            TLA_SHA256,
+            "install -D -m 0444 \"$TLA2TOOLS_JAR\" tools/cache/tla2tools.jar",
         ] {
             assert!(
-                workflow_job(&contents, job).contains("./.github/actions/setup-invariant-verifier"),
-                "{workflow} job {job} omitted verifier tool provisioning"
+                tla.contains(required),
+                "{workflow} TLA job omitted {required}"
             );
         }
         for job in ["invariants-maelstrom", &format!("invariants-{profile}")] {
-            assert!(
-                workflow_job(&contents, job).contains("maelstrom: \"true\""),
-                "{workflow} job {job} must provision Maelstrom, Graphviz, and gnuplot"
-            );
+            let block = workflow_job(&contents, job);
+            for required in [
+                SETUP_MAELSTROM,
+                "version: \"0.2.4\"",
+                MAELSTROM_SHA256,
+                "java-version: \"21.0.11+10.0.LTS\"",
+                "analysis-tools: \"true\"",
+            ] {
+                assert!(
+                    block.contains(required),
+                    "{workflow} job {job} omitted {required}"
+                );
+            }
         }
+        assert!(!contents.contains("./.github/actions/setup-invariant-verifier"));
     }
 }
 

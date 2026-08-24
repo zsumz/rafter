@@ -1,65 +1,10 @@
-//! Pinned TLC tool preparation, Java binding, and duration parsing.
+//! Pinned TLC tool path, Java binding, and duration parsing.
 
-use std::{collections::BTreeMap, error::Error, ffi::OsString, path::Path, time::Duration};
+use std::{collections::BTreeMap, error::Error, time::Duration};
 
 use crate::evidence::SourceReceipt;
 
-use super::super::process;
-
 pub(super) const JAR: &str = "tools/cache/tla2tools.jar";
-const TOOL_FETCH_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-
-pub(in crate::producer::tla) fn fetch_tool() -> Result<(), Box<dyn Error>> {
-    fetch_tool_at(Path::new("."))
-}
-
-pub(crate) fn fetch_tool_at(repo_root: &Path) -> Result<(), Box<dyn Error>> {
-    let runner = repo_root.join("scripts/tla-model-check");
-    let program = runner.as_os_str().to_string_lossy();
-    fetch_tool_with(
-        repo_root,
-        &program,
-        &[OsString::from("--fetch-tool")],
-        TOOL_FETCH_TIMEOUT,
-    )
-}
-
-pub(super) fn fetch_tool_with(
-    repo_root: &Path,
-    program: &str,
-    arguments: &[OsString],
-    timeout: Duration,
-) -> Result<(), Box<dyn Error>> {
-    let environment = tool_fetch_environment(repo_root);
-    let output = process::timed_with_optional_layer_budget(
-        process::ProcessKind::TlaExecution,
-        program,
-        arguments,
-        &environment,
-        Path::new("."),
-        timeout,
-    )?;
-    if output.timed_out || !output.status.success() {
-        return Err(format!(
-            "fetch pinned TLC tool failed with {:?} (timed_out={}): stdout: {}; stderr: {}",
-            output.status.code(),
-            output.timed_out,
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-        .into());
-    }
-    Ok(())
-}
-
-pub(super) fn tool_fetch_environment(repo_root: &Path) -> BTreeMap<String, String> {
-    let mut environment = process::base_environment();
-    environment.insert(
-        "RAFTER_TLA_REPO_ROOT".to_owned(),
-        repo_root.as_os_str().to_string_lossy().into_owned(),
-    );
-    environment
-}
 
 pub(in crate::producer::tla) fn validate_java(
     source: &SourceReceipt,

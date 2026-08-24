@@ -139,16 +139,16 @@ contract rejects a reporting profile that declares no obligations.
 Upstream `tlaplus/tlaplus` tag `v1.8.0` is a rolling nightly channel, not an
 immutable release: the tag stays fixed while its assets are rebuilt, uploaded
 under fresh IDs, and their predecessors deleted. Three distinct `tla2tools.jar`
-digests were observed in five weeks, and the asset ID pinned before this
-contract now 404s. `tools/tla/ASSET_ID` is therefore a liveness pin only.
+digests were observed in five weeks, and two successively pinned upstream asset
+IDs now 404. `tools/tla/ASSET_ID` records the immutable mirror asset used by the
+Action so produced evidence remains bound to its reviewed distribution source.
 
 The identity pin is the SHA-256 in `tools/tla/SHA256SUMS`, which
-`scripts/tla-model-check` verifies before every run and which the profile
-contract repeats independently as `tool_sha256`, so a silently swapped upstream
-asset fails closed rather than being accepted. `tools/tla/VERSION` records the
-channel and the TLC build string it reported. A repo-controlled mirror of the
-reviewed jar is the durable fix for the liveness half; it is a maintainer
-decision and is not made here.
+`scripts/tla-model-check` verifies before every manual run and which the profile
+contract repeats independently as `tool_sha256`, so a silently swapped asset
+fails closed rather than being accepted. CI installs the immutable mirrored
+release through `zactionsz/tla-tools`; Rafter retains only the source and digest
+bindings needed to authenticate the evidence it produces.
 
 #### TLA+ contract migration: v15 to v16
 

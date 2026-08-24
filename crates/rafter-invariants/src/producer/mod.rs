@@ -31,9 +31,6 @@ pub(crate) use simulator::evaluate_model_fixture;
 pub(crate) use simulator::model::{
     later_launch_error_fixture_at, timed_out_zero_exit_fixture_at, SimulatorFixtureInvocation,
 };
-#[cfg(test)]
-pub(crate) use tla::contract::fetch_tool_at as fetch_tla_tool_at;
-
 use std::collections::BTreeSet;
 use std::{error::Error, io::Write, path::PathBuf};
 

@@ -222,10 +222,8 @@ impl Fixture {
                 "test: materialize TLA evidence fixture",
             ],
         );
-        crate::producer::fetch_tla_tool_at(workspace)
-            .expect("fetch and verify pinned TLC tool fixture");
         let tool = fs::read(workspace.join("tools/cache/tla2tools.jar"))
-            .expect("read pinned TLC tool fixture");
+            .expect("read pinned TLC tool fixture provisioned by zactionsz/tla-tools");
         self.write_kind("tla-tool", &tool);
         self.write_execution_artifacts();
         let old_source_ref = self.bundle.source_ref.clone();

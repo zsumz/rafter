@@ -89,7 +89,7 @@ fn tla_runner_tier_flags(source: &str) -> BTreeSet<String> {
         .lines()
         .filter_map(|line| line.trim().strip_suffix(')'))
         .filter(|flag| flag.starts_with("--"))
-        .filter(|flag| !matches!(*flag, "--fetch-tool" | "--print-config"))
+        .filter(|flag| *flag != "--print-config")
         .map(str::to_owned)
         .collect()
 }

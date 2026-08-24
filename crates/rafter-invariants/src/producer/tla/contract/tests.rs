@@ -1,16 +1,15 @@
 //! TLA+ source, tool, symmetry, and trace-contract scenarios.
 
-use std::{collections::BTreeMap, ffi::OsString, path::Path, time::Duration};
+use std::collections::BTreeMap;
 
 use super::super::tla_output::{
     render_detector_config, DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES,
     REGISTERED_PREDICATES,
 };
 use super::{
-    configured_invariants, fetch_tool_with, java_major, tool_fetch_environment,
-    validate_obligation_config_sources, validate_obligation_options, validate_runner_options,
-    validate_safety_only_boundary, validate_symmetry_contract, validate_trace_contract_sources,
-    SPEC, TRACE_CONFIG, TRACE_SPEC,
+    configured_invariants, java_major, validate_obligation_config_sources,
+    validate_obligation_options, validate_runner_options, validate_safety_only_boundary,
+    validate_symmetry_contract, validate_trace_contract_sources, SPEC, TRACE_CONFIG, TRACE_SPEC,
 };
 use crate::contract::profile::{ObligationCompletion, ProofObligationContract};
 
@@ -20,31 +19,6 @@ fn java_major_is_parsed_exactly() {
     assert_eq!(java_major("openjdk 21.0.7 2025-04-15"), Some(21));
     assert_eq!(java_major("java version \"1.8.0_402\""), Some(8));
     assert_eq!(java_major("java 210.0.1"), Some(210));
-}
-
-#[test]
-#[cfg(unix)]
-fn tool_fetch_is_managed_and_times_out_with_retained_diagnostics() {
-    let error = fetch_tool_with(
-        Path::new("."),
-        "sh",
-        &[
-            OsString::from("-c"),
-            OsString::from("printf fetch-started; sleep 5"),
-        ],
-        Duration::from_millis(50),
-    )
-    .expect_err("stalled tool fetch must time out")
-    .to_string();
-    assert!(error.contains("timed_out=true"));
-    assert!(error.contains("fetch-started"));
-}
-
-#[test]
-fn descriptor_bound_tool_fetch_receives_the_held_repository_root() {
-    let environment = tool_fetch_environment(Path::new("/tmp/rafter-root"));
-
-    assert_eq!(environment["RAFTER_TLA_REPO_ROOT"], "/tmp/rafter-root");
 }
 
 #[test]
