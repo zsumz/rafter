@@ -280,7 +280,7 @@ jobs:
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
       - name: Set up Maelstrom
-        uses: zactionsz/setup-maelstrom@b2d7032d3c93ab76b2005bfceb470675786c40ad
+        uses: zactionsz/setup-maelstrom@8a9d98910169eaa2ad22a8e7a46ca8a72e9e8e2b
         with:
           version: "0.2.4"
           sha256: "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799"
@@ -353,7 +353,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         timeout-minutes: 8
       - name: Set up Maelstrom
-        uses: zactionsz/setup-maelstrom@b2d7032d3c93ab76b2005bfceb470675786c40ad
+        uses: zactionsz/setup-maelstrom@8a9d98910169eaa2ad22a8e7a46ca8a72e9e8e2b
         timeout-minutes: 8
         with:
           version: "0.2.4"
