@@ -111,6 +111,18 @@ proof map in [`docs/work-completion.md`](./docs/work-completion.md).
 ## Testing
 
 ```sh
+zcheck
+```
+
+One command qualifies the checkout with the pull-request-tier local gates —
+the lint surface, the architecture contract, and the workspace test suite —
+through the task graph in [`zcheck.toml`](./zcheck.toml), run by
+[zcheck](https://github.com/zsumz/zcheck) (`cargo install zcheck --locked`).
+`zcheck run full` adds the locally runnable deeper evidence lanes,
+`zcheck plan check` shows the graph without executing it, and every run
+records logs and a receipt. The underlying commands remain directly runnable:
+
+```sh
 cargo test --workspace
 cargo test -p rafter-sim
 cargo run --release -p rafter-sim --bin rafter-model-check-fast
