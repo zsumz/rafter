@@ -68,7 +68,7 @@ fn every_tla_runtime_uses_the_exact_reviewed_jdk_build() {
         }
     }
     assert_eq!(
-        identities, 8,
+        identities, 9,
         "reviewed invariant JDK identity inventory drifted"
     );
 }

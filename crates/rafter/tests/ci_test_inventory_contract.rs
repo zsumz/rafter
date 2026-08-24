@@ -144,6 +144,19 @@ fn verifier_jobs_share_runtime_class_and_use_reviewed_tool_actions() {
             assert!(block.contains(required), "PR job {job} omitted {required}");
         }
     }
+    let aggregate = workflow_job(&ci, "invariants-pr");
+    for required in [
+        "uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9",
+        "distribution: temurin",
+        "java-version: \"21.0.11+10.0.LTS\"",
+        "architecture: x64",
+        "check-latest: false",
+    ] {
+        assert!(
+            aggregate.contains(required),
+            "PR aggregate omitted {required}"
+        );
+    }
     assert!(!ci.contains("./.github/actions/setup-invariant-verifier"));
 
     for (workflow, profile) in [("nightly.yml", "nightly"), ("weekly.yml", "weekly")] {
