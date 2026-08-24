@@ -141,11 +141,7 @@ fn maelstrom_compatibility_mounts_preserve_ci_test_identities() {
     let full_bundle = read(
         &root.join("crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle.rs"),
     );
-    for fragment in [
-        "scenarios.inc",
-        "serialized_fixture.inc",
-        "bundle_fixture.inc",
-    ] {
+    for fragment in ["scenarios.rs", "serialized_fixture.rs", "bundle_fixture.rs"] {
         assert!(
             full_bundle.contains(&format!("include!(\"full_bundle/{fragment}\")")),
             "full-bundle facade omitted {fragment}"

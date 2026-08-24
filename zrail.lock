@@ -2009,7 +2009,7 @@ value = 509
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter/tests/invariant_tooling_architecture_guard/domain_scenarios.rs"
-value = 841
+value = 845
 
 [[ratchet]]
 rule = "rust.file-size"

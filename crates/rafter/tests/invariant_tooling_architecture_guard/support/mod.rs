@@ -22,7 +22,7 @@ pub(crate) use source_inventory::{
     public_free_functions, string_array_constant,
 };
 pub(crate) use workspace::{
-    declares_implementation, display_path, invariant_rust_files, is_legacy_verifier,
-    is_test_module, legacy_verifier_references, read, rust_files, starts_with_module_contract,
-    workspace_root,
+    declares_implementation, display_path, invariant_rust_files, is_include_mounted_fragment,
+    is_legacy_verifier, is_test_module, legacy_verifier_references, read, rust_files,
+    starts_with_module_contract, workspace_root,
 };

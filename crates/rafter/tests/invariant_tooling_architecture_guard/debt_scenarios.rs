@@ -3,8 +3,8 @@
 use super::{
     architecture_support::{
         assert_forbidden_domain_imports_absent, declared_module_graph, declares_implementation,
-        display_path, invariant_rust_files, is_test_module, legacy_verifier_references, read,
-        starts_with_module_contract, workspace_root,
+        display_path, invariant_rust_files, is_include_mounted_fragment, is_test_module,
+        legacy_verifier_references, read, starts_with_module_contract, workspace_root,
     },
     invariant_tooling::{
         MAX_FILES_WITHOUT_MODULE_CONTRACTS, MAX_LEGACY_VERIFIER_PRODUCER_IMAGE_REFERENCES,
@@ -55,6 +55,9 @@ fn invariant_tooling_presentation_debt_only_shrinks() {
 
     for path in &files {
         let relative = display_path(&root, path);
+        if is_include_mounted_fragment(&relative) {
+            continue;
+        }
         let source = read(path);
         if !starts_with_module_contract(&source) {
             missing_contracts += 1;
