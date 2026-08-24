@@ -2,7 +2,7 @@
 schema = 1
 semantics = 1
 producer = "0.0.1"
-contract_sha256 = "0c4ba5abffc2b75c34ad9f7721c071ca22732218d0eb7ccb209ce9d49f59d163"
+contract_sha256 = "519e6d369d359c27f459481b4260cfc5ac749bd6a258744f8f526cabcd35190a"
 
 [[package]]
 name = "rafter"
