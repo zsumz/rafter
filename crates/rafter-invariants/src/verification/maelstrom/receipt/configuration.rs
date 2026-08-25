@@ -24,6 +24,7 @@ pub(super) fn validate(contract: &RunnerContract) -> Result<(), &'static str> {
         ("maelstrom_version", "v0.2.4"),
         ("operation_floor", "read-write-cas-per-trial"),
         ("lease_tick_interval_ms", "50"),
+        ("lease_answer_deadline_ticks", "2"),
         ("lease_election_timeout_ticks", "20"),
         ("lease_heartbeat_interval_ticks", "2"),
         ("lease_window_ticks", "10"),
@@ -31,7 +32,7 @@ pub(super) fn validate(contract: &RunnerContract) -> Result<(), &'static str> {
         ("lease_probe_source", "real-direct-maelstrom-read"),
         (
             "lease_history_binding",
-            "ordered-process-invoke-terminal-client-msg-value-code11",
+            "ordered-process-invoke-terminal-client-msg-value-code0-or-code11",
         ),
         (
             "lease_probe_selection",

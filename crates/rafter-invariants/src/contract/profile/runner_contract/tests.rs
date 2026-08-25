@@ -7,7 +7,7 @@ fn runner(layer: &str, configuration: serde_json::Value) -> RunnerContract {
     let producer = match layer {
         "tests" => "rafter-invariants-tests-v14",
         "tla" => "rafter-invariants-tla-v16",
-        "maelstrom" => "rafter-invariants-maelstrom-v10",
+        "maelstrom" => "rafter-invariants-maelstrom-v11",
         _ => unreachable!(),
     };
     let minimum_observed_checks = match layer {
@@ -314,7 +314,8 @@ fn maelstrom_contract_rejects_pr_profile() {
             "layer_timeout": "25m",
             "lease_election_timeout_ticks": "20",
             "lease_heartbeat_interval_ticks": "2",
-            "lease_history_binding": "ordered-process-invoke-terminal-client-msg-value-code11",
+            "lease_answer_deadline_ticks": "2",
+            "lease_history_binding": "ordered-process-invoke-terminal-client-msg-value-code0-or-code11",
             "lease_probe_selection": "second-post-expiry-read-per-client",
             "lease_probe_source": "real-direct-maelstrom-read",
             "lease_same_node_term": "required",

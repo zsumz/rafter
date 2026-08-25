@@ -57,8 +57,12 @@ impl LeaseMarker {
                 | "post-expiry-duplicate-terminal"
                 | "coverage-lost"
         );
+        let coded_phase = matches!(
+            phase.as_str(),
+            "post-expiry-unavailable" | "post-expiry-unexpected-error"
+        );
         if !known_phase
-            || (phase == "post-expiry-unexpected-error") != code.is_some()
+            || coded_phase != code.is_some()
             || (phase == "coverage-lost") != reason.is_some()
         {
             return Err(());

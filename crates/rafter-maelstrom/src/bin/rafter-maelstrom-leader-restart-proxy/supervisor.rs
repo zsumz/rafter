@@ -331,8 +331,12 @@ impl Supervisor {
             LeaseAction::PostExpiryHandler(event) => {
                 self.emit_lease_marker("post-expiry-handler", &event, None)?;
             }
-            LeaseAction::ProbeUnavailable(event) => {
-                self.emit_lease_marker("post-expiry-unavailable", &event, None)?;
+            LeaseAction::ProbeUnavailable { event, code } => {
+                self.emit_lease_marker(
+                    "post-expiry-unavailable",
+                    &event,
+                    Some(&format!("code={code}")),
+                )?;
             }
             LeaseAction::PostExpiryReadServed(event) => {
                 self.emit_lease_marker("post-expiry-read-served-violation", &event, None)?;

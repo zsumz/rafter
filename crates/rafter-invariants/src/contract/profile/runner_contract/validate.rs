@@ -51,7 +51,7 @@ fn expected_identity(layer: &str) -> Result<(&'static str, usize), String> {
         "tests" => Ok(("rafter-invariants-tests-v14", 82)),
         "simulator" => Ok(("rafter-invariants-simulator-v19", 79)),
         "tla" => Ok(("rafter-invariants-tla-v16", 1)),
-        "maelstrom" => Ok(("rafter-invariants-maelstrom-v10", 6)),
+        "maelstrom" => Ok(("rafter-invariants-maelstrom-v11", 6)),
         _ => Err(format!("unsupported runner layer {layer}")),
     }
 }

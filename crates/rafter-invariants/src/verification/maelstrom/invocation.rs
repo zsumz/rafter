@@ -187,6 +187,11 @@ fn expected_environment(
                 "RAFTER_MAELSTROM_HEARTBEAT_INTERVAL_TICKS",
                 "lease_heartbeat_interval_ticks",
             )?,
+            configured(
+                bundle,
+                "RAFTER_MAELSTROM_ANSWER_DEADLINE_TICKS",
+                "lease_answer_deadline_ticks",
+            )?,
         ]);
     }
     Ok(expected)
@@ -215,6 +220,7 @@ fn remove_trial_environment(environment: &mut BTreeMap<String, String>) {
         "RAFTER_MAELSTROM_TICK_INTERVAL_MS",
         "RAFTER_MAELSTROM_ELECTION_TIMEOUT_TICKS",
         "RAFTER_MAELSTROM_HEARTBEAT_INTERVAL_TICKS",
+        "RAFTER_MAELSTROM_ANSWER_DEADLINE_TICKS",
     ] {
         environment.remove(name);
     }
