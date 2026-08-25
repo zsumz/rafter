@@ -17,14 +17,18 @@
 # The adoption debt ledger (per-file shrink-only ratchets) lives in
 # zrail-baseline.toml so this file stays the readable architecture document.
 #
-# Pinned to zrail 0.0.1 (lock semantics epoch 1). The 0.0.2 upgrade is
-# blocked: its repository-wide include-binding projection has a fixed
-# 4,000,000-unit work budget that this workspace exhausts (RUST-INCLUDE-002
-# fails closed before any other analysis), workspace_members = "exact"
-# forbids narrowing scope around it, and no override exists. Upgrade when the
-# projection budget scales with repository size or becomes configurable; the
-# 0.0.2 feature set then also unlocks deny-unreviewed macros, module-doc
-# ratchets, file-role overrides, and production-scoped owners and effects.
+# Pinned to zrail 0.0.1 (contract schema 1, lock semantics epoch 1). The
+# 0.0.3-rc.4 upgrade fixed 0.0.2's fixed projection budget with input-scaled
+# analysis, but its ordinary-path binding resolution leaves 474 of this
+# workspace's files unresolved (RUST-INCLUDE-002 on plain signatures and
+# prelude names, concentrated in the module-hub `use super::{...}` re-import
+# idiom), and the completeness certificate then refuses lock construction,
+# baseline, coverage, and migration with no override; raising the schema-2
+# [analysis.limits] work budgets changes nothing, so this is resolver
+# capability, not budget. Upgrade when ordinary-path resolution completes on
+# this workspace; schema migration itself is one line (schema = 2), and
+# `zrail migrate-config --write` must not be used here because it strips
+# every comment from this document.
 
 schema = 1
 adapters = ["rust"]
