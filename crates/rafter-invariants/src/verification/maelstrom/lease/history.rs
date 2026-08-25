@@ -23,17 +23,24 @@ pub(crate) fn completion_count(
     source: &str,
     client: &str,
     message: u64,
+    code: u64,
 ) -> Result<u64, AggregateError> {
-    completion_count_with_limits(source, client, message, LIMITS)
+    completion_count_with_limits(source, client, message, code, LIMITS)
 }
 
 pub(crate) fn completion_count_with_limits(
     source: &str,
     client: &str,
     message: u64,
+    code: u64,
     limits: Limits,
 ) -> Result<u64, AggregateError> {
-    let expected = format!("[rafter-lease-probe client={client} msg_id={message} code=11]");
+    let error_name = match code {
+        0 => "timeout",
+        11 => "temporarily-unavailable",
+        _ => return Err(error(format!("unsupported lease probe error code {code}"))),
+    };
+    let expected = format!("[rafter-lease-probe client={client} msg_id={message} code={code}]");
     let mut pending = BTreeMap::<Value, (Value, Value)>::new();
     let mut completions = 0;
     let mut last_index = None;
@@ -100,7 +107,7 @@ pub(crate) fn completion_count_with_limits(
         }
         let tagged = match operation.get(&keyword("error")) {
             Some(Value::Vector(error)) if error.len() == 2 => {
-                matches!(&error[0], Value::Keyword(value) if value.name() == "temporarily-unavailable")
+                matches!(&error[0], Value::Keyword(value) if value.name() == error_name)
                     && matches!(&error[1], Value::String(text) if text.ends_with(&expected))
             }
             _ => false,

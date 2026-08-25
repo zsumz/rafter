@@ -14,7 +14,7 @@ fn good() -> Vec<LeaseMarker> {
         "seq=3 node=n1 term=3 phase=read-buffered client=c1 msg_id=11",
         "seq=4 node=n1 term=3 phase=post-expiry-released client=c1 msg_id=11",
         "seq=5 node=n1 term=3 phase=post-expiry-handler client=c1 msg_id=11",
-        "seq=6 node=n1 term=3 phase=post-expiry-unavailable client=c1 msg_id=11",
+        "seq=6 node=n1 term=3 phase=post-expiry-unavailable client=c1 msg_id=11 code=11",
     ]
     .into_iter()
     .map(|fields| {
@@ -134,6 +134,9 @@ fn duplicate_terminal_marker_fails_closed_after_either_terminal_kind() {
     ] {
         let mut events = good();
         events[5].phase = terminal.to_owned();
+        if terminal == "post-expiry-read-served-violation" {
+            events[5].code = None;
+        }
         events.push(LeaseMarker::parse(
             "rafter-maelstrom lease-isolation seq=7 node=n1 term=3 phase=post-expiry-duplicate-terminal client=c1 msg_id=11",
             "n1",
@@ -147,6 +150,9 @@ fn duplicate_terminal_marker_fails_closed_after_either_terminal_kind() {
 
         let mut duplicate_before_handler = good();
         duplicate_before_handler[5].phase = terminal.to_owned();
+        if terminal == "post-expiry-read-served-violation" {
+            duplicate_before_handler[5].code = None;
+        }
         duplicate_before_handler.insert(4, LeaseMarker::parse(
             "rafter-maelstrom lease-isolation seq=5 node=n1 term=3 phase=post-expiry-duplicate-terminal client=c1 msg_id=11",
             "n1",
@@ -165,6 +171,7 @@ fn duplicate_terminal_marker_fails_closed_after_either_terminal_kind() {
 fn malformed_marker_after_read_served_preserves_violation_and_harness_error() {
     let mut events = good();
     events[5].phase = "post-expiry-read-served-violation".to_owned();
+    events[5].code = None;
     let mut markers = ScenarioMarkers::default();
     finish_lease_transcript(&mut markers, &events, 1);
     assert_eq!(
@@ -192,6 +199,30 @@ fn retained_history_must_match_the_exact_probe_identity_once() {
     bind_lease_history(&mut matched, &events, Some(exact));
     assert_eq!(matched.lease_history_probe_matches, 1);
     assert_eq!(matched.lease_status, LeaseTranscriptStatus::Complete);
+
+    let timeout_events = good()
+        .into_iter()
+        .map(|mut event| {
+            if event.phase == "post-expiry-unavailable" {
+                event.code = Some(0);
+            }
+            event
+        })
+        .collect::<Vec<_>>();
+    let timeout = exact
+        .replace(":temporarily-unavailable", ":timeout")
+        .replace("code=11", "code=0");
+    let mut timeout_matched = ScenarioMarkers {
+        lease_status: LeaseTranscriptStatus::Complete,
+        lease_sequence_complete: 1,
+        ..ScenarioMarkers::default()
+    };
+    bind_lease_history(&mut timeout_matched, &timeout_events, Some(&timeout));
+    assert_eq!(timeout_matched.lease_history_probe_matches, 1);
+    assert_eq!(
+        timeout_matched.lease_status,
+        LeaseTranscriptStatus::Complete
+    );
 
     for history in [None, Some(swapped.as_str())] {
         let mut rejected = ScenarioMarkers {

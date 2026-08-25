@@ -52,10 +52,15 @@ pub(in crate::producer) fn bind_lease_history(
         return;
     }
     let probe = events.iter().find(|event| event.phase == "read-buffered");
+    let completion = events
+        .iter()
+        .find(|event| event.phase == "post-expiry-unavailable");
     let matches = probe
+        .zip(completion)
         .zip(source)
-        .and_then(|(probe, source)| {
-            history::probe_completion_count(source, &probe.client, probe.msg_id).ok()
+        .and_then(|((probe, completion), source)| {
+            history::probe_completion_count(source, &probe.client, probe.msg_id, completion.code?)
+                .ok()
         })
         .unwrap_or_default();
     if matches == 1 {
@@ -114,7 +119,10 @@ pub(in crate::producer) fn validate_lease_transcript(
                 handled = true;
             }
             "post-expiry-unavailable"
-                if handled && probe == Some(event.request()) && terminal.is_none() =>
+                if handled
+                    && probe == Some(event.request())
+                    && matches!(event.code, Some(0 | 11))
+                    && terminal.is_none() =>
             {
                 terminal = Some(LeaseTranscriptStatus::Complete);
             }

@@ -19,6 +19,7 @@ struct Configuration {
     layer_timeout: String,
     lease_election_timeout_ticks: String,
     lease_heartbeat_interval_ticks: String,
+    lease_answer_deadline_ticks: String,
     lease_history_binding: String,
     lease_probe_selection: String,
     lease_probe_source: String,
@@ -69,8 +70,9 @@ pub(super) fn validate(
         && contract.kill_confirmation_timeout == "5s"
         && contract.lease_election_timeout_ticks == "20"
         && contract.lease_heartbeat_interval_ticks == "2"
+        && contract.lease_answer_deadline_ticks == "2"
         && contract.lease_history_binding
-            == "ordered-process-invoke-terminal-client-msg-value-code11"
+            == "ordered-process-invoke-terminal-client-msg-value-code0-or-code11"
         && contract.lease_probe_selection == "second-post-expiry-read-per-client"
         && contract.lease_probe_source == "real-direct-maelstrom-read"
         && contract.lease_same_node_term == "required"

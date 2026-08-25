@@ -51,7 +51,10 @@ pub(super) fn rederive(events: &[LeaseMarker]) -> Result<LeaseArtifactStatus, ()
                 handled = true;
             }
             "post-expiry-unavailable"
-                if handled && buffered == Some(event.identity()) && terminal.is_none() =>
+                if handled
+                    && buffered == Some(event.identity())
+                    && matches!(event.code, Some(0 | 11))
+                    && terminal.is_none() =>
             {
                 terminal = Some(LeaseArtifactStatus::Complete);
             }

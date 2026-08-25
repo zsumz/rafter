@@ -262,6 +262,10 @@ fn trial_environment(
                 "RAFTER_MAELSTROM_HEARTBEAT_INTERVAL_TICKS".to_owned(),
                 required_configuration(configuration, "lease_heartbeat_interval_ticks")?.to_owned(),
             ),
+            (
+                "RAFTER_MAELSTROM_ANSWER_DEADLINE_TICKS".to_owned(),
+                required_configuration(configuration, "lease_answer_deadline_ticks")?.to_owned(),
+            ),
         ]);
     }
     Ok(environment)

@@ -86,9 +86,9 @@ fn correlated_code_11_response_completes_after_forwarding() {
     ));
     assert!(matches!(
         state
-            .observe_response(&probe, ClientResponse::TemporarilyUnavailable)
+            .observe_response(&probe, ClientResponse::Unavailable(11))
             .as_slice(),
-        [Action::ProbeUnavailable(_)]
+        [Action::ProbeUnavailable { code: 11, .. }]
     ));
     assert!(!state.drops_raft());
 }
@@ -100,26 +100,23 @@ fn response_and_handler_correlate_across_pipe_ordering() {
     state.observe_lease_state(false, true, 3);
     select_probe(&mut state, &probe);
     assert!(state
-        .observe_response(&probe, ClientResponse::TemporarilyUnavailable)
+        .observe_response(&probe, ClientResponse::Unavailable(0))
         .is_empty());
     let actions = state.observe_read_handler(&probe, false, true, 3);
     assert!(matches!(
         actions.as_slice(),
-        [Action::PostExpiryHandler(_), Action::ProbeUnavailable(_)]
+        [
+            Action::PostExpiryHandler(_),
+            Action::ProbeUnavailable { code: 0, .. }
+        ]
     ));
 }
 
 #[test]
 fn second_probe_terminal_fails_closed_before_handler_in_either_order() {
     for (first, second) in [
-        (
-            ClientResponse::TemporarilyUnavailable,
-            ClientResponse::ReadOk,
-        ),
-        (
-            ClientResponse::ReadOk,
-            ClientResponse::TemporarilyUnavailable,
-        ),
+        (ClientResponse::Unavailable(11), ClientResponse::ReadOk),
+        (ClientResponse::ReadOk, ClientResponse::Unavailable(11)),
     ] {
         let mut state = isolating();
         let probe = request("c1", 11);
@@ -137,8 +134,10 @@ fn second_probe_terminal_fails_closed_before_handler_in_either_order() {
             Some(Action::PostExpiryHandler(_))
         ));
         match first {
-            ClientResponse::TemporarilyUnavailable => {
-                assert!(matches!(actions.get(1), Some(Action::ProbeUnavailable(_))));
+            ClientResponse::Unavailable(code) => {
+                assert!(
+                    matches!(actions.get(1), Some(Action::ProbeUnavailable { code: observed, .. }) if *observed == code)
+                );
             }
             ClientResponse::ReadOk => assert!(matches!(
                 actions.get(1),
@@ -152,14 +151,8 @@ fn second_probe_terminal_fails_closed_before_handler_in_either_order() {
 #[test]
 fn second_probe_terminal_fails_closed_after_safe_or_violating_completion() {
     for (first, second) in [
-        (
-            ClientResponse::TemporarilyUnavailable,
-            ClientResponse::ReadOk,
-        ),
-        (
-            ClientResponse::ReadOk,
-            ClientResponse::TemporarilyUnavailable,
-        ),
+        (ClientResponse::Unavailable(11), ClientResponse::ReadOk),
+        (ClientResponse::ReadOk, ClientResponse::Unavailable(11)),
     ] {
         let mut state = isolating();
         let probe = request("c1", 11);
@@ -237,9 +230,9 @@ fn expected_stepdown_after_handler_waits_for_the_correlated_cancellation() {
     assert!(state.drops_raft());
     assert!(matches!(
         state
-            .observe_response(&probe, ClientResponse::TemporarilyUnavailable)
+            .observe_response(&probe, ClientResponse::Unavailable(11))
             .as_slice(),
-        [Action::ProbeUnavailable(_)]
+        [Action::ProbeUnavailable { code: 11, .. }]
     ));
 }
 

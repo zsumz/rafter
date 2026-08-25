@@ -26,7 +26,7 @@ fn good() -> String {
         "seq=3 node=n1 term=3 phase=read-buffered client=c1 msg_id=11",
         "seq=4 node=n1 term=3 phase=post-expiry-released client=c1 msg_id=11",
         "seq=5 node=n1 term=3 phase=post-expiry-handler client=c1 msg_id=11",
-        "seq=6 node=n1 term=3 phase=post-expiry-unavailable client=c1 msg_id=11",
+        "seq=6 node=n1 term=3 phase=post-expiry-unavailable client=c1 msg_id=11 code=11",
     ]
     .into_iter()
     .map(|fields| format!("rafter-maelstrom lease-isolation {fields}"))
@@ -60,6 +60,9 @@ fn lease_isolation_artifacts_require_the_complete_safe_sequence() {
         &markers,
         false
     ));
+
+    let timeout = good().replace("code=11", "code=0");
+    assert_eq!(scan(&timeout).0, LeaseArtifactStatus::Complete);
 }
 
 #[test]
@@ -95,8 +98,8 @@ fn detector_rejects_out_of_order_missing_and_duplicate_events() {
 #[test]
 fn detector_classifies_read_ok_and_renewal_as_rd05_violations() {
     let served = good().replace(
-        "phase=post-expiry-unavailable",
-        "phase=post-expiry-read-served-violation",
+        "phase=post-expiry-unavailable client=c1 msg_id=11 code=11",
+        "phase=post-expiry-read-served-violation client=c1 msg_id=11",
     );
     let (status, markers) = scan(&served);
     assert_eq!(status, LeaseArtifactStatus::Violation);
@@ -118,7 +121,7 @@ fn detector_classifies_read_ok_and_renewal_as_rd05_violations() {
 #[test]
 fn detector_treats_unexpected_error_and_malformed_marker_as_harness_errors() {
     let unexpected = good().replace(
-        "phase=post-expiry-unavailable client=c1 msg_id=11",
+        "phase=post-expiry-unavailable client=c1 msg_id=11 code=11",
         "phase=post-expiry-unexpected-error client=c1 msg_id=11 code=20",
     );
     assert_eq!(scan(&unexpected).0, LeaseArtifactStatus::HarnessError);
@@ -132,7 +135,15 @@ fn detector_rejects_second_correlated_terminal_after_either_result() {
         "post-expiry-unavailable",
         "post-expiry-read-served-violation",
     ] {
-        let mut source = good().replace("post-expiry-unavailable", phase);
+        let source = if phase == "post-expiry-unavailable" {
+            good()
+        } else {
+            good().replace(
+                "phase=post-expiry-unavailable client=c1 msg_id=11 code=11",
+                "phase=post-expiry-read-served-violation client=c1 msg_id=11",
+            )
+        };
+        let mut source = source;
         source.push_str("\nrafter-maelstrom lease-isolation seq=7 node=n1 term=3 phase=post-expiry-duplicate-terminal client=c1 msg_id=11");
         let (status, markers) = scan(&source);
         let expected = if phase == "post-expiry-read-served-violation" {
@@ -143,11 +154,15 @@ fn detector_rejects_second_correlated_terminal_after_either_result() {
         assert_eq!(status, expected);
         assert_eq!(markers["lease_duplicate_terminal"], 1);
 
-        let mut lines = good()
-            .replace("post-expiry-unavailable", phase)
-            .lines()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        let source = if phase == "post-expiry-unavailable" {
+            good()
+        } else {
+            good().replace(
+                "phase=post-expiry-unavailable client=c1 msg_id=11 code=11",
+                "phase=post-expiry-read-served-violation client=c1 msg_id=11",
+            )
+        };
+        let mut lines = source.lines().map(str::to_owned).collect::<Vec<_>>();
         lines.insert(4, "rafter-maelstrom lease-isolation seq=5 node=n1 term=3 phase=post-expiry-duplicate-terminal client=c1 msg_id=11".to_owned());
         for (index, line) in lines.iter_mut().enumerate() {
             let (_, rest) = line.split_once(" node=").expect("marker has node");
@@ -163,8 +178,8 @@ fn detector_rejects_second_correlated_terminal_after_either_result() {
 #[test]
 fn malformed_marker_after_read_served_preserves_violation_and_harness_error() {
     let mut source = good().replace(
-        "post-expiry-unavailable",
-        "post-expiry-read-served-violation",
+        "phase=post-expiry-unavailable client=c1 msg_id=11 code=11",
+        "phase=post-expiry-read-served-violation client=c1 msg_id=11",
     );
     source.push_str("\nrafter-maelstrom lease-isolation malformed");
     let (status, markers) = scan(&source);
@@ -177,22 +192,30 @@ fn independent_history_parser_rejects_missing_and_swapped_probe_identity() {
     let completion = "{:index 2 :type :fail :process 0 :f :read :value nil :error [:temporarily-unavailable \"LeadershipLost [rafter-lease-probe client=c1 msg_id=11 code=11]\"]}";
     let exact = format!("{{:index 1 :type :invoke :process 0 :f :read :value nil}}\n{completion}");
     assert_eq!(
-        history_completion_count(&exact, "c1", 11).expect("history parses"),
+        history_completion_count(&exact, "c1", 11, 11).expect("history parses"),
+        1
+    );
+    let timeout = exact
+        .replace(":temporarily-unavailable", ":timeout")
+        .replace("code=11", "code=0");
+    assert_eq!(
+        history_completion_count(&timeout, "c1", 11, 0).expect("timeout history parses"),
         1
     );
     assert_eq!(
-        history_completion_count("", "c1", 11).expect("empty history parses"),
+        history_completion_count("", "c1", 11, 11).expect("empty history parses"),
         0
     );
     assert_eq!(
-        history_completion_count(&exact.replace("client=c1", "client=c2"), "c1", 11)
+        history_completion_count(&exact.replace("client=c1", "client=c2"), "c1", 11, 11)
             .expect("swapped history parses"),
         0
     );
-    assert!(history_completion_count(completion, "c1", 11).is_err());
+    assert!(history_completion_count(completion, "c1", 11, 11).is_err());
     assert!(history_completion_count(
         "{:index 1 :type :invoke :process 0 :f :read :value nil}",
         "c1",
+        11,
         11
     )
     .is_err());
@@ -202,17 +225,17 @@ fn independent_history_parser_rejects_missing_and_swapped_probe_identity() {
             .replace(":index 2", ":index 3")
             .replace(":process 0", ":process 1")
     );
-    assert!(history_completion_count(&swapped, "c1", 11).is_err());
+    assert!(history_completion_count(&swapped, "c1", 11, 11).is_err());
     let mismatched_value = format!(
         "{{:index 1 :type :invoke :process 0 :f :read :value [0 nil]}}\n{}",
         completion.replace(":value nil", ":value [1 nil]")
     );
-    assert!(history_completion_count(&mismatched_value, "c1", 11).is_err());
+    assert!(history_completion_count(&mismatched_value, "c1", 11, 11).is_err());
     let missing_value = format!(
         "{{:index 1 :type :invoke :process 0 :f :read :value nil}}\n{}",
         completion.replace(" :value nil", "")
     );
-    assert!(history_completion_count(&missing_value, "c1", 11).is_err());
+    assert!(history_completion_count(&missing_value, "c1", 11, 11).is_err());
 }
 
 #[test]
@@ -263,6 +286,7 @@ fn history_parser_enforces_operation_pending_and_line_limits() {
         &format!("{invoke}\n{second}"),
         "c1",
         11,
+        11,
         limits(1, usize::MAX, usize::MAX),
     )
     .unwrap_err()
@@ -272,6 +296,7 @@ fn history_parser_enforces_operation_pending_and_line_limits() {
         &format!("{invoke}\n{second}"),
         "c1",
         11,
+        11,
         limits(usize::MAX, 1, usize::MAX),
     )
     .unwrap_err()
@@ -280,6 +305,7 @@ fn history_parser_enforces_operation_pending_and_line_limits() {
     assert!(history_completion_count_with_limits(
         invoke,
         "c1",
+        11,
         11,
         limits(usize::MAX, usize::MAX, 16),
     )

@@ -931,12 +931,12 @@ impl InitializedNode {
                 json!({"type": "cas_ok", "msg_id": msg_id, "in_reply_to": in_reply_to})
             }
             ClientResult::Error { code, mut text } => {
-                if code == ERROR_TEMPORARILY_UNAVAILABLE
+                if matches!(code, ERROR_TIMEOUT | ERROR_TEMPORARILY_UNAVAILABLE)
                     && std::env::var("RAFTER_MAELSTROM_LEASE_EVIDENCE").as_deref() == Ok("1")
                 {
                     let _ = write!(
                         text,
-                        " [rafter-lease-probe client={client} msg_id={in_reply_to} code=11]"
+                        " [rafter-lease-probe client={client} msg_id={in_reply_to} code={code}]"
                     );
                 }
                 json!({"type": "error", "msg_id": msg_id, "in_reply_to": in_reply_to, "code": code, "text": text})

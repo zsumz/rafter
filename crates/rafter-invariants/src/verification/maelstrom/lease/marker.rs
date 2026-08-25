@@ -61,8 +61,12 @@ impl LeaseMarker {
             .transpose()
             .map_err(|_| ())?;
         let reason = fields.get("reason").map(|value| (*value).to_owned());
+        let coded_phase = matches!(
+            phase.as_str(),
+            "post-expiry-unavailable" | "post-expiry-unexpected-error"
+        );
         if !known_phase(&phase)
-            || (phase == "post-expiry-unexpected-error") != code.is_some()
+            || coded_phase != code.is_some()
             || (phase == "coverage-lost") != reason.is_some()
         {
             return Err(());

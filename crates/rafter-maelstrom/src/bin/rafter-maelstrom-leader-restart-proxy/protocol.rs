@@ -127,8 +127,8 @@ pub(super) fn role_state(line: &str) -> Option<RoleState> {
 }
 
 fn error_response(code: u64) -> ClientResponse {
-    if code == 11 {
-        ClientResponse::TemporarilyUnavailable
+    if matches!(code, 0 | 11) {
+        ClientResponse::Unavailable(code)
     } else {
         ClientResponse::UnexpectedError(code)
     }
@@ -205,12 +205,15 @@ mod tests {
         );
         assert_eq!(
             client_response(
+                r#"{"src":"n1","dest":"c0","body":{"type":"error","in_reply_to":41,"code":0}}"#
+            ),
+            Some((RequestId::new("c0", 41), ClientResponse::Unavailable(0)))
+        );
+        assert_eq!(
+            client_response(
                 r#"{"src":"n1","dest":"c0","body":{"type":"error","in_reply_to":41,"code":11}}"#
             ),
-            Some((
-                RequestId::new("c0", 41),
-                ClientResponse::TemporarilyUnavailable
-            ))
+            Some((RequestId::new("c0", 41), ClientResponse::Unavailable(11)))
         );
         assert_eq!(
             client_response(

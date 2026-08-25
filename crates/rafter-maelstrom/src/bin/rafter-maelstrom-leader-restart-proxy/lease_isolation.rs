@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ClientResponse {
     ReadOk,
-    TemporarilyUnavailable,
+    Unavailable(u64),
     UnexpectedError(u64),
 }
 
@@ -44,7 +44,10 @@ pub(super) enum Action {
     LeaseExpired(EvidenceEvent),
     ReleaseBuffered(EvidenceEvent),
     PostExpiryHandler(EvidenceEvent),
-    ProbeUnavailable(EvidenceEvent),
+    ProbeUnavailable {
+        event: EvidenceEvent,
+        code: u64,
+    },
     PostExpiryReadServed(EvidenceEvent),
     PostExpiryLeaseRenewed(EvidenceEvent),
     PostExpiryUnexpectedError {
@@ -375,7 +378,7 @@ impl LeaseIsolation {
         }
         if matches!(
             attempt.response,
-            Some(ClientResponse::TemporarilyUnavailable | ClientResponse::UnexpectedError(_))
+            Some(ClientResponse::Unavailable(_) | ClientResponse::UnexpectedError(_))
         ) {
             self.fast_path = None;
             self.phase = Phase::AwaitingFastPath;
@@ -396,9 +399,9 @@ impl LeaseIsolation {
         };
         self.buffered = None;
         match response {
-            ClientResponse::TemporarilyUnavailable => {
+            ClientResponse::Unavailable(code) => {
                 self.phase = Phase::Complete;
-                vec![Action::ProbeUnavailable(event)]
+                vec![Action::ProbeUnavailable { event, code }]
             }
             ClientResponse::ReadOk => {
                 self.phase = Phase::Violation;

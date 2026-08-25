@@ -34,6 +34,7 @@ pub(super) struct MarkerScan {
 struct LeaseProbe {
     client: String,
     message: u64,
+    code: u64,
 }
 
 pub(super) fn scan_node_logs(
@@ -67,9 +68,17 @@ pub(super) fn scan_node_logs(
     let probe = lease_events
         .iter()
         .find(|event| event.phase == "read-buffered")
-        .map(|event| LeaseProbe {
-            client: event.client.clone(),
-            message: event.message,
+        .zip(
+            lease_events
+                .iter()
+                .find(|event| event.phase == "post-expiry-unavailable"),
+        )
+        .and_then(|(probe, completion)| {
+            Some(LeaseProbe {
+                client: probe.client.clone(),
+                message: probe.message,
+                code: completion.code?,
+            })
         });
     Ok(MarkerScan {
         values,
@@ -94,9 +103,12 @@ pub(super) fn bind_history(
         })
         .collect::<Vec<_>>();
     let matches = match (histories.as_slice(), scan.probe.as_ref()) {
-        ([history], Some(probe)) => {
-            history::completion_count(authenticated.text(history)?, &probe.client, probe.message)?
-        }
+        ([history], Some(probe)) => history::completion_count(
+            authenticated.text(history)?,
+            &probe.client,
+            probe.message,
+            probe.code,
+        )?,
         _ => 0,
     };
     if matches == 1 {
