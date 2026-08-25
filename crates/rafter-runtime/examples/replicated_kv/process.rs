@@ -7,7 +7,7 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rafter::{Input, LogIndex, Message, NodeId, Output, ReadId, Role};
+use rafter::{Input, LocalProposalId, LogIndex, Message, NodeId, Output, ReadId, Role};
 use rafter_transport_tcp_insecure::{InsecureTcpTransport, ReconnectBackoff};
 
 use super::{
@@ -104,6 +104,7 @@ struct ProcessCluster {
     stdout_rx: mpsc::Receiver<ProcessLine>,
     stdout_tx: mpsc::Sender<ProcessLine>,
     pending: VecDeque<ProcessLine>,
+    next_proposal_id: u64,
     next_read_id: u64,
 }
 
@@ -118,6 +119,7 @@ impl ProcessCluster {
             stdout_rx,
             stdout_tx,
             pending: VecDeque::new(),
+            next_proposal_id: 1,
             next_read_id: 1,
         };
         for node_id in super::types::NODE_IDS {
@@ -216,8 +218,37 @@ impl ProcessCluster {
     }
 
     fn propose_set(&mut self, leader: NodeId, key: &str, value: &str) {
-        self.send_command(leader, &format!("PROPOSE {key} {value}"));
-        self.wait_applied(leader, leader, key, value);
+        for _ in 0..3 {
+            let proposal_id = self.next_proposal_id;
+            self.next_proposal_id += 1;
+            self.send_command(leader, &format!("PROPOSE {proposal_id} {key} {value}"));
+            let event = self.wait_for_line(
+                PROCESS_STEP_TIMEOUT,
+                |cluster| cluster.tick_node(leader),
+                |event| {
+                    event.node_id == leader
+                        && (event
+                            .line
+                            .starts_with(&format!("PROPOSAL_APPLIED {} {proposal_id} ", leader.0))
+                            || event.line.starts_with(&format!(
+                                "PROPOSAL_REJECTED {} {proposal_id} ",
+                                leader.0
+                            ))
+                            || event.line.starts_with(&format!(
+                                "PROPOSAL_DROPPED {} {proposal_id} ",
+                                leader.0
+                            )))
+                },
+            );
+            if event.line.starts_with("PROPOSAL_APPLIED ") {
+                return;
+            }
+
+            // A set of the same value is idempotent, so the example may safely
+            // retry after either a proven rejection or an unknown outcome.
+            self.wait_role(leader, Role::Leader);
+        }
+        panic!("proposal {key}={value} did not apply on {leader} after leadership stabilized");
     }
 
     fn linearizable_get(&mut self, leader: NodeId, key: &str) -> Option<String> {
@@ -568,7 +599,12 @@ impl ProcessReplica {
                         println!("SEND_ERROR {} {} {error}", self.node_id.0, to.0);
                     }
                 }
-                Output::Apply { index, payload, .. } => {
+                Output::Apply {
+                    index,
+                    payload,
+                    local_proposal_id,
+                    ..
+                } => {
                     let command = std::str::from_utf8(payload.as_slice())
                         .expect("example commands are UTF-8");
                     let (key, value) = apply_set_with_parts(command, &mut self.kv);
@@ -578,6 +614,12 @@ impl ProcessReplica {
                         "APPLIED {} {} {} {}",
                         self.node_id.0, self.applied.0, key, value
                     );
+                    if let Some(proposal_id) = local_proposal_id {
+                        println!(
+                            "PROPOSAL_APPLIED {} {} {}",
+                            self.node_id.0, proposal_id.0, index.0
+                        );
+                    }
                     self.flush_reads();
                 }
                 Output::ApplySnapshot { snapshot } => {
@@ -598,8 +640,28 @@ impl ProcessReplica {
                     }
                     self.flush_reads();
                 }
-                Output::RejectProposal { reason, .. } => {
-                    println!("PROPOSAL_REJECTED {} {reason}", self.node_id.0);
+                Output::RejectProposal {
+                    proposal_id,
+                    reason,
+                } => {
+                    let proposal_id = proposal_id
+                        .expect("tracked process proposal preserves its local ID")
+                        .0;
+                    println!(
+                        "PROPOSAL_REJECTED {} {proposal_id} {reason}",
+                        self.node_id.0
+                    );
+                }
+                Output::LocalProposalDropped {
+                    proposal_id,
+                    index,
+                    term,
+                    reason,
+                } => {
+                    println!(
+                        "PROPOSAL_DROPPED {} {} {} {} {reason:?}",
+                        self.node_id.0, proposal_id.0, index.0, term.0
+                    );
                 }
                 Output::ReadIndexRejected { read_id, reason } => {
                     let request_id = read_id.0;
@@ -623,9 +685,7 @@ impl ProcessReplica {
                     "CONFIGURATION_COMMITTED {} {} {}",
                     self.node_id.0, index.0, term.0
                 ),
-                Output::LocalProposalAppended { .. }
-                | Output::LocalProposalDropped { .. }
-                | Output::StageSnapshotChunk { .. } => {}
+                Output::LocalProposalAppended { .. } | Output::StageSnapshotChunk { .. } => {}
                 Output::SendSnapshotChunk { .. } => {
                     panic!("runtime should resolve snapshot chunk sends")
                 }
@@ -644,9 +704,17 @@ impl ProcessReplica {
             }
             Some("TICK") => self.step(Input::Tick),
             Some("PROPOSE") => {
+                let proposal_id = LocalProposalId(
+                    parts
+                        .next()
+                        .expect("proposal id")
+                        .parse()
+                        .expect("proposal id parses"),
+                );
                 let key = parts.next().expect("proposal key");
                 let value = parts.next().expect("proposal value");
-                self.step(Input::ClientProposal {
+                self.step(Input::TrackedClientProposal {
+                    proposal_id,
                     payload: encode_set(key, value),
                 });
             }
