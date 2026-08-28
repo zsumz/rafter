@@ -28,8 +28,11 @@ fn production_modules_begin_with_an_architectural_contract() {
     let workspace = workspace_root();
     let mut violations = Vec::new();
 
-    for source_root in source_roots(&workspace) {
+    for source_root in contract_source_roots(&workspace) {
         for path in production_rust_files(&source_root) {
+            if is_contract_exempt(&workspace, &path) {
+                continue;
+            }
             let source = read(&path);
             if !source
                 .trim_start_matches(|character: char| {
@@ -57,8 +60,11 @@ fn test_modules_begin_with_a_scenario_contract() {
     let workspace = workspace_root();
     let mut violations = Vec::new();
 
-    for source_root in source_roots(&workspace) {
+    for source_root in contract_source_roots(&workspace) {
         for path in test_rust_files(&source_root) {
+            if is_contract_exempt(&workspace, &path) {
+                continue;
+            }
             let source = read(&path);
             if !source
                 .trim_start_matches(|character: char| {
@@ -541,6 +547,44 @@ fn source_roots(workspace: &Path) -> [PathBuf; 2] {
         workspace.join("crates/rafter/src"),
         workspace.join("crates/rafter-codec/src"),
     ]
+}
+
+/// Every workspace crate's source tree, for the module-contract rules that
+/// hold repository-wide. The narrower `source_roots` list keeps governing the
+/// rules that are still being adopted crate by crate.
+fn contract_source_roots(workspace: &Path) -> Vec<PathBuf> {
+    let crates = workspace.join("crates");
+    let mut roots = Vec::new();
+    let entries =
+        fs::read_dir(&crates).unwrap_or_else(|error| panic!("read {}: {error}", crates.display()));
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|error| panic!("read entry under {}: {error}", crates.display()))
+            .path();
+        let src = path.join("src");
+        if src.is_dir() {
+            roots.push(src);
+        }
+    }
+    roots.sort();
+    roots
+}
+
+/// Rust fragments spliced into a mounting suite through `include!`. Inner
+/// `//!` attributes are invalid at the splice position, so these six files
+/// can never carry a module contract; the invariant tooling guard pins the
+/// same set as `INCLUDE_MOUNTED_FRAGMENTS`.
+const CONTRACT_EXEMPT_FRAGMENTS: &[&str] = &[
+    "crates/rafter-invariants/src/artifact_verify/tests/reports.rs",
+    "crates/rafter-invariants/src/artifact_verify/tests/resources.rs",
+    "crates/rafter-invariants/src/artifact_verify/tests/schedule.rs",
+    "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/bundle_fixture.rs",
+    "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/scenarios.rs",
+    "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/serialized_fixture.rs",
+];
+
+fn is_contract_exempt(workspace: &Path, path: &Path) -> bool {
+    CONTRACT_EXEMPT_FRAGMENTS.contains(&display_path(workspace, path).as_str())
 }
 
 fn compact_whitespace(source: &str) -> String {
