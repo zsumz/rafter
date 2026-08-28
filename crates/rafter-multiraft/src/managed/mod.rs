@@ -6,6 +6,8 @@
 
 mod config;
 mod error;
+mod identity;
+mod report;
 mod scheduler;
 mod typed;
 mod types;
@@ -15,15 +17,15 @@ pub use error::{
     AdmissionRejected, AdmissionRejection, CompletionError, GroupStateError, IdentityError,
     RegisterError, RemoveError,
 };
-pub use scheduler::ManagedScheduler;
-pub use typed::{
+pub use identity::{DispatchId, PassId, WorkClass, WorkId};
+pub use report::{
     BoxedTypedGroupDriver, ExecuteDispatchRejected, ManagedAdmissionRejected,
     ManagedDispatchReport, ManagedItemOutcome, ManagedOpenError, ManagedOpenRejected,
-    ManagedTypedMultiRaftHost,
 };
+pub use scheduler::ManagedScheduler;
+pub use typed::ManagedTypedMultiRaftHost;
 pub use types::{
     AdmissionReceipt, ArmPass, BeginDispatch, Dispatch, DispatchCompletion,
-    DispatchCompletionPermit, DispatchId, DispatchItem, FailedQueuedItem, ManagedMetrics,
-    PassCompletion, PassId, PassPlan, SkipReason, SkippedOpportunity, WorkClass, WorkDisposition,
-    WorkId,
+    DispatchCompletionPermit, DispatchItem, FailedQueuedItem, ManagedMetrics, PassCompletion,
+    PassPlan, SkipReason, SkippedOpportunity, WorkDisposition,
 };
