@@ -1,3 +1,10 @@
+//! A certificate rotation walked through all three directory snapshots.
+//!
+//! Old-only, overlap, and next-only must each authenticate exactly what they
+//! map and refuse everything else as unconfigured — the property that makes a
+//! rotation performable with no window where a chain-valid stranger is admitted
+//! or a legitimate peer is locked out.
+
 mod support;
 
 use rafter_transport_tls::{

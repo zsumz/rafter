@@ -1,3 +1,9 @@
+//! A uniquely named temporary directory, removed when its handle drops.
+//!
+//! The obligation is isolation between tests that write real files: the name
+//! carries the process id and a counter, so concurrent runs cannot collide. It
+//! creates the directory and nothing inside it.
+
 use std::{
     fs,
     path::{Path, PathBuf},

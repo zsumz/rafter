@@ -1,3 +1,10 @@
+//! Outbound capacity, class priority, and work handed back to the queue.
+//!
+//! Control traffic keeps its reservation while bulk fills the rest, byte and
+//! frame reservations move independently, a failed bulk frame requeues behind
+//! later control work under a bounded retry count, and work returned after the
+//! sender retires is released rather than left holding capacity forever.
+
 use std::time::Duration;
 
 use rafter::NodeId;

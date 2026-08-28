@@ -1,3 +1,10 @@
+//! What the builder must refuse before it ever binds a socket.
+//!
+//! Missing security material, an unreachable session store, aggregate session
+//! capacity too small for the configured peers, an exhausted inbound high-water
+//! mark, and a receive budget that cannot hold one receiver and one maximum
+//! frame are all startup failures rather than runtime surprises.
+
 mod support;
 
 use rafter_transport_tls::{

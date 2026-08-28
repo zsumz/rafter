@@ -1,3 +1,10 @@
+//! In-memory session accounting, before any file is involved.
+//!
+//! Outbound numbers start at one and only rise; inbound accepts strictly newer
+//! epochs and reports staleness without mutating. The peer bound refuses
+//! without partly applying, preflight counts absent peers without adding them,
+//! and a recovered maximum is terminal rather than wrapping.
+
 use std::collections::BTreeMap;
 
 use rafter_transport_tls::{

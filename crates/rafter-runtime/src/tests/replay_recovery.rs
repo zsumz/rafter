@@ -1,3 +1,10 @@
+//! What a restart owes the state machine above its applied floor.
+//!
+//! Committed entries the embedding never applied must come back — through the
+//! recovery constructor or the explicit drain, exactly once, and without
+//! needing another Raft message to shake them loose. Entries below the floor
+//! are the caller's already, and nothing here re-emits them.
+
 use super::*;
 
 #[test]

@@ -1,3 +1,9 @@
+//! Accepted inbound connections never exceed the configured bound.
+//!
+//! A connection past the limit must be counted as refused and must not raise
+//! the active count, because that bound is what caps the memory an
+//! unauthenticated dialer can make the transport hold.
+
 mod support;
 
 use std::{net::TcpStream, time::Duration};

@@ -1,3 +1,10 @@
+//! Durable session state after an interrupted write, and after a poisoned lock.
+//!
+//! Every failpoint must leave one unambiguous path: a never-published creation
+//! may be retried, a published one is the recovery oracle, and an ambiguous
+//! replacement latches the handle until reopen so no session number is ever
+//! reused. Poisoned in-memory state fails closed the same way.
+
 use std::{
     fs,
     panic::{catch_unwind, AssertUnwindSafe},

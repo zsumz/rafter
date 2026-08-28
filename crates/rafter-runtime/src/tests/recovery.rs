@@ -1,3 +1,10 @@
+//! Restart, decomposition, and the index a state machine must catch up to.
+//!
+//! A reopened node must recover its configuration and committed dynamic
+//! membership from what is durable; the committed application index must ignore
+//! entries no state machine ever sees, and never decrease. Decomposition must
+//! return stores that recover the same node, writing nothing — poisoned or not.
+
 use super::recording_stores::{
     RecordingHardStateStore, RecordingLogSegment, RecordingSnapshotStore, StoreJournal,
 };

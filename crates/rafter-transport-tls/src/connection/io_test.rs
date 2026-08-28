@@ -1,3 +1,11 @@
+//! Telling an idle connection from a truncated one at the read boundary.
+//!
+//! A timeout before any length-prefix byte arrives is an idle poll and must
+//! leave the connection usable; a timeout once the prefix has started is a
+//! connection error, because the reader can no longer say where the frame ends.
+//! Confusing the two tears down healthy peers or resynchronizes on bytes an
+//! attacker chose.
+
 use std::io::{self, Read};
 
 use super::*;

@@ -1,3 +1,10 @@
+//! The crash window's hard case: a snapshot boundary past the segment tail.
+//!
+//! Unlike a retained full log, this shape leaves the segment's next appendable
+//! index below the kernel's, so reopen must finish the interrupted compaction
+//! or later entries persist at wrong indexes. The defence behind it is here
+//! too: a step still behind the boundary refuses the append as fatal.
+
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 

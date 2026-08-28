@@ -1,3 +1,9 @@
+//! A newer connection epoch cannot be displaced by an older one arriving late.
+//!
+//! Sessions are monotonic per peer, so a delayed install naming a lower session
+//! must be refused outright and the live epoch must stay current — otherwise a
+//! reordered dial would quietly replace a good connection with a stale one.
+
 use std::{
     net::{TcpListener, TcpStream},
     sync::Arc,

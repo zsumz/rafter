@@ -1,3 +1,9 @@
+//! Local proposal tracking is volatile and must not survive a restart.
+//!
+//! The committed entry replays on recovery with no proposal id attached, since
+//! the caller that supplied it is gone; a fresh proposal afterwards carries its
+//! own id and never the retired one. Entry durability is proven elsewhere.
+
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 

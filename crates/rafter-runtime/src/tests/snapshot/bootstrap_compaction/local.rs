@@ -1,3 +1,10 @@
+//! Every check a locally built snapshot must pass before anything is written.
+//!
+//! A boundary above the applied index, a wrong boundary term, and wrong
+//! committed membership or configuration identity are each refused with both
+//! stores unchanged. What the runtime fills in for itself — boundary membership
+//! and the normalized transfer identity — is proven on the accepted paths.
+
 use super::*;
 use rafter_invariant_test::oracle_assert_eq;
 

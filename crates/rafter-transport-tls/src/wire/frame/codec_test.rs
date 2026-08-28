@@ -1,3 +1,9 @@
+//! Staged decoding routes a frame without decoding its group twice.
+//!
+//! Routing decodes the group once and the message decode reuses that canonical
+//! value, so an inbound frame round-trips unchanged for exactly one group
+//! decode. Repeating the work would let a peer set the cost of its own routing.
+
 use std::{
     convert::Infallible,
     sync::{

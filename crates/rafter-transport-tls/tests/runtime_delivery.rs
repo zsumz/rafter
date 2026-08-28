@@ -1,3 +1,9 @@
+//! One envelope, delivered authenticated over a connection that stays up.
+//!
+//! What arrives must carry the peer proved by TLS and the Raft identities the
+//! sender named. Idling past the read deadline must poll for shutdown rather
+//! than tear the stream down, so a quiet group costs no reconnects.
+
 mod support;
 
 use std::time::Duration;

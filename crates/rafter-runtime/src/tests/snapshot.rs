@@ -1,3 +1,9 @@
+//! Snapshot durability: install, transfer, local compaction, and the failures.
+//!
+//! This module wires the snapshot scenarios together and re-exports the
+//! builders, chunk helpers, and failing stores they share. Every assertion
+//! lives in a child; nothing is proven at this level.
+
 use super::*;
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,

@@ -1,3 +1,10 @@
+//! The transport composed with the service driver, as an embedding would.
+//!
+//! An authenticated envelope must reach the driver, its response must route
+//! back out through the sender, and the driver's published policy must show up
+//! in the directory. Membership changes must revoke work already queued —
+//! retired destination, unbound local source — and be rechecked while live.
+
 mod support;
 
 use std::{error::Error, fmt, time::Duration};

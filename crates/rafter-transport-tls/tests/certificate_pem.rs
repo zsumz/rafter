@@ -1,3 +1,10 @@
+//! Loading a principal's certificate from PEM on disk.
+//!
+//! The first certificate in the file is the leaf that names the principal; a
+//! file holding no certificate is refused, and an oversized one is refused on
+//! its length before any parser sees it. What that fingerprint then authorizes
+//! is the directory's subject, not this module's.
+
 #[path = "support/temp_dir.rs"]
 mod temp_dir;
 

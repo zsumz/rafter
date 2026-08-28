@@ -1,3 +1,9 @@
+//! Rejected proposals keep their identifier without touching the log.
+//!
+//! A not-leader rejection must return the caller's id having written nothing —
+//! proven against a segment that would fail any append it were given — while a
+//! genuine append failure suppresses the id's output and poisons the runtime.
+
 use super::*;
 
 #[test]

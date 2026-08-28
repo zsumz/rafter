@@ -1,3 +1,10 @@
+//! The whole lifecycle in one process, over a hand-driven message queue.
+//!
+//! This owns the deterministic scenario: elect, propose, read through a
+//! barrier, restart a follower with its applied floor, snapshot a lagging peer
+//! back into the group, and transfer leadership. There is no transport and no
+//! concurrency — delivery is a queue this module pumps to quiescence.
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 

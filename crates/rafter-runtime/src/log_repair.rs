@@ -1,3 +1,11 @@
+//! Reconciling the persisted log's tail with the kernel's after a step.
+//!
+//! The obligation is that no persisted entry the kernel has since rewritten
+//! survives above the last persist's commit floor, and that a disagreement at
+//! or below that floor is reported rather than repaired — down there it is
+//! corruption, not a splice. This module only removes; appending the kernel's
+//! new suffix belongs to the stepping path.
+
 use rafter::{LogIndex, Node as RaftNode, Term};
 use rafter_storage::RaftLogSegment;
 

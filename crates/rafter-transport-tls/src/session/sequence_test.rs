@@ -1,3 +1,9 @@
+//! The exact frame at which a connection's sequence space runs out.
+//!
+//! Outbound must hand out the maximum before reporting exhaustion, and inbound
+//! must accept that maximum once and refuse afterwards — an off-by-one either
+//! wastes a legal frame or admits a replay at the top of the space.
+
 use super::{
     ConnectionSequence, InboundSequence, OutboundSequence, SequenceError, SequenceExhausted,
 };

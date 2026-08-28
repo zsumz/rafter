@@ -1,3 +1,9 @@
+//! The example's command, payload, and harness-line encodings.
+//!
+//! These are deliberately trivial so the scenarios can stay about Raft rather
+//! than about framing. Nothing here is versioned or negotiated; a real
+//! embedding brings its own encoding and its own compatibility story.
+
 use std::{collections::BTreeMap, net::SocketAddr};
 
 use rafter::{LogIndex, NodeId};

@@ -1,3 +1,10 @@
+//! Shared fixtures and injected-failure stores for the runtime suite.
+//!
+//! This module owns what the persistence scenarios build on: node constructors
+//! over chosen stores, the post-failure input sweep that proves a runtime stays
+//! poisoned, and stores that refuse one write on demand. It asserts nothing
+//! about the runtime itself; each child module owns its own scenario.
+
 use super::*;
 use rafter::{
     AppendEntries, AppendEntriesResponse, ApplicationSnapshotKind, ApplicationSnapshotMetadata,

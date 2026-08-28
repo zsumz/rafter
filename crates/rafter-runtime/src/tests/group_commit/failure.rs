@@ -1,3 +1,10 @@
+//! When a batch's single flush fails, nothing the batch produced may escape.
+//!
+//! These prove the failure is surfaced with no outputs and none of the batch's
+//! entries persisted, that the runtime poisons rather than continuing from
+//! state the medium never took, and that reopening lands on the last successful
+//! persist — not on the volatile state that had already run past it.
+
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 

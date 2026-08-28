@@ -1,3 +1,10 @@
+//! A tracked proposal's identifier survives the persist-before-output fence.
+//!
+//! The append acknowledgement and the apply must both name the caller's own id,
+//! and must follow the entry becoming durable; a stepdown must drop the id with
+//! a reason, released only once the new term is durable. Rejections are next
+//! door.
+
 use super::*;
 
 #[test]

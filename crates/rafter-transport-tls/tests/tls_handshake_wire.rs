@@ -1,3 +1,9 @@
+//! TLS evidence and canonical hello bytes joined into one negotiated connection.
+//!
+//! The identities proved by mutual TLS and the hellos as they appear on the
+//! wire must agree end to end — encoded, decoded, and validated — before a
+//! negotiated connection exists with its versions and frame bound settled.
+
 mod support;
 
 use rafter_transport_tls::{

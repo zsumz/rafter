@@ -1,3 +1,9 @@
+//! What batching a step is worth, counted in durable flushes.
+//!
+//! One batch of proposals must cost one log append and no truncation, the
+//! unbatched loop must cost one append per proposal, and an empty batch must
+//! write nothing. Failure of that single flush is the sibling's subject.
+
 use super::*;
 
 #[test]

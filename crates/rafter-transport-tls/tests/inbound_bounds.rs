@@ -1,3 +1,9 @@
+//! The authenticated inbound queue holds its per-peer and global bounds.
+//!
+//! Frames past the bound must be counted as refused rather than buffered, the
+//! depth must match what was actually admitted, and draining must give the
+//! capacity back — the ceiling an authenticated but noisy peer cannot lift.
+
 mod support;
 
 use std::time::Duration;

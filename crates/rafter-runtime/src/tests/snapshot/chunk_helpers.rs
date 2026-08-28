@@ -1,3 +1,9 @@
+//! Driving and inspecting a chunked snapshot transfer into a follower.
+//!
+//! These build the lagging follower, feed it one chunk of a transfer, restart it
+//! from its own durable stores, and assert the shape a partial transfer must
+//! keep — nothing applied, nothing promoted, the received count still visible.
+
 use super::*;
 
 pub(crate) fn stale_snapshot_follower() -> DurableRaftNode {

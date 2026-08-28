@@ -1,3 +1,9 @@
+//! An unauthenticated dialer cannot buy time by trickling bytes.
+//!
+//! The handshake deadline covers the whole handshake, not the gap between
+//! reads, so a slow drip must be dropped on schedule — otherwise a peer that
+//! has proved nothing could hold a bounded connection slot indefinitely.
+
 mod support;
 
 use std::{

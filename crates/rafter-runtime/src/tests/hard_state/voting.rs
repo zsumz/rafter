@@ -1,3 +1,10 @@
+//! Term and vote reach the medium before any message they authorize escapes.
+//!
+//! Election, granted vote, higher-term rejection, and higher-term append each
+//! persist first — and against a failing store each releases nothing and
+//! poisons instead. A restart is checked to honour the vote it persisted, so
+//! the write is shown to be worth the ordering it costs.
+
 use super::super::*;
 use super::fixtures::pre_vote_grant;
 use rafter::{AppendEntries, Message, RequestVote};

@@ -1,3 +1,10 @@
+//! The example application's own durable state: its KV map and applied floor.
+//!
+//! These are one crash-consistency unit — recovery hands the floor back to the
+//! runtime, so a floor published without the matching bytes would skip
+//! committed commands. The record is written whole, checksummed, and renamed
+//! into place. Raft's durable state is the runtime's, not this module's.
+
 use std::{collections::BTreeMap, io::Write, path::Path};
 
 use rafter::{LogIndex, NodeId};

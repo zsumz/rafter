@@ -1,3 +1,10 @@
+//! The peer handshake above TLS: what it publishes, and what it refuses.
+//!
+//! Acceptance publishes both session directions before the connection is
+//! usable, while every pre-session refusal — identity, cluster, versions, frame
+//! bound — leaves durable state untouched, and a replayed session is refused
+//! once accepted. The client rechecks every claim it was handed.
+
 mod support;
 
 use std::num::{NonZeroU16, NonZeroU32};

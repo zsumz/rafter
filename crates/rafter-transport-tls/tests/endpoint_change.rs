@@ -1,3 +1,9 @@
+//! A live sender follows the endpoint book when a peer's address moves.
+//!
+//! A disconnected sender must redial at the newest generation rather than the
+//! one it failed on, and a connected sender must retire its stream before the
+//! next send instead of delivering to an address that has been replaced.
+
 mod support;
 
 use std::time::Duration;

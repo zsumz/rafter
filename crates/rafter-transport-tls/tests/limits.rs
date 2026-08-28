@@ -1,3 +1,10 @@
+//! Every configured bound is finite, nonzero, and consistent before use.
+//!
+//! Default wire limits are derived from the codec's receive contract rather
+//! than chosen; the directory, endpoint, session, queue, memory, and timeout
+//! constructors refuse zero, crossed reservations, and values the wire cannot
+//! represent. A bound that could be misconfigured at startup is not a bound.
+
 use rafter_transport_tls::{
     CertificateDirectoryLimits, DirectoryLimits, EndpointBookLimits, LimitError, LimitKind,
     SessionStoreLimits, TransportLimits, WireLimits, DEFAULT_MAX_APPEND_ENTRIES_BYTES,

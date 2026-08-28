@@ -1,3 +1,9 @@
+//! Snapshot metadata, payloads, and a leader that has already compacted.
+//!
+//! These construct the durable shapes the snapshot scenarios start from, up to
+//! driving a real node through commit and compaction. They assert only what a
+//! fixture must to be worth trusting; the scenarios assert everything else.
+
 use super::*;
 
 pub(crate) fn persisted_entry(index: u64, term: u64, payload: &[u8]) -> PersistedRaftLogEntry {

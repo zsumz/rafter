@@ -1,3 +1,10 @@
+//! A failed final commit write must suppress the apply it would have justified.
+//!
+//! The control run shows the apply and success response a working store
+//! releases; the injected failure must release neither, must leave the durable
+//! commit index behind the entry, and must poison. Restart is checked to land
+//! on that durable commit index, not the one the failed step implied.
+
 use super::super::*;
 use super::fixtures::committed_append_entries_input;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};

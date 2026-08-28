@@ -1,3 +1,10 @@
+//! Reopen after a crash between the snapshot write and the log compaction.
+//!
+//! These prove the repaired node is indistinguishable from one that never
+//! crashed — same boundary, same live suffix, same next appendable index — over
+//! both in-memory and file-backed stores, and that the repair is itself durable.
+//! The boundary-past-the-tail shape is the sibling module's subject.
+
 use super::*;
 use rafter_invariant_test::oracle_assert_eq;
 use rafter_storage::FileRaftNodeStores;

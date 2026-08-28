@@ -1,3 +1,10 @@
+//! What a sender spends while a peer is broken, and what recovers it.
+//!
+//! Backoff must stay capped until a frame actually succeeds, a permanent
+//! configuration refusal must block without consuming further sessions, and a
+//! failed bulk frame must yield to later control work on the next live socket.
+//! An explicit refresh recovers a repaired peer at identical endpoint values.
+
 mod support;
 
 #[path = "support/fault_peer.rs"]

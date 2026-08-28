@@ -1,3 +1,10 @@
+//! Mutual TLS proves two explicit principals, or admits nobody.
+//!
+//! A completed handshake must yield both peers' mapped identities under TLS 1.3
+//! with the negotiated ALPN, and nothing before completion may be read as an
+//! identity. A chain-valid but unmapped certificate, a wrong trust root, a
+//! wrong server name, and a missing client certificate are each refused.
+
 mod support;
 
 use std::sync::Arc;

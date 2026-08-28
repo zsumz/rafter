@@ -1,3 +1,10 @@
+//! The published surface stays usable from the threads an embedding has.
+//!
+//! Every shared handle is `Send + Sync`, the transport itself is `Send`, the
+//! sender really implements the service transport trait, and the frame codec
+//! constructs with no runtime behind it. A regression here is a breaking change
+//! that would otherwise surface downstream.
+
 mod support;
 
 use rafter::InMemorySnapshotChunkSource;

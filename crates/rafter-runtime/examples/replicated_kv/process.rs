@@ -1,3 +1,10 @@
+//! The same lifecycle across real processes, over TCP and a line protocol.
+//!
+//! This owns spawning and killing child nodes, the parent's event-driven waits,
+//! and the child loop that applies, persists application state, and answers
+//! commands. The transport underneath is unauthenticated demo plumbing: what is
+//! demonstrated is durability across restarts, never a peer-identity layer.
+
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;

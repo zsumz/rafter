@@ -1,3 +1,9 @@
+//! A session store that fails after startup is terminal, and says so.
+//!
+//! Session numbers cannot be invented, so losing the store is not retryable:
+//! health must report failure, the failure must be counted, and later sends
+//! must be refused with a terminal error rather than queued in hope.
+
 mod support;
 
 use std::time::Duration;

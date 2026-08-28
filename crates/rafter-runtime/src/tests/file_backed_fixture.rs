@@ -1,3 +1,9 @@
+//! A uniquely named temporary directory for the file-backed runtime scenarios.
+//!
+//! The obligation is isolation: each handle owns a fresh directory keyed by
+//! process and counter, removed on drop so a crashed run cannot seed the next
+//! one. It knows nothing of store layout — callers open the stores themselves.
+
 use std::{
     fs,
     path::{Path, PathBuf},
