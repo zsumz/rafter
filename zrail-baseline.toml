@@ -125,11 +125,6 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/tests/invariant_catalog_guard/evidence.rs"
-reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-maelstrom/src/raft/reply_tests.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
 
@@ -320,11 +315,6 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/liveness/features/read.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/liveness/features/report_tests.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
 
@@ -442,146 +432,6 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 rule = "rust.file-size"
 target = "crates/rafter/tests/storage_readability_architecture_guard.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-app/src/error.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-app/src/membership.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-app/src/transport.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-crc32/src/lib.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/answers.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/bin/rafter-maelstrom-leader-restart-proxy/config.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/bin/rafter-maelstrom-leader-restart-proxy/protocol.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/membership.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/protocol.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/raft_node.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/runtime.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/driver/mapping.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/driver/write.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/membership.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/transport.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/watch.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/bin/rafter_model_check_fast/runner/exhaustive.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/application.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/checks/witnesses.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/liveness/driver.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/liveness/features/membership.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/liveness/features/read.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/liveness/features/transfer.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/observations.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/scheduling.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-transport-tls/src/connection/backoff.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-transport-tls/src/connection/receiver/scratch.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-transport-tls/src/queue/receive_memory.rs"
-reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-transport-tls/tests/support/runtime.rs"

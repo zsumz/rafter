@@ -2,7 +2,7 @@
 schema = 1
 semantics = 1
 producer = "0.0.1"
-contract_sha256 = "9a89f73df33ba17af83e1b5377d6586699e446e0cef8bdb64f7b2d76c6e6223f"
+contract_sha256 = "802bc3b311aa95485973c9d9e45fadea5f2f6575fd8d4f50f083ea2ef0a77041"
 
 [[package]]
 name = "rafter"
@@ -1229,7 +1229,7 @@ value = 1466
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/group_read.rs"
-value = 1298
+value = 1289
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1289,7 +1289,7 @@ value = 843
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-invariants/src/tests.rs"
-value = 1498
+value = 702
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1315,11 +1315,6 @@ value = 1131
 rule = "rust.file-size"
 target = "crates/rafter-invariants/src/verification/tla/tests/full_bundle/serialized_tests.rs"
 value = 443
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/tests/invariant_catalog_guard/evidence.rs"
-value = 1333
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1409,7 +1404,7 @@ value = 530
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/tests/transport_checkpoint_merge.rs"
-value = 901
+value = 812
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1429,7 +1424,7 @@ value = 560
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/tests/transport_driver.rs"
-value = 852
+value = 840
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1439,7 +1434,7 @@ value = 594
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/tests/transport_identity.rs"
-value = 1046
+value = 991
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1464,7 +1459,7 @@ value = 745
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/tests/transport_waiters.rs"
-value = 1047
+value = 914
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1499,7 +1494,7 @@ value = 766
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/tests/election.rs"
-value = 1058
+value = 986
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1514,12 +1509,7 @@ value = 559
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/tests/snapshot_application.rs"
-value = 944
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/liveness/features/read.rs"
-value = 330
+value = 853
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1645,143 +1635,3 @@ value = 677
 rule = "rust.file-size"
 target = "crates/rafter/tests/storage_readability_architecture_guard.rs"
 value = 481
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-app/src/error.rs"
-value = 9
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-app/src/membership.rs"
-value = 4
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-app/src/transport.rs"
-value = 9
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-crc32/src/lib.rs"
-value = 6
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/answers.rs"
-value = 5
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/bin/rafter-maelstrom-leader-restart-proxy/config.rs"
-value = 2
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/bin/rafter-maelstrom-leader-restart-proxy/protocol.rs"
-value = 6
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/membership.rs"
-value = 3
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/protocol.rs"
-value = 3
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/raft_node.rs"
-value = 3
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-maelstrom/src/runtime.rs"
-value = 2
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/driver/mapping.rs"
-value = 7
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/driver/write.rs"
-value = 5
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/membership.rs"
-value = 6
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/transport.rs"
-value = 11
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-service/src/watch.rs"
-value = 6
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/bin/rafter_model_check_fast/runner/exhaustive.rs"
-value = 3
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/application.rs"
-value = 3
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/checks/witnesses.rs"
-value = 2
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/liveness/driver.rs"
-value = 1
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/liveness/features/membership.rs"
-value = 3
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/liveness/features/read.rs"
-value = 4
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/liveness/features/transfer.rs"
-value = 2
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/observations.rs"
-value = 2
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-sim/src/model_check/scheduling.rs"
-value = 3
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-transport-tls/src/connection/backoff.rs"
-value = 4
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-transport-tls/src/connection/receiver/scratch.rs"
-value = 3
-
-[[ratchet]]
-rule = "rust.inline-tests"
-target = "crates/rafter-transport-tls/src/queue/receive_memory.rs"
-value = 3
