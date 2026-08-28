@@ -1,3 +1,10 @@
+//! The read-barrier liveness detector the registry pins by name.
+//!
+//! LV-03 owes a stable leader that stays leader for the whole operation window
+//! and a read-index request that reaches an explicit terminal outcome inside
+//! it; a lost premise is reported as uncovered rather than as a violation. Only
+//! the recorded client history decides whether a read terminated.
+
 use std::collections::BTreeSet;
 
 use super::super::driver::{

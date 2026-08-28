@@ -1,8 +1,28 @@
+//! The election-safety detectors the invariant registry pins by name.
+//!
+//! Every clause-level checker the catalog cites is defined here and keeps the
+//! order the history suite owes, so a registry row always resolves to a
+//! detector in this file. The shared violation shapes and outcome scans live
+//! in the private submodules; nothing there chooses what a suite runs.
+
 use super::{catalog, summarize, Action, Failure};
 use super::{
     check_internal_derived_state, BTreeMap, Cluster, ElectionSafetyExplorer, ExplorationState,
-    MembershipConfig, NodeId, Role, Term,
+    NodeId, Role, Term,
 };
+
+mod authority;
+mod certificates;
+mod votes;
+
+use authority::{check_authority_transition_kind, check_pre_vote_history};
+use certificates::{check_election_certificates, check_election_outcomes};
+use votes::{check_term_and_vote_history, check_vote_grants};
+
+#[cfg(test)]
+pub(super) use certificates::check_election_certificate_voters;
+#[cfg(test)]
+pub(super) use votes::check_vote_grant_durability;
 
 pub(crate) fn check_election_safety(cluster: &Cluster, trace: &[Action]) -> Result<(), Failure> {
     check_internal_derived_state(cluster, trace)?;
@@ -51,55 +71,6 @@ pub(crate) fn check_election_history(
     check_pre_vote_history(state, trace)?;
     check_election_outcomes(state, trace)?;
     check_election_certificates(state, trace)
-}
-
-fn check_term_and_vote_history(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    if let Some(regression) = state.election_history().term_regressions.iter().next() {
-        return Err(Failure {
-            kind: crate::model_check::FailureKind::InvariantViolation,
-            invariant: catalog::EL_01_TERM_MONOTONICITY,
-            message: format!(
-                "{} term regressed from observed floor {} to {}",
-                regression.node_id, regression.previous_floor, regression.observed
-            ),
-            trace: trace.to_vec(),
-            state: summarize(state.cluster()),
-        });
-    }
-
-    if let Some(conflict) = state.election_history().vote_conflicts.iter().next() {
-        return Err(Failure {
-            kind: crate::model_check::FailureKind::InvariantViolation,
-            invariant: catalog::EL_02_ONE_DURABLE_VOTE_PER_TERM,
-            message: format!(
-                "{} recorded conflicting durable votes in term {}: {} then {}",
-                conflict.node_id, conflict.term, conflict.first_vote, conflict.second_vote
-            ),
-            trace: trace.to_vec(),
-            state: summarize(state.cluster()),
-        });
-    }
-
-    if let Some(loss) = state.election_history().vote_losses.iter().next() {
-        return Err(Failure {
-            kind: crate::model_check::FailureKind::InvariantViolation,
-            invariant: catalog::EL_02_ONE_DURABLE_VOTE_PER_TERM,
-            message: format!(
-                "{} lost durable vote for {} in term {}",
-                loss.node_id, loss.previous_vote, loss.term
-            ),
-            trace: trace.to_vec(),
-            state: summarize(state.cluster()),
-        });
-    }
-
-    Ok(())
-}
-
-fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    check_vote_candidate_eligibility(state, trace)?;
-    check_vote_candidate_log_freshness(state, trace)?;
-    check_vote_grant_durability(state, trace)
 }
 
 pub(super) fn check_vote_candidate_eligibility(
@@ -154,28 +125,6 @@ pub(super) fn check_vote_candidate_log_freshness(
     Ok(())
 }
 
-pub(super) fn check_vote_grant_durability(
-    state: &ExplorationState,
-    trace: &[Action],
-) -> Result<(), Failure> {
-    for grant in &state.election_history().vote_grants {
-        if grant.durable_vote != Some(grant.candidate_id) {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::EL_02_ONE_DURABLE_VOTE_PER_TERM,
-                message: format!(
-                    "{} granted term {} vote to {} but durable vote is {:?}",
-                    grant.voter_id, grant.term, grant.candidate_id, grant.durable_vote
-                ),
-                trace: trace.to_vec(),
-                state: summarize(state.cluster()),
-            });
-        }
-    }
-
-    Ok(())
-}
-
 fn check_authority_transitions(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
     check_higher_term_authority_fencing(state, trace)?;
     check_stale_authority_leadership(state, trace)?;
@@ -218,52 +167,11 @@ pub(super) fn check_stale_authority_state(
     )
 }
 
-fn check_authority_transition_kind(
-    state: &ExplorationState,
-    trace: &[Action],
-    expected: super::super::state::AuthorityTransitionViolationKind,
-    reason: &str,
-) -> Result<(), Failure> {
-    if let Some(violation) = state
-        .election_history()
-        .authority_transition_violations
-        .iter()
-        .find(|violation| violation.reason == expected)
-    {
-        return Err(Failure {
-            kind: crate::model_check::FailureKind::InvariantViolation,
-            invariant: catalog::EL_07_TERM_AND_AUTHORITY_FENCING,
-            message: format!(
-                "{} {reason}: delivered {} term {} from term {} {} vote {:?} to term {} {} vote {:?}",
-                violation.node_id,
-                violation.message_kind,
-                violation.message_term,
-                violation.before_term,
-                violation.before_role,
-                violation.before_vote,
-                violation.after_term,
-                violation.after_role,
-                violation.after_vote,
-            ),
-            trace: trace.to_vec(),
-            state: summarize(state.cluster()),
-        });
-    }
-
-    Ok(())
-}
-
-fn check_pre_vote_history(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    check_pre_vote_request_authority(state, trace)?;
-    check_stale_pre_vote_response_authority(state, trace)?;
-    check_pre_vote_leader_stability(state, trace)
-}
-
 pub(super) fn check_pre_vote_request_authority(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    check_pre_vote_violation_kind(
+    authority::check_pre_vote_violation_kind(
         state,
         trace,
         super::super::state::PreVoteViolationKind::RequestMutatedAuthority,
@@ -275,7 +183,7 @@ pub(super) fn check_stale_pre_vote_response_authority(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    check_pre_vote_violation_kind(
+    authority::check_pre_vote_violation_kind(
         state,
         trace,
         super::super::state::PreVoteViolationKind::StaleResponseAdvancedAuthority,
@@ -287,88 +195,12 @@ pub(super) fn check_pre_vote_leader_stability(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    check_pre_vote_violation_kind(
+    authority::check_pre_vote_violation_kind(
         state,
         trace,
         super::super::state::PreVoteViolationKind::RequestDisruptedLeader,
         "pre-vote request disrupted a leader",
     )
-}
-
-fn check_pre_vote_violation_kind(
-    state: &ExplorationState,
-    trace: &[Action],
-    expected: super::super::state::PreVoteViolationKind,
-    reason: &str,
-) -> Result<(), Failure> {
-    if let Some(violation) = state
-        .election_history()
-        .pre_vote_violations
-        .iter()
-        .find(|violation| violation.reason == expected)
-    {
-        return Err(Failure {
-            kind: crate::model_check::FailureKind::InvariantViolation,
-            invariant: catalog::EL_08_PRE_VOTE_NON_BINDING,
-            message: format!(
-                "{} {reason}: delivered {} term {} from term {} {} vote {:?} to term {} {} vote {:?}",
-                violation.node_id,
-                violation.message_kind,
-                violation.message_term,
-                violation.before_term,
-                violation.before_role,
-                violation.before_vote,
-                violation.after_term,
-                violation.after_role,
-                violation.after_vote,
-            ),
-            trace: trace.to_vec(),
-            state: summarize(state.cluster()),
-        });
-    }
-
-    Ok(())
-}
-
-fn check_election_outcomes(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    if let Some(conflict) = state.election_history().conflicting_elections.iter().next() {
-        return Err(Failure {
-            kind: crate::model_check::FailureKind::InvariantViolation,
-            invariant: catalog::EL_05_ELECTION_SAFETY_OVER_HISTORY,
-            message: format!(
-                "term {} elected both {} and {}",
-                conflict.term, conflict.first_leader, conflict.second_leader
-            ),
-            trace: trace.to_vec(),
-            state: summarize(state.cluster()),
-        });
-    }
-
-    if let Some((leader_id, term)) = state
-        .election_history()
-        .uncertified_seeded_leaders
-        .iter()
-        .next()
-    {
-        return Err(Failure {
-            kind: crate::model_check::FailureKind::CoverageNotReached,
-            invariant: catalog::EL_05_ELECTION_SAFETY_OVER_HISTORY,
-            message: format!(
-                "{leader_id} was already leader in term {term} when exploration history began"
-            ),
-            trace: trace.to_vec(),
-            state: summarize(state.cluster()),
-        });
-    }
-
-    Ok(())
-}
-
-fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    check_eligible_leader_certificates(state, trace)?;
-    check_election_certificate_voters(state, trace)?;
-    check_stable_election_quorums(state, trace)?;
-    check_joint_election_quorums(state, trace)
 }
 
 pub(super) fn check_eligible_leader_certificates(
@@ -407,77 +239,16 @@ pub(super) fn check_eligible_leader_certificates(
     Ok(())
 }
 
-pub(super) fn check_election_certificate_voters(
-    state: &ExplorationState,
-    trace: &[Action],
-) -> Result<(), Failure> {
-    for certificate in state.election_history().elected_by_term.values().flatten() {
-        if let Some(non_voter) = certificate
-            .granted_by
-            .iter()
-            .find(|voter| !certificate.membership.contains_voter(**voter))
-        {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::EL_06_LEADER_HAS_VALID_ELECTION_QUORUM,
-                message: format!(
-                    "{} election certificate for term {} includes non-voter grant {}",
-                    certificate.leader_id, certificate.term, non_voter
-                ),
-                trace: trace.to_vec(),
-                state: summarize(state.cluster()),
-            });
-        }
-    }
-
-    Ok(())
-}
-
 pub(super) fn check_stable_election_quorums(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    check_election_quorums(state, trace, false)
+    certificates::check_election_quorums(state, trace, false)
 }
 
 pub(super) fn check_joint_election_quorums(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    check_election_quorums(state, trace, true)
-}
-
-fn check_election_quorums(
-    state: &ExplorationState,
-    trace: &[Action],
-    joint: bool,
-) -> Result<(), Failure> {
-    for certificate in state.election_history().elected_by_term.values().flatten() {
-        let is_joint = matches!(certificate.membership, MembershipConfig::Joint(_));
-        if is_joint != joint {
-            continue;
-        }
-        if !certificate
-            .membership
-            .has_quorum(certificate.granted_by.iter().copied())
-        {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::EL_06_LEADER_HAS_VALID_ELECTION_QUORUM,
-                message: format!(
-                    "{} election certificate for term {} lacks an effective quorum; grants={:?}, membership={:?}, last_log=({}, {})",
-                    certificate.leader_id,
-                    certificate.term,
-                    certificate.granted_by,
-                    certificate.membership,
-                    certificate.last_log_index,
-                    certificate.last_log_term,
-                ),
-                trace: trace.to_vec(),
-                state: summarize(state.cluster()),
-            });
-        }
-    }
-
-    Ok(())
+    certificates::check_election_quorums(state, trace, true)
 }
