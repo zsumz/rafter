@@ -2,7 +2,7 @@
 schema = 1
 semantics = 1
 producer = "0.0.1"
-contract_sha256 = "232968f31afc769f72112ec5b7cdce340d25b399f5e43c2ac905d5a5e18881c5"
+contract_sha256 = "31206b8ecc4ff769ffcbc23ffeb2b60fa23522c0f0b4521959ee68a9cabc9e33"
 
 [[package]]
 name = "rafter"
@@ -1253,21 +1253,6 @@ value = 409
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/evidence/format/tla.rs"
-value = 608
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/execution/process/internal_command.rs"
-value = 388
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/execution/process/managed/target.rs"
-value = 369
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/execution/process/mod.rs"
 value = 117
 
@@ -1275,11 +1260,6 @@ value = 117
 rule = "rust.file-size"
 target = "crates/rafter-invariants/src/producer/mod.rs"
 value = 263
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/producer/source.rs"
-value = 396
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1293,38 +1273,13 @@ value = 638
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout.rs"
-value = 731
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout/cargo_inputs.rs"
-value = 345
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/provenance/source/checkout/config_tests.rs"
 value = 863
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout/materialization.rs"
-value = 369
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/provenance/source/checkout/materialization_tests.rs"
 value = 566
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout/rust_inputs.rs"
-value = 675
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout/rust_inputs/macro_scan.rs"
-value = 361
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1338,11 +1293,6 @@ value = 1498
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/verification/detector_replay/artifact/publisher.rs"
-value = 368
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/verification/maelstrom/lease/mod.rs"
 value = 167
 
@@ -1353,23 +1303,8 @@ value = 110
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/verification/source/registry_snapshot/cache.rs"
-value = 301
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/verification/source/registry_snapshot/extract.rs"
-value = 327
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/verification/source/registry_snapshot/tests.rs"
 value = 603
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/verification/source/sealed.rs"
-value = 413
 
 [[ratchet]]
 rule = "rust.file-size"

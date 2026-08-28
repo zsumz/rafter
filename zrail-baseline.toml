@@ -60,21 +60,6 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/evidence/format/tla.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/execution/process/internal_command.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/execution/process/managed/target.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/execution/process/mod.rs"
 reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
 
@@ -82,11 +67,6 @@ reason = "Pre-adoption module facade holding implementation; shrink toward the 1
 rule = "rust.file-size"
 target = "crates/rafter-invariants/src/producer/mod.rs"
 reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/producer/source.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -100,38 +80,13 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout/cargo_inputs.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/provenance/source/checkout/config_tests.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout/materialization.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/provenance/source/checkout/materialization_tests.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout/rust_inputs.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/provenance/source/checkout/rust_inputs/macro_scan.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -145,11 +100,6 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/verification/detector_replay/artifact/publisher.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/verification/maelstrom/lease/mod.rs"
 reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
 
@@ -160,23 +110,8 @@ reason = "Pre-adoption module facade holding implementation; shrink toward the 1
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-invariants/src/verification/source/registry_snapshot/cache.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/verification/source/registry_snapshot/extract.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-invariants/src/verification/source/registry_snapshot/tests.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-invariants/src/verification/source/sealed.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
