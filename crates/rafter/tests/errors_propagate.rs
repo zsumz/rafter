@@ -1,3 +1,9 @@
+//! Public error types stay inspectable through every layer they cross.
+//!
+//! An error a caller can receive must expose source chains and stable
+//! formatting rather than collapsing into strings, so embeddings can match on
+//! causes instead of parsing prose.
+
 use rafter::{BootstrapState, Node, NodeConfig, NodeId, Term};
 
 #[test]

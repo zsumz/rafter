@@ -1,3 +1,10 @@
+//! Published crates document their whole public surface, with reviewed gaps.
+//!
+//! Missing rustdoc, undocumented exhaustive enums, untracked doc markers, and
+//! risky library expectations fail closed unless a path-exact allowlist entry
+//! carries them - and an unused entry fails the same way, so the allowlist
+//! can only shrink.
+
 use std::{
     collections::BTreeMap,
     fmt::Write as _,

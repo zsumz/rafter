@@ -1,3 +1,9 @@
+//! A leader never overwrites or deletes its own log entries.
+//!
+//! Property runs drive a leader through arbitrary schedules and require every
+//! retained entry to survive verbatim while that leadership lasts - the
+//! append-only half of the log-matching argument, checked from the outside.
+
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use rafter::{

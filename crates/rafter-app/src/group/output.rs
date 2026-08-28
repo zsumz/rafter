@@ -204,11 +204,6 @@ where
             // instead made the fact conditional on every earlier output having
             // been handled successfully, which an undecodable `Apply` at a lower
             // index is exactly what prevents. See `apply_outputs`.
-            // Already queued, by the infallible pre-pass `apply_outputs` runs
-            // over the whole vector before this loop starts. Queueing it here
-            // instead made the fact conditional on every earlier output having
-            // been handled successfully, which an undecodable `Apply` at a lower
-            // index is exactly what prevents. See `apply_outputs`.
             RaftOutput::ConfigurationCommitted { .. } => {}
         }
         Ok(())

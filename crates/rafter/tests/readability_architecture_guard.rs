@@ -1,3 +1,10 @@
+//! Reviewed modules open with contracts and keep their declared shapes.
+//!
+//! Production and test modules in the enrolled crates must begin with a `//!`
+//! contract, declared facades must stay declarative, load-bearing node-state
+//! mutations must stay with their owning modules, and mature test domains
+//! must mirror the source tree they prove.
+
 use std::{
     fs,
     path::{Path, PathBuf},

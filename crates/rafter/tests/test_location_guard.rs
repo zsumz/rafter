@@ -1,3 +1,10 @@
+//! Inline test modules stay small or move to sibling files.
+//!
+//! An inline `#[cfg(test)]` module may hold a bounded number of lines before
+//! it must become a sibling `_test.rs` module; the allowlist for oversized
+//! holdouts requires a reason and fails when the holdout shrinks back under
+//! the limit.
+
 use std::{
     fs,
     path::{Path, PathBuf},
