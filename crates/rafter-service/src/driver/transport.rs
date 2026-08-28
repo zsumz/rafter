@@ -5,73 +5,63 @@
 
 //! Managed driver for one local Raft group over an attached transport.
 //!
-//! This file is the driver's lifecycle and the operations only *this* driver
-//! has. Three neighbours carry the rest of what a caller touches: [`sender`]
-//! holds the [`DriverCommandSender`] surface a handle reaches through, which
+//! This file is the driver type itself: what it holds, how a clone shares it,
+//! how an embedder looks at the group it holds, and the two builders every
+//! client future is made by. Its neighbours carry what a caller *does* with it.
+//! [`construction`], [`handover`], and [`takeover`] hold the lifecycle;
+//! [`entry`] holds the four calls that advance the protocol; [`addressed`] holds
+//! the work a caller names before awaiting it; [`sender`] holds the
+//! [`DriverCommandSender`] surface a handle reaches through, which
 //! `InMemoryRaftDriver` implements too; [`bounds`] holds what the driver refuses
 //! to accumulate; and [`health`] holds what an operator reads off a running one.
 
 use std::future::poll_fn;
 
-use crate::transport::{
-    validate_inbound_peer_envelope, AuthenticatedPeerEnvelope, AuthenticatedPeerValidator,
-    RaftTransport,
-};
+use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
 use super::*;
 
-/// One unresolved write a driver is still holding.
-///
-/// Named both ways a caller can name it, because the two IDs answer different
-/// questions: the driver's own ID is what
-/// [`TransportRaftDriver::abandon_write`] takes, and the caller's is how a
-/// caller with several writes in flight tells them apart.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub struct PendingWrite {
-    /// The ID this driver allocated for the proposal.
-    pub local_proposal_id: LocalProposalId,
-    /// The ID the caller supplied in [`WriteOptions`], if any.
-    pub client_request_id: Option<ClientRequestId>,
-}
-
-/// A write this driver admitted, named and awaited separately.
-///
-/// Returned by [`TransportRaftDriver::begin_write`]. The ID is what
-/// [`TransportRaftDriver::abandon_write`] takes; the future is what
-/// [`DriverCommandSender::write`] would have returned alone.
-pub type AddressedWrite<R> = (
-    LocalProposalId,
-    DriverFuture<Result<WriteReceipt<R>, WriteError>>,
-);
-
-/// A read barrier this driver reserved, named and awaited separately.
-///
-/// The read counterpart of [`AddressedWrite`], returned by
-/// [`TransportRaftDriver::begin_read`].
-pub type AddressedRead<G, QR> = (ReadId, DriverFuture<Result<QueryReceipt<G, QR>, ReadError>>);
-
+mod addressed;
+mod adopted;
 mod adoption;
+mod barrier;
 mod bounds;
+mod candidate;
 mod checkpoint;
 mod condition;
+mod construction;
 mod control_plane;
+mod dispatch;
+mod durable;
+mod entry;
 mod error;
+mod handover;
 mod health;
+mod install;
+mod merge;
 mod observation;
 mod policy;
+mod reads;
 mod reconciliation;
+mod resolution;
 mod sender;
+mod shared;
+mod standing;
 mod state;
+mod step;
+mod takeover;
+mod transaction;
 mod waiters;
+mod writes;
 
+pub use addressed::{AddressedRead, AddressedWrite, PendingWrite};
 pub use bounds::TransportDriverOptions;
 pub use checkpoint::{CurrentCommittedState, PeerControlPlaneCheckpoint};
 pub use condition::DriverServiceState;
 pub use error::InboundEnvelopeError;
 
-use adoption::{adopted_watermarks, highest, PendingProposals, WaiterGuard};
-use state::{DriverShared, SharedState, TransportDriverState, WaiterId};
+use adoption::WaiterGuard;
+use state::{SharedState, WaiterId};
 
 /// Managed driver for one local Raft group over an attached transport.
 ///
@@ -147,159 +137,6 @@ where
     T: RaftTransport<G>,
     V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
 {
-    /// Builds a driver over one already-configured group and routes its
-    /// recovery outputs.
-    ///
-    /// The group must be quiescent — no pending proposals and no reserved
-    /// reads — for the same reason [`InMemoryRaftDriver::new`] requires it: the
-    /// driver correlates outcomes to waiters it created, and a waiter it did
-    /// not create can never be resolved. Generated IDs start above the group's
-    /// adopted watermarks.
-    ///
-    /// `recovery_outputs` are the outputs the recovered runtime released, taken
-    /// here for the reason [`TransportRaftDriver::adopt_group`] takes them: a
-    /// recovery report carries peer messages and snapshot directives that must
-    /// be routed, and a caller that applied them outside the driver would drop
-    /// exactly the effects a restart depends on. A first incarnation over empty
-    /// storage recovers nothing and passes an empty vector.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ManagedDriverError`] when the group is poisoned, holds
-    /// undrained poisoned waiters, is not quiescent, has exhausted a local
-    /// ID space, the options are out of range, or the recovery outputs fail to
-    /// apply.
-    pub fn new(
-        group: RaftGroup<G, A, R>,
-        recovery_outputs: Vec<RaftOutput>,
-        transport: T,
-        validator: V,
-        options: TransportDriverOptions,
-    ) -> Result<Self, ManagedDriverError> {
-        let checkpoint = PeerControlPlaneCheckpoint::empty(group.group_id().clone());
-        Self::with_control_plane_checkpoint(
-            group,
-            recovery_outputs,
-            transport,
-            validator,
-            options,
-            checkpoint,
-        )
-    }
-
-    /// Builds a driver whose peer control plane resumes from a recovered
-    /// checkpoint.
-    ///
-    /// **The constructor a process that can crash uses.**
-    /// [`TransportRaftDriver::new`] is this with an empty checkpoint, and an
-    /// empty checkpoint is the honest description of a *first* incarnation over
-    /// empty storage — every later one has state the Raft log cannot give back.
-    /// A driver reconstructed after a crash without one starts with no
-    /// high-water mark and no current committed state: the retirement floor it
-    /// publishes falls back to whatever the surviving configuration names, so the
-    /// identity a committed removal consumed stops being retired and becomes
-    /// allocatable again. See [`PeerControlPlaneCheckpoint`] for why neither fact
-    /// is re-derivable and what a stale checkpoint costs.
-    ///
-    /// The checkpoint is installed before any membership fact is derived from
-    /// `group`, so a recovered mark of 5 beats a reconstructed committed set of
-    /// `{1,2}` rather than losing to it.
-    ///
-    /// # Errors
-    ///
-    /// As [`TransportRaftDriver::new`].
-    pub fn with_control_plane_checkpoint(
-        group: RaftGroup<G, A, R>,
-        recovery_outputs: Vec<RaftOutput>,
-        transport: T,
-        validator: V,
-        options: TransportDriverOptions,
-        checkpoint: PeerControlPlaneCheckpoint<G>,
-    ) -> Result<Self, ManagedDriverError> {
-        let options = options.validate()?;
-        let group_id = group.group_id().clone();
-        let node_id = group.node_id();
-        let (next_proposal_id, next_read_id) =
-            adopted_watermarks(&group, PendingProposals::Refuse)?;
-        let metrics = MetricsPublisher::new(group.metrics());
-        let driver = Self {
-            inner: Arc::new(DriverShared::new(TransportDriverState {
-                group_id,
-                node_id,
-                group: Some(group),
-                transport,
-                validator,
-                options,
-                metrics,
-                next_proposal_id,
-                next_read_id,
-                write_waiters: BTreeMap::new(),
-                read_waiters: BTreeMap::new(),
-                refused_sends: 0,
-                refused_peer_updates: 0,
-                refused_non_member_frames: 0,
-                effective_members: BTreeSet::new(),
-                committed_members: BTreeSet::new(),
-                current_committed: None,
-                committed_id_high_water: None,
-                published_policy: None,
-                contradiction: None,
-                staged_membership: None,
-                checkpoint_epoch: 0,
-                shutting_down: false,
-            })),
-        };
-        // **One membership transaction spans this whole constructor**, and the
-        // three statements below are its three inputs rather than three
-        // transactions. It opens here because that order is also the contract:
-        // the spent test reads the recovered mark and the recovered current state
-        // together, and a membership fact derived ahead of them would be derived
-        // against state the crash erased.
-        driver
-            .inner
-            .lock()
-            .open_membership_transaction(checkpoint)
-            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
-        // **The history, then the endpoint**, which is a preference rather than a
-        // correctness requirement: each recovery output carries its own
-        // transition, so folding one out of order proves the same removals. What
-        // the order buys is a current committed state that ends level with the
-        // runtime rather than at the last entry replayed.
-        //
-        // The membership these outputs carry folds into the open transaction and
-        // installs nothing. Everything else in the report — peer messages,
-        // snapshot directives, waiter resolutions — routes normally, because none
-        // of it is a permanent statement about who may speak.
-        if !recovery_outputs.is_empty() {
-            driver
-                .inner
-                .lock()
-                .apply_recovery_outputs(recovery_outputs)?;
-        }
-        // The transaction closes: the runtime's endpoint is the last input, and
-        // the single installation and single publication behind it are the only
-        // things this constructor states to the link layer.
-        //
-        // Published before the driver serves anything, so the transport's policy
-        // is the group's membership from construction onward rather than
-        // undefined until the first membership change. A group that never changes
-        // membership would otherwise never tell its link layer anything, and a
-        // recovery report carries no membership event to stand in.
-        //
-        // Fallible, and the failures are the shapes a constructor must not
-        // absorb: a crossing the replay carried disagreeing with the restored
-        // record, and the record and the runtime standing at one position and
-        // disagreeing about the committed membership there. **Nothing has been
-        // published when this refuses**, including whatever a valid prefix of the
-        // replay would have licensed.
-        driver
-            .inner
-            .lock()
-            .commit_membership_transaction()
-            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
-        Ok(driver)
-    }
-
     /// Reads the adopted group under this driver's own lock.
     ///
     /// The closure receives a shared borrow for its own duration and nothing
@@ -358,139 +195,6 @@ where
         self.with_group(RaftGroup::committed_application_index)
     }
 
-    /// Stops waiting for one write and resolves its client.
-    ///
-    /// This is the caller's own decision, not the cluster's, so the client
-    /// resolves as [`WriteError::UnknownOutcome`] with
-    /// [`UnknownOutcomeReason::DriveBoundReached`]: the proposal may already be
-    /// in the durable log and may still commit, and there is no
-    /// `cancel_proposal` that could make it otherwise. The waiter stops counting
-    /// against [`TransportDriverOptions::max_pending_waiters`] immediately.
-    ///
-    /// Abandonment is terminal for the client. A later `Applied`, `Rejected`, or
-    /// `UnknownOutcome` event for this proposal resolves nothing and changes
-    /// nothing, which is the correct direction: the client already holds a
-    /// terminal answer, and on this side that answer is *unknown*, which is
-    /// exactly the statement that the proposal may still commit. A caller that
-    /// wants the eventual fact keeps its future and does not call this.
-    ///
-    /// Returns whether a waiter was retired. Abandoning a write this driver no
-    /// longer holds, one that has already resolved, or one whose client future
-    /// was dropped — which reclaims the waiter — is a no-op rather than an
-    /// error: a caller racing its own completion is not a fault, and abandonment
-    /// resolves a client, so there is nothing to do for one that left.
-    #[must_use]
-    pub fn abandon_write(&self, local_proposal_id: LocalProposalId) -> bool {
-        self.inner.lock().abandon_write(local_proposal_id)
-    }
-
-    /// Stops waiting for one read and resolves its client.
-    ///
-    /// The barrier is cancelled through
-    /// [`rafter_app::group::RaftGroup::cancel_read`] first, so the group's
-    /// `reserved_reads` returns to its previous value, and the client resolves
-    /// as [`ReadError::Abandoned`] with
-    /// [`ReadAbandonReason::DriveBoundReached`]. The `ReadId` is spent: a retry
-    /// issues a new read.
-    ///
-    /// Returns whether a waiter was retired. A read whose client future was
-    /// already dropped has none: dropping the future cancels the barrier and
-    /// reclaims the waiter on its own.
-    #[must_use]
-    pub fn abandon_read(&self, read_id: ReadId) -> bool {
-        self.inner.lock().abandon_read(read_id)
-    }
-
-    /// Returns every write this driver has not resolved.
-    ///
-    /// This answers "what is this driver still holding", which is the question a
-    /// supervisor draining one asks. It is not how a caller finds its *own*
-    /// write: use [`TransportRaftDriver::begin_write`], which returns the ID it
-    /// allocated. A caller that answered the second question with this one was
-    /// taking the highest unresolved ID and relying on no other write being
-    /// admitted in between, which holds only while nothing else uses a driver
-    /// that is [`Sync`].
-    #[must_use]
-    pub fn pending_writes(&self) -> Vec<PendingWrite> {
-        self.inner.lock().pending_writes()
-    }
-
-    /// Returns the read IDs of every barrier this driver has not resolved.
-    ///
-    /// The read counterpart of [`TransportRaftDriver::pending_writes`], and the
-    /// same distinction applies: a caller looking for the barrier it just
-    /// started wants [`TransportRaftDriver::begin_read`].
-    #[must_use]
-    pub fn pending_reads(&self) -> Vec<ReadId> {
-        self.inner.lock().pending_reads()
-    }
-
-    /// Proposes `command` and returns the ID this driver allocated for it
-    /// beside the future that resolves it.
-    ///
-    /// [`DriverCommandSender::write`] returns the future alone, so the only name
-    /// for the waiter it created arrives when that future resolves — which is
-    /// after the point a caller would have used it, because the one thing the
-    /// name is for is [`TransportRaftDriver::abandon_write`].
-    ///
-    /// No group ID: this driver names one group for its whole life, so it
-    /// supplies its own and cannot be handed the wrong one. The future is the
-    /// one `write` returns, built by the same call, so the two cannot answer
-    /// differently.
-    ///
-    /// # Errors
-    ///
-    /// As [`DriverCommandSender::write`], except that a refusal which allocated
-    /// no ID is returned here rather than delivered through the future: there is
-    /// no waiter to name, so there is no pair to return.
-    pub fn begin_write(
-        &self,
-        command: A::Command,
-        options: WriteOptions,
-    ) -> Result<AddressedWrite<A::CommandResult>, WriteError> {
-        // One acquisition: the shared body takes the group ID this driver was
-        // built with, and reading it under the same lock that registers the
-        // waiter leaves nothing to argue about. `write_future` takes no lock —
-        // the guard is a handle and the poll closure is lazy — so the lock is
-        // released before the pair is built.
-        let local_proposal_id = {
-            let mut state = self.inner.lock();
-            let group_id = state.group_id.clone();
-            state.begin_write(&group_id, command, options)?
-        };
-        Ok((local_proposal_id, self.write_future(local_proposal_id)))
-    }
-
-    /// Begins a linearizable read and returns the ID of the barrier it reserved
-    /// beside the future that resolves it.
-    ///
-    /// The read counterpart of [`TransportRaftDriver::begin_write`], and
-    /// linearizable-only for a reason a consistency parameter would hide: this
-    /// exists to name a waiter so that [`TransportRaftDriver::abandon_read`] can
-    /// retire it, and a [`ReadConsistency::Local`] read reserves no barrier,
-    /// registers no waiter, and is answered inside the call that starts it.
-    /// There would be no ID to return and nothing to abandon. Run one through
-    /// [`DriverCommandSender::read`], which serves both levels.
-    ///
-    /// # Errors
-    ///
-    /// As [`DriverCommandSender::read`], except that a refusal which reserved no
-    /// barrier is returned here rather than delivered through the future.
-    pub fn begin_read(
-        &self,
-        query: A::Query,
-        options: ReadOptions,
-    ) -> Result<AddressedRead<G, A::QueryResult>, ReadError> {
-        // One acquisition, for the reason [`TransportRaftDriver::begin_write`]
-        // gives.
-        let read_id = {
-            let mut state = self.inner.lock();
-            let group_id = state.group_id.clone();
-            state.begin_linearizable_read(&group_id, query, options)?
-        };
-        Ok((read_id, self.barrier_future(read_id)))
-    }
-
     /// Builds the client future for one registered write waiter.
     ///
     /// Shared by [`TransportRaftDriver::begin_write`] and
@@ -533,418 +237,5 @@ where
     ) -> RaftHandle<G, A::Command, A::Query, A::CommandResult, A::QueryResult, Self> {
         let group_id = self.inner.lock().group_id.clone();
         RaftHandle::new(group_id, self.clone())
-    }
-
-    /// Steps the group with a tick and routes everything the step produced.
-    ///
-    /// This is one of the two entry points that advance the protocol. Call it
-    /// on the embedder's own timer; the app layer's election and heartbeat
-    /// timing is measured in ticks, not in wall time, so the tick interval is
-    /// the embedder's policy and Rafter does not choose it.
-    ///
-    /// The step's report is routed before this returns: peer messages go to
-    /// the transport, proposal and read events resolve waiters, and the metrics
-    /// snapshot is published. A terminal event resolves its waiter whichever
-    /// step observed it, which is why a client future can complete inside a
-    /// tick it has no other relationship to.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ManagedDriverError`] when the driver has released its group,
-    /// is shutting down, or the group step fails.
-    pub fn tick(&self) -> Result<(), ManagedDriverError> {
-        let mut state = self.inner.lock();
-        state.reject_if_shutting_down()?;
-        // Before the step, so a policy the link layer refused earlier is retried
-        // on the embedder's own timer rather than waiting for the cluster's next
-        // configuration change — which may never come.
-        state.flush_peer_policy();
-        state.step(GroupInput::Tick)
-    }
-
-    /// Starts one caller-planned membership change and routes every immediate
-    /// side effect.
-    ///
-    /// This is the execution counterpart to
-    /// [`crate::MembershipController`]'s plans. The driver does not choose a
-    /// target membership, decide when a learner is caught up, or turn an
-    /// accepted step into a completion claim; those remain deployment policy.
-    /// `Ok(())` means the local group accepted and processed this input. The
-    /// caller must observe committed membership before retiring an identity or
-    /// advancing its durable allocation record.
-    ///
-    /// The control-plane checkpoint is reconciled before this returns, just as
-    /// it is after ticks and peer deliveries. An embedder that persists on
-    /// [`TransportRaftDriver::control_plane_checkpoint_epoch`] therefore sees a
-    /// membership change through the same fail-closed path as every other
-    /// protocol input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ManagedDriverError`] when the driver has released its group,
-    /// is shutting down, or the local group refuses the membership input.
-    pub fn change_membership(&self, change: MembershipChange) -> Result<(), ManagedDriverError> {
-        let mut state = self.inner.lock();
-        state.reject_if_shutting_down()?;
-        state.flush_peer_policy();
-        state.step(GroupInput::Membership { change })
-    }
-
-    /// Validates one inbound authenticated envelope and steps the group with
-    /// it.
-    ///
-    /// Validation happens in two stages, and they answer different questions.
-    /// [`validate_inbound_peer_envelope`] asks the *validator* whether the link
-    /// layer authenticated this principal as this replica, and whether the policy
-    /// that deployment currently holds authorizes it rather than retiring it.
-    /// Then this driver asks itself whether its own group's membership names the
-    /// sender at all. Both run before the group is touched, exactly where a
-    /// production embedder refuses a frame, and the group never sees one that
-    /// fails either.
-    ///
-    /// The second stage is the fail-closed half, and it exists because the first
-    /// one can be out of date. [`crate::RaftTransport::update_peers`] is how a
-    /// removed replica stops being authorized, and it is allowed to fail — so
-    /// between the moment the cluster commits a removal and the moment the
-    /// transport accepts the policy that retires it, the validator still
-    /// authorizes a replica the cluster has retired. The driver knows better
-    /// than its own link layer in that window: its admission reads the
-    /// effective and raw committed memberships and the positioned committed
-    /// register, less every spent identity, so it can refuse the frame itself
-    /// rather than let a transient control-plane failure become an
-    /// authorization.
-    ///
-    /// It cannot refuse a legitimate joiner. The membership it checks includes
-    /// the effective configuration, so a replica added by a change that has
-    /// appended and not committed is present and its frames are accepted — which
-    /// it must be, or it can never catch up and the change can never commit.
-    ///
-    /// Rejection is not a driver failure: an unauthorized or retired peer
-    /// sending frames is an expected condition, and the caller decides
-    /// whether to log it, count it, or drop the connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InboundEnvelopeError::Rejected`] when the validator refuses the
-    /// frame, [`InboundEnvelopeError::NotInMembership`] when this driver's own
-    /// membership does not name the sender — both leaving the group untouched —
-    /// and [`InboundEnvelopeError::Driver`] when the group step itself fails.
-    pub fn deliver(
-        &self,
-        envelope: AuthenticatedPeerEnvelope<G, T::PeerPrincipal>,
-    ) -> Result<(), InboundEnvelopeError> {
-        let mut state = self.inner.lock();
-        state
-            .reject_if_shutting_down()
-            .map_err(|source| InboundEnvelopeError::Driver { source })?;
-        // A delivery is an entry point like a tick, and a frame from a replica
-        // the current policy retires is the likeliest moment for the retry to
-        // matter.
-        state.flush_peer_policy();
-        let node_id = state.node_id;
-        let envelope = validate_inbound_peer_envelope(envelope, node_id, &state.validator)
-            .map_err(|source| InboundEnvelopeError::Rejected { source })?;
-        if !state.is_admitted(envelope.from) {
-            state.refused_non_member_frames = state.refused_non_member_frames.saturating_add(1);
-            return Err(InboundEnvelopeError::NotInMembership {
-                node_id: envelope.from,
-            });
-        }
-        state
-            .step(GroupInput::PeerMessage { envelope })
-            .map_err(|source| InboundEnvelopeError::Driver { source })
-    }
-
-    /// Collects every barrier whose proof this driver has been told is ready.
-    ///
-    /// A grant is announced — `tick` and `deliver` route the group's read
-    /// events — but the proof it announces is *consumed* by a read call, and
-    /// that call runs the state machine, which this driver will not do inside a
-    /// tick the embedder asked for on its own timer. So the third entry point
-    /// stays: call it after each batch of deliveries and after each tick.
-    ///
-    /// It attempts exactly the barriers a routed `ReadEvent::Granted` named and
-    /// leaves the rest alone. A barrier still waiting on its quorum round, or
-    /// granted at an index this replica has not applied through, cannot answer
-    /// differently until the group says so, and a read against a barrier the
-    /// group already tracks returns an unstepped report — so attempting one
-    /// anyway would spin. With nothing granted this is a no-op, and it is safe
-    /// to call at any time.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ManagedDriverError::NoGroup`] when the driver has released its
-    /// group, and nothing else. Every group error a read call can raise names
-    /// the one barrier that call was for, so it resolves that barrier's client
-    /// and the pass continues: one barrier's fault does not deny service to the
-    /// rest.
-    pub fn drive_pending_reads(&self) -> Result<(), ManagedDriverError> {
-        let mut state = self.inner.lock();
-        // The third entry point flushes like the other two. This is the one an
-        // embedder calls after each batch of deliveries, so it is the supervisory
-        // surface a driver whose link layer just recovered is most likely to
-        // reach first.
-        state.flush_peer_policy();
-        state.drive_pending_reads()
-    }
-
-    /// Retires the running incarnation and returns its group.
-    ///
-    /// This is the driver-level half of decomposition.
-    /// [`rafter_app::group::RaftGroup::into_parts`] consumes the group it
-    /// retires, and a driver's group lives behind the lock its cloned handles
-    /// share, which nothing can move out of. The driver owns the movable slot
-    /// so an embedder does not have to build one.
-    ///
-    /// Every outstanding waiter resolves before this returns. Writes resolve as
-    /// [`WriteError::UnknownOutcome`] with
-    /// [`UnknownOutcomeReason::DriverReleased`], because a proposal already
-    /// appended may still commit and apply under the next incarnation. Reads
-    /// resolve as [`ReadError::Abandoned`] with
-    /// [`ReadAbandonReason::DriverReleased`], and their barriers are cancelled
-    /// through the group first so the retired group is quiescent *in reads*.
-    /// It is deliberately not quiescent in proposals — the appended entry stays
-    /// in the group's table, which is what
-    /// [`TransportRaftDriver::adopt_group`] accepts and
-    /// [`TransportRaftDriver::new`] does not.
-    ///
-    /// The driver refuses every operation until
-    /// [`TransportRaftDriver::adopt_group`] installs a new incarnation. It does
-    /// not close the transport: the same link serves the next incarnation, and
-    /// closing it is the embedder's decision.
-    ///
-    /// The metrics watch stays open across the gap, because a handle names a
-    /// service rather than an incarnation — but its last snapshot describes the
-    /// retired one and nothing refreshes it until `adopt_group` publishes the
-    /// next. Closing the watch would break re-adoption, and there is no metrics
-    /// snapshot to publish for a group that does not exist, so the surface that
-    /// tells a released driver from an idle one is
-    /// [`TransportRaftDriver::with_group`] and
-    /// [`TransportRaftDriver::committed_application_index`], which answer
-    /// [`ManagedDriverError::NoGroup`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ManagedDriverError::NoGroup`] when the driver has already
-    /// released its group.
-    pub fn release_group(&self) -> Result<RaftGroup<G, A, R>, ManagedDriverError> {
-        let mut state = self.inner.lock();
-        if state.group.is_none() {
-            return Err(ManagedDriverError::NoGroup);
-        }
-        state.release_waiters();
-        state.group.take().ok_or(ManagedDriverError::NoGroup)
-    }
-
-    /// Installs a new incarnation and routes its recovery outputs.
-    ///
-    /// `recovery_outputs` are the outputs the recovered runtime released, and
-    /// the driver applies them itself rather than accepting an already-applied
-    /// group. That is deliberate: the recovery report carries peer messages and
-    /// snapshot directives that must be routed, and a caller that applied them
-    /// outside the driver would drop exactly the effects a restart depends on.
-    ///
-    /// The new group must serve the group ID this driver was built with. A
-    /// driver names one group for its whole life — its handles and metrics
-    /// watch were issued against that ID and adoption does not reissue them —
-    /// so a group with a different ID is refused rather than adopted under the
-    /// wrong name. The node ID may change, because a replacement incarnation is
-    /// still a replica of the same group.
-    ///
-    /// The new group must hold no reserved reads, and its local ID watermarks
-    /// must be at or above the retired incarnation's when the two share a
-    /// runtime; see [`rafter_app::group::RaftGroupParts`]. A driver that
-    /// rebuilt its runtime from durable storage may restart its IDs at zero.
-    ///
-    /// Unlike [`TransportRaftDriver::new`], this accepts a group that still
-    /// tracks appended proposals, because that is precisely what a released
-    /// group carries: the entry is in the durable log and may commit under this
-    /// incarnation. Its client already received
-    /// [`UnknownOutcomeReason::DriverReleased`], so the later `Applied` event
-    /// resolves no waiter — which is the correct outcome and not a lost one.
-    /// A group whose waiters were never resolved must not be adopted here; use
-    /// [`TransportRaftDriver::new`], which refuses it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ManagedDriverError::ShuttingDown`] when the driver has shut
-    /// down — that is terminal, and a supervisor that wants to serve again
-    /// builds a driver — [`ManagedDriverError::GroupAlreadyAdopted`] when the
-    /// driver still holds a group, [`ManagedDriverError::MixedGroups`] when the
-    /// group serves a different group ID than this driver, the same validation
-    /// errors as [`TransportRaftDriver::new`], and a group error when the
-    /// recovery outputs fail to apply.
-    pub fn adopt_group(
-        &self,
-        group: RaftGroup<G, A, R>,
-        recovery_outputs: Vec<RaftOutput>,
-    ) -> Result<(), ManagedDriverError> {
-        let checkpoint = PeerControlPlaneCheckpoint::empty(group.group_id().clone());
-        self.adopt_group_with_checkpoint(group, recovery_outputs, checkpoint)
-    }
-
-    /// Installs a new incarnation and merges a recovered control-plane
-    /// checkpoint into what this driver already holds.
-    ///
-    /// The adoption counterpart of
-    /// [`TransportRaftDriver::with_control_plane_checkpoint`], for a supervisor
-    /// that rebuilds a replica's runtime from durable storage and has a
-    /// checkpoint from *before* this driver existed — a takeover, or a driver
-    /// re-armed from another process's persisted state.
-    ///
-    /// Merged rather than assigned, because this driver may already hold
-    /// retirement state of its own and a released group does not cancel it: the
-    /// mark is the higher of the two and the current state is the later
-    /// observation. An in-process release and re-adopt needs none of this and
-    /// passes an empty checkpoint through
-    /// [`TransportRaftDriver::adopt_group`], because nothing was lost.
-    ///
-    /// # What an `Err` leaves behind
-    ///
-    /// **Two kinds of `Err`, and they differ in whether the group was
-    /// installed.** `Result<(), _>` cannot say which, so it is said here and
-    /// pinned in `tests/adoption.rs`.
-    ///
-    /// Everything above the installation is a *refusal*: shutdown, a group
-    /// already held, a foreign group ID, a checkpoint that contradicts this
-    /// driver's invariants, a runtime whose committed membership contradicts the
-    /// restored record at a position both observed, a node ID a committed removal
-    /// has spent, and watermarks a released incarnation had already passed. Each
-    /// leaves the driver holding no group, so
-    /// [`TransportRaftDriver::with_group`] answers
-    /// [`ManagedDriverError::NoGroup`] and the next adoption is an ordinary
-    /// first attempt. The group itself is consumed and dropped, which is what a
-    /// refusal means: the supervisor rebuilds and offers a new one.
-    ///
-    /// **Only the recovery outputs and the publication they feed fail after the
-    /// group is installed, and that adoption is not rolled back.** The driver
-    /// holds the group, `with_group` reads it, and `service_state` answers for it
-    /// — [`TransportRaftDriver::release_group`] is how a supervisor gets it back,
-    /// and is required before another adoption, which would otherwise raise
-    /// [`ManagedDriverError::GroupAlreadyAdopted`]. Rolling back instead would
-    /// *drop* the group on the floor, which is strictly worse: a caller holding
-    /// a `Result<(), _>` has no other way to reach it.
-    ///
-    /// The link layer is told what the installed group requires whether or not
-    /// the outputs applied, because that is the one statement a later call
-    /// cannot repair on its own: a policy left describing the retired
-    /// incarnation is not stale, it is wrong about who may speak, and nothing
-    /// re-derives it until the cluster's next configuration change. The single
-    /// exception is a contradiction the recovery outputs themselves introduced,
-    /// where publishing nothing *is* the correct statement — see
-    /// [`DriverServiceState::ContradictoryCurrentState`].
-    ///
-    /// **Retry is legal, and re-sending is sound.** The checkpoint is merged
-    /// before the failure and stays merged; the join is monotone and idempotent,
-    /// so offering the same record again adds nothing. Transport calls that
-    /// already flew are lost-message-equivalent under this repo's own model —
-    /// [`RaftTransport`] states that Raft safety tolerates dropped, duplicated,
-    /// and reordered peer messages — so a supervisor that releases, rebuilds the
-    /// runtime, and adopts again re-sends what it must and duplicates what it
-    /// need not.
-    ///
-    /// # Errors
-    ///
-    /// As [`TransportRaftDriver::adopt_group`].
-    pub fn adopt_group_with_checkpoint(
-        &self,
-        group: RaftGroup<G, A, R>,
-        recovery_outputs: Vec<RaftOutput>,
-        checkpoint: PeerControlPlaneCheckpoint<G>,
-    ) -> Result<(), ManagedDriverError> {
-        let mut state = self.inner.lock();
-        // Shutdown is terminal, and `shutdown` itself says so by refusing a
-        // second call. A driver that could be re-armed by adopting a group would
-        // make the entry's own distinction — a supervisor restarting a replica
-        // releases, a supervisor stopping one shuts down and then releases —
-        // a distinction with no consequence.
-        state.reject_if_shutting_down()?;
-        // Before anything about the incoming group is consumed: a contradiction
-        // is terminal for this incarnation, and releasing the old group did not
-        // resolve it. Refusing here keeps the partial-adoption contract exact —
-        // a group is left installed only by a failure the newly adopted group's
-        // own recovery outputs produced, never by terminal state that predates
-        // the adoption. The error names the driver's own condition rather than
-        // the incoming record, because nothing offered here is what is wrong.
-        if let Some(reason) = state.recorded_contradiction() {
-            return Err(ManagedDriverError::ControlPlaneContradicted { reason });
-        }
-        if state.group.is_some() {
-            return Err(ManagedDriverError::GroupAlreadyAdopted);
-        }
-        // The driver's group ID is fixed at construction and adoption does not
-        // republish it: handles, the metrics watch, and every client-facing
-        // group check keep comparing against the original. A group serving a
-        // different ID would be driven under this driver's ID, and nothing
-        // downstream would catch it — `GroupInput::Proposal` carries no group
-        // ID, so a client write addressed to this driver would be proposed into
-        // the foreign group's log and answered with a real index and term.
-        // `InMemoryRaftDriver::new` refuses the same mismatch with the same
-        // error.
-        if group.group_id() != &state.group_id {
-            return Err(ManagedDriverError::MixedGroups);
-        }
-        // **The record and the runtime are one transaction, staged.** The join
-        // moves the mark and the register — the two fields an embedder persists —
-        // and the runtime offered beside them can contradict the result at a
-        // position both stand at. Running the join against live state and asking
-        // the runtime afterwards left a refused adoption holding durable state
-        // recovered from the very input it had just declared contradictory, with
-        // an epoch move telling the embedder to write it down. So both questions
-        // are asked of a candidate, and nothing is installed until every refusal
-        // above the installation has had its say.
-        //
-        // The checkpoint is joined before the identity gate so the gate reads the
-        // recovered mark as well as the held one: a takeover handed a checkpoint
-        // that spent the offered ID must refuse it, and joining afterwards would
-        // install the identity and only then learn it was spent.
-        let candidate = state
-            .adoption_candidate(checkpoint, group.runtime())
-            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
-        if candidate.is_spent(group.node_id()) {
-            return Err(ManagedDriverError::RetiredNodeId {
-                node_id: group.node_id(),
-            });
-        }
-        let (next_proposal_id, next_read_id) = adopted_watermarks(&group, PendingProposals::Carry)?;
-        state.node_id = group.node_id();
-        state.next_proposal_id = highest(state.next_proposal_id, next_proposal_id);
-        state.next_read_id = highest(state.next_read_id, next_read_id);
-        state.group = Some(group);
-        // After the group, so the identity this driver now is is the one every
-        // later derivation excludes. Nothing is stated to the link layer here:
-        // the publication belongs to the endpoint fold below, once the recovery
-        // outputs this incarnation is replaying have been folded first.
-        state.install_restored_membership(candidate);
-        // History then endpoint, for the reason
-        // [`TransportRaftDriver::with_control_plane_checkpoint`] gives: the
-        // recovery outputs are older than the committed membership the rebuilt
-        // runtime reports, and a driver that took the endpoint first read every
-        // one of them as a removal of what the endpoint had added. A takeover
-        // reaches this with a checkpoint from another process and is the case
-        // that most needs it.
-        // **The publication runs whether or not the outputs applied**, and the
-        // `?` that used to sit on this line is the whole of the defect. The
-        // group is installed by now, so this driver *is* the replica the link
-        // layer authorizes for — and returning early left the transport
-        // describing the retired incarnation with nothing to re-derive it from,
-        // because the policy is only republished when the cluster's membership
-        // moves.
-        let applied = if recovery_outputs.is_empty() {
-            Ok(())
-        } else {
-            state.apply_recovery_outputs(recovery_outputs)
-        };
-        // The check above cleared the record against the runtime, so the only way
-        // this refuses is a contradiction the recovery outputs themselves
-        // introduced — which is a group already installed, exactly like a failed
-        // apply. The driver records the refusal and stops serving; the supervisor
-        // releases and rebuilds.
-        let published = state
-            .recorded_contradiction()
-            .map_or_else(|| state.publish_adopted_membership(), Err)
-            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason });
-        state.publish_metrics();
-        applied.and(published)
     }
 }

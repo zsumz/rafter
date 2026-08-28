@@ -42,12 +42,17 @@ use crate::{
 };
 
 mod adoption;
+mod batch;
+mod batch_outcome;
 #[path = "trait.rs"]
 mod driver_trait;
+mod group_error;
 mod in_memory;
 mod mapping;
 mod options;
+mod proposal_outcome;
 mod read;
+mod routing;
 mod state;
 mod transfer;
 mod transport;
