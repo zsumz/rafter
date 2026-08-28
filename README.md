@@ -46,7 +46,9 @@ rafter-sim          simulation and model checking
 
 Use the lower crates when you want full control. Use the higher crates when you
 want application structure without surrendering storage, transport, scheduling,
-identity, or recovery policy.
+identity, or recovery policy. The embedder's tour of how the layers compose —
+the kernel's step loop, the persist-before-output rule, and what each layer
+owes the next — is [`docs/architecture.md`](./docs/architecture.md).
 
 ## API Layers
 
