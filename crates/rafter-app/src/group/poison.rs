@@ -1,3 +1,10 @@
+//! Fatal group health and the waiters a poison strands.
+//!
+//! Poison ends one group incarnation: the cause is retained, and every pending
+//! proposal and read moves once into a set the caller must drain, after which
+//! the group emits nothing further for them. It offers no repair — replacing
+//! the group through an explicit recovery path stays the caller's business.
+
 use super::{
     Arc, BTreeSet, ClientRequestId, Debug, ErrorCause, GroupError, GroupResult, LocalProposalId,
     PersistedRaftRuntime, RaftGroup, ReadId, ReplicatedStateMachine, RuntimeGroupError,

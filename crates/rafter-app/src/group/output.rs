@@ -1,3 +1,10 @@
+//! Runtime output translation into one step report.
+//!
+//! Every output a runtime step released becomes exactly one reported fact or
+//! one deliberate silence, ordered so that a step failing partway still owes
+//! its membership delta rather than losing it. Nothing here delivers or
+//! retries: routing the collected messages and chunks is the caller's work.
+
 use super::{
     ApplyEntry, Debug, GrantedReadIndex, GroupResult, GroupStepReport, LeadershipTransferEvent,
     LocalProposalId, LogIndex, Message, NodeId, PeerEnvelope, PersistedRaftRuntime, ProposalEvent,

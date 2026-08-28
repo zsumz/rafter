@@ -1,3 +1,10 @@
+//! Proves every submitted proposal reaches exactly one lifecycle verdict.
+//!
+//! Duplicate and non-monotonic IDs are refused before the runtime is touched,
+//! runtime silence becomes an explicit unknown outcome, a batch keeps committed
+//! order, and a stale event for a spent ID resolves nothing. The runtime is
+//! scripted: what a real cluster would commit is proved elsewhere.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

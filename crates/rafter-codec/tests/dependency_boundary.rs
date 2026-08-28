@@ -1,3 +1,10 @@
+//! Proves rafter-codec stays a dependency-free wire crate.
+//!
+//! Its manifest may not name storage, an async runtime, a logging facade, or a
+//! serialization framework, because a codec that pulled one in would put it in
+//! every embedder's tree. It reads manifest text only; what the encoders
+//! actually produce is proved by the codec's own tests.
+
 use std::{fs, path::Path};
 
 #[test]

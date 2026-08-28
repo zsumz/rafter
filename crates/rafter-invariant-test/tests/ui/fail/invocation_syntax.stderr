@@ -1,7 +1,7 @@
 error: no rules expected `::`
-  --> tests/ui/fail/invocation_syntax.rs:12:40
+  --> tests/ui/fail/invocation_syntax.rs:19:40
    |
-12 |     let _ = oracle_expect_err!(detector::reject(), "qualified path");
+19 |     let _ = oracle_expect_err!(detector::reject(), "qualified path");
    |                                        ^^ no rules expected this token in macro call
    |
 note: while trying to match `(`
@@ -11,9 +11,9 @@ note: while trying to match `(`
    |                     ^
 
 error: no rules expected `::`
-  --> tests/ui/fail/invocation_syntax.rs:13:37
+  --> tests/ui/fail/invocation_syntax.rs:20:37
    |
-13 |     oracle_invoke_recorder!(detector::record());
+20 |     oracle_invoke_recorder!(detector::record());
    |                                     ^^ no rules expected this token in macro call
    |
 note: while trying to match `(`

@@ -1,3 +1,10 @@
+//! Opening the durable Raft node this process runs on.
+//!
+//! Every timing and evidence knob comes from the environment, is validated
+//! before the node opens, and falls back to a default the harness scripts can
+//! reason about; the outputs recovery produced are handed back rather than
+//! swallowed. Stepping the node and answering clients happen elsewhere.
+
 use std::{
     error::Error,
     path::{Path, PathBuf},

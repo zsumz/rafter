@@ -1,3 +1,10 @@
+//! Proves the lease-isolation machine accuses only on real evidence.
+//!
+//! Coverage is claimed once, the probe is a genuine direct read released only
+//! after same-term expiry, and the pipe ordering between a handler line and a
+//! client response must not change the verdict; a changed term or leader loses
+//! coverage instead. It drives the state machine alone, with no child process.
+
 use super::{Action, ClientResponse, LeaseIsolation, RequestId};
 
 fn request(client: &str, msg_id: u64) -> RequestId {

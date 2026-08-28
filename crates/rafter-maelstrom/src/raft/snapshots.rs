@@ -1,3 +1,10 @@
+//! Snapshot exchange between the Maelstrom application and its Raft node.
+//!
+//! A snapshot this harness writes carries its own group, kind, and version,
+//! and an inbound one is refused unless all three match before any application
+//! state is persisted; compaction runs only on a leader that has advanced far
+//! enough. Moving the chunks is the runtime's business, not this module's.
+
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, LogIndex,
     RaftSnapshot, RaftSnapshotMetadata, Role, SnapshotGroupId,

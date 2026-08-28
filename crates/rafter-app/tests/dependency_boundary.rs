@@ -1,3 +1,10 @@
+//! Proves rafter-app's dependency edges stay on the abstraction.
+//!
+//! The crate may name `rafter` and `rafter-runtime-api` as ordinary
+//! dependencies and must name no concrete runtime, storage, service, or
+//! transport; examples reach those through dev-dependencies alone. This reads
+//! the manifest, not the code that has to honour what the manifest allows.
+
 use std::{fs, path::Path};
 
 #[test]

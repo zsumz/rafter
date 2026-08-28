@@ -1,3 +1,10 @@
+//! Proves a group's whole lifetime, from election through teardown.
+//!
+//! Membership requests, leadership transfers, poison reporting, and the parts a
+//! group hands back are one scenario here because each is a fact a caller reads
+//! off a group it already holds. Proposal and read mechanics have their own
+//! files; they appear only where a lifetime boundary changes them.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

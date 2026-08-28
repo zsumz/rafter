@@ -1,3 +1,10 @@
+//! Proves the evidence resolver itself, on fixtures rather than the tree.
+//!
+//! Cargo target roots, inline module nesting, library and binary identities,
+//! and the guards against imported names and `should_panic` tests are each
+//! exercised against constructed sources, so a resolver defect cannot pass on
+//! the luck of the real workspace. The registry's contents are checked apart.
+
 use super::*;
 
 #[test]

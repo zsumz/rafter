@@ -1,3 +1,10 @@
+//! The proxy's configuration, all of it read from the environment.
+//!
+//! Every knob has a documented default and the aliases the harness scripts
+//! already use, and an unrecognized mode falls back to the historical
+//! leader-triggered behaviour rather than failing a run outright. Nothing
+//! here acts on what it read.
+
 use std::{env, error::Error, path::PathBuf, time::Duration};
 
 const DEFAULT_LEADER_RESTARTS: u64 = 1;

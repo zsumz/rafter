@@ -1,3 +1,10 @@
+//! The managed scheduler composed over the typed many-group host.
+//!
+//! A typed input is admitted, planned, and dispatched under the scheduler's
+//! bounds, and a dispatch holds its worker until every selected item has been
+//! stepped and given an exact disposition, failed groups included. It adds
+//! bounding and ordering only; a group's own semantics stay below it.
+
 use std::{fmt::Debug, num::NonZeroUsize};
 
 use rafter_app::group::GroupInput;

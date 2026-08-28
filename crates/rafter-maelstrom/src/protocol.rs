@@ -1,3 +1,10 @@
+//! Maelstrom envelopes and the harness's own message vocabulary.
+//!
+//! A `body.type` is classified once here, and a sender becomes a peer only by
+//! surviving the membership lookup that mints the token every peer handler
+//! requires, so no handler can take an identity off the wire itself. It holds
+//! no protocol state and decides nothing about what a message means.
+
 use std::{collections::BTreeMap, error::Error};
 
 use rafter::NodeId;

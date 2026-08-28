@@ -1,3 +1,10 @@
+//! Proves every evidence record names something a machine can find.
+//!
+//! Each record must bind to a known invariant and layer, and its path, symbol,
+//! and test identity must resolve to a real declaration in the workspace —
+//! never an import, an alias, or a `should_panic` test. It proves the binding
+//! exists; whether running that evidence passes is not asked here.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,

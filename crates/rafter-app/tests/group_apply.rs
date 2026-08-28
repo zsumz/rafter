@@ -1,3 +1,10 @@
+//! Proves what a group does when its state machine misbehaves on apply.
+//!
+//! A decode failure, a batch answering with the wrong count or wrong metadata,
+//! an applied index that moved backwards, or a refused snapshot install each
+//! poison the group permanently and strand its waiters where a caller can
+//! drain them. Whether those entries were rightly committed is not asked here.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

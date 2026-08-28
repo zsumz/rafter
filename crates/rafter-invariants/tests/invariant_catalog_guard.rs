@@ -1,3 +1,10 @@
+//! Proves the invariant registry and its generated document are one artifact.
+//!
+//! Every declared count, identifier, family, tier, and evidence record in
+//! `verification/raft-invariants.yaml` must be well formed, machine-checkable,
+//! and reproduced exactly in `docs/raft-invariants.md`. It judges the
+//! catalog's shape, never whether an invariant it names holds of the code.
+
 use std::path::{Path, PathBuf};
 
 use rafter_invariants::{

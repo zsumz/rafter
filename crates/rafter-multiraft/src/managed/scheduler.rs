@@ -1,3 +1,10 @@
+//! The bounded, deterministic many-group scheduler itself.
+//!
+//! Admission, ready-set membership, pass and dispatch identity, and worker
+//! occupancy move only through this type, and a dispatch releases its worker
+//! only on a completion this scheduler's own authority validates item by item.
+//! It has no threads, clocks, or I/O: the caller performs every turn.
+
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt::Debug,

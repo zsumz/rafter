@@ -1,3 +1,10 @@
+//! Reading Maelstrom's stdin and the child's two pipes as facts.
+//!
+//! Each parser answers one question about one line and returns nothing when
+//! the line does not answer it, so a log format the child changed degrades
+//! into silence rather than into a wrong fact. It holds no state and decides
+//! nothing; the supervisor and the lease machine do that.
+
 use std::time::Duration;
 
 use serde_json::Value;

@@ -1,3 +1,10 @@
+//! Proves the lin-kv state machine and its durable application file.
+//!
+//! Writes, reads, and compare-and-set apply in log order and report
+//! Maelstrom's own error codes; the snapshot payload and the persisted applied
+//! floor survive a round trip; the persist crash point fires once per root.
+//! No Raft is involved here — replication is proved against a real node.
+
 use super::*;
 
 use serde_json::json;

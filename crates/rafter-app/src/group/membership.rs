@@ -1,3 +1,10 @@
+//! Membership request translation and the group's membership event stream.
+//!
+//! A configuration this replica moved through stays owed until a report
+//! carrying it reaches a caller, whatever caused the move; effective and
+//! committed are two independent facts, reported effective first. Which
+//! configurations are legal is the kernel's judgement, not this module's.
+
 use super::{
     Debug, GroupStepReport, MembershipChange, MembershipEvent, PersistedRaftRuntime,
     ProposalRejection, RaftGroup, RaftInput, ReplicatedStateMachine,

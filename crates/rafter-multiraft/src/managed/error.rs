@@ -1,3 +1,10 @@
+//! Why the managed scheduler refused, as typed and exhaustive verdicts.
+//!
+//! Each refusal names the single condition that produced it, so a caller can
+//! tell an unknown route from a queue bound from exhausted identity without
+//! parsing text, and a refused payload comes back rather than vanishing.
+//! Recovery policy stays the caller's; these values only say what happened.
+
 use std::{error::Error, fmt};
 
 use super::{DispatchId, WorkId};

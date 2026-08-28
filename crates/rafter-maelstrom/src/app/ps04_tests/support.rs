@@ -1,3 +1,10 @@
+//! Fixtures the PS-04 durability scenarios are built from.
+//!
+//! Opening a node through the production entry points, committing one command
+//! at a time, and interrupting a persist exactly where the crash point fires,
+//! so each scenario arranges a real process rather than a stub. Its assertions
+//! only guard the fixture; the obligations belong to the scenarios.
+
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},

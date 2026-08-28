@@ -1,3 +1,10 @@
+//! The lease-isolation experiment's state machine.
+//!
+//! It watches one node serve a fast-path lease read, isolates that node for
+//! exactly that term, and holds a real client read until the lease expires;
+//! only a read served or a lease renewed after expiry is a violation, and a
+//! broken correlation loses coverage rather than accusing. It never acts.
+
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

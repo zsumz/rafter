@@ -1,3 +1,10 @@
+//! Proves the shapes `#[detector_test]` must keep accepting.
+//!
+//! An ordinary detector test, one carrying a string `#[ignore]`, and one with
+//! a concrete `where` clause all compile, so tightening the attribute's
+//! refusals cannot quietly narrow what already works. The refusals themselves
+//! belong to the failing fixtures.
+
 #![allow(unused_imports)]
 
 use rafter_invariant_test::{detector_test, oracle_expect_err};

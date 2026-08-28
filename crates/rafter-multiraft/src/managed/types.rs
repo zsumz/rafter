@@ -1,3 +1,10 @@
+//! The values a caller exchanges with the managed scheduler.
+//!
+//! Each records one scheduler decision — an admission, a pass plan, a turn, a
+//! completion — and moves the caller's payload rather than copying it, so
+//! accepted work is owned in exactly one place at a time. They hold no logic:
+//! the scheduler decides, and these are what it said.
+
 use std::sync::Arc;
 
 use super::{DispatchId, PassId, WorkClass, WorkId};

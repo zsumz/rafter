@@ -1,3 +1,10 @@
+//! Proves the reviewed evidence witnesses are still the ones on record.
+//!
+//! Client and persistence obligations each name an exact witness — path,
+//! symbol, test identity, and failure kind — and the registry must still carry
+//! every one, so weakening an obligation cannot pass as a routine catalog
+//! edit. People review the witness list; this only holds it in place.
+
 use std::collections::BTreeSet;
 
 use rafter_invariants::{

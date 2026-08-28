@@ -1,5 +1,3 @@
-#![allow(clippy::wildcard_imports)]
-
 //! A membership fact this group moved through is owed until it is *reported*.
 //!
 //! Its sibling [`group_membership_stream`] pins what a **successful** step
@@ -18,6 +16,8 @@
 //! report this group *handed back* — and it advances only when a report is
 //! returned. Everything here is one shape said five ways: **the delta survives
 //! the failure.**
+
+#![allow(clippy::wildcard_imports)]
 
 mod support;
 

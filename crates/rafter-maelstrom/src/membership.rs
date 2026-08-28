@@ -1,3 +1,10 @@
+//! The harness's scripted membership change.
+//!
+//! A plan names one target voter set, and the next drive action is derived
+//! only from what the replica currently reports, so a transition is proposed
+//! only when the effective and committed configurations agree it is next.
+//! Nothing here performs the change; the kernel still judges every transition.
+
 use std::{collections::BTreeMap, error::Error};
 
 use rafter::{MembershipConfig, MembershipSet, NodeId};

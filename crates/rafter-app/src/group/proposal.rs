@@ -1,3 +1,10 @@
+//! Local tracked proposals and their immediate lifecycle verdict.
+//!
+//! Every submitted proposal leaves the call with exactly one lifecycle
+//! statement, including runtime silence, which is reported as an unknown
+//! outcome rather than a failure. It does not follow a proposal to commit; an
+//! appended proposal's later fate arrives through ordinary step reports.
+
 use super::{
     report_has_proposal_lifecycle, Debug, GroupStepReport, LocalProposalId, PersistedRaftRuntime,
     Proposal, ProposalBatchBeginReport, ProposalBatchBeginReportResult, ProposalBegin,

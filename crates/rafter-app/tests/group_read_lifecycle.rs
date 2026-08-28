@@ -1,3 +1,10 @@
+//! Proves the read-barrier lifecycle, terminal states included.
+//!
+//! A barrier answers only once its applied floor is reached; a rejection or a
+//! cancellation clears local state and spends the `ReadId`; a cached proof is
+//! consumed by an identical retry and by nothing else. Whether the read index
+//! behind the barrier was rightly granted is the kernel's question.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

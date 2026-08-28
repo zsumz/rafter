@@ -1,3 +1,10 @@
+//! State-machine reads and the local half of the read-index barrier.
+//!
+//! A query is answered only from applied state at or above the barrier that
+//! authorized it, and a terminal verdict clears that barrier's local state so
+//! its spent `ReadId` cannot be reused. Quorum confirmation belongs to the
+//! kernel; cancelling here withdraws local waiter state, never a peer request.
+
 use super::{
     Arc, Debug, GroupError, GroupResult, GroupStepReport, PersistedRaftRuntime, RaftGroup,
     ReadBarrier, ReadConsistency, ReadEvent, ReadId, ReadIndexCancelReason, ReadIndexRejection,
