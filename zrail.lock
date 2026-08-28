@@ -2,7 +2,7 @@
 schema = 1
 semantics = 1
 producer = "0.0.1"
-contract_sha256 = "fdf1881b63501dfcd8581500b0b496b4bd7e89175f11a1ff74ab89ae983ba604"
+contract_sha256 = "232968f31afc769f72112ec5b7cdce340d25b399f5e43c2ac905d5a5e18881c5"
 
 [[package]]
 name = "rafter"
@@ -1388,21 +1388,6 @@ value = 1326
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-maelstrom/src/answers.rs"
-value = 350
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-maelstrom/src/app.rs"
-value = 389
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-maelstrom/src/client.rs"
-value = 946
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-maelstrom/src/raft/reply_tests.rs"
 value = 654
 
@@ -1420,26 +1405,6 @@ value = 416
 rule = "rust.file-size"
 target = "crates/rafter-multiraft/src/host/tests.rs"
 value = 514
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-multiraft/src/managed/scheduler.rs"
-value = 545
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-multiraft/src/managed/typed.rs"
-value = 304
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-multiraft/src/managed/types.rs"
-value = 306
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-multiraft/src/typed.rs"
-value = 326
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1579,27 +1544,7 @@ value = 430
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/lib.rs"
-value = 404
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/application.rs"
-value = 630
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/checks/witnesses.rs"
-value = 350
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/explorers/budget.rs"
-value = 345
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/helpers.rs"
-value = 316
+value = 107
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1653,16 +1598,6 @@ value = 388
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/liveness/driver.rs"
-value = 895
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/liveness/features.rs"
-value = 810
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/liveness/features/membership.rs"
 value = 423
 
@@ -1683,78 +1618,8 @@ value = 410
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/observations.rs"
-value = 321
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/scheduling.rs"
-value = 314
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state.rs"
-value = 508
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state/client.rs"
-value = 630
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state/commit.rs"
-value = 525
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state/election.rs"
-value = 625
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state/snapshot.rs"
-value = 989
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/network/delivery.rs"
-value = 683
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/records.rs"
-value = 360
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/format/v1/log_entry.rs"
-value = 507
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/format/v1/snapshot.rs"
-value = 442
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-storage/src/lib.rs"
 value = 141
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/raft_log_segment/error.rs"
-value = 366
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/raft_snapshot_store/error.rs"
-value = 394
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/raft_snapshot_store/open.rs"
-value = 334
 
 [[ratchet]]
 rule = "rust.file-size"

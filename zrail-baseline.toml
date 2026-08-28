@@ -195,21 +195,6 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-maelstrom/src/answers.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-maelstrom/src/app.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-maelstrom/src/client.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-maelstrom/src/raft/reply_tests.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
 
@@ -227,26 +212,6 @@ reason = "Pre-adoption implementation size held as shrink-only debt; split along
 rule = "rust.file-size"
 target = "crates/rafter-multiraft/src/host/tests.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-multiraft/src/managed/scheduler.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-multiraft/src/managed/typed.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-multiraft/src/managed/types.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-multiraft/src/typed.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -390,26 +355,6 @@ reason = "Pre-adoption module facade holding implementation; shrink toward the 1
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/application.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/checks/witnesses.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/explorers/budget.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/helpers.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/election.rs"
 reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
@@ -460,16 +405,6 @@ reason = "Pre-adoption implementation size held as shrink-only debt; split along
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/liveness/driver.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/liveness/features.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/liveness/features/membership.rs"
 reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
@@ -490,78 +425,8 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/observations.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/scheduling.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state/client.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state/commit.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state/election.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/state/snapshot.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/network/delivery.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/records.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/format/v1/log_entry.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/format/v1/snapshot.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-storage/src/lib.rs"
 reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/raft_log_segment/error.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/raft_snapshot_store/error.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-storage/src/raft_snapshot_store/open.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
