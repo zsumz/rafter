@@ -1,5 +1,3 @@
-use std::hash::{Hash, Hasher};
-
 use rafter::{
     BootstrapLogEntry, CommittedConfiguration, LocalProposalDropReason, LocalProposalId,
     LogEntryKind, LogIndex, MembershipConfig, NodeId, ProposalRejection, RaftSnapshotMetadata,
@@ -7,6 +5,11 @@ use rafter::{
 };
 
 use crate::Envelope;
+
+mod ledger;
+mod read_terminal;
+
+pub(crate) use ledger::ExecutionLedger;
 
 /// One application payload applied by a simulated node.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -59,59 +62,6 @@ pub struct ExecutionWitness {
     pub emitted_application_payload: Option<SharedPayload>,
     pub prior_state: ReferenceState,
     pub resulting_state: ReferenceState,
-}
-
-/// Structurally append-only owner of execution witnesses.
-///
-/// Production code can only append. Test-only corruption hooks advance a
-/// revision so the incremental verifier can detect rewritten consumed history
-/// without rescanning every payload-rich prefix after each transition.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ExecutionLedger {
-    witnesses: Vec<ExecutionWitness>,
-    rewrite_revision: u64,
-}
-
-impl Hash for ExecutionLedger {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.witnesses.hash(state);
-        self.rewrite_revision.hash(state);
-    }
-}
-
-impl ExecutionLedger {
-    pub(crate) fn push(&mut self, witness: ExecutionWitness) {
-        self.witnesses.push(witness);
-    }
-
-    pub(crate) fn as_slice(&self) -> &[ExecutionWitness] {
-        &self.witnesses
-    }
-
-    pub(crate) const fn rewrite_revision(&self) -> u64 {
-        self.rewrite_revision
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_witnesses(witnesses: Vec<ExecutionWitness>) -> Self {
-        let mut ledger = Self::default();
-        for witness in witnesses {
-            ledger.push(witness);
-        }
-        ledger
-    }
-
-    #[cfg(test)]
-    pub(crate) fn rewrite(&mut self, index: usize, witness: ExecutionWitness) {
-        self.witnesses[index] = witness;
-        self.rewrite_revision = self.rewrite_revision.saturating_add(1);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn swap(&mut self, first: usize, second: usize) {
-        self.witnesses.swap(first, second);
-        self.rewrite_revision = self.rewrite_revision.saturating_add(1);
-    }
 }
 
 /// Local-only proposal correlation emitted by one simulated node transition.
@@ -276,85 +226,4 @@ pub enum ReadTerminalOutput {
         request_id: u64,
         reason: ReadIndexCancelReason,
     },
-}
-
-impl ReadTerminalOutput {
-    pub(crate) fn matches_operation(self, operation_id: u64) -> bool {
-        match self {
-            Self::Rejected {
-                operation_id: recorded,
-                ..
-            }
-            | Self::Canceled {
-                operation_id: recorded,
-                ..
-            } => recorded == Some(operation_id),
-        }
-    }
-
-    pub(crate) const fn operation_id(self) -> Option<u64> {
-        match self {
-            Self::Rejected { operation_id, .. } | Self::Canceled { operation_id, .. } => {
-                operation_id
-            }
-        }
-    }
-}
-
-impl Hash for ReadTerminalOutput {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Self::Rejected {
-                node_id,
-                operation_id,
-                request_id,
-                reason,
-            } => {
-                0_u8.hash(state);
-                node_id.hash(state);
-                operation_id.hash(state);
-                request_id.hash(state);
-                hash_read_rejection(*reason, state);
-            }
-            Self::Canceled {
-                node_id,
-                operation_id,
-                request_id,
-                reason,
-            } => {
-                1_u8.hash(state);
-                node_id.hash(state);
-                operation_id.hash(state);
-                request_id.hash(state);
-                hash_read_cancellation(*reason, state);
-            }
-        }
-    }
-}
-
-fn hash_read_rejection<H: Hasher>(reason: ReadIndexRejection, state: &mut H) {
-    match reason {
-        ReadIndexRejection::NotLeader { role, term } => {
-            0_u8.hash(state);
-            role.hash(state);
-            term.hash(state);
-        }
-        ReadIndexRejection::NoCommitInCurrentTerm => 1_u8.hash(state),
-        ReadIndexRejection::LeadershipTransferInProgress { target } => {
-            2_u8.hash(state);
-            target.hash(state);
-        }
-        ReadIndexRejection::TooManyPendingReads => 3_u8.hash(state),
-    }
-}
-
-fn hash_read_cancellation<H: Hasher>(reason: ReadIndexCancelReason, state: &mut H) {
-    match reason {
-        ReadIndexCancelReason::LeadershipLost => 0_u8.hash(state),
-        ReadIndexCancelReason::LeaderStateReset => 1_u8.hash(state),
-        ReadIndexCancelReason::LeadershipTransfer { target } => {
-            2_u8.hash(state);
-            target.hash(state);
-        }
-    }
 }
