@@ -23,7 +23,21 @@ use rafter::LogIndex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::protocol::body_type;
+mod apply;
+mod checkpoint;
+mod requests;
+
+pub(crate) use apply::{
+    apply_committed_command, maybe_crash_after_app_persist_before_reply, AfterAppPersist,
+    CommandApplyOutcome,
+};
+pub(crate) use checkpoint::{
+    load_app_state, persist_app_state, persist_snapshot_application_state,
+};
+pub(crate) use requests::{
+    apply_mutation, parse_client_request, read_value, ClientMutation, ClientRequest, ClientResult,
+    Command,
+};
 
 /// Maelstrom's `timeout`, and the only *indefinite* error this harness sends.
 ///
@@ -54,16 +68,6 @@ pub(crate) struct AppState {
     pub(crate) kv: BTreeMap<String, Value>,
 }
 
-/// What a crash point decided after the checkpoint reached the medium.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AfterAppPersist {
-    /// No crash point armed; apply the command and answer normally.
-    Continue,
-    /// A crash point fired. The checkpoint is durable and the client was never
-    /// answered — the window a restart must survive without losing the write.
-    Interrupt,
-}
-
 /// The three durable moments of one checkpoint write.
 ///
 /// Writing a temporary file, renaming it over the old one, and syncing the
@@ -79,80 +83,6 @@ pub(super) enum AppPersistStage {
     Renamed,
     /// The rename is durable; recovery reads the new checkpoint.
     DirectorySynced,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum CommandApplyOutcome {
-    /// The command applied and the application checkpoint was written.
-    Applied(ClientResult),
-    /// The command applied into the in-memory state machine, but the
-    /// application checkpoint could not be written.
-    ///
-    /// The answer is owed exactly as it is on the `Applied` path, and the
-    /// result is carried out here rather than discarded so the caller can pay
-    /// it. The mutation is real: `app.kv` carries it and `app.applied` has
-    /// moved past `index`, so every later read on this node — and the
-    /// already-applied check on every later command — sees it. And it is
-    /// durable, because durability was never this checkpoint's job: the Raft
-    /// log holds the committed entry, the checkpoint only lets recovery skip
-    /// replaying it. A restart therefore replays the entry and applies it
-    /// again, reaching the same state the answer described.
-    AppliedWithoutCheckpoint {
-        result: ClientResult,
-        error: String,
-    },
-    AlreadyApplied,
-    Interrupted,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct Command {
-    pub(crate) origin: String,
-    pub(crate) client: String,
-    pub(crate) in_reply_to: u64,
-    pub(crate) request: ClientMutation,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub(crate) enum ClientMutation {
-    Write { key: Value, value: Value },
-    Cas { key: Value, from: Value, to: Value },
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum ClientRequest {
-    Read { key: Value },
-    Write { key: Value, value: Value },
-    Cas { key: Value, from: Value, to: Value },
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum ClientResult {
-    ReadOk { value: Value },
-    WriteOk,
-    CasOk,
-    Error { code: u64, text: String },
-}
-
-pub(crate) fn load_app_state(root: &Path) -> Result<AppState, Box<dyn Error>> {
-    let path = root.join("app.json");
-    if !path.exists() {
-        return Ok(AppState {
-            applied: LogIndex::ZERO,
-            kv: BTreeMap::new(),
-        });
-    }
-    let persisted: PersistedApp = serde_json::from_slice(&std::fs::read(path)?)?;
-    Ok(AppState {
-        applied: LogIndex(persisted.applied),
-        kv: persisted.kv,
-    })
-}
-
-pub(crate) fn persist_app_state(root: &Path, app: &AppState) -> Result<(), Box<dyn Error>> {
-    persist_app_state_with_observer(root, app, |_| Ok(()))
 }
 
 pub(super) fn persist_app_state_with_observer(
@@ -216,65 +146,6 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn persist_snapshot_application_state(
-    root: &Path,
-    app: &mut AppState,
-    snapshot_index: LogIndex,
-    payload: &[u8],
-) -> Result<(), Box<dyn Error>> {
-    let kv = decode_snapshot_payload(payload).map_err(std::io::Error::other)?;
-    app.kv = kv;
-    app.applied = snapshot_index;
-    persist_app_state(root, app)
-}
-
-/// Applies one committed command into the state machine and reports what the
-/// caller owes for it.
-///
-/// Infallible by construction. The only fallible step is the application
-/// checkpoint, and it runs *after* the mutation has already landed in `app`, so
-/// there is no outcome in which the command did not apply. Reporting a failed
-/// checkpoint as an error would hand the caller a value that carries no result
-/// to answer with while the mutation it answers for has already happened — the
-/// shape that stranded the write. `AppliedWithoutCheckpoint` carries both.
-pub(crate) fn apply_committed_command(
-    root: &Path,
-    app: &mut AppState,
-    index: LogIndex,
-    command: &Command,
-    after_persist: impl FnOnce(&Path) -> AfterAppPersist,
-) -> CommandApplyOutcome {
-    if index <= app.applied {
-        return CommandApplyOutcome::AlreadyApplied;
-    }
-
-    let result = apply_mutation(&mut app.kv, &command.request);
-    app.applied = index;
-    if let Err(error) = persist_app_state(root, app) {
-        return CommandApplyOutcome::AppliedWithoutCheckpoint {
-            result,
-            error: error.to_string(),
-        };
-    }
-
-    if after_persist(root) == AfterAppPersist::Interrupt {
-        return CommandApplyOutcome::Interrupted;
-    }
-    CommandApplyOutcome::Applied(result)
-}
-
-pub(crate) fn maybe_crash_after_app_persist_before_reply(root: &Path) {
-    if std::env::var_os(CRASH_AFTER_APP_PERSIST_ONCE_ENV).is_none() {
-        return;
-    }
-    if claim_app_persist_crash_point_once(root) {
-        eprintln!(
-            "rafter-maelstrom crashpoint={CRASH_AFTER_APP_PERSIST_ONCE_ENV} fired after app persist before reply"
-        );
-        std::process::exit(APP_PERSIST_CRASH_EXIT_CODE);
-    }
-}
-
 fn claim_app_persist_crash_point_once(root: &Path) -> bool {
     let marker = root.join(APP_PERSIST_CRASH_MARKER);
     match std::fs::OpenOptions::new()
@@ -303,79 +174,6 @@ pub(crate) fn encode_snapshot_payload(kv: &BTreeMap<String, Value>) -> Result<Ve
 
 pub(crate) fn decode_snapshot_payload(payload: &[u8]) -> Result<BTreeMap<String, Value>, String> {
     serde_json::from_slice(payload).map_err(|error| error.to_string())
-}
-
-pub(crate) fn parse_client_request(body: &Value) -> Result<ClientRequest, ClientResult> {
-    match body_type(body) {
-        Some("read") => Ok(ClientRequest::Read {
-            key: required_value(body, "key")?,
-        }),
-        Some("write") => Ok(ClientRequest::Write {
-            key: required_value(body, "key")?,
-            value: required_value(body, "value")?,
-        }),
-        Some("cas") => Ok(ClientRequest::Cas {
-            key: required_value(body, "key")?,
-            from: required_value(body, "from")?,
-            to: required_value(body, "to")?,
-        }),
-        Some(other) => Err(ClientResult::Error {
-            code: ERROR_TEMPORARILY_UNAVAILABLE,
-            text: format!("unsupported request type {other}"),
-        }),
-        None => Err(ClientResult::Error {
-            code: ERROR_TEMPORARILY_UNAVAILABLE,
-            text: "request body missing type".to_string(),
-        }),
-    }
-}
-
-fn required_value(body: &Value, field: &str) -> Result<Value, ClientResult> {
-    body.get(field).cloned().ok_or_else(|| ClientResult::Error {
-        code: ERROR_TEMPORARILY_UNAVAILABLE,
-        text: format!("request missing {field}"),
-    })
-}
-
-pub(crate) fn apply_mutation(
-    kv: &mut BTreeMap<String, Value>,
-    request: &ClientMutation,
-) -> ClientResult {
-    match request {
-        ClientMutation::Write { key, value } => {
-            kv.insert(canonical_key(key), value.clone());
-            ClientResult::WriteOk
-        }
-        ClientMutation::Cas { key, from, to } => {
-            let key = canonical_key(key);
-            let Some(current) = kv.get_mut(&key) else {
-                return ClientResult::Error {
-                    code: ERROR_KEY_DOES_NOT_EXIST,
-                    text: "key does not exist".to_string(),
-                };
-            };
-            if current != from {
-                return ClientResult::Error {
-                    code: ERROR_PRECONDITION_FAILED,
-                    text: "current value did not match CAS precondition".to_string(),
-                };
-            }
-            *current = to.clone();
-            ClientResult::CasOk
-        }
-    }
-}
-
-pub(crate) fn read_value(kv: &BTreeMap<String, Value>, key: &Value) -> ClientResult {
-    kv.get(&canonical_key(key)).map_or_else(
-        || ClientResult::Error {
-            code: ERROR_KEY_DOES_NOT_EXIST,
-            text: "key does not exist".to_string(),
-        },
-        |value| ClientResult::ReadOk {
-            value: value.clone(),
-        },
-    )
 }
 
 fn canonical_key(key: &Value) -> String {
