@@ -253,16 +253,5 @@ pub(crate) fn dispatch_recovery_outputs(node: &mut InitializedNode, outputs: Vec
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::tick_interval;
-
-    #[test]
-    fn evidence_tick_interval_is_explicit_and_nonzero() {
-        assert_eq!(tick_interval(None), Ok(Duration::from_millis(50)));
-        assert_eq!(tick_interval(Some("25")), Ok(Duration::from_millis(25)));
-        assert!(tick_interval(Some("0")).is_err());
-        assert!(tick_interval(Some("bad")).is_err());
-    }
-}
+#[path = "runtime_test.rs"]
+mod tests;

@@ -162,23 +162,5 @@ pub(crate) fn read_snapshot_payload(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{lease_reads_enabled, timing_value};
-
-    #[test]
-    fn lease_reads_are_enabled_only_by_an_explicit_evidence_flag() {
-        assert!(lease_reads_enabled(Some("1")));
-        assert!(lease_reads_enabled(Some("true")));
-        assert!(!lease_reads_enabled(None));
-        assert!(!lease_reads_enabled(Some("0")));
-        assert!(!lease_reads_enabled(Some("TRUE")));
-    }
-
-    #[test]
-    fn evidence_timing_values_are_explicit_positive_ticks() {
-        assert_eq!(timing_value("ticks", None, 5), Ok(5));
-        assert_eq!(timing_value("ticks", Some("20"), 5), Ok(20));
-        assert!(timing_value("ticks", Some("0"), 5).is_err());
-        assert!(timing_value("ticks", Some("nope"), 5).is_err());
-    }
-}
+#[path = "raft_node_test.rs"]
+mod tests;

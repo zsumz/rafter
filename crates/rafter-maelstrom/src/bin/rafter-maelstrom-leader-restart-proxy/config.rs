@@ -73,26 +73,5 @@ fn env_u64(name: &str, default: u64) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_restart_modes() {
-        // The parser accepts aliases used by scripts but keeps the proxy's
-        // historical leader-triggered behavior as the fallback.
-        assert_eq!(
-            proxy_mode_from_value(Some("scheduled")),
-            ProxyMode::Scheduled
-        );
-        assert_eq!(
-            proxy_mode_from_value(Some("staggered")),
-            ProxyMode::Scheduled
-        );
-        assert_eq!(
-            proxy_mode_from_value(Some("lease-isolation")),
-            ProxyMode::LeaseIsolation
-        );
-        assert_eq!(proxy_mode_from_value(Some("leader")), ProxyMode::Leader);
-        assert_eq!(proxy_mode_from_value(None), ProxyMode::Leader);
-    }
-}
+#[path = "config_test.rs"]
+mod tests;

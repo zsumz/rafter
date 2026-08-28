@@ -111,34 +111,5 @@ pub(super) fn run_membership_transition_liveness_detector(
 }
 
 #[cfg(test)]
-mod tests {
-    use rafter::{LocalProposalId, NodeId};
-
-    use super::{membership_rejection_observed, operation_rounds};
-    use crate::records::ProposalRejected;
-
-    #[test]
-    fn completion_after_final_driven_round_is_within_the_exact_bound() {
-        let budget = 8;
-        assert_eq!(operation_rounds(budget - 1, true), budget);
-        assert_eq!(operation_rounds(budget - 1, false), budget - 1);
-    }
-
-    #[test]
-    fn explicit_configuration_rejection_matches_only_after_its_floor() {
-        let rejections = [
-            ProposalRejected {
-                node_id: NodeId(1),
-                proposal_id: Some(LocalProposalId(7)),
-            },
-            ProposalRejected {
-                node_id: NodeId(1),
-                proposal_id: None,
-            },
-        ];
-
-        assert!(membership_rejection_observed(&rejections, 1, NodeId(1)));
-        assert!(!membership_rejection_observed(&rejections, 2, NodeId(1)));
-        assert!(!membership_rejection_observed(&rejections, 0, NodeId(2)));
-    }
-}
+#[path = "membership_test.rs"]
+mod tests;

@@ -91,21 +91,5 @@ fn witness_harness_error(message: String) -> Failure {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn semantic_witness_scenarios_reach_all_rare_branches() {
-        let summary = check_raft_semantic_witness_safety().expect("semantic witness leg passes");
-        for observation in [
-            Observation::NonvoterVoteDecisions,
-            Observation::JointElectionCertificates,
-            Observation::PostAppendJointCommitCertificates,
-            Observation::SameBoundarySnapshotInstallPairs,
-            Observation::LeaderPreVoteRequestDeliveries,
-            Observation::RestartNonemptyExpectedReplayComparisons,
-        ] {
-            assert!(summary.observations.contains(observation));
-        }
-    }
-}
+#[path = "witnesses_test.rs"]
+mod tests;

@@ -122,29 +122,5 @@ impl Hash for ObservationSet {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    use super::{Observation, ObservationSet};
-
-    #[test]
-    fn observations_are_named_but_do_not_change_state_hashes() {
-        let empty = ObservationSet::default();
-        let mut observed = empty;
-        observed.mark(Observation::ElectionCertificates);
-
-        assert_ne!(empty, observed);
-        assert_eq!(
-            observed.labels().collect::<Vec<_>>(),
-            ["election_certificates"]
-        );
-        assert_eq!(hash(empty), hash(observed));
-    }
-
-    fn hash(value: ObservationSet) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        value.hash(&mut hasher);
-        hasher.finish()
-    }
-}
+#[path = "observations_test.rs"]
+mod tests;
