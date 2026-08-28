@@ -1,5 +1,7 @@
 //! Pure bounded peer-frame encoder and decoder.
 
+mod config;
+
 use std::marker::PhantomData;
 
 use rafter::NodeId;
@@ -9,8 +11,8 @@ use rafter_service::transport::message_sender;
 use crate::{ConnectionSequence, GroupIdCodec, WireLimits};
 
 use super::{
-    DecodePeerFrameError, PeerFrame, PeerFrameCodecConfigError, PeerFrameRoute, PeerFrameScratch,
-    PEER_FRAME_KIND_MESSAGE, PEER_FRAME_LENGTH_PREFIX_BYTES,
+    DecodePeerFrameError, PeerFrame, PeerFrameRoute, PeerFrameScratch, PEER_FRAME_KIND_MESSAGE,
+    PEER_FRAME_LENGTH_PREFIX_BYTES,
 };
 use crate::wire::read::{Reader, UnexpectedEnd};
 
@@ -28,63 +30,6 @@ impl<G, C> PeerFrameCodec<G, C>
 where
     C: GroupIdCodec<G>,
 {
-    /// Validates and creates a peer-frame codec.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PeerFrameCodecConfigError`] when the group codec's declared
-    /// bound is zero or exceeds `limits`.
-    pub fn new(group_codec: C, limits: WireLimits) -> Result<Self, PeerFrameCodecConfigError> {
-        let group_id_bound = group_codec.max_encoded_len();
-        if group_id_bound == 0 {
-            return Err(PeerFrameCodecConfigError::ZeroGroupIdBound);
-        }
-        if group_id_bound > limits.max_group_id_bytes() {
-            return Err(PeerFrameCodecConfigError::GroupIdBoundTooLarge {
-                codec_maximum: group_id_bound,
-                wire_maximum: limits.max_group_id_bytes(),
-            });
-        }
-        Ok(Self {
-            decoded_group_bound: std::mem::size_of::<G>()
-                .saturating_add(group_codec.max_decoded_heap_bytes()),
-            group_codec,
-            limits,
-            group_id_bound,
-            marker: PhantomData,
-        })
-    }
-
-    /// Returns the configured wire limits.
-    #[must_use]
-    pub const fn limits(&self) -> WireLimits {
-        self.limits
-    }
-
-    /// Returns the caller-supplied group codec.
-    #[must_use]
-    pub const fn group_codec(&self) -> &C {
-        &self.group_codec
-    }
-
-    /// Maximum in-place and codec-controlled heap memory for group decoding.
-    ///
-    /// This includes `size_of::<G>()` and the codec's declared peak across
-    /// decoding, error construction, and canonical re-encoding.
-    #[must_use]
-    pub const fn max_decoded_group_bytes(&self) -> usize {
-        self.decoded_group_bound
-    }
-
-    /// Maximum canonical group bytes emitted into reusable scratch storage.
-    ///
-    /// The blocking runtime reserves at least this many receive-memory bytes
-    /// for the lifetime of every authenticated inbound receiver.
-    #[must_use]
-    pub const fn max_encoded_group_bytes(&self) -> usize {
-        self.group_id_bound
-    }
-
     /// Decodes exactly one complete length-prefixed peer frame.
     ///
     /// The declared body limit is checked before any caller-owned group decoder
