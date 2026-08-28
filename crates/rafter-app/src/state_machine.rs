@@ -5,7 +5,11 @@
 
 use std::{error::Error, fmt};
 
-use rafter::{LocalProposalId, LogIndex, RaftSnapshot, Term};
+use rafter::{LogIndex, RaftSnapshot};
+
+mod apply;
+
+pub use apply::{ApplyBatch, ApplyEntry, ApplyResult, ReadBarrier};
 
 /// Whether a state machine implements application snapshots.
 ///
@@ -242,48 +246,6 @@ pub trait ReplicatedStateMachine {
         let _ = snapshot;
         Err(ApplicationSnapshotError::Unsupported)
     }
-}
-
-/// A batch of committed commands ready for ordered application.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplyBatch<C> {
-    /// Committed application entries in strictly increasing log order.
-    pub entries: Vec<ApplyEntry<C>>,
-}
-
-/// A single committed command in an application batch.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplyEntry<C> {
-    /// Committed Raft log index.
-    pub index: LogIndex,
-    /// Raft term that appended the entry.
-    pub term: Term,
-    /// Decoded application command.
-    pub command: C,
-    /// Volatile local correlation ID when this node originated the command.
-    pub local_proposal_id: Option<LocalProposalId>,
-}
-
-/// The application result for one applied command.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplyResult<R> {
-    /// Applied Raft log index.
-    pub index: LogIndex,
-    /// Raft term of the applied entry.
-    pub term: Term,
-    /// Application result produced by the command.
-    pub result: R,
-    /// Volatile local correlation ID copied from the applied entry.
-    pub local_proposal_id: Option<LocalProposalId>,
-}
-
-/// A barrier proving the local state machine is fresh enough for a read.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ReadBarrier {
-    /// Minimum application index required by the read proof.
-    pub required_applied_index: LogIndex,
-    /// Application index observed when the query is served.
-    pub local_applied_index: LogIndex,
 }
 
 /// Application snapshot data and the applied index it covers.

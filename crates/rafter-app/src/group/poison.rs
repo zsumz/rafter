@@ -1,8 +1,52 @@
 use super::{
-    Arc, BTreeSet, Debug, ErrorCause, GroupError, GroupFatalState, GroupResult,
-    PersistedRaftRuntime, RaftGroup, ReplicatedStateMachine, RuntimeGroupError,
+    Arc, BTreeSet, ClientRequestId, Debug, ErrorCause, GroupError, GroupResult, LocalProposalId,
+    PersistedRaftRuntime, RaftGroup, ReadId, ReplicatedStateMachine, RuntimeGroupError,
     StateMachineOperation,
 };
+
+/// Fatal health state for a Raft group.
+///
+/// This enum is exhaustive: a group is either healthy or permanently poisoned
+/// until the caller replaces it through an explicit recovery path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GroupFatalState {
+    /// The group may continue accepting inputs.
+    Healthy,
+    /// A permanent local fault ended this group incarnation.
+    Poisoned {
+        /// Human-readable summary suitable for metrics and readiness output.
+        reason: String,
+    },
+}
+
+/// Proposal and read waiters drained when a group enters a fatal poison state.
+///
+/// A poison is not an event stream: the group moves every pending waiter here
+/// and emits nothing further for them. A driver that routes reports and does
+/// not drain this leaves those clients waiting forever, which is why every
+/// stepping path drains it.
+///
+/// Writes here must be reported as an unknown outcome, not a refusal: the entry
+/// may already be in the durable log and may commit under a later incarnation.
+/// Reads are terminal — a barrier the group dropped will never produce an
+/// answer.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PoisonedWaiters {
+    /// Each dropped proposal's local ID, paired with the caller's own request
+    /// ID when one was supplied, so a driver can name the write to its client.
+    pub proposals: Vec<(LocalProposalId, Option<ClientRequestId>)>,
+    /// Each dropped barrier's read ID. Those IDs are spent; a retry issues a
+    /// new read.
+    pub reads: Vec<ReadId>,
+}
+
+impl PoisonedWaiters {
+    /// Returns `true` when no proposal or read waiters were drained by poison.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.proposals.is_empty() && self.reads.is_empty()
+    }
+}
 
 impl<G, A, R> RaftGroup<G, A, R>
 where
