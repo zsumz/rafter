@@ -14,8 +14,10 @@ use rafter_storage::{RaftHardState, RaftHardStateStore, RaftLogSegment, RaftSnap
 
 use crate::hard_state::hard_state_for_node;
 use crate::DurableRaftNode;
-// Named only by the rustdoc links on the accessors below, never by their code.
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "named only by the rustdoc links on the accessors below, never by their code"
+)]
 use crate::{PersistedRaftRuntime, RaftRuntimeError};
 
 impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotChunkSource>

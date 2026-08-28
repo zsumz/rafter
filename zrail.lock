@@ -2,7 +2,7 @@
 schema = 1
 semantics = 1
 producer = "0.0.1"
-contract_sha256 = "25a2ea12c3d639c42e77d63642a87806b7160073baa6f2b4094ca367c3d63720"
+contract_sha256 = "fdf1881b63501dfcd8581500b0b496b4bd7e89175f11a1ff74ab89ae983ba604"
 
 [[package]]
 name = "rafter"
@@ -1198,58 +1198,8 @@ sha256 = "c45a71ad5c57a10df1d4329debff73612ec80a4f1413ce4d378fe3174bfb90d4"
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-app/src/error.rs"
-value = 591
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/membership.rs"
-value = 325
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/output.rs"
-value = 520
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/proposal.rs"
-value = 344
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/read.rs"
-value = 687
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/types.rs"
-value = 934
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-app/src/lib.rs"
 value = 252
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/membership.rs"
-value = 394
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/read.rs"
-value = 313
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/state_machine.rs"
-value = 304
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/transport.rs"
-value = 531
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1295,11 +1245,6 @@ value = 431
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/support/mod.rs"
 value = 885
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-crc32/src/lib.rs"
-value = 142
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1514,7 +1459,7 @@ value = 518
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-runtime-api/src/lib.rs"
-value = 346
+value = 154
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1523,83 +1468,13 @@ value = 816
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-runtime/src/construction.rs"
-value = 349
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-runtime/src/error.rs"
-value = 438
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-runtime/src/lib.rs"
-value = 996
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-runtime/src/tests/recovery.rs"
 value = 618
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/mapping.rs"
-value = 991
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport.rs"
-value = 950
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/checkpoint.rs"
-value = 830
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/policy.rs"
-value = 415
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/reconciliation.rs"
-value = 868
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/state.rs"
-value = 831
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/waiters.rs"
-value = 684
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/write.rs"
-value = 680
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/error.rs"
-value = 792
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/error/vocabulary.rs"
-value = 372
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-service/src/handle/tests.rs"
 value = 476
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/transport.rs"
-value = 503
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1898,53 +1773,8 @@ value = 579
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-transport-tcp-insecure/src/lib.rs"
-value = 486
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/builder/state.rs"
-value = 314
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/config/timeouts.rs"
-value = 302
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/connection/sender.rs"
-value = 317
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/directory/mutation.rs"
-value = 312
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/endpoint/book.rs"
-value = 316
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-transport-tls/src/lib.rs"
 value = 110
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/session/file/mod.rs"
-value = 136
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/session/state.rs"
-value = 313
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/wire/frame/codec.rs"
-value = 331
 
 [[ratchet]]
 rule = "rust.file-size"

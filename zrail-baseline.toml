@@ -5,58 +5,8 @@
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-app/src/error.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/membership.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/output.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/proposal.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/read.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/group/types.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-app/src/lib.rs"
 reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/membership.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/read.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/state_machine.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-app/src/transport.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -102,11 +52,6 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/support/mod.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-crc32/src/lib.rs"
-reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -330,83 +275,13 @@ reason = "Pre-adoption harness size held as shrink-only debt; extract shared dri
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-runtime/src/construction.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-runtime/src/error.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-runtime/src/lib.rs"
-reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-runtime/src/tests/recovery.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/mapping.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/checkpoint.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/policy.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/reconciliation.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/state.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/transport/waiters.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/driver/write.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/error.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/error/vocabulary.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-service/src/handle/tests.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-service/src/transport.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -705,53 +580,8 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-transport-tcp-insecure/src/lib.rs"
-reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/builder/state.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/config/timeouts.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/connection/sender.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/directory/mutation.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/endpoint/book.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter-transport-tls/src/lib.rs"
 reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/session/file/mod.rs"
-reason = "Pre-adoption module facade holding implementation; shrink toward the 100-line target as items move behind named modules."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/session/state.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-transport-tls/src/wire/frame/codec.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
