@@ -2,7 +2,7 @@
 schema = 1
 semantics = 1
 producer = "0.0.1"
-contract_sha256 = "4ce8a725b919377fac556a4af4010f1196d35327618504c9b1a680d5429d4af8"
+contract_sha256 = "9a89f73df33ba17af83e1b5377d6586699e446e0cef8bdb64f7b2d76c6e6223f"
 
 [[package]]
 name = "rafter"
@@ -1229,7 +1229,7 @@ value = 1466
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/group_read.rs"
-value = 1291
+value = 1298
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1329,12 +1329,7 @@ value = 654
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-maelstrom/src/raft/reply_tests/obligation.rs"
-value = 718
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-maelstrom/src/raft/reply_tests/scope.rs"
-value = 416
+value = 625
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1483,73 +1478,53 @@ value = 107
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/invariants/election.rs"
-value = 483
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/invariants/persistence.rs"
-value = 319
+target = "crates/rafter-sim/src/model_check/invariants/applied.rs"
+value = 305
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/snapshot.rs"
-value = 629
+value = 517
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/tests/application_epoch.rs"
-value = 485
+value = 492
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/tests/commit_history.rs"
-value = 759
+value = 766
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/tests/election.rs"
-value = 1051
+value = 1058
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/tests/log_history.rs"
-value = 486
+value = 493
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/tests/persistence_read.rs"
-value = 552
+value = 559
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/tests/snapshot_application.rs"
-value = 937
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/liveness.rs"
-value = 388
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/liveness/features/membership.rs"
-value = 423
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter-sim/src/model_check/liveness/features/proposal.rs"
-value = 414
+value = 944
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/liveness/features/read.rs"
-value = 323
+value = 330
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/liveness/features/report_tests.rs"
-value = 410
+value = 417
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1659,7 +1634,7 @@ value = 1023
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter/tests/public_api_docs_guard.rs"
-value = 1108
+value = 1198
 
 [[ratchet]]
 rule = "rust.file-size"
