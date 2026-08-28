@@ -1,5 +1,3 @@
-#![allow(clippy::wildcard_imports)]
-
 //! The committed floor a driver publishes, and why it is not part of the
 //! retirement record.
 //!
@@ -35,6 +33,8 @@
 //! authorization is the union of the two runtime facts *and* the register, while
 //! the raw floor stays the runtime's alone — the fields keep their separate
 //! meanings, and only the derivation over them widened.
+
+#![allow(clippy::wildcard_imports)]
 
 mod support;
 

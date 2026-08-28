@@ -1,5 +1,3 @@
-#![allow(clippy::wildcard_imports)]
-
 //! Folding the committed configuration stream from any state, in any order.
 //!
 //! A driver hears each committed configuration twice: once as the cluster
@@ -22,6 +20,8 @@
 //!
 //! What is pinned here is that both halves hold: a replayed history proves
 //! exactly what it proved the first time, and no more.
+
+#![allow(clippy::wildcard_imports)]
 
 mod support;
 

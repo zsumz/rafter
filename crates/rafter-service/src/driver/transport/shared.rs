@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The lock every clone and every client future shares.
 //!
 //! Two locks rather than one, because the second exists to be takeable when the
 //! first is not: a client future's `Drop` can run on a thread that already holds
 //! the state, so reclamation asks rather than waits. What lives here is that
 //! arrangement and nothing else — the state it guards is [`super::state`]'s.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::sync::TryLockError;
 

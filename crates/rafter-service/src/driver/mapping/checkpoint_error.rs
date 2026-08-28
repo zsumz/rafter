@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Why a peer-control-plane checkpoint could not be installed.
 //!
 //! The closed set of ways a durable record can contradict the invariants a
 //! driver maintains for one, and how each reads to an operator. Every variant
 //! names the identity or the log position the record disagrees about, because
 //! that is what an investigation starts from. Nothing here decides anything.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

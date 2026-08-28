@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! How an app-layer failure reaches a client.
 //!
 //! One mapping per client surface, shared by both shipped drivers so a group
@@ -10,6 +5,11 @@
 //! them. Nothing here inspects driver state: the fate a write mapping stamps is
 //! passed in by the caller that observed it, because the same fault can occur on
 //! either side of the local append.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::error::Error;
 

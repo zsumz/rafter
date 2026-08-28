@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The membership transaction a construction holds open across calls.
 //!
 //! A live report is one batch folded and installed inside one call, so its
@@ -10,6 +5,11 @@
 //! group's own stepping machinery in between, so the candidate lives on the
 //! driver until every one of them has been read — and the single installation
 //! and single publication behind it happen here or not at all.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The client-waiter tables behind one transport driver.
 //!
 //! A second impl block on [`TransportDriverState`] rather than a second type:
@@ -11,6 +6,11 @@
 //! hold"; this answers "what happens to the client". Its three neighbours split
 //! the same question again by direction: [`super::writes`] and [`super::reads`]
 //! admit work, and [`super::resolution`] ends it.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::task::{Context, Poll, Waker};
 

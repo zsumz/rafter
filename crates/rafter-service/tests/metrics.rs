@@ -1,3 +1,11 @@
+//! What a metrics watch reports, and when the driver publishes into it.
+//!
+//! Three scenarios over the in-memory driver: the whole path working on real
+//! groups, a handle naming a group this driver does not own refused by identity
+//! rather than by transport, and the ordering that costs the most to get wrong —
+//! a step's mutation is published before the error that step is returning, so a
+//! failed tick still reports the role it moved to.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

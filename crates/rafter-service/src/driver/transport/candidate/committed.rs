@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Taking one committed membership fact into a candidate.
 //!
 //! The only place identity is *consumed*: which IDs a removal spends, which fact
 //! is refused for contradicting the register, and how far allocation has got.
 //! Every operation here is monotone evidence, so re-folding a fact a restart
 //! replays changes nothing and there is no cursor left to keep.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::collections::BTreeSet;
 

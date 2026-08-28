@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Where one step's report goes.
 //!
 //! Peer frames to the transport, snapshot directives to the transport,
@@ -10,6 +5,11 @@
 //! events to the waiters they belong to. A refused send is counted rather than
 //! propagated: Raft re-sends, so a client write must not fail because one
 //! heartbeat could not be delivered.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport, SnapshotChunkEnvelope};
 

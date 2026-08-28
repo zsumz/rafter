@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Managed driver for one local Raft group over an attached transport.
 //!
 //! This file is the driver type itself: what it holds, how a clone shares it,
@@ -14,6 +9,11 @@
 //! [`DriverCommandSender`] surface a handle reaches through, which
 //! `InMemoryRaftDriver` implements too; [`bounds`] holds what the driver refuses
 //! to accumulate; and [`health`] holds what an operator reads off a running one.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::future::poll_fn;
 

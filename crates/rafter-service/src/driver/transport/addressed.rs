@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Work a caller names before it awaits it.
 //!
 //! A write or a read this driver admitted, returned beside the identifier it
 //! allocated, so the caller holds a name for the waiter before the future
 //! resolves. Everything here is the naming half: what a caller may abandon, what
 //! it may still be holding, and the two shapes those answers travel in.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

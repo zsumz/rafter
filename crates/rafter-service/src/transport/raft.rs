@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The synchronous transport boundary an embedder implements.
 //!
 //! Three obligations and no more: hand a peer frame to the link layer, resolve
 //! and send one leader snapshot-chunk directive, and install the current
 //! authorization policy. Rafter opens no sockets and spawns no tasks, so the
 //! async half of every one of these belongs to the embedder.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::error::Error;
 

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! What one proposal's outcome says to a client.
 //!
 //! Both shipped drivers project the app layer's proposal vocabulary through
@@ -10,6 +5,11 @@
 //! observed them. An unknown-outcome reason this build does not recognize is
 //! reported as a dropped proposal, which is the safe direction: it keeps the
 //! write unresolved rather than telling a caller its request identity is unused.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

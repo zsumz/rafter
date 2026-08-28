@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Who this driver authorizes, what it retires, and what it will still serve.
 //!
 //! Split from [`super::control_plane`] along the line between *absorbing* a
@@ -37,6 +32,11 @@
 //! What this driver concludes about *itself* — whether its own identity is
 //! spent, and what it will still serve — is [`super::standing`], which also owns
 //! the spent test both halves read.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::collections::BTreeSet;
 

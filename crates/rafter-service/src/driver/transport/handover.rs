@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Retiring one incarnation and installing the next.
 //!
 //! The driver-level half of decomposition: a released group leaves with every
 //! waiter resolved, and an adopted one arrives with its recovery outputs still
 //! to route. The slot between them is what an embedder would otherwise have to
 //! build, and it refuses every operation while it is empty.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

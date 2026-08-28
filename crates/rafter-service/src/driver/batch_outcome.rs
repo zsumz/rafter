@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Reading one step's report against the entries of a batch.
 //!
 //! The report carries events for whichever proposals moved, and the batch is
@@ -10,6 +5,11 @@
 //! than by a scan per entry. What an entry has observed — an append, a terminal
 //! outcome, nothing yet — is the only thing that decides the fate it is finally
 //! reported with.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::batch::BatchWriteState;
 use super::*;

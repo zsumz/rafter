@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! One membership statement per batch of facts, or none at all.
 //!
 //! **The staged transaction, and it exists because a retirement floor is
@@ -36,6 +31,11 @@
 //! read from. Splitting them across two transactions would let a refusal leave a
 //! published peer set describing a membership the durable record does not agree
 //! with, which is the same defect one layer down.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::collections::BTreeSet;
 

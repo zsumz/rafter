@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The membership fields of one driver, staged.
 //!
 //! A plain value with no transport, no group, and no epoch, so it can refuse and
 //! refusing costs a drop. Every fact of a batch folds into one of these, and the
 //! driver installs it whole or not at all. What one *committed* fact does to it
 //! is [`committed`], because that is the only place identity is consumed.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::collections::BTreeSet;
 

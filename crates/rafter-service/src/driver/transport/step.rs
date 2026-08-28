@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! One step of the protocol, and everything that step obliges.
 //!
 //! Every way an input reaches the group runs through here, and each of them owes
@@ -10,6 +5,11 @@
 //! reconcile the membership the runtime moved, drain what a poison captured, and
 //! publish metrics. The error path owes them too, which is why they are not
 //! written once per caller.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! This driver's [`DriverCommandSender`] surface.
 //!
 //! Split from [`super`] along the line between the driver's *own* API and the
@@ -16,6 +11,11 @@
 //! Nothing here holds a rule of its own: every method either forwards to the
 //! same state the file above drives, or resolves a client future the same two
 //! builders make.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::future::ready;
 

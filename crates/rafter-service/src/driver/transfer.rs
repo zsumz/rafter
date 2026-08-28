@@ -1,3 +1,10 @@
+//! Asking the in-memory primary to hand leadership on.
+//!
+//! The transfer slice of the driver state machine: one step, one search of that
+//! step's report for a refusal naming this target, and the routing and metrics
+//! every operation owes afterwards. Success is request-level — nothing here
+//! observes the target becoming leader, and nothing here waits for it to.
+
 #![allow(
     clippy::wildcard_imports,
     reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"

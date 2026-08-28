@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Opening a driver over one group.
 //!
 //! Both constructors are one membership transaction: the recovered record, the
 //! replay's crossings, and the runtime's endpoint fold together and reach the
 //! link layer as a single statement or not at all. A first incarnation over
 //! empty storage is the empty-checkpoint case of the same path.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

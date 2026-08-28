@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The calls that advance one replica.
 //!
 //! Four entry points and no schedule behind them: Rafter spawns no tasks, so a
@@ -10,6 +5,11 @@
 //! because the embedder called. Each routes everything its step produced before
 //! it returns, and each flushes the peer policy first so a refused publication
 //! is retried on the embedder's own timer.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{
     validate_inbound_peer_envelope, AuthenticatedPeerEnvelope, AuthenticatedPeerValidator,

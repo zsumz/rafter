@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The managed read failure surface.
 //!
 //! The read half of what [`super::write`] owes a caller, less the fate: a read
 //! takes no effect, so nothing here leaves a later outcome to be uncertain
 //! about. It renders through [`super`]'s shared helpers and decides nothing
 //! about which failures a driver may raise.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

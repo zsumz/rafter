@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The peer-control-plane record a restarted process reads back, and the one
 //! merge every pair of observations goes through.
 //!
@@ -37,6 +32,11 @@
 //! The state these rules read still lives on
 //! [`super::state::TransportDriverState`], like every other field behind the one
 //! lock. What lives here is the record's own algebra.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::collections::BTreeSet;
 

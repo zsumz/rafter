@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! What an adopted runtime says about the committed membership.
 //!
 //! A runtime handed to this driver reports one endpoint observation, and that
@@ -10,6 +5,11 @@
 //! that would contradict the restored record refuses instead of opening, and
 //! once after the recovery outputs are replayed, so the link layer hears the
 //! whole of what the incarnation requires.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::collections::BTreeSet;
 

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The fields one transport driver holds, and the small shapes its steps speak
 //! in.
 //!
@@ -24,6 +19,11 @@
 //! polling a driver's standing and a reader following a step are reading for
 //! different things, and the two types that answer the first hold no state and
 //! read none.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::collections::BTreeSet;
 

@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The record itself, and the observation it carries.
 //!
 //! Caller-owned durable state with public fields: Rafter opens no files, so this
 //! is a plain value an embedder reads, persists, and hands back. What a record
 //! *means* is decided elsewhere — this file declares the two facts and the
 //! verdict a restarted process cannot re-derive, and constructs the empty one.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

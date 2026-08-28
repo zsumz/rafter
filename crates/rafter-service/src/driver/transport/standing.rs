@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Whether an identity is spent, and what this driver will still serve.
 //!
 //! Split from [`super::policy`] along the line between what this driver states
@@ -10,6 +5,11 @@
 //! here because both questions read it: a peer set excludes what a committed
 //! removal consumed, and so does this replica's own standing. Nothing here
 //! writes any state.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

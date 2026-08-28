@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! What a driver stage carries before a client hears about it.
 //!
 //! The staged error every driver operation travels in, and the one error object
@@ -10,6 +5,11 @@
 //! routing. Each staged variant is projected into the write, read, or transfer
 //! vocabulary by the caller that knows which surface is waiting, because the
 //! same fault means different things to the three of them.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::{error::Error, fmt};
 

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! How two observations of the committed membership combine.
 //!
 //! One merge reached from four directions — two records joining, a record
@@ -11,6 +6,11 @@
 //! one rule and only one of them refused a tie. The later observation wins, a
 //! proven removal is absorbed wherever it stands, and a tie that survives
 //! normalization is refused rather than broken.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;

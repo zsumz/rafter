@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The managed write failure surface.
 //!
 //! One type for every way a write can fail, and it owes the caller three
@@ -10,6 +5,11 @@
 //! preserved cause. It renders through [`super`]'s shared helpers so a write, a
 //! read, and a transfer report a leader hint identically, and it decides nothing
 //! about which failures a driver may raise.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

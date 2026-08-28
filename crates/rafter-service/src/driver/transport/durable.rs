@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! What this driver hands its embedder to make durable.
 //!
 //! The checkpoint a caller persists, the epoch that says when to, and the live
 //! reading of the register the spent test is judged against. Reads of state the
 //! reconciliation transaction owns, and one counter it moves; nothing here
 //! decides what a record means.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::collections::BTreeSet;
 

@@ -1,10 +1,10 @@
-#![allow(dead_code)]
-
 //! The link, the directory, and the cluster every transport-driver test needs.
 //!
 //! Shared rather than repeated: four test binaries drive the same one-replica
 //! composition from different angles, and a second copy of a deterministic
 //! network is a second thing to keep honest.
+
+#![allow(dead_code)]
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},

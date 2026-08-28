@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The managed leadership-transfer failure surface.
 //!
 //! A transfer is a request rather than an outcome, so every variant here reports
 //! a refusal to start. It carries no fate and no unknown outcome because a
 //! transfer commits no entry of its own, and it renders through [`super`]'s
 //! shared leader-hint helper like the other two surfaces.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! One proposal batch, driven to a terminal outcome for every entry.
 //!
 //! The in-memory driver owns every replica, so it moves frames itself until each
 //! entry of the batch has an answer or the drive bound is reached. Every exit
 //! resolves every entry: an unresolved write leaving this loop would be a client
 //! waiting on a driver that has stopped driving.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::batch_outcome::{
     complete_unresolved_writes, finish_write_batch, observe_batch_report, repeat_write_error,

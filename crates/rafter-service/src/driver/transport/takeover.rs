@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Adopting a group beside a record from before this driver existed.
 //!
 //! A takeover, or a driver re-armed from another process's persisted state: the
@@ -10,6 +5,11 @@
 //! retirement state a release did not cancel. Everything above the installation
 //! is a refusal that leaves no group behind; only the recovery outputs and the
 //! publication they feed can fail with one installed.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

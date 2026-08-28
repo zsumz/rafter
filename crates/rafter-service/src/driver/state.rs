@@ -1,3 +1,12 @@
+//! The fields the in-memory driver holds, and the primitives every operation
+//! shares.
+//!
+//! The in-memory half of the driver state machine: a group per node, one queue
+//! standing in for a network, and the shutdown gates, report routing, ID
+//! reservation, and metrics publication that [`super::read`], [`super::write`],
+//! and [`super::transfer`] each run through. Nothing here decides a client's
+//! answer; each of those files composes these steps into one.
+
 #![allow(
     clippy::wildcard_imports,
     reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"

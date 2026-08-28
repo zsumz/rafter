@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! How a waiter stops waiting.
 //!
 //! Three ways one ends, and they are not interchangeable: the group announced a
 //! terminal outcome, the caller decided to stop, or the incarnation let go of
 //! everything at once. Each resolves a client rather than removing an entry, so
 //! a caller still holding its future gets an answer on the next poll.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! The one statement this crate makes to a link layer about admission.
 //!
 //! Who may speak and how far retirement reaches travel in a single value,
 //! because they are licensed by the same committed fact and a caller that could
 //! publish them apart could publish them inconsistently. Nothing here derives a
 //! policy; it is the shape a driver hands over and a transport installs whole.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

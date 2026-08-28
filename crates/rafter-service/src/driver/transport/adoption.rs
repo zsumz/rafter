@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! What a client future owns, and what a group must prove to be adopted.
 //!
 //! A third file under the driver rather than a third of `transport.rs`, split
@@ -11,6 +6,11 @@
 //! because they are the same subject from either end — the guard is what a
 //! waiter's lifetime is made of, and the watermarks are what a driver checks so
 //! that every waiter it will ever hold is one it created.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::super::*;
 use super::state::{SharedState, WaiterId};

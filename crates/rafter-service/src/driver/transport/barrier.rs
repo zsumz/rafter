@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Finishing a linearizable read.
 //!
 //! A grant is announced by a routed event, and the proof it announces is
@@ -10,6 +5,11 @@
 //! not do inside a tick the embedder asked for on its own timer. So collecting
 //! granted barriers is its own pass, and one barrier's fault never denies
 //! service to the rest.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

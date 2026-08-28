@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Moving a surviving candidate onto the driver.
 //!
 //! The one place the staged fields become the driver's own, and therefore the
 //! one place the epoch an embedder persists against moves. A contradicted driver
 //! takes the live half and keeps the record it froze, and that rule lives here
 //! so every installer inherits it rather than remembering it.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

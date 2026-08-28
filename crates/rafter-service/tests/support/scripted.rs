@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! A replica whose two membership facts a test moves by hand.
 //!
 //! Shared rather than repeated, because three transport-driver suites need the
@@ -11,6 +9,8 @@
 //! The state is shared through an `Arc`, which is what lets a test move it while
 //! the driver holds no group — the only way to reach a change this replica
 //! observes across a release and re-adoption instead of through an event.
+
+#![allow(dead_code)]
 
 use std::sync::{Arc, Mutex, MutexGuard};
 

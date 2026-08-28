@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! What one driver is allowed to accumulate before it refuses.
 //!
 //! Its own file because the bound here is not about the driver's public
@@ -16,6 +11,11 @@
 //! driver's retirement statement is now a floor republished from state it still
 //! holds, so there is no queue to grow, nothing to threshold, and no degraded
 //! state to leave.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::super::*;
 

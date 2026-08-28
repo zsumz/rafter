@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Starting one read, at either level this driver serves.
 //!
 //! The two levels part company at the first branch and never rejoin: a
@@ -11,6 +6,11 @@
 //! of refusals that precede both, including the one a local read makes tempting
 //! to skip — a replica the cluster is not replicating to has no bounded view to
 //! answer from.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

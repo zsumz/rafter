@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! What makes one record readable.
 //!
 //! Every clause holds by construction for a record a driver wrote, so each
 //! failure means the durable state was damaged, truncated, or belongs to another
 //! replica — and each one lowers a retirement record in the dangerous direction
 //! if it is absorbed instead of refused. Nothing here reads driver state.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

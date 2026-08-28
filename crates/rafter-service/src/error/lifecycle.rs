@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! What can go wrong around a managed group rather than inside one.
 //!
 //! Opening a metrics watch and shutting a service down are lifecycle operations,
 //! not protocol ones: neither proposes anything, neither reads the state
 //! machine, and neither can fail for a reason outside the driver. That is why
 //! both types here stay this small, and why one of them keeps equality.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

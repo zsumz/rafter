@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! Admitting one write.
 //!
 //! Every refusal a driver can raise before it proposes, in the order that keeps
@@ -10,6 +5,11 @@
 //! terminal event emitted inside that very step finds someone listening. The
 //! fate a failing step reports is never inferred from the absence of an observed
 //! append: only the group errors that are themselves the whole event prove one.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::error::Error;
 

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! How a managed failure is said, and where each vocabulary lives.
 //!
 //! The driver's failures reach three different readers, so they are declared in
@@ -11,6 +6,11 @@
 //! before a client hears anything; [`super::group_error`] holds the projections
 //! into the client surfaces. This file re-exports all of them under their
 //! original names so nothing outside the driver has to know that.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::{error::Error, fmt};
 

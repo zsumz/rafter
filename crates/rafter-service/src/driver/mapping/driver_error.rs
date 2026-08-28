@@ -1,14 +1,14 @@
-#![allow(
-    clippy::wildcard_imports,
-    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
-)]
-
 //! What a driver reports about itself.
 //!
 //! One type for every way constructing or manually driving a managed driver can
 //! fail, with its rendering beside it. It carries no free-text message field:
 //! the category is the variant and the detail is the preserved cause, so nothing
 //! downstream is tempted to match on rendered text.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 
