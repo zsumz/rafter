@@ -1,3 +1,10 @@
+//! The history-bearing log and commit invariants over recorded witnesses.
+//!
+//! Owns the log family — append-only, truthful `AppendEntries` acceptance, log
+//! matching, committed-prefix stability, leader completeness — together with the
+//! commit certificates behind CM-02 and CM-03. A witness the recorder never
+//! captured is coverage-not-reached or a harness error, never a quiet pass.
+
 use std::collections::BTreeSet;
 
 use super::{

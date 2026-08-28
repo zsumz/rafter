@@ -1,3 +1,10 @@
+//! Liveness evidence must describe the run that actually produced it.
+//!
+//! Proves each feature monitor runs its own fixture and keeps its scenario
+//! identity distinct, that a report whose fault cycle never partitioned, never
+//! healed, or never moved protocol state is rejected as invalid, and that every
+//! LV-03 detector fails red once its bounded round budget is exhausted.
+
 use std::collections::BTreeSet;
 
 use rafter::NodeId;

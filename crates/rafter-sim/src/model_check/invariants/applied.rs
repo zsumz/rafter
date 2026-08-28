@@ -1,3 +1,10 @@
+//! The apply-side invariant predicates over one explored state.
+//!
+//! Owns AP-01 ordering — cursors advance, no index applies twice in an epoch,
+//! nothing applies above its emit-time commit index — plus AP-02 execution
+//! agreement, SS-05 agreement between snapshots at one boundary, and ST-01
+//! well-formedness. Recording those witnesses is instrumentation's own job.
+
 use std::collections::BTreeSet;
 
 use super::{catalog, summarize, Action, BTreeMap, Cluster, ExplorationState, Failure};

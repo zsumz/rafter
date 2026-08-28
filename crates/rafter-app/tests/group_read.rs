@@ -1,3 +1,10 @@
+//! Proves what a group's read path may and may not answer with.
+//!
+//! A linearizable read is served only once the state machine has applied every
+//! application entry at or below its read index — no more, so a leader's `Noop`
+//! tail cannot stall it forever, and no less, so an unapplied write inside the
+//! cut cannot be read past. Granting that index correctly is the kernel's job.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

@@ -1,3 +1,10 @@
+//! Joint membership changes and what a committed prefix must survive.
+//!
+//! Proves adding a voter and removing one both preserve every entry committed
+//! before the change, that a removed leader steps down and stops receiving
+//! proposals, that a lossy restart cannot erase committed membership state, and
+//! that a half-replicated joint configuration produces no conflicting leaders.
+
 use super::super::helpers::{
     deliver_append_entries, deliver_append_entries_response, elect_node_one, request_vote,
 };

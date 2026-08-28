@@ -1,3 +1,10 @@
+//! The baseline safety scenarios a three-node group must satisfy.
+//!
+//! Proves one leader per term through election and partition, that a quorum
+//! commit reaches its followers, that a stale leader cannot commit once a newer
+//! term has won, and that the committed prefix survives failover — LG-04 stated
+//! as a hand-followable trace rather than as a checker's verdict.
+
 use super::helpers::{
     deliver_append_entries, deliver_append_entries_response, direct_election_three_node_cluster,
     elect_node_one, elect_node_two_without_reaching_node_one, three_node_cluster,

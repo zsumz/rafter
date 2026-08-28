@@ -1,3 +1,10 @@
+//! Negative controls for the AP-02 execution-agreement detector.
+//!
+//! Proves a corrupted command, configuration, or reference result at one log
+//! index is caught rather than absorbed, that a recorder failure turns commit
+//! safety red as a harness error, and that two snapshots disagreeing at a
+//! shared boundary — in payload or committed membership — fail SS-05.
+
 use super::super::applied::{check_applied_payload_agreement, check_execution_history_agreement};
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};

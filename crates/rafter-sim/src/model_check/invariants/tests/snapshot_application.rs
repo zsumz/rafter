@@ -1,3 +1,10 @@
+//! Negative controls for the snapshot detectors, from transfer to install.
+//!
+//! Proves a rewound boundary, a payload that binds neither its own metadata nor
+//! the witnessed reference state, a chunk stream whose descriptor or offset
+//! moved, and an install completed before every byte arrived each fail.
+//! Snapshot bytes must never surface as a log Apply for a covered index.
+
 use super::super::applied::check_applied_cursor_monotonicity;
 use super::super::snapshot::{
     check_pending_snapshot_lifecycle_shape, check_restart_snapshot_safety,

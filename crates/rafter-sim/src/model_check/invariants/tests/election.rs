@@ -1,3 +1,10 @@
+//! Negative controls for every election-authority detector.
+//!
+//! Proves each fires on a constructed violation: a regressed term, a second or
+//! lost durable vote in one term, an unfenced higher term or a stale one that
+//! moved authority, a pre-vote that mutated state or disrupted a leader, a
+//! grant to an ineligible candidate, and a certificate without its quorum.
+
 use super::super::election::{
     check_eligible_leader_certificates, check_higher_term_authority_fencing,
     check_joint_election_quorums, check_pre_vote_leader_stability,

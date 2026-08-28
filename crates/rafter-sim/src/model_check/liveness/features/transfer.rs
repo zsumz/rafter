@@ -1,3 +1,10 @@
+//! The LV-03 monitor for leadership transfer to a caught-up voter.
+//!
+//! Proves an issued transfer reaches an explicit terminal state — the target
+//! becomes the quiescent leader, or the transfer is rejected — inside its
+//! bounded round budget. Having no caught-up voter to name is a coverage
+//! failure rather than a pass; an exhausted budget is a liveness violation.
+
 use std::collections::BTreeSet;
 
 use rafter::NodeId;

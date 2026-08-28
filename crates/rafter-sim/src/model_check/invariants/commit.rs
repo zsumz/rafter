@@ -1,3 +1,10 @@
+//! Commit-index, committed-prefix, and configuration bounds on one state.
+//!
+//! Owns CM-01's monotone commit index within local log coverage, LG-04's
+//! cross-node agreement on every committed entry, and the membership facts a
+//! commit rests on: well-formed voter sets, at most one uncommitted
+//! configuration, and a committed configuration identity that never moves.
+
 use rafter::BootstrapState;
 
 use super::{catalog, summarize, Action, Failure};

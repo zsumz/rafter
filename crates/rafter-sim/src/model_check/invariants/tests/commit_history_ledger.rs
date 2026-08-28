@@ -1,3 +1,10 @@
+//! The canonical committed ledger a shorter observation is checked against.
+//!
+//! Proves a node reporting a shorter committed prefix is compared to the
+//! canonical ledger rather than allowed to shrink it, and that a committed
+//! prefix with no explicit commit-authority witness fails closed as a harness
+//! error instead of inferring authority from some node's current term.
+
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use super::super::history::check_committed_prefix_history_stability;

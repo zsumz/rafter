@@ -1,3 +1,10 @@
+//! Losing a leader, and what the old one may still claim afterwards.
+//!
+//! Proves failover under message delay leaves one leader per term, that a
+//! restarted follower keeps its prefix across it, that transfer preserves
+//! committed entries, and — the RD-01 obligation — that an isolated leader
+//! grants no read barrier while the surviving majority commits past its view.
+
 use super::super::helpers::{
     deliver_append_entries, deliver_append_entries_response, direct_election_three_node_cluster,
     elect_node_one, elect_node_two_without_reaching_node_one, pre_vote, pre_vote_response,
