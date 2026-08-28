@@ -12,16 +12,19 @@
 //! funnel does not reach, tested separately rather than folded into a claim one
 //! step wider than the mechanism. That folding is the defect itself.
 
-use rafter::{LogIndex, NodeId};
+use rafter::NodeId;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 use serde_json::{json, Value};
 
-use crate::{protocol::Envelope, InitializedNode};
+use crate::protocol::Envelope;
 
+use self::support::{client_read, stall_the_applied_state_below_the_next_grant};
 use super::{
     client_forwards, client_write, direct_answer, direct_answers, elected_cluster_leader,
     elected_single_node_process, fresh_cluster_member, remove_test_root, test_root,
 };
+
+mod support;
 
 // ---------------------------------------------------------------------------
 // A read enters the ledger like every other request.
@@ -378,39 +381,4 @@ fn the_dedupe_set_grows_with_distinct_answered_requests_and_nothing_else() {
         "and must not draw a second answer"
     );
     remove_test_root(root);
-}
-// ---------------------------------------------------------------------------
-// Helpers.
-// ---------------------------------------------------------------------------
-
-/// A client's `read` arriving straight at `dest`.
-fn client_read(dest: &str, client: &str, msg_id: u64, key: &str) -> Envelope {
-    Envelope {
-        src: client.to_owned(),
-        dest: dest.to_owned(),
-        body: json!({ "type": "read", "msg_id": msg_id, "key": key }),
-    }
-}
-
-/// Leaves this leader's applied state one application entry below the floor the
-/// next granted barrier will resolve to, and reports that floor.
-///
-/// A read issued afterwards grants, parks below its floor, and stays there:
-/// nothing else will apply, so no flush hook can pay it and no error output is
-/// coming either. That is the stranded read in the small — a barrier that
-/// neither resolves nor fails — and the only thing left holding it is the
-/// ledger record.
-///
-/// Rolling the cursor back is how `read_tests` builds the same stall; the
-/// production shape it stands for is a floor the state machine has not reached
-/// and an apply that never arrives to move it.
-fn stall_the_applied_state_below_the_next_grant(node: &mut InitializedNode) -> LogIndex {
-    node.handle_envelope(client_write("n1", "c0", 1, "counter", 7));
-    let floor = node.app.applied;
-    oracle_assert!(
-        floor > LogIndex::ZERO,
-        "the write must have applied for there to be a floor above zero"
-    );
-    node.app.applied = LogIndex(floor.0 - 1);
-    floor
 }
