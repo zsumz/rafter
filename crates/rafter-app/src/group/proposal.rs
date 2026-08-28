@@ -19,10 +19,6 @@ where
     A::CommandResult: Clone,
     R: PersistedRaftRuntime,
 {
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "the proposal is consumed by contract"
-    )]
     /// Begins a local tracked proposal and reports its immediate local state.
     ///
     /// This outcome-only helper intentionally discards co-emitted report
@@ -44,6 +40,10 @@ where
     /// runtime rejects the proposal input, or applying a synchronously committed
     /// entry fails. A runtime that accepts the input but emits no lifecycle event
     /// is returned as [`ProposalUnknownOutcomeReason::LifecycleUnreported`].
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the proposal is consumed by contract"
+    )]
     pub fn begin_proposal_outcome(
         &mut self,
         proposal: Proposal<A::Command>,
@@ -56,10 +56,6 @@ where
         Ok(begin)
     }
 
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "the proposal is consumed by contract"
-    )]
     /// Begins a local tracked proposal and returns the immediate state plus
     /// the full step report generated while starting it.
     ///
@@ -74,6 +70,10 @@ where
     /// runtime rejects the proposal input, or applying a synchronously committed
     /// entry fails. A runtime that accepts the input but emits no lifecycle event
     /// is returned as [`ProposalUnknownOutcomeReason::LifecycleUnreported`].
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the proposal is consumed by contract"
+    )]
     pub fn begin_proposal(
         &mut self,
         proposal: Proposal<A::Command>,

@@ -5,16 +5,16 @@
 
 use super::{MembershipChange, NodeId, PeerEnvelope, Proposal, ReadBarrierRequest};
 
-#[allow(
-    clippy::large_enum_variant,
-    reason = "payloads ride inline; boxing taxes every dispatch"
-)]
 /// Inputs accepted by the synchronous group driver.
 ///
 /// This enum is exhaustive because it is the closed set a group driver must
 /// dispatch. A new operation must break drivers that would otherwise ignore it
 /// through a wildcard.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "payloads ride inline; boxing taxes every dispatch"
+)]
 pub enum GroupInput<G, C> {
     /// Advance logical Raft time by one caller-owned tick.
     Tick,
