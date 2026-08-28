@@ -1,3 +1,10 @@
+//! The failure a check returns and the class it is triaged into.
+//!
+//! An invariant violation, an unreached coverage witness, and a harness error
+//! are deliberately distinct classes, because only the first says anything
+//! about the protocol. Every failure carries the trace and state needed to
+//! reproduce it, and its label resolves to a reviewed identifier.
+
 use std::{error::Error, fmt};
 
 use super::{Action, StateSummary};

@@ -1,3 +1,10 @@
+//! The before-image a transition is observed against.
+//!
+//! Proves an observation snapshot omits the immutable execution payloads while
+//! hashing identically to the live cluster's protocol state, so retaining
+//! execution history for the verifier cannot change what counts as a distinct
+//! protocol state.
+
 use std::hash::{DefaultHasher, Hasher};
 
 use rafter::{LogEntryKind, LogIndex, NodeConfig, NodeId, Term};

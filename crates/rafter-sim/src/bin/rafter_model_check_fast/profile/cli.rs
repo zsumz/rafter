@@ -1,3 +1,10 @@
+//! Argument parsing for the model-check binary.
+//!
+//! A malformed invocation must fail with a typed message rather than quietly
+//! defaulting: an unknown profile, a repeated profile, an unparseable seed, or
+//! `--seed` on a profile with no soak workload are all errors. Parsing settles
+//! nothing about bounds or which checks run.
+
 use rafter_sim::SimSeed;
 
 use super::{CliError, Profile, ProfileRun, ProfileSelection};

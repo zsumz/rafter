@@ -1,3 +1,8 @@
+//! Bootstrap-state and vote-response builders for the failover suites.
+//!
+//! Constructs the durable images a scenario restarts a node from and the
+//! predicates it filters election traffic with. Situation only; no assertions.
+
 use super::super::*;
 use rafter::Message;
 

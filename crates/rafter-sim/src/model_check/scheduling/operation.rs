@@ -1,3 +1,10 @@
+//! The operation vocabulary an explorer or soak can schedule.
+//!
+//! An operation carries everything applying it needs, paired with the trace
+//! action naming it for replay; the soak vocabulary extends the model one with
+//! the faults exploration never takes. Enumerating what is enabled and
+//! choosing among it both belong elsewhere.
+
 use rafter::{MembershipSet, NodeId, PromotionBarrier};
 
 use super::super::{Action, ProposalId, SoakAction};

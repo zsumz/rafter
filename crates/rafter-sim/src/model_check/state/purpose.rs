@@ -1,3 +1,10 @@
+//! Witnesses that a run reached the situation a check exists to examine.
+//!
+//! A production-config commit, a proposal blocked by a one-batch window, a
+//! lease fast-path grant, and a joint configuration surviving restart or
+//! install are each recognized from a before/after pair, so a purpose-bound
+//! check can refuse to pass on an exploration that never got there.
+
 use rafter::{
     CommittedConfiguration, LogEntryKind, MembershipConfig, Message, NodeId, ReplicationState,
 };

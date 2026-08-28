@@ -1,3 +1,10 @@
+//! Post-heal convergence and the usability window that must follow it.
+//!
+//! Electing a stable leader is not enough: that same leader must then accept
+//! and commit a proposal within the remaining round budget, so a cluster that
+//! converges but cannot serve is reported as a failure. Rounds spent
+//! converging count against the budget rather than being reset.
+
 use std::collections::BTreeSet;
 
 use super::{

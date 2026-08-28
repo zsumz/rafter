@@ -1,3 +1,10 @@
+//! Network fault injection over the simulator's message queue.
+//!
+//! Delay, duplication, drop, and sustained partition act only on queued
+//! envelopes and leave node state untouched; messages lost while partitioned
+//! stay lost, as on a real network. Field-level corruption is byzantine and
+//! belongs in targeted scenarios, never in invariant-checked soaks.
+
 use rafter::NodeId;
 
 use super::{Envelope, QueuedEnvelope};

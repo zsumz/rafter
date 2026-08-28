@@ -1,3 +1,10 @@
+//! Coverage marks recording which situations an exploration actually reached.
+//!
+//! An observation set names evidence, never protocol state: it is aggregated
+//! out of band and hashes to a constant, so marking coverage can never split a
+//! model state in two or inflate the explored state count. A situation never
+//! reached is reported as a coverage gap, not a pass.
+
 use std::hash::{Hash, Hasher};
 
 mod label;

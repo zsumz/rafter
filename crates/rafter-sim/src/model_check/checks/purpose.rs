@@ -1,3 +1,10 @@
+//! Checks that require a specific situation to have actually been reached.
+//!
+//! An exhaustive run that never reaches its purpose — a production-config
+//! commit, a blocked one-batch window, a lease fast-path grant — is reported
+//! as coverage-not-reached rather than a pass, so a check cannot go green by
+//! exploring a state space in which its property is vacuous.
+
 use rafter::NodeConfig;
 
 use crate::Cluster;

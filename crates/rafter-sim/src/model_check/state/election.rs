@@ -1,3 +1,10 @@
+//! Election history: term floors, durable votes, and leader certificates.
+//!
+//! Every term regression, same-term vote conflict, lost vote, unfenced
+//! authority transition, and pre-vote violation is retained as evidence rather
+//! than collapsed into a boolean, so a later check can say which node did what
+//! in which term. A leader with no certificate is recorded as uncertified.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::{BootstrapState, LogIndex, MembershipConfig, NodeId, Term};

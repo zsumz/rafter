@@ -1,3 +1,10 @@
+//! The election-safety explorer over tick and delivery schedules.
+//!
+//! Each entered state is checked for election safety and for election, log,
+//! and commit history consistency before expansion, so an unsafe state cannot
+//! be reached without being reported. It enumerates only ticks and ready
+//! deliveries; proposals and restarts belong to the richer explorers.
+
 use super::super::{
     catalog,
     invariants::{

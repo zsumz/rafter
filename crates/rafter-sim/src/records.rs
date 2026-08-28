@@ -1,3 +1,10 @@
+//! Immutable event records the simulator preserves across restarts.
+//!
+//! These types are the evidence invariant checkers reason over: what a node
+//! applied, executed, granted, rejected, and held durably. They record only
+//! what the kernel explicitly reported, never inferring an outcome from
+//! payload equality or later protocol state.
+
 use rafter::{
     BootstrapLogEntry, CommittedConfiguration, LocalProposalDropReason, LocalProposalId,
     LogEntryKind, LogIndex, MembershipConfig, NodeId, ProposalRejection, RaftSnapshotMetadata,

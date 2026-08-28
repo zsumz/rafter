@@ -1,3 +1,10 @@
+//! The restart and snapshot-transfer explorations.
+//!
+//! These runs must actually reach the situations they claim to verify — a
+//! restart, a pending transfer, an installed snapshot, and for the joint leg a
+//! recovered joint configuration — and report coverage-not-reached when they
+//! do not, because an unreached restart proves nothing about restart safety.
+
 use crate::Cluster;
 
 use super::super::{

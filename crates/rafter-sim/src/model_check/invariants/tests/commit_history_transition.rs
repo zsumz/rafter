@@ -1,3 +1,10 @@
+//! Commit attribution and the verifier/protocol state-hash boundary.
+//!
+//! Proves a follower's higher-term commit is not attributed to the old
+//! leader's authority, and that recording commit certificates changes the
+//! verifier hash while leaving the protocol hash untouched, so evidence can
+//! never inflate the explored protocol state count.
+
 use std::hash::{Hash, Hasher};
 
 use rafter::{

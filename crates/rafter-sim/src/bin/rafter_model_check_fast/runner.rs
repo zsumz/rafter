@@ -1,3 +1,10 @@
+//! Profile dispatch for the model-check binary.
+//!
+//! A run announces the profile, bounds, and schedule classes it is about to
+//! execute before any check starts, so the log records what was attempted even
+//! when the run dies partway. Choosing the profile happens upstream; the checks
+//! themselves live in the submodules.
+
 use std::error::Error;
 
 #[path = "runner/checks.rs"]

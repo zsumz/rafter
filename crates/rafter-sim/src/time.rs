@@ -1,3 +1,9 @@
+//! Logical time and deterministic pseudo-randomness for the simulator.
+//!
+//! Both advance only when the harness explicitly asks, so a seed and a
+//! schedule reproduce a run exactly. Nothing here consults the host clock or
+//! any entropy source, and no scheduling policy lives here.
+
 /// Monotonic logical time used by the deterministic simulator.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SimTick(pub u64);

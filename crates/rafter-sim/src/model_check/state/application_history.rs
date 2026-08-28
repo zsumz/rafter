@@ -1,3 +1,10 @@
+//! Incremental verifier index over the simulator's execution ledger.
+//!
+//! The cluster owns the exact witnesses; this index keeps a cursor, the
+//! ledger's revision, and one canonical identity per logical index so
+//! state-machine-safety checks process only newly appended witnesses. A
+//! truncated or rewritten prefix is an instrumentation error, not a pass.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,

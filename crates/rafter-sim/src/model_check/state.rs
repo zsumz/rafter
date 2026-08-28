@@ -1,3 +1,10 @@
+//! The state a bounded exploration carries between transitions.
+//!
+//! Beyond the cluster itself this holds the histories invariants argue from —
+//! application, client, election, log, commit, snapshot, purpose witnesses —
+//! and the budgets consumed so far. Those histories are append-only evidence,
+//! and an instrumentation gap is recorded as an error rather than dropped.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::{CommittedConfiguration, LogIndex, NodeId, SharedPayload};

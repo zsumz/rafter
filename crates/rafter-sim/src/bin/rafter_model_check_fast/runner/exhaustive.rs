@@ -1,3 +1,10 @@
+//! State-count targets and resource caps for the scheduled profiles.
+//!
+//! A scheduled profile passes only when it explores at least its target count
+//! of both unique protocol states and unique verifier states; falling short of
+//! either is an error. Wall-clock and unique-state caps bound the run so a
+//! scheduled job terminates; the local profiles carry no targets at all.
+
 use std::{error::Error, time::Duration};
 
 use rafter_sim::model_check::Bounds;

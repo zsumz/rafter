@@ -1,3 +1,10 @@
+//! Snapshot history: boundaries, transfers, and the evidence behind them.
+//!
+//! Every boundary advance is retained alongside its geometry, payload binding,
+//! reference, chunk, and transfer-identity findings, and a check that could
+//! not be performed is recorded as a coverage gap, so an install never counts
+//! as verified on evidence that was never gathered.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]

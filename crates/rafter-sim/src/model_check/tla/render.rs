@@ -1,3 +1,10 @@
+//! Rendering a projected trace as a runnable wrapper around `Raft.tla`.
+//!
+//! The generated module constrains `TraceNext` to follow the projected action
+//! sequence exactly, so TLC with deadlock checking rejects any step the
+//! abstract model does not enable. `traceVars` must name every variable
+//! `Raft.tla` declares, or the exported counterexample will not run at all.
+
 use super::super::Action;
 use super::errors::TlaTraceRenderError;
 use super::projection::require_tla_projectable_raft_trace;

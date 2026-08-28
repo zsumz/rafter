@@ -1,3 +1,10 @@
+//! Multi-chunk snapshot streaming and content integrity.
+//!
+//! Proves a chunked transfer assembles into the payload the follower installs,
+//! and that bytes diverging from the leader's own store are detected —
+//! matching descriptors are not enough, because two different payloads must
+//! never install under one identity.
+
 use super::super::helpers::{deliver_append_entries, deliver_append_entries_response};
 use super::super::*;
 use super::fixtures::{

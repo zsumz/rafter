@@ -1,3 +1,10 @@
+//! Machine-readable reporting for model-check and soak runs.
+//!
+//! Every verdict leaves both a human line and one `RAFTER_EVENT` JSON line, so
+//! CI grades a run from structured output rather than prose. This module owns
+//! the event envelope and the prefix identifying it; the checks themselves
+//! decide nothing about how their results are printed.
+
 #[path = "reporting/failure.rs"]
 mod failure;
 #[path = "reporting/liveness.rs"]

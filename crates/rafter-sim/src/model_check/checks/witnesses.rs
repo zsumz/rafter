@@ -1,3 +1,10 @@
+//! Compact scenarios for detector branches the broad explorers rarely reach.
+//!
+//! Each scenario drives one deliberately rare branch — a non-voter vote, a
+//! joint election certificate, a post-append joint commit, a same-boundary
+//! snapshot pair, a leader pre-vote, a pending application replay — and fails
+//! when its branch goes unexercised, so no detector stays permanently untested.
+
 use rafter::{LogIndex, Message, NodeId, RequestVote, Term};
 
 use crate::Cluster;

@@ -1,3 +1,10 @@
+//! The per-feature liveness monitors and the evidence each one must emit.
+//!
+//! A feature report carries its invariant, clauses, scenario, preconditions,
+//! round budget, and measured evidence together, so a liveness claim is only
+//! as strong as the conditions it was observed under. A monitor that cannot
+//! establish its preconditions reports a coverage failure, not a pass.
+
 use rafter::{NodeConfig, NodeConfigError, NodeId};
 
 use crate::model_check::{

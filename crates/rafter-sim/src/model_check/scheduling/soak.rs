@@ -1,3 +1,10 @@
+//! Enumeration of the actions a soak may take from a state.
+//!
+//! Beyond the model operations a soak may delay, drop, duplicate, partition,
+//! heal, and restart lossily, each still capped by its configured budget so
+//! the run stays bounded. Every queued envelope receives a distinct identity,
+//! keeping duplicates individually addressable in a recorded trace.
+
 use rafter::{NodeId, Role};
 
 use crate::Envelope;

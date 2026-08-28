@@ -1,3 +1,9 @@
+//! Lease-read soak coverage.
+//!
+//! Proves a lease-configured soak actually reaches read, fault, and timing
+//! actions together, so the lease fast path is exercised under the conditions
+//! that make it interesting rather than on an otherwise quiet cluster.
+
 use rafter::NodeId;
 
 use super::super::super::helpers::three_node_lease_configs;

@@ -1,3 +1,10 @@
+//! Commit certificates and the committed prefix they justify.
+//!
+//! A commit is recorded with the membership in force when it happened —
+//! commits below a configuration append use the frozen pre-append set, those
+//! at or above it the post-append set — so quorum validity is judged against
+//! the right configuration. Unwitnessed prefixes are tracked, never assumed.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     hash::{Hash, Hasher},

@@ -1,3 +1,10 @@
+//! The closed action vocabulary a soak trace is recorded in.
+//!
+//! Every action carries enough identity to be replayed plus a stable
+//! machine-readable family label for metrics, so a summary's action counts and
+//! a reproduction from the same trace agree. The set is closed: a new soak
+//! capability needs a new variant rather than an overloaded one.
+
 use std::fmt;
 
 use rafter::{MembershipSet, NodeId};

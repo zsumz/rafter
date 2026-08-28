@@ -1,3 +1,10 @@
+//! Message delivery and the execution history it records.
+//!
+//! Delivering an envelope steps one node and records what that step proved:
+//! the sender's durable-acknowledgement floor rises, and each newly applied
+//! entry becomes an immutable execution witness carrying its prior and
+//! resulting reference state. Missing inputs surface as typed errors.
+
 use rafter::{Input, LogEntryKind, LogIndex, NodeId};
 
 use super::Envelope;

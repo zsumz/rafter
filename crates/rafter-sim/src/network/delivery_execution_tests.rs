@@ -1,3 +1,10 @@
+//! Execution-history recording under missing inputs, log gaps, and each
+//! committed entry kind.
+//!
+//! Proves the recorder raises a typed instrumentation error for every input it
+//! cannot obtain, and that application, configuration, and no-op entries are
+//! all preserved rather than only the kinds that emit an application output.
+
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,
     BootstrapLogEntry, BootstrapState, LogIndex, Node, NodeConfig, NodeId, RaftSnapshot,

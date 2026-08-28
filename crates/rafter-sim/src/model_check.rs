@@ -1,3 +1,10 @@
+//! Bounded model checking, replay, soak, and TLA projection for the kernel.
+//!
+//! This module owns the crate's verification surface: which explorers,
+//! invariants, and checks are public, and which state, observation, and
+//! scheduling machinery stays private. It exports finished checkers, not the
+//! exploration internals those checkers are built from.
+
 mod types;
 
 pub use types::{

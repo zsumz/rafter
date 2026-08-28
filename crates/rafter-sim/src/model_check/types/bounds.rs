@@ -1,3 +1,10 @@
+//! The budgets a bounded exploration is allowed to spend.
+//!
+//! Every capability past depth starts at zero and is opted into explicitly, so
+//! an exploration does only what its caller granted. The unique-state and
+//! wall-clock caps bound a run's cost and make it report why it stopped rather
+//! than claim an exhausted frontier.
+
 use std::time::Duration;
 
 /// Bound settings for an in-repo model-checking run.

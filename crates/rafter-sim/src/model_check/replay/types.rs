@@ -1,3 +1,10 @@
+//! The vocabulary a replay is requested and reported in.
+//!
+//! A replay names which invariant suite to run and what it expects — a final
+//! state or one named invariant failure — and reports the state reached along
+//! with any failure observed. Suites and expectations are deliberately closed
+//! sets, so extending either is a deliberate change.
+
 use super::super::{Failure, StateSummary};
 
 /// Invariant suite to run while replaying a model-check trace.

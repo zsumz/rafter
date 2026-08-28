@@ -1,3 +1,10 @@
+//! Binding an installed snapshot to the transfer that actually delivered it.
+//!
+//! A boundary may advance only on a final install message whose descriptor and
+//! payload bytes match what was installed; anything else is a violation. When
+//! the sender's payload is no longer available the result is reported as
+//! coverage-unavailable rather than quietly passing the byte comparison.
+
 use rafter::{Message, NodeId, RaftSnapshot};
 
 use crate::{Cluster, Envelope};

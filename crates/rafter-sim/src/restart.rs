@@ -1,3 +1,10 @@
+//! The simulator's process-restart boundary.
+//!
+//! A restart rebuilds a node from durable state alone: hard state, retained
+//! log, commit floor, and snapshot descriptor survive while role, progress,
+//! and chunk staging do not. Durable metadata without durable content panics
+//! as a persistence bug; the lossy variants model assumption violations.
+
 use rafter::{
     BootstrapState, BootstrapValidationError, InMemorySnapshotChunkSource, LogIndex, Message, Node,
     NodeId,

@@ -1,3 +1,10 @@
+//! Failure events and the trace timeline printed beside them.
+//!
+//! A failure must name a reviewed invariant identifier; an unregistered label
+//! is downgraded to a harness error rather than reported as a protocol
+//! violation, so an unreviewed check can never be mistaken for a real one.
+//! Classification comes from the failure itself and is never inferred here.
+
 use rafter_sim::model_check::{reviewed_invariant_id, Failure, FailureKind, SoakFailure};
 use serde_json::json;
 

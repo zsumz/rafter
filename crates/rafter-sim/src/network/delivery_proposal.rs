@@ -1,3 +1,10 @@
+//! Correlation of kernel outputs to local proposal lifecycle events.
+//!
+//! A proposal's outcome is taken only from the output that explicitly carries
+//! its identifier; outputs with no proposal correlation map to nothing rather
+//! than being matched by payload or index. The match is exhaustive so a new
+//! kernel output cannot silently drop out of proposal history.
+
 use rafter::{NodeId, Output};
 
 use crate::records::LocalProposalEvent;

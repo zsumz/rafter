@@ -1,3 +1,10 @@
+//! Depth-aware state deduplication and the limits an exploration runs under.
+//!
+//! A state already seen is re-expanded only when reached with more depth
+//! remaining, so deduplication never hides a descendant a shorter path could
+//! reach. Verifier and protocol identities are counted apart from the exact
+//! canonical state, and each cap reports the completion that stopped the run.
+
 use std::{
     collections::BTreeMap,
     hash::{Hash, Hasher},

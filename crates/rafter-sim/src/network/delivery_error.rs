@@ -1,3 +1,10 @@
+//! Typed reasons the simulator cannot extend a node's execution history.
+//!
+//! Each variant names a missing instrumentation input — no cursor, an
+//! unretained log range, an unavailable snapshot payload or reference — so a
+//! coverage gap is reported as a gap instead of passing as a clean run. These
+//! are harness diagnostics, never protocol failures.
+
 use std::fmt;
 
 use rafter::{LogIndex, NodeId};

@@ -1,3 +1,10 @@
+//! Driving a recorded trace and grading it against its expectation.
+//!
+//! The invariant suite runs after every replayed action, so a failure is
+//! attributed to the earliest action producing it. An expectation is met only
+//! exactly: an expected failure that never arrives and an unexpected one that
+//! does are both errors, so a trace cannot pass by coincidence.
+
 use rafter::NodeConfig;
 
 use crate::Cluster;

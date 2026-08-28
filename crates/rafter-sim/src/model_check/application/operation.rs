@@ -1,3 +1,10 @@
+//! Applying one scheduled operation and recording what it proved.
+//!
+//! Every operation captures a before-image, applies its cluster effects, then
+//! refreshes the election, log, commit, snapshot, client, and purpose
+//! histories in one fixed order, so no transition can advance protocol state
+//! without leaving behind the evidence later invariants read.
+
 use super::super::super::{
     observations::Observation, scheduling::Operation, Action, ExplorationState, Failure,
     RestartSnapshotState,

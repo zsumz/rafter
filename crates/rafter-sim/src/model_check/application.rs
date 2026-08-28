@@ -1,3 +1,10 @@
+//! The transition engine every model-check state change passes through.
+//!
+//! A driver may inspect the cluster but may not mutate it directly: every
+//! operation, restart, seed, and soak action is applied here, so the
+//! observation and history refresh that later invariant checks argue from
+//! cannot be skipped. Raw `Cluster` mutation stays private to this tree.
+
 #[path = "application/cluster.rs"]
 mod cluster;
 #[path = "application/entry.rs"]

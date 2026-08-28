@@ -1,3 +1,10 @@
+//! The nightly and weekly check batteries and their state accounting.
+//!
+//! These profiles explore the same properties as the local ones at greater
+//! depth and across pre-vote, check-quorum, production, and learner
+//! configurations, accumulating state counts so the profile total can be
+//! graded against its target once every check has run.
+
 use std::error::Error;
 
 use rafter_sim::model_check::{

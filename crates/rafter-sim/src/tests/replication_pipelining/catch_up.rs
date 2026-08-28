@@ -1,3 +1,10 @@
+//! Follower catch-up under different in-flight append windows.
+//!
+//! Proves a pipelined window streams a committed suffix in a constant number
+//! of rounds while a window of one reproduces serialized, acknowledgement-paced
+//! catch-up, so the window size is shown to be load-bearing rather than
+//! assumed.
+
 use super::super::helpers::{config, pre_vote, pre_vote_response, request_vote};
 use super::super::*;
 use super::fixtures::{

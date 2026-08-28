@@ -1,3 +1,10 @@
+//! Applying one soak action, including the faults exploration never takes.
+//!
+//! Actions that are ordinary model operations route to the shared transition
+//! path so they observe identically; only the soak-only faults — delay, drop,
+//! duplicate, partition, heal, lossy restart — are handled here, and each
+//! still refreshes the histories before the step is allowed to count.
+
 use super::super::super::{
     scheduling::{Operation, SoakOperation},
     Action, ExplorationState, Failure,

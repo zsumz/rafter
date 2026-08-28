@@ -1,3 +1,10 @@
+//! Progress inspection and delivery helpers for the pipelining suites.
+//!
+//! Exposes per-follower replication progress, ready-message counts, and
+//! generation-at-a-time delivery, so a scenario can measure catch-up in rounds
+//! rather than in wall-clock steps. These observe and deliver; they assert
+//! nothing.
+
 use super::super::*;
 use rafter::{Message, ReplicationProgress, RequestVoteResponse};
 

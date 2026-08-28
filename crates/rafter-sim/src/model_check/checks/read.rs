@@ -1,3 +1,10 @@
+//! The bounded read-barrier exploration.
+//!
+//! Every granted barrier must cover the cluster-wide committed floor observed
+//! at its registration, across schedules mixing proposals, message faults, and
+//! reads. The run starts from an elected leader holding one committed entry so
+//! barriers are grantable within shallow depths.
+
 use rafter::NodeConfig;
 
 use crate::Cluster;

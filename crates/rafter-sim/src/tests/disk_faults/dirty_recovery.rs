@@ -1,3 +1,10 @@
+//! Reopening a follower after each modeled disk-write crash point.
+//!
+//! Proves a running simulation reopens and keeps progressing after a crash at
+//! every modeled I/O boundary and after each dirty-tail shape, and that a
+//! restart failing bootstrap validation leaves the running cluster exactly as
+//! it was rather than half-applied.
+
 use super::super::*;
 use super::fixtures::{
     assert_committed_on_intact_quorum, cluster_with_unacknowledged_follower_tail,

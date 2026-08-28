@@ -1,3 +1,10 @@
+//! Cluster and durable-image builders for the disk-fault suites.
+//!
+//! Builds a cluster whose follower holds an unacknowledged tail, reopens and
+//! repairs that follower, and commits against the intact quorum, so each
+//! scenario starts where its fault is actually reachable. These construct
+//! situations and assert nothing about the protocol.
+
 use super::super::helpers::{
     config, deliver_append_entries, deliver_append_entries_response, elect_node_one,
     three_node_cluster,

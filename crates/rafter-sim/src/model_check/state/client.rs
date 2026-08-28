@@ -1,3 +1,10 @@
+//! The client-visible history of the writes and reads a run performed.
+//!
+//! Each operation records when it started, what it was promised, and how it
+//! terminated — completed, rejected, canceled, or explicitly unknown — because
+//! linearizability is argued over that record. An event contradicting the
+//! recorder is kept as an instrumentation error rather than smoothed away.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,

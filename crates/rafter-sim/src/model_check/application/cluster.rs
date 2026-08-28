@@ -1,3 +1,10 @@
+//! Translation of one scheduled operation into raw cluster effects.
+//!
+//! This is the only place a model-check operation touches the `Cluster` API,
+//! and it hands back the emitted envelopes, proposal events, and read
+//! registration its caller must observe. It records no history and checks no
+//! invariant; restart operations are refused here because they need context.
+
 use rafter::{Input, LocalProposalId, MembershipConfig, MembershipSet, NodeId};
 
 use crate::records::LocalProposalEvent;

@@ -1,3 +1,10 @@
+//! The replayable action vocabulary a counterexample is recorded in.
+//!
+//! Each action carries enough identity to be re-executed exactly, including
+//! which queued envelope a delivery consumed, so a reported trace reproduces
+//! the run rather than merely describing it. The set is closed; a new
+//! simulator capability requires a new variant.
+
 use std::fmt;
 
 use rafter::{MembershipSet, Message, NodeId};

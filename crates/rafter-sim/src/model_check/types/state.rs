@@ -1,3 +1,9 @@
+//! The cluster snapshot captured alongside a model-check failure.
+//!
+//! A summary records per-node term, role, commit index, and log geometry — the
+//! minimum a reader needs to orient in a counterexample without carrying the
+//! whole cluster. It reports a state; it is never the state itself.
+
 use rafter::{LogIndex, NodeId, Role, Term};
 
 /// Node state summary captured with a model-checking failure.

@@ -1,3 +1,10 @@
+//! The abstract TLA+ action vocabulary and its named abstraction gaps.
+//!
+//! Both sets are closed and mirror `specs/tla/raft/Raft.tla` as it stands, so
+//! widening what a trace may project to is a deliberate edit here rather than
+//! silent drift. The bounded symbol counts fix how large a renderable trace
+//! can be.
+
 use std::fmt;
 
 use rafter::NodeId;

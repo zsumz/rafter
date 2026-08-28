@@ -1,3 +1,10 @@
+//! State-identity, deduplication, and exploration-limit scenarios.
+//!
+//! Proves depth-aware dedup re-expands a shorter path to reach a descendant,
+//! that the canonical zero-run encoding stays injective so a compact-key
+//! collision keeps distinct states distinct, that protocol counts ignore
+//! recorder history, and that both caps report the completion that stopped.
+
 use std::{
     hash::{Hash, Hasher},
     time::Duration,

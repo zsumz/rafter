@@ -1,3 +1,10 @@
+//! Projection of simulator traces into a TLA+ trace specification.
+//!
+//! A projection must be total or refused: a trace the abstraction cannot
+//! represent is reported as an explicit abstraction gap rather than quietly
+//! rendered into a weaker spec. Rendering produces input for an external
+//! checker; nothing here decides whether the trace is correct.
+
 mod errors;
 mod projection;
 mod render;

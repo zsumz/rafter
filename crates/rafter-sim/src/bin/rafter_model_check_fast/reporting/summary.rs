@@ -1,3 +1,10 @@
+//! Exhaustive-check summary lines and profile state-count totals.
+//!
+//! A check counts as passing only when its frontier was exhausted; any other
+//! completion is reported as coverage-not-reached rather than a pass. Protocol
+//! and verifier state counts stay separate because a profile's targets are
+//! graded against both.
+
 use std::time::Duration;
 
 use rafter_sim::model_check::{ExplorationCompletion, Summary};

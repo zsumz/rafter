@@ -1,3 +1,10 @@
+//! Bounded exploration scenarios across every checked property.
+//!
+//! Proves election, commit, membership, joint restart-and-snapshot, restart,
+//! read-index, and lease-read checks all pass at their configured bounds, that
+//! membership safety holds without client proposals, and that a unique-state
+//! budget stops expansion without turning into a failure.
+
 use std::time::Duration;
 
 use super::super::helpers::{config, four_node_future_learner_configs, three_node_lease_configs};

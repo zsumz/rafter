@@ -1,3 +1,10 @@
+//! Enumeration of the actions enabled from a model-check state.
+//!
+//! An action is offered only when the state and the configured bounds both
+//! permit it, so a driver cannot exceed its proposal, restart, read, or
+//! membership budget by construction, and every queued envelope carries a
+//! distinct scheduler identity. Choosing among them is the driver's job.
+
 use rafter::{Role, Term};
 
 use crate::Cluster;

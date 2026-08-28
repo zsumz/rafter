@@ -1,3 +1,9 @@
+//! Message routing types for the simulated network.
+//!
+//! An envelope carries sender, recipient, and payload; queueing adds only the
+//! tick at which it becomes deliverable. Ordering, faults, and the effects of
+//! delivery belong to the submodules, not to these records.
+
 mod delivery;
 pub(crate) use delivery::ExecutionInstrumentationError;
 mod faults;

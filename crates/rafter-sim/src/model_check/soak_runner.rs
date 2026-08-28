@@ -1,3 +1,10 @@
+//! Execution of one deterministic randomized soak.
+//!
+//! Every step re-runs the full commit-safety suite, so a violation is reported
+//! at the exact seed and step that produced it rather than at the end of the
+//! run. The liveness pass replays the same seed on a fresh cluster; a safety
+//! failure aborts the soak and nothing is retried into a passing result.
+
 use std::collections::BTreeSet;
 
 use rafter::NodeConfig;

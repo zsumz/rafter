@@ -1,3 +1,10 @@
+//! The restart and snapshot-transfer explorer.
+//!
+//! Beyond running the safety suites at every state, this explorer records
+//! whether the run actually reached a restart, a partially received transfer,
+//! and an installed snapshot, so its caller can refuse to report a pass for an
+//! exploration that never exercised the situation it claims to cover.
+
 use rafter::NodeId;
 
 use super::super::{

@@ -1,3 +1,10 @@
+//! What a completed soak reports about the run it actually performed.
+//!
+//! The summary records observed action families, per-family counts, restarted
+//! nodes, the liveness reports produced, and the configuration provenance
+//! behind them, so a reader can tell which coverage was genuinely exercised
+//! rather than merely permitted by the budget.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::NodeId;

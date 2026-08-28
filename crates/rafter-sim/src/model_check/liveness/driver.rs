@@ -1,3 +1,10 @@
+//! The bounded-fair round driver every liveness monitor runs under.
+//!
+//! Progress may be claimed only under a schedule fair by construction: no node
+//! goes unticked and no ready message undelivered beyond a fixed round bound,
+//! and starvation past that bound is an error rather than a timeout. The
+//! schedule is seeded, so a liveness result stays replayable.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::NodeId;

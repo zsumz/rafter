@@ -1,3 +1,10 @@
+//! The restart transition and the durability evidence it must produce.
+//!
+//! A restart must reproduce its bootstrap state exactly, preserve any pending
+//! snapshot transfer alongside its durably staged bytes, and replay precisely
+//! the committed suffix above the durable applied floor. Divergence is a
+//! violation; a missing durable payload is a harness error, never a pass.
+
 use rafter::{BootstrapState, LogIndex, Node, NodeId, PendingSnapshotTransfer};
 
 use crate::{DurableStateDigest, ExecutedLogEntry, StagedSnapshotTransfer};

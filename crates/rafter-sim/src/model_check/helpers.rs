@@ -1,3 +1,10 @@
+//! Shared fixtures and driving routines for model-check states.
+//!
+//! The bounded explorers pin the minimal protocol — no pre-vote, no
+//! check-quorum — so their state spaces stay exactly the historically verified
+//! ones, and each leg opts in explicitly. Every driver here moves the cluster
+//! through the instrumented transition engine, never around it.
+
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, LogIndex,
     Message, NodeConfig, NodeId, RaftSnapshotMetadata, Role, SnapshotGroupId, Term,

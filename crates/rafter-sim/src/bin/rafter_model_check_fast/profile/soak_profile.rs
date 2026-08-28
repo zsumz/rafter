@@ -1,3 +1,10 @@
+//! Soak workload budgets and the execution contract that pins them.
+//!
+//! A soak's reported contract must match the `SoakConfig` actually executed
+//! and the node configs actually used, so a summary cannot claim coverage the
+//! run did not perform. Mismatches return errors; this module chooses budgets
+//! and never interprets the results a soak produces.
+
 use rafter::{NodeConfig, NodeId};
 use rafter_sim::{model_check::SoakConfig, SimSeed};
 

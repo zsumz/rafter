@@ -1,3 +1,10 @@
+//! The named model-check profiles and the bounds each one commits to.
+//!
+//! A profile is the single place a run's depth, proposal, restart, and
+//! state-count budgets are decided, so the bounds printed in a summary are the
+//! bounds actually explored. Profiles carry budgets only; which checks run
+//! under them is the runner's decision, not this module's.
+
 use std::{error::Error, fmt};
 
 use rafter_sim::SimSeed;

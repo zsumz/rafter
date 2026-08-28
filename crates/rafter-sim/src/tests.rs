@@ -1,3 +1,9 @@
+//! Scenario suites for the deterministic simulator.
+//!
+//! The root of this crate's cluster-level tests: fault primitives, disk
+//! faults, membership change, elections, replication, snapshots, and
+//! liveness. Unit tests of a single module live beside that module instead.
+
 use super::*;
 use rafter::{BootstrapLogEntry, CommittedConfiguration, LogEntry, Role, Term};
 

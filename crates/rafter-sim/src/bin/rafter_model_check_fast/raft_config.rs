@@ -1,3 +1,10 @@
+//! Node configurations the model-check profiles explore.
+//!
+//! The plain legs pin the minimal protocol — no pre-vote, no check-quorum — so
+//! their explored state spaces stay exactly the historically verified ones.
+//! Pre-vote, check-quorum, lease reads, learners, and in-flight append window
+//! size are explicit opt-ins here rather than inherited defaults.
+
 use rafter::{NodeConfig, NodeId};
 
 /// The plain legs pin the minimal protocol — no pre-vote, no check-quorum —
