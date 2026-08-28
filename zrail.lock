@@ -1639,7 +1639,7 @@ value = 1198
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter/tests/readability_architecture_guard.rs"
-value = 633
+value = 677
 
 [[ratchet]]
 rule = "rust.file-size"
