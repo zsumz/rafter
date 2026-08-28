@@ -2,7 +2,7 @@
 schema = 1
 semantics = 1
 producer = "0.0.1"
-contract_sha256 = "31206b8ecc4ff769ffcbc23ffeb2b60fa23522c0f0b4521959ee68a9cabc9e33"
+contract_sha256 = "4ce8a725b919377fac556a4af4010f1196d35327618504c9b1a680d5429d4af8"
 
 [[package]]
 name = "rafter"
@@ -1204,17 +1204,17 @@ value = 252
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/gen7_boundary_probe.rs"
-value = 666
+value = 667
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/group_apply.rs"
-value = 610
+value = 617
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/group_lifecycle.rs"
-value = 724
+value = 731
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1224,7 +1224,7 @@ value = 758
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/group_proposal_lifecycle.rs"
-value = 1459
+value = 1466
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1234,17 +1234,17 @@ value = 1291
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/group_read_lifecycle.rs"
-value = 721
+value = 728
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/recovery_transaction.rs"
-value = 431
+value = 432
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-app/tests/support/mod.rs"
-value = 885
+value = 892
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1319,7 +1319,7 @@ value = 443
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-invariants/tests/invariant_catalog_guard/evidence.rs"
-value = 1326
+value = 1333
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1339,12 +1339,12 @@ value = 416
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-multiraft/src/host/tests.rs"
-value = 514
+value = 521
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-multiraft/src/typed/tests.rs"
-value = 427
+value = 434
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1354,7 +1354,7 @@ value = 623
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-multiraft/tests/managed_scheduler.rs"
-value = 518
+value = 525
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1364,17 +1364,17 @@ value = 154
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-runtime/examples/replicated_kv/process.rs"
-value = 816
+value = 823
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-runtime/src/tests/recovery.rs"
-value = 618
+value = 625
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/src/handle/tests.rs"
-value = 476
+value = 484
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1384,12 +1384,12 @@ value = 569
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/tests/in_memory_read.rs"
-value = 620
+value = 628
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/tests/in_memory_write.rs"
-value = 812
+value = 820
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1399,7 +1399,7 @@ value = 723
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/tests/support/mod.rs"
-value = 649
+value = 657
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1474,7 +1474,7 @@ value = 1047
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/bin/rafter_model_check_fast/reporting/tests.rs"
-value = 430
+value = 437
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1579,17 +1579,17 @@ value = 110
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-transport-tls/tests/snapshot_chunks.rs"
-value = 515
+value = 522
+
+[[ratchet]]
+rule = "rust.file-size"
+target = "crates/rafter-transport-tls/tests/support/runtime.rs"
+value = 407
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter/src/lib.rs"
 value = 144
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter/src/node/bootstrap/error.rs"
-value = 383
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1599,7 +1599,7 @@ value = 312
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter/src/node/log.rs"
-value = 618
+value = 311
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1613,18 +1613,13 @@ value = 407
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter/src/types/membership.rs"
-value = 350
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter/tests/ci_test_inventory_contract.rs"
 value = 402
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter/tests/dependency_boundary.rs"
-value = 416
+value = 423
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1664,12 +1659,12 @@ value = 1023
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter/tests/public_api_docs_guard.rs"
-value = 1101
+value = 1108
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter/tests/readability_architecture_guard.rs"
-value = 626
+value = 633
 
 [[ratchet]]
 rule = "rust.file-size"

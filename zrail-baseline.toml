@@ -395,11 +395,6 @@ reason = "Pre-adoption module facade holding implementation; shrink toward the 1
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter/src/node/bootstrap/error.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter/src/node/election.rs"
 reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
@@ -417,11 +412,6 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 rule = "rust.file-size"
 target = "crates/rafter/src/node/tests/replication/follower.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter/src/types/membership.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -622,3 +612,7 @@ reason = "Inline test module accepted at adoption; move the proofs into a reacha
 rule = "rust.inline-tests"
 target = "crates/rafter-transport-tls/src/queue/receive_memory.rs"
 reason = "Inline test module accepted at adoption; move the proofs into a reachable sibling `_test.rs` module."
+[[ratchet]]
+rule = "rust.file-size"
+target = "crates/rafter-transport-tls/tests/support/runtime.rs"
+reason = "Crossed the scenario-suite target when its module contract landed; shrink-only from here."
