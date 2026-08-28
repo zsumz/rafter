@@ -2,16 +2,13 @@
 
 use std::{
     collections::BTreeSet,
-    env,
     error::Error,
     fs,
     path::{Component, Path, PathBuf},
 };
 
-use sha2::{Digest, Sha256};
-
 use crate::{
-    evidence::{SourceMaterializationReceipt, SourceReceipt, ToolReceipt},
+    evidence::{SourceMaterializationReceipt, SourceReceipt},
     provenance::source::{
         observe_checkout_with, CheckoutCommandRunner, CheckoutObservation, CommandOutput,
         GeneratedOutputPolicy,
@@ -19,6 +16,14 @@ use crate::{
 };
 
 use super::process;
+
+mod artifact_names;
+mod tools;
+
+use artifact_names::reviewed_tla_evidence_artifact;
+#[cfg(test)]
+use tools::{bind_adjacent_tool_inputs, tool_identity_arguments, tool_version_output};
+use tools::{capture_tool, find_tool};
 
 #[derive(Clone, Copy)]
 struct LayerSourceContract {
@@ -66,13 +71,6 @@ impl GeneratedOutputPolicy for ProducerGeneratedOutputs {
         reviewed_generated_output(path)
     }
 }
-
-const TOOL_IDENTITY_PROBES: &[(&str, &[&str])] = &[
-    ("java", &["-version"]),
-    ("maelstrom", &["serve", "--help"]),
-    ("dot", &["-V"]),
-    ("gnuplot", &["--version"]),
-];
 
 pub(super) fn capture_for_layer(layer: &str) -> Result<SourceReceipt, Box<dyn Error>> {
     capture_at(
@@ -234,47 +232,6 @@ fn layer_contract(layer: &str) -> Result<LayerSourceContract, Box<dyn Error>> {
     }
 }
 
-fn capture_tool(
-    name: &str,
-    root: &Path,
-    runner: ProducerCommandRunner,
-) -> Result<ToolReceipt, Box<dyn Error>> {
-    let executable = find_tool(name).ok_or_else(|| format!("{name} is not present on PATH"))?;
-    let arguments = tool_identity_arguments(name)?;
-    let output = runner.run(name, arguments, root)?;
-    let version = bind_adjacent_tool_inputs(
-        name,
-        tool_version_output(name, &output.stdout, &output.stderr)?,
-        &executable,
-    )?;
-    Ok(ToolReceipt {
-        version,
-        sha256: file_sha256(&executable)?,
-    })
-}
-
-fn bind_adjacent_tool_inputs(
-    name: &str,
-    version: String,
-    executable: &Path,
-) -> Result<String, Box<dyn Error>> {
-    if name != "maelstrom" {
-        return Ok(version);
-    }
-    let executable = fs::canonicalize(executable)?;
-    let jar = maelstrom_jar_path(&executable)?;
-    let jar_sha256 = file_sha256(&jar).map_err(|error| {
-        format!(
-            "bind Maelstrom launcher {} to adjacent {}: {error}",
-            executable.display(),
-            jar.display()
-        )
-    })?;
-    Ok(format!(
-        "{version}\nrafter-adjacent-lib/maelstrom.jar-sha256: {jar_sha256}"
-    ))
-}
-
 pub(super) fn maelstrom_jar_path(executable: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let executable = fs::canonicalize(executable)?;
     Ok(executable
@@ -283,33 +240,8 @@ pub(super) fn maelstrom_jar_path(executable: &Path) -> Result<PathBuf, Box<dyn E
         .join("lib/maelstrom.jar"))
 }
 
-fn tool_identity_arguments(name: &str) -> Result<&'static [&'static str], Box<dyn Error>> {
-    TOOL_IDENTITY_PROBES
-        .iter()
-        .find_map(|(tool, arguments)| (*tool == name).then_some(*arguments))
-        .ok_or_else(|| format!("no reviewed identity probe is registered for {name}").into())
-}
-
-fn tool_version_output(name: &str, stdout: &str, stderr: &str) -> Result<String, Box<dyn Error>> {
-    let value = format!("{stdout}{stderr}").trim().to_owned();
-    if value.is_empty() {
-        return Err(format!("{name} produced empty identity output").into());
-    }
-    Ok(value)
-}
-
-fn find_tool(name: &str) -> Option<PathBuf> {
-    env::split_paths(&env::var_os("PATH")?)
-        .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
 pub(super) fn tool_path(name: &str) -> Option<PathBuf> {
     find_tool(name)
-}
-
-fn file_sha256(path: &Path) -> Result<String, Box<dyn Error>> {
-    Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }
 
 fn reviewed_generated_output(path: &Path) -> bool {
@@ -333,62 +265,6 @@ fn reviewed_generated_output(path: &Path) -> bool {
             if first == "specs" && second == "tla" && rest.iter().any(|value| value == "states"))
         || components.iter().any(|value| value == "__pycache__")
         || path.extension().is_some_and(|extension| extension == "pyc")
-}
-
-fn reviewed_tla_evidence_artifact(name: &str) -> bool {
-    matches!(
-        name,
-        "tla-log"
-            | "tla.log"
-            | "tla-trace-log"
-            | "tla-tool"
-            | "tla-spec"
-            | "tla-trace-spec"
-            | "tla-detector-spec"
-            | "tla-runner"
-            | "tla-tool-asset-id"
-            | "tla-tool-checksums"
-            | "tla-config"
-            | "tla-trace-config"
-            | "tla-detector-config"
-            | "tla-mutation-log"
-            | "tla-producer"
-            | "tla-checkpoint-contract"
-            | "tla-checkpoint-inventory"
-            | "tla-checkpoint-recovered-contract"
-            | "tla-checkpoint-recovered-inventory"
-            | "tla-checkpoint-recovery-report"
-    ) || crate::producer::tla_output::DETECTOR_PROBES
-        .into_iter()
-        .any(|probe| {
-            crate::producer::tla_output::detector_log_kind(probe)
-                .is_some_and(|kind| normalize_fixture_artifact_name(&kind) == name)
-                || crate::producer::tla_output::detector_config_kind(probe)
-                    .is_some_and(|kind| normalize_fixture_artifact_name(&kind) == name)
-        })
-        || reviewed_obligation_evidence_artifact(name)
-}
-
-/// Proof-obligation evidence names are open-ended: the identity is profile
-/// data, so the reviewed set cannot be a literal list the way the detector
-/// probes are. Recognizing them by their normalized kind prefix keeps the
-/// source-identity policy closed against everything else while still admitting
-/// whatever obligations the manifest declares.
-fn reviewed_obligation_evidence_artifact(name: &str) -> bool {
-    ["tla-obligation-log-", "tla-obligation-config-"]
-        .into_iter()
-        .any(|prefix| {
-            name.strip_prefix(prefix)
-                .is_some_and(|id| !id.is_empty() && id.bytes().all(is_obligation_identity_byte))
-        })
-}
-
-fn is_obligation_identity_byte(byte: u8) -> bool {
-    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
-}
-
-fn normalize_fixture_artifact_name(kind: &str) -> String {
-    crate::producer::artifact::portable_filename(kind)
 }
 
 #[cfg(test)]
