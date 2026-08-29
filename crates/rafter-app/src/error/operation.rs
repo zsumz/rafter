@@ -31,12 +31,12 @@ pub enum StateMachineOperation {
 impl fmt::Display for StateMachineOperation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::AppliedIndex => "applied-index lookup",
-            Self::EncodeCommand => "command encoding",
-            Self::DecodeCommand => "command decoding",
-            Self::ApplyBatch => "batch apply",
-            Self::Read => "read",
-            Self::InstallSnapshot => "snapshot install",
+            StateMachineOperation::AppliedIndex => "applied-index lookup",
+            StateMachineOperation::EncodeCommand => "command encoding",
+            StateMachineOperation::DecodeCommand => "command decoding",
+            StateMachineOperation::ApplyBatch => "batch apply",
+            StateMachineOperation::Read => "read",
+            StateMachineOperation::InstallSnapshot => "snapshot install",
         })
     }
 }

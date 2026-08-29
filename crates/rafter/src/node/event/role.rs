@@ -25,10 +25,10 @@ pub enum Role {
 impl fmt::Display for Role {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Follower => "follower",
-            Self::PreCandidate => "pre-candidate",
-            Self::Candidate => "candidate",
-            Self::Leader => "leader",
+            Role::Follower => "follower",
+            Role::PreCandidate => "pre-candidate",
+            Role::Candidate => "candidate",
+            Role::Leader => "leader",
         })
     }
 }

@@ -292,10 +292,8 @@ fn an_install_failure_still_poisons_with_the_state_machine_error() {
 /// and without running anything.
 #[test]
 fn snapshot_support_is_readable_without_an_instance() {
-    const RECORDING: SnapshotSupport =
-        <RecordingStateMachine as ReplicatedStateMachine>::SNAPSHOT_SUPPORT;
-    const UNSUPPORTED: SnapshotSupport =
-        <UnsupportedStateMachine as ReplicatedStateMachine>::SNAPSHOT_SUPPORT;
+    const RECORDING: SnapshotSupport = RecordingStateMachine::SNAPSHOT_SUPPORT;
+    const UNSUPPORTED: SnapshotSupport = UnsupportedStateMachine::SNAPSHOT_SUPPORT;
 
     assert_eq!(RECORDING, SnapshotSupport::Supported);
     assert_eq!(UNSUPPORTED, SnapshotSupport::Unsupported);

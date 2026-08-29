@@ -64,10 +64,10 @@ where
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unsupported => {
+            ApplicationSnapshotError::Unsupported => {
                 formatter.write_str("state machine declares no application snapshot support")
             }
-            Self::StateMachine(error) => {
+            ApplicationSnapshotError::StateMachine(error) => {
                 write!(formatter, "application snapshot operation failed: {error}")
             }
         }
@@ -80,8 +80,8 @@ where
 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Unsupported => None,
-            Self::StateMachine(error) => Some(error),
+            ApplicationSnapshotError::Unsupported => None,
+            ApplicationSnapshotError::StateMachine(error) => Some(error),
         }
     }
 }

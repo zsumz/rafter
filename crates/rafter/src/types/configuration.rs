@@ -102,8 +102,8 @@ impl fmt::Display for ConfigurationId {
 impl fmt::Display for ConfigurationPhase {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Stable => write!(formatter, "stable"),
-            Self::Joint => write!(formatter, "joint"),
+            ConfigurationPhase::Stable => write!(formatter, "stable"),
+            ConfigurationPhase::Joint => write!(formatter, "joint"),
         }
     }
 }

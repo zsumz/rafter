@@ -164,7 +164,7 @@ impl fmt::Display for PendingSnapshotTransferResumeError {
                 actual = actual,
                 expected = expected,
             ),
-            Self::InvalidMetadata => {
+            PendingSnapshotTransferResumeError::InvalidMetadata => {
                 formatter.write_str("pending snapshot transfer metadata is not valid for this node")
             }
             Self::StaleSnapshot {

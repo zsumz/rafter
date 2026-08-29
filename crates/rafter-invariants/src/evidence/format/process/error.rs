@@ -26,46 +26,58 @@ pub(crate) enum ProcessFormatError {
 impl fmt::Display for ProcessFormatError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyTranscript => write!(formatter, "combined process log is empty"),
-            Self::InvalidDetectorChallenge => {
+            ProcessFormatError::EmptyTranscript => {
+                write!(formatter, "combined process log is empty")
+            }
+            ProcessFormatError::InvalidDetectorChallenge => {
                 write!(
                     formatter,
                     "detector challenge is not 32 lowercase hexadecimal bytes"
                 )
             }
-            Self::InvalidExitCode => write!(formatter, "combined process exit code is malformed"),
-            Self::InvalidLabel => write!(formatter, "process label is empty or contains a newline"),
-            Self::InvalidMetric(field) => {
+            ProcessFormatError::InvalidExitCode => {
+                write!(formatter, "combined process exit code is malformed")
+            }
+            ProcessFormatError::InvalidLabel => {
+                write!(formatter, "process label is empty or contains a newline")
+            }
+            ProcessFormatError::InvalidMetric(field) => {
                 write!(
                     formatter,
                     "combined process metric {field} is missing or invalid"
                 )
             }
-            Self::InvalidTimeout => {
+            ProcessFormatError::InvalidTimeout => {
                 write!(formatter, "combined process timeout status is malformed")
             }
-            Self::InvalidUtf8(error) => write!(formatter, "process output is not UTF-8: {error}"),
-            Self::InvalidUtf8Boundary(stream) => {
+            ProcessFormatError::InvalidUtf8(error) => {
+                write!(formatter, "process output is not UTF-8: {error}")
+            }
+            ProcessFormatError::InvalidUtf8Boundary(stream) => {
                 write!(formatter, "combined process {stream} boundary is not UTF-8")
             }
-            Self::Json(error) => write!(formatter, "process JSON is invalid: {error}"),
-            Self::MalformedCombinedHeader(field) => {
+            ProcessFormatError::Json(error) => {
+                write!(formatter, "process JSON is invalid: {error}")
+            }
+            ProcessFormatError::MalformedCombinedHeader(field) => {
                 write!(
                     formatter,
                     "combined process log omitted or malformed {field}"
                 )
             }
-            Self::MissingTermination => {
+            ProcessFormatError::MissingTermination => {
                 write!(formatter, "process schema requires a termination receipt")
             }
-            Self::PayloadLengthOverflow => {
+            ProcessFormatError::PayloadLengthOverflow => {
                 write!(formatter, "combined process payload length overflowed")
             }
-            Self::TruncatedPayload => write!(formatter, "combined process payload was truncated"),
-            Self::UnexpectedTermination => {
+            ProcessFormatError::TruncatedPayload => {
+                write!(formatter, "combined process payload was truncated")
+            }
+            ProcessFormatError::UnexpectedTermination => {
                 write!(formatter, "process schema forbids a termination receipt")
             }
-            Self::UnsupportedCombinedSchema(observed) => write!(
+            ProcessFormatError::UnsupportedCombinedSchema(observed) => write!(
                 formatter,
                 "combined process schema version {observed} is unsupported"
             ),
@@ -73,7 +85,9 @@ impl fmt::Display for ProcessFormatError {
                 formatter,
                 "process schema version {observed} does not match required version {expected}"
             ),
-            Self::ZeroPeakRss => write!(formatter, "combined process log omitted peak RSS"),
+            ProcessFormatError::ZeroPeakRss => {
+                write!(formatter, "combined process log omitted peak RSS")
+            }
         }
     }
 }
@@ -81,8 +95,8 @@ impl fmt::Display for ProcessFormatError {
 impl Error for ProcessFormatError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidUtf8(error) => Some(error),
-            Self::Json(error) => Some(error),
+            ProcessFormatError::InvalidUtf8(error) => Some(error),
+            ProcessFormatError::Json(error) => Some(error),
             _ => None,
         }
     }

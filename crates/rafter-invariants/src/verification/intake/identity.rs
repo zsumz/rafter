@@ -95,7 +95,8 @@ pub(super) fn select_bundles(
         .iter()
         .filter_map(|runner| {
             let bundles = by_runner.remove(runner)?;
-            let [(path, bundle)] = <[_; 1]>::try_from(bundles).ok()?;
+            let bundle_array: [_; 1] = bundles.try_into().ok()?;
+            let [(path, bundle)] = bundle_array;
             Some((runner.clone(), path, bundle))
         })
         .collect()

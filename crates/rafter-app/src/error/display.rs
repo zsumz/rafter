@@ -15,7 +15,7 @@ where
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Runtime(error) => write!(formatter, "Raft runtime failed: {error}"),
+            GroupError::Runtime(error) => write!(formatter, "Raft runtime failed: {error}"),
             Self::StateMachine { operation, source } => {
                 write!(formatter, "state machine {operation} failed: {source}")
             }
@@ -71,7 +71,7 @@ where
                 "state machine declares application snapshot support but refused the install at index {snapshot_index} as unsupported"
             ),
             Self::Poisoned { reason, .. } => write!(formatter, "Raft group is poisoned: {reason}"),
-            Self::WrongGroup => formatter.write_str("input targets a different Raft group"),
+            GroupError::WrongGroup => formatter.write_str("input targets a different Raft group"),
             Self::WrongRecipient { expected, actual } => write!(
                 formatter,
                 "peer message targets {actual}, but this group is node {expected}"
@@ -110,7 +110,7 @@ where
 {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Runtime(error) => Some(error),
+            GroupError::Runtime(error) => Some(error),
             Self::StateMachine { source, .. } => Some(&**source),
             // Transparent to the preserved cause: a chain printer walks one
             // link per real failure rather than one per boundary crossed.
@@ -127,7 +127,7 @@ where
             | Self::MalformedSnapshot { .. }
             | Self::SnapshotsUnsupported { .. }
             | Self::SnapshotSupportMisdeclared { .. }
-            | Self::WrongGroup
+            | GroupError::WrongGroup
             | Self::WrongRecipient { .. }
             | Self::NonMonotonicLocalProposalId { .. }
             | Self::DuplicateReadId { .. }

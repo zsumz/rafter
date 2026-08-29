@@ -141,7 +141,7 @@ impl FunctionBodyVisitor<'_> {
             }
         });
         let receiver_type = receiver_type
-            .map(<[String]>::to_vec)
+            .map(Vec::from)
             .or_else(|| {
                 self.resolver.field_expression_type_module(
                     &call.receiver,

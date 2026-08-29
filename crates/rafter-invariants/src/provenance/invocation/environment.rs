@@ -39,13 +39,13 @@ pub(crate) enum EnvironmentIdentityError {
 impl fmt::Display for EnvironmentIdentityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidName(name) => {
+            EnvironmentIdentityError::InvalidName(name) => {
                 write!(
                     formatter,
                     "environment contains invalid variable name {name:?}"
                 )
             }
-            Self::InvalidValue(name) => {
+            EnvironmentIdentityError::InvalidValue(name) => {
                 write!(formatter, "environment variable {name:?} contains NUL")
             }
         }

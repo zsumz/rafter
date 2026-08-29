@@ -13,7 +13,7 @@ use super::MembershipValidationError;
 impl fmt::Display for MembershipValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyVoters => {
+            MembershipValidationError::EmptyVoters => {
                 write!(formatter, "Raft membership must contain at least one voter")
             }
             Self::DuplicateVoter { node_id } => {

@@ -144,8 +144,8 @@ pub enum AuthenticatedPeerEnvelopeError {
 impl fmt::Display for AuthenticatedPeerEnvelopeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownGroup => formatter.write_str("authenticated envelope targets an unknown group"),
-            Self::AuthenticatedPeerNotMapped => {
+            AuthenticatedPeerEnvelopeError::UnknownGroup => formatter.write_str("authenticated envelope targets an unknown group"),
+            AuthenticatedPeerEnvelopeError::AuthenticatedPeerNotMapped => {
                 formatter.write_str("authenticated peer is not mapped to a Raft node")
             }
             Self::AuthenticatedPeerMismatch { expected, actual } => write!(
