@@ -125,7 +125,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: install the pinned zrail release
-        run: cargo install zrail --version 0.0.1 --locked
+        run: cargo install zrail --version 0.0.3-rc.5 --locked
       - name: architecture contract
         # zrail.toml is the declarative architecture (layers, scopes, owners,
         # size ratchets); zrail.lock binds it to exact repository state. Any
