@@ -441,3 +441,38 @@ reason = "Crossed the scenario-suite target when its module contract landed; shr
 rule = "rust.file-size"
 target = "crates/rafter-sim/src/model_check/invariants/applied.rs"
 reason = "Crossed the implementation target when its module contract landed; shrink-only from here."
+
+# The six Rust fragments the invariant suites splice in with `include!`. An
+# inner `//!` contract is a compile error inside a splice (E0753), so these
+# carry the mounting suite's contract instead of their own. Not shrink-only
+# debt: the entry retires when the fragment stops being include-mounted.
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/artifact_verify/tests/reports.rs"
+reason = "Include-mounted fragment; an inner module contract cannot be written inside a splice."
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/artifact_verify/tests/resources.rs"
+reason = "Include-mounted fragment; an inner module contract cannot be written inside a splice."
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/artifact_verify/tests/schedule.rs"
+reason = "Include-mounted fragment; an inner module contract cannot be written inside a splice."
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/bundle_fixture.rs"
+reason = "Include-mounted fragment; an inner module contract cannot be written inside a splice."
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/scenarios.rs"
+reason = "Include-mounted fragment; an inner module contract cannot be written inside a splice."
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/serialized_fixture.rs"
+reason = "Include-mounted fragment; an inner module contract cannot be written inside a splice."

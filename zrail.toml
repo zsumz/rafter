@@ -5,9 +5,9 @@
 # source_boundary, readability_architecture_guard, file_size_guard,
 # test_location_guard}.rs — into declarative, lock-bound policy. The guards
 # remain in force; zrail adds exact dependency identity, shrink-only ratchets,
-# and semantic diffs of architecture changes. Where policy is looser than the
-# ambition (module_docs, facades, entrypoints), the tightening path is written
-# at the decision.
+# and semantic diffs of architecture changes. Two switches are still looser
+# than the ambition — macros and facades — and at each one the reason and the
+# path back are written at the decision rather than left to a reader to infer.
 #
 # Everyday commands:
 #   zrail check                     # read-only architecture check
@@ -117,34 +117,82 @@ requirement = "1"
 # ---------------------------------------------------------------------------
 # Source policy.
 #
-# module_docs stays "allow" until the module-contract convention that
+# module_docs is "required": the module-contract convention that
 # readability_architecture_guard enforces for rafter, rafter-codec, and
-# rafter-storage has been extended to the remaining crates (378 files lack a
-# leading //! contract today); the flip to "required" is that campaign's
-# completion gate. facades and entrypoints stay "allow" because 20 crate roots
-# and mod.rs files still hold implementation items (rafter-runtime/src/lib.rs
-# alone is ~1,000 lines); the guard test architectural_facades_remain_declarative
-# already holds the 127 reviewed facades declarative, and the flip to
-# "declarative" is the extraction campaign's completion gate.
+# rafter-storage now holds everywhere. The only six files without a leading
+# `//!` are the `include!`-mounted fragments, which cannot carry one — an inner
+# attribute after the splice point is E0753 — so they are ratcheted in the
+# ledger rather than exempted here.
+#
+# entrypoints is "declarative": every binary hands off to its library, with the
+# one reviewed exception reclassified below.
+#
+# facades stays "allow". The extraction campaign took the ledger far enough
+# that this is now a short, nameable list rather than a class of debt: 20 files
+# hold 68 items behind a facade path. Nine are implementations wearing a
+# mod.rs — rafter-invariants producer (263 lines), maelstrom lease (167) and
+# receipt (110), verification/artifact/test_runner, the detector_test proc-macro
+# body, rafter-transport-tls directory and session/file, and rafter node
+# bootstrap/validate and replication/snapshot/receive. Ten are facades that
+# declare their module's own central type or constants inline — `Node`,
+# `Message`, `NodeConfig` and its defaults, `Cluster`, the driver type aliases,
+# the ALPN constant — which is a house pattern, not debt, and would need a
+# policy that distinguishes a declaration from an implementation. One,
+# rafter-invariant-test-macros/src/lib.rs, is a proc-macro crate root, where
+# Rust requires the entry function to live. The flip waits on the first group
+# moving and a reviewed answer for the second.
 # ---------------------------------------------------------------------------
 
 [source.rust]
-module_docs = "allow"
+module_docs = "required"
 facades = "allow"
-entrypoints = "allow"
+entrypoints = "declarative"
 tests = "sibling"
 
+# crates/rafter-maelstrom/src/main.rs is not a thin entrypoint that hands off
+# to a library: it is the Maelstrom harness itself, 291 lines of node state,
+# request routing, and reply obligations that exist only for that binary.
+[[source.rust.file_roles]]
+path = "crates/rafter-maelstrom/src/main.rs"
+role = "implementation"
+reason = "The Maelstrom harness is the binary; its node state and reply routing have no library to move behind."
+
 [source.rust.macros]
-# "allow", found rather than chosen: this adoption authored a complete
-# deny-unreviewed allowlist (58 reviewed expansions; see this branch's history),
-# and zrail 0.0.1 could not bind it. The engine resolves macro names
-# conservatively wherever a glob import is in scope, and conservative
-# observations carry an unresolved origin that no allowance is permitted to
-# match, so every `use super::*` test module makes its macros unreviewable by
-# policy. Sibling-test files here open with `use super::*` by convention,
-# which put ~3,700 reviewed invocations beyond reach. Flip to
-# "deny-unreviewed" and restore the allowlist once zrail can bind
-# glob-imported names.
+# "allow", found rather than chosen — for the second time, and for a new
+# reason. The 0.0.1 adoption authored a complete deny-unreviewed allowlist and
+# could not bind it: that engine resolved a macro name conservatively wherever
+# a glob import was in scope, and the sibling tests here open with
+# `use super::*` by convention. rc.5 fixed exactly that. The same allowlist,
+# restored and extended to 68 reviewed expansions, binds 21,248 of the 21,328
+# invocations the engine observes. The 80 it cannot bind are not review debt,
+# and no spelling of an allowance reaches them:
+#
+#   * 71 std invocations in rafter-invariants modules mounted under
+#     `#[cfg(unix)]` or `#[cfg(all(test, unix))]`. rc.5 reduces `cfg(feature)`
+#     exactly but leaves other target predicates conservative, so a macro
+#     origin inside one of those domains stays unresolved. An exact allowance
+#     cannot bind an unresolved origin, and a conservative one may not borrow
+#     the compiler authority the candidate still carries.
+#   * 8 `json!` invocations in the two `include!`-mounted maelstrom fragments,
+#     where the splice leaves no origin to bind and serde_json's dependency
+#     authority is likewise unborrowable.
+#   * 1 `write!` in rafter-service/src/error.rs, whose module declares a child
+#     `mod write`. Rust keeps macros and modules in separate namespaces; one
+#     occurrence namespace does not, so the origin collides and goes
+#     unresolved.
+#
+# Deny-unreviewed also promotes those unresolved origins into 30 findings on
+# ordinary path bindings, 29 of them cascading from a single line —
+# `#[cfg(test)] use std::hash::Hash;` in rafter-sim/src/lib.rs, which shadows
+# the `Hash` derive in the test compilation domain and leaves every use of
+# `Cluster` unresolved across that crate. Neither rule is baselineable, and
+# `zrail baseline` refuses to run at all while the analysis is incomplete, so
+# this switch gates the module-docs ratchets below as well.
+#
+# The path back is source, not policy: qualify the three shadowing imports and
+# narrow the cfg(unix) mounts, then restore the reviewed allowlist, which is
+# recorded with the tightening report that flipped everything else in this
+# file.
 mode = "allow"
 
 # Item-position expansions still need per-file graph exemptions regardless of
@@ -294,10 +342,16 @@ deny_macros = ["todo", "unimplemented", "dbg"]
 # 400, harness target 600. The hard values are class backstops; the per-file
 # teeth are the shrink-only ratchets in zrail-baseline.toml, which pin every
 # over-target file at its adoption size.
+#
+# The facade backstop is 225 rather than 1,000. It was raised to the shared
+# 1,000 at adoption only because a class hard stop then applied to ratcheted
+# files too; the rc series exempts them, so every facade still over 100 lines
+# is held by its own ratchet and the class limit can return to the reviewed
+# number. A new facade may be born up to 225 lines; past that it is a module.
 
 [source.rust.size.facade]
 target = 100
-hard = 1000
+hard = 225
 
 [source.rust.size.implementation]
 target = 300
@@ -315,14 +369,49 @@ hard = 1500
 # Effects. Layers marked no-ambient-services may not reach the network, an
 # async runtime, a database, a container runtime, or ambient entropy from any
 # file, tests included. Filesystem, process, clock, and thread effects are not
-# denied here because guard tests legitimately spawn cargo and git; the
-# per-directory scopes below hold the production kernel to the stricter rule.
+# denied there because guard tests legitimately spawn cargo and git.
+#
+# sealed-production adds the stricter rule for the layers whose shipped code
+# reaches nothing at all. Six carry it: checksum, kernel, runtime-boundary,
+# wire, application, and embedding — the sans-IO half of the stack plus the two
+# embeddings, whose async surface is the caller's runtime rather than one they
+# bind. Seven refuse, each for a reason that is the layer's job: durability
+# writes (filesystem, process), runtime persists and ticks (filesystem,
+# wall-clock, environment, process), transport-dev and transport open sockets
+# (network, thread, and for TLS filesystem and wall-clock too), test-toolkit
+# spawns and reads the environment (process, environment), verification runs
+# the simulator and the Maelstrom harness (wall-clock, environment, process,
+# filesystem, thread), and evidence-tooling is the pipeline that launches
+# verifiers (all six, 727 occurrences). Those are architecture, not debt, and
+# the scopes below already hold the strictest of them to named symbol denies.
 # ---------------------------------------------------------------------------
 
 [profiles.no-ambient-services]
 [profiles.no-ambient-services.effects]
 deny = [
   "network",
+  "async-runtime",
+  "database",
+  "container-runtime",
+  "randomness",
+]
+
+# The stricter rule, and the reason it can exist: production reachability
+# excludes integration tests, benchmarks, examples, and anything beneath
+# #[cfg(test)], so a layer can be held to total purity in the code that ships
+# while its own suites still spawn cargo, touch the clock, and write scratch
+# directories. no-ambient-services stays attached beside this one because it
+# governs those suites too.
+[profiles.sealed-production]
+reachability = "production"
+[profiles.sealed-production.effects]
+deny = [
+  "filesystem",
+  "network",
+  "process",
+  "thread",
+  "wall-clock",
+  "environment",
   "async-runtime",
   "database",
   "container-runtime",
@@ -342,7 +431,7 @@ deny = [
 name = "checksum"
 packages = ["rafter-crc32"]
 may_depend_on = []
-profiles = ["no-ambient-services"]
+profiles = ["no-ambient-services", "sealed-production"]
 reason = "A dependency-free CRC32C primitive shared by storage and wire formats."
 
 [layer.dependencies]
@@ -352,7 +441,7 @@ external = "none"
 name = "kernel"
 packages = ["rafter"]
 may_depend_on = ["test-toolkit"]
-profiles = ["no-ambient-services"]
+profiles = ["no-ambient-services", "sealed-production"]
 reason = "The deterministic sans-IO protocol kernel; its only workspace edge is the dev-only invariant-test toolkit."
 
 [layer.dependencies]
@@ -362,7 +451,7 @@ external = "locked"
 name = "runtime-boundary"
 packages = ["rafter-runtime-api"]
 may_depend_on = ["kernel"]
-profiles = ["no-ambient-services"]
+profiles = ["no-ambient-services", "sealed-production"]
 reason = "The persist-before-output contract between the kernel and any runtime."
 
 [layer.dependencies]
@@ -382,7 +471,7 @@ external = "locked"
 name = "wire"
 packages = ["rafter-codec"]
 may_depend_on = ["kernel", "checksum"]
-profiles = ["no-ambient-services"]
+profiles = ["no-ambient-services", "sealed-production"]
 reason = "The versioned peer-message wire format, independent of storage formats."
 
 [layer.dependencies]
@@ -413,7 +502,7 @@ may_depend_on = [
   "durability",
   "test-toolkit",
 ]
-profiles = ["no-ambient-services"]
+profiles = ["no-ambient-services", "sealed-production"]
 reason = "The embedded replicated state machine; runtime and durability edges are dev-only acceptance harnesses."
 
 [layer.dependencies]
@@ -429,7 +518,7 @@ may_depend_on = [
   "runtime",
   "durability",
 ]
-profiles = ["no-ambient-services"]
+profiles = ["no-ambient-services", "sealed-production"]
 reason = "Async service handles and the many-group host; runtime and durability edges are dev-only acceptance harnesses."
 
 [layer.dependencies]
@@ -592,10 +681,15 @@ deny = [
 # Owners.
 # ---------------------------------------------------------------------------
 
+# A directory owner has no production/test split to narrow — a fixture tree is
+# owned wherever it is reached — so this one stays "all". The capability owner
+# below is the opposite case: it is narrowed to production reach, which is what
+# shrank its allow list from 29 files to the six that actually launch.
 [[owner]]
 name = "adversarial-fixtures"
 kind = "directory"
 match = "**/fixtures"
+reachability = "all"
 allow = [
   "crates/rafter-transport-tls/tests/fixtures",
   "crates/rafter-sim/src/tests/dynamic_membership/fixtures",
@@ -611,38 +705,16 @@ name = "process-launch-capability"
 kind = "capability"
 within = ["crates/rafter-invariants/src/**"]
 match = "std::process::Command"
+reachability = "production"
 allow = [
-  "crates/rafter-invariants/src/execution/filesystem/tests.rs",
   "crates/rafter-invariants/src/execution/process/anchor.rs",
   "crates/rafter-invariants/src/execution/process/internal_command.rs",
   "crates/rafter-invariants/src/execution/process/launch.rs",
   "crates/rafter-invariants/src/execution/process/spawn.rs",
-  "crates/rafter-invariants/src/execution/process/test_support.rs",
-  "crates/rafter-invariants/src/execution/process/tests/mechanics/reaper.rs",
-  "crates/rafter-invariants/src/execution/process/tests/support.rs",
-  "crates/rafter-invariants/src/producer/source_identity_tests.rs",
-  "crates/rafter-invariants/src/producer/test_exec/detector_proof.rs",
-  "crates/rafter-invariants/src/producer/test_exec/fixtures.rs",
-  "crates/rafter-invariants/src/producer/tla_exec_budget_tests.rs",
-  "crates/rafter-invariants/src/producer/tla_mutation_tests/support/runtime.rs",
   "crates/rafter-invariants/src/provenance/image.rs",
-  "crates/rafter-invariants/src/provenance/source/checkout/cargo_graph_tests.rs",
-  "crates/rafter-invariants/src/provenance/source/checkout/config_tests.rs",
-  "crates/rafter-invariants/src/provenance/source/checkout/materialization_tests.rs",
-  "crates/rafter-invariants/src/provenance/source/checkout/observation_tests.rs",
-  "crates/rafter-invariants/src/provenance/source/checkout/rust_inputs/tests.rs",
   "crates/rafter-invariants/src/provenance/source/tracked.rs",
-  "crates/rafter-invariants/src/verification/detector/source_tests.rs",
-  "crates/rafter-invariants/src/verification/intake/tests/resource_limits.rs",
-  "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle.rs",
-  "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/serialized_fixture.rs",
-  "crates/rafter-invariants/src/verification/simulator/schedule/tests/fixtures/checkout.rs",
-  "crates/rafter-invariants/src/verification/simulator/schedule/tests/fixtures/compile.rs",
-  "crates/rafter-invariants/src/verification/simulator/schedule/tests/fixtures/io.rs",
-  "crates/rafter-invariants/src/verification/simulator/schedule/tests/intake.rs",
-  "crates/rafter-invariants/src/verification/tla/tests/full_bundle/serialized_tests.rs",
 ]
-reason = "Verifier subprocesses launch only through the bounded descriptor-anchored execution path and its reviewed provenance probes."
+reason = "Production verifier subprocesses launch only through the bounded descriptor-anchored execution path and its two reviewed provenance probes; the twenty-three test-only reachers this list used to name are covered by the profile rails, not by capability ownership."
 
 # ---------------------------------------------------------------------------
 # Qualification gates and the architecture invariants they enforce. The
