@@ -2,7 +2,7 @@
 schema = 3
 semantics = 4
 producer = "0.0.3-rc.5"
-contract_sha256 = "bcb8e178ce9b8de7b09e7cb38a0193664513530a2dde1ab5a5167318e5c9dc82"
+contract_sha256 = "bbebe9135332dbe018a0dc4a4d4c93629842db638355ef73932e77ca2e5737d3"
 
 [analysis]
 inventory_sha256 = "089d6e6d06f9e975adf5325057f5bd96db39d083932fbe1af9bce327960c0890"
@@ -16,7 +16,7 @@ targets = 147
 physical_rust_files = 1913
 base_source_contexts = 3292
 derived_source_contexts = 0
-source_facts = 703295
+source_facts = 703291
 projection_queries = 5169134
 projected_facts = 2475
 unresolved_bindings = 0
@@ -24,11 +24,11 @@ analyzer_semantics = 4
 
 [[analysis.contract_source]]
 path = "zrail-baseline.toml"
-sha256 = "b6932d1a914e0fbdd596bd4f50facb7c781eb363bb0bce9eaa18ae1e5f1cbfed"
+sha256 = "1776a97c4a12a00f0eca66b6532b03f436df8f9044b179d699b91456259b74d9"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "4039e5de5a2b058374593fb17d03c6dd045df31c8bd9e5a1285deee7bbb70f51"
+sha256 = "83e2cb5944467fef769517eec7f1c2819e0b45eaed8270ad602ddb3064fd3ba9"
 
 [[package]]
 name = "rafter"
@@ -1661,3 +1661,33 @@ value = 677
 rule = "rust.file-size"
 target = "crates/rafter/tests/storage_readability_architecture_guard.rs"
 value = 481
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/artifact_verify/tests/reports.rs"
+value = 1
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/artifact_verify/tests/resources.rs"
+value = 1
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/artifact_verify/tests/schedule.rs"
+value = 1
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/bundle_fixture.rs"
+value = 1
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/scenarios.rs"
+value = 1
+
+[[ratchet]]
+rule = "rust.module-docs"
+target = "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/serialized_fixture.rs"
+value = 1
