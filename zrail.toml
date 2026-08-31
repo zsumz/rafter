@@ -17,10 +17,14 @@
 # The adoption debt ledger (per-file shrink-only ratchets) lives in
 # zrail-baseline.toml so this file stays the readable architecture document.
 #
-# Runs on zrail 0.0.3-rc.5 (contract schema 2, lock semantics epoch 4).
-# rc.5 resolved the ordinary-path binding gaps that pinned earlier upgrades,
-# migrates locks directly from every prior epoch, and preserves authored
-# comments through `migrate-config` and `fmt`.
+# Runs on zrail 0.0.3-rc.6 (contract schema 2, lock semantics epoch 5).
+# rc.6 adds repository-source macro authority — a cross-crate workspace macro
+# can bind its providing package, hash that package's owned input closure into
+# the lock, and carry an explicit no-ambient-input attestation — and relaxes the
+# declarative-facade conventions so a module may declare its own central type,
+# its defaults, its aliases, and its constants inline. The second of those
+# closed the facade switch below; the first was not enough to close the macro
+# switch, and the reason is written at that decision.
 
 schema = 2
 adapters = ["rust"]
@@ -125,27 +129,31 @@ requirement = "1"
 # ledger rather than exempted here.
 #
 # entrypoints is "declarative": every binary hands off to its library, with the
-# one reviewed exception reclassified below.
+# two reviewed exceptions reclassified below. rc.6 reads an entrypoint as
+# declarative only when its body is empty or a single expression handoff — no
+# branches, no macros, no blocks — which is what reclassified the second one.
 #
-# facades stays "allow". The extraction campaign took the ledger far enough
-# that this is now a short, nameable list rather than a class of debt: 20 files
-# hold 68 items behind a facade path. Nine are implementations wearing a
-# mod.rs — rafter-invariants producer (263 lines), maelstrom lease (167) and
-# receipt (110), verification/artifact/test_runner, the detector_test proc-macro
-# body, rafter-transport-tls directory and session/file, and rafter node
-# bootstrap/validate and replication/snapshot/receive. Ten are facades that
-# declare their module's own central type or constants inline — `Node`,
-# `Message`, `NodeConfig` and its defaults, `Cluster`, the driver type aliases,
-# the ALPN constant — which is a house pattern, not debt, and would need a
-# policy that distinguishes a declaration from an implementation. One,
-# rafter-invariant-test-macros/src/lib.rs, is a proc-macro crate root, where
-# Rust requires the entry function to live. The flip waits on the first group
-# moving and a reviewed answer for the second.
+# facades is "declarative", flipped under rc.6. The list this switch waited on
+# was 20 files holding 68 items behind a facade path, in two halves that only
+# looked like one class of debt. Ten were facades declaring their own module's
+# central type or constants inline — `Node`, `Message`, `NodeConfig` and its
+# defaults, `Cluster`, the driver type aliases, the ALPN constant. That was a
+# house pattern, not debt, and it needed a policy that could tell a declaration
+# from an implementation; rc.6's relaxed conventions are that policy, and all
+# ten now pass untouched.
+#
+# The other half did not change and was not expected to: nine parent modules
+# holding behavior their own child modules call. Each is reclassified as an
+# implementation below with the reason it belongs at that path, because in
+# every case the items are private to the subtree and moving them one level
+# down would have to widen their visibility to do it. A tenth reclassification,
+# rafter-invariant-test-macros/src/lib.rs, is a one-line move candidate rather
+# than a durable implementation, and is marked as such at the entry.
 # ---------------------------------------------------------------------------
 
 [source.rust]
 module_docs = "required"
-facades = "allow"
+facades = "declarative"
 entrypoints = "declarative"
 tests = "sibling"
 
@@ -157,42 +165,140 @@ path = "crates/rafter-maelstrom/src/main.rs"
 role = "implementation"
 reason = "The Maelstrom harness is the binary; its node state and reply routing have no library to move behind."
 
+# rc.6 reads a declarative entrypoint as an empty body or a single expression
+# handoff — no branches, no macros, no blocks. crates/rafter-invariants/src/main.rs
+# hands off to `cli::run` but then maps its Result onto the process exit code,
+# which is a `match` with an arm that writes to stderr and returns exit code 2.
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/main.rs"
+role = "implementation"
+reason = "The binary owns the process exit contract: mapping the CLI result onto success, failure, and the reserved code-2 error channel is behavior with no library caller to move behind."
+
+# The nine implementations wearing a mod.rs. rc.6's relaxed declarative
+# conventions absorbed the ten central-type facades — a module may now declare
+# its own type, its defaults, its aliases, and its constants inline — which was
+# the half of this list that was never debt. What remains is the other half,
+# unchanged by the release: parent modules that hold behavior their own child
+# modules call. Each is reclassified here with the reason the implementation
+# belongs at that path rather than one level down, because in every case the
+# items are private to the subtree and moving them would have to widen their
+# visibility to do it.
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/producer/mod.rs"
+role = "implementation"
+reason = "The producer driver is the module: layer execution, bundle staging, and the StagedBundle Drop guard that deletes a partial bundle are one lifetime. Splitting the guard from the publish path it protects would let a half-written bundle outlive its owner."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/verification/maelstrom/lease/mod.rs"
+role = "implementation"
+reason = "Lease scanning is a three-stage pipeline — scan_node_logs, bind_history, finalize_scan — folding into one accumulator, with two private helpers that only that accumulator uses. The stages have no meaning apart from each other."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/verification/maelstrom/receipt/mod.rs"
+role = "implementation"
+reason = "Receipt validation is one entry function and the toolchain rule it delegates to. Both read the same receipt shape and validate_toolchain has no caller other than validate."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/verification/artifact/test_runner/mod.rs"
+role = "implementation"
+reason = "The module exists to install exactly one verifier. The zero-sized ExactTestVerifier, its DetectorLogVerifier implementation, and the static instance callers receive are a single registration; separating them would have to make the type public."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariant-test-macros/src/detector_test/mod.rs"
+role = "implementation"
+reason = "Parsing, validating, and expanding the attribute is the module's whole purpose, and each private validator is called only by the expansion step declared directly above it."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-transport-tls/src/directory/mod.rs"
+role = "implementation"
+reason = "InstalledPeerPolicy and TlsPeerDirectory are declared here, and these are their own inherent and Clone implementations. The child modules hold the directory's error and lease vocabulary, not its behavior."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-transport-tls/src/session/file/mod.rs"
+role = "implementation"
+reason = "from_parts is the store's single private constructor, called twice from the open child module. It stays at the parent so no child has to learn the field layout, and so the Mutex-wrapped Inner it seals stays private to the subtree."
+
+[[source.rust.file_roles]]
+path = "crates/rafter/src/node/bootstrap/validate/mod.rs"
+role = "implementation"
+reason = "The author rule is deliberately sited in the one place that sees only a durable image, beside the BootstrapState validation that applies it. The log child module holds the per-entry checks these call."
+
+[[source.rust.file_roles]]
+path = "crates/rafter/src/node/replication/snapshot/receive/mod.rs"
+role = "implementation"
+reason = "Three private Node helpers shared by the chunk, disposition, and whole child modules. They are the follower-side snapshot authority those siblings agree on; moving them into any one of the three would invert the dependency."
+
+# Not an implementation by intent — a one-line move candidate. rc.6 reads a
+# procedural-macro entrypoint as declarative only when its body is a single
+# expression handoff, and this one binds a local first:
+#
+#     let arguments = arguments.into();
+#     detector_test::expand(&arguments, item.into()).into()
+#
+# Inlining that conversion into the call makes the file declarative and this
+# override stale. It is recorded as an override rather than a source edit
+# because the flip was scoped to policy.
+[[source.rust.file_roles]]
+path = "crates/rafter-invariant-test-macros/src/lib.rs"
+role = "implementation"
+reason = "The proc-macro entry converts its own argument stream before handing off, so the crate root holds one statement of behavior."
+
 [source.rust.macros]
-# "allow", found rather than chosen — for the second time, and for a new
-# reason. The 0.0.1 adoption authored a complete deny-unreviewed allowlist and
-# could not bind it: that engine resolved a macro name conservatively wherever
-# a glob import was in scope, and the sibling tests here open with
-# `use super::*` by convention. rc.5 fixed exactly that. The same allowlist,
-# restored and extended to 68 reviewed expansions, binds 21,248 of the 21,328
-# invocations the engine observes. The 80 it cannot bind are not review debt,
-# and no spelling of an allowance reaches them:
+# "allow", found rather than chosen — for the third time, and each time for a
+# different reason. The 0.0.1 adoption authored a complete deny-unreviewed
+# allowlist and could not bind it, because that engine resolved a macro name
+# conservatively wherever a glob import was in scope and the sibling tests here
+# open with `use super::*`. rc.5 fixed that but left 80 invocations unbindable.
+# rc.6 was tried with the same 68-entry allowlist restored, its seven
+# cross-crate toolkit exports upgraded to the new repository-source authority,
+# and the one source fix that mattered actually applied. 39 invocations still
+# cannot bind. What changed and what did not:
 #
-#   * 71 std invocations in rafter-invariants modules mounted under
-#     `#[cfg(unix)]` or `#[cfg(all(test, unix))]`. rc.5 reduces `cfg(feature)`
-#     exactly but leaves other target predicates conservative, so a macro
-#     origin inside one of those domains stays unresolved. An exact allowance
-#     cannot bind an unresolved origin, and a conservative one may not borrow
-#     the compiler authority the candidate still carries.
-#   * 8 `json!` invocations in the two `include!`-mounted maelstrom fragments,
-#     where the splice leaves no origin to bind and serde_json's dependency
-#     authority is likewise unborrowable.
-#   * 1 `write!` in rafter-service/src/error.rs, whose module declares a child
-#     `mod write`. Rust keeps macros and modules in separate namespaces; one
-#     occurrence namespace does not, so the origin collides and goes
-#     unresolved.
+#   * 71 -> 0. The std invocations in rafter-invariants modules mounted under
+#     `#[cfg(unix)]` and `#[cfg(all(test, unix))]` now bind. rc.6 resolves a
+#     macro origin through a target predicate it does not reduce, so the whole
+#     class is gone. This was the largest of the three and it is closed.
+#   * 8 -> 8. The `serde_json::json` invocations in the two `include!`-mounted
+#     maelstrom fragments. The splice still leaves the origin unresolved, and
+#     the exact dependency allowance cannot reach an unresolved site. Nor can a
+#     second conservative entry: the engine rejects a duplicate allowance name
+#     outright, and relaxing the single entry to name-only conservative breaks
+#     the ~315 sites that do resolve exactly, because rc.6 requires an
+#     allowance to name the provenance class its occurrence actually resolved
+#     to. One name, one provenance, and these sites need two.
+#   * 1 -> 1. The `write!` in rafter-service/src/error.rs, whose module declares
+#     a child `mod write`. Rust keeps macros and modules in separate namespaces;
+#     one occurrence namespace does not, so the origin still collides.
 #
-# Deny-unreviewed also promotes those unresolved origins into 30 findings on
-# ordinary path bindings, 29 of them cascading from a single line —
-# `#[cfg(test)] use std::hash::Hash;` in rafter-sim/src/lib.rs, which shadows
-# the `Hash` derive in the test compilation domain and leaves every use of
-# `Cluster` unresolved across that crate. Neither rule is baselineable, and
-# `zrail baseline` refuses to run at all while the analysis is incomplete, so
-# this switch gates the module-docs ratchets below as well.
+# And one class rc.6 introduced, as the cost of its new authority:
 #
-# The path back is source, not policy: qualify the three shadowing imports and
-# narrow the cfg(unix) mounts, then restore the reviewed allowlist, which is
-# recorded with the tightening report that flipped everything else in this
-# file.
+#   * 0 -> 30. `vec!`, `assert_eq!`, `panic!`, and `assert!` in the five
+#     crates/rafter/src/node/tests/*/support.rs files. Those tests reach the
+#     crate through `pub(super) use crate::*` in node/tests.rs and then re-export
+#     it again with `pub(super) use super::*`. rc.6 cannot prove that projected
+#     namespace holds no same-named repository macro, so each invocation carries
+#     a `repository:rafter` candidate beside the compiler one — and a repository
+#     candidate now demands an explicit source or definition, which a name-only
+#     allowance may not supply. Package rafter defines no macro named `vec`,
+#     `assert`, `assert_eq`, or `panic`; the candidate is an over-approximation.
+#     Declaring a repository source for it would attest an implementation that
+#     does not exist and hash the whole crate into the lock, so nothing is
+#     declared, and the class stands.
+#
+# The path back is source, not policy, and it is now three specific edits: make
+# the two glob re-exports in crates/rafter/src/node/tests private, give the
+# maelstrom fragments a real module instead of an `include!`, and rename either
+# the `write` module or its sibling macro use. The reviewed 68-entry allowlist
+# is not parked here while that waits — the engine rejects any
+# `source.rust.macros.allow` entry unless the mode is already
+# "deny-unreviewed" — so it lives in the tightening report beside this change.
+#
+# One source fix from that report did land, because it was behavior-identical:
+# `#[cfg(test)] use std::hash::Hash;` in rafter-sim/src/lib.rs shadowed the Hash
+# derive in the test compilation domain and left every use of `Cluster`
+# unresolved across the crate. The import was dead. Removing it took
+# RUST-INCLUDE-002 under deny-unreviewed from 111 to 1.
 mode = "allow"
 
 # Item-position expansions still need per-file graph exemptions regardless of

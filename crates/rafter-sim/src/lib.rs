@@ -8,8 +8,6 @@
 //! and `rafter-service`.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-#[cfg(test)]
-use std::hash::Hash;
 
 use rafter::{BootstrapState, InMemorySnapshotChunkSource, LogIndex, Node, NodeConfig, NodeId};
 #[cfg(test)]
