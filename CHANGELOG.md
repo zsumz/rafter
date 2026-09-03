@@ -10,6 +10,9 @@ release mechanics and exact publish lists live in [RELEASE.md](./RELEASE.md).
   (`zrail.toml`, lock-bound) declares the layer graph, sans-IO source scopes,
   capability owners, qualification gates, and per-file shrink-only size
   ratchets, checked on every pull request beside the existing guard tests.
+  Macro expansion is part of that surface: every macro invocation in the
+  workspace binds one of the contract's named, provenance-pinned allowances,
+  so an unreviewed macro fails the pull-request gate.
 - One command qualifies a checkout: `zcheck` runs the pull-request-tier local
   gates through the task graph in `zcheck.toml`, with logs and durable
   receipts; `zcheck run full` adds the locally runnable deeper evidence lanes.
