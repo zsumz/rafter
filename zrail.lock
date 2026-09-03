@@ -2,7 +2,7 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.7"
-contract_sha256 = "1bdaa823e4a4b6278dfbd4050262410ea518b907fd433f96bc9d686d09f4db7d"
+contract_sha256 = "f14102a08f680b8d5dd52a81a190677180fcfef0b43d84e6d87e58dbe0be459c"
 
 [analysis]
 inventory_sha256 = "43b01c2bc992c2631bc7350a4d925cb133d00f5e1fe2999b11bf8749e44ae349"
@@ -28,7 +28,7 @@ sha256 = "2a81e755c3150e8bf66182d12e412c00914e1e7322f73bb8dea26888f3dd75e7"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "4d616807e26ab9dce6119bc5186153f6f31e3aaf83b347296db31bab5573df7a"
+sha256 = "3ded1066d27c9a5f9101dea98e7b3c0092d49d6996dd53e3de8214ff8eff11c8"
 
 [[package]]
 name = "rafter"

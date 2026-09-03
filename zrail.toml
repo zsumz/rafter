@@ -277,7 +277,10 @@ reason = "The proc-macro entry converts its own argument stream before handing o
 # stale opaque-input claims went with them. Each entry names the narrowest
 # provenance class its occurrences actually resolve to; the engine enforces
 # that match per occurrence, so a loosened entry fails the gate rather than
-# widening silently.
+# widening silently. Twenty-three entries additionally attest
+# `field_mutation = "none"` — reviewed: their expansions write, mutably
+# borrow, and mutate no governed field — which is what lets the field
+# ownership rail at the bottom of this contract see through them.
 mode = "deny-unreviewed"
 
 # Compiler-builtin derives. The compiler expands these itself and zrail reads
@@ -285,39 +288,48 @@ mode = "deny-unreviewed"
 
 [[source.rust.macros.allow]]
 name = "Clone"
+field_mutation = "none"
 reason = "The builtin Clone derive duplicates a data type field by field."
 
 [[source.rust.macros.allow]]
 name = "Copy"
+field_mutation = "none"
 reason = "The builtin Copy derive marks a data type as trivially duplicated."
 
 [[source.rust.macros.allow]]
 name = "Debug"
+field_mutation = "none"
 reason = "The builtin Debug derive renders a data type for diagnostics only."
 
 [[source.rust.macros.allow]]
 name = "Default"
+field_mutation = "none"
 reason = "The builtin Default derive composes per-field defaults."
 
 [[source.rust.macros.allow]]
 name = "Eq"
+field_mutation = "none"
 reason = "The builtin Eq derive asserts reflexive equality for a data type."
 
 [[source.rust.macros.allow]]
 name = "Hash"
+field_mutation = "none"
 resolution = "conservative"
 reason = "The builtin Hash derive feeds a data type's fields to a hasher."
 
 [[source.rust.macros.allow]]
 name = "Ord"
+field_mutation = "none"
 reason = "The builtin Ord derive orders a data type by declaration order."
 
 [[source.rust.macros.allow]]
 name = "PartialEq"
+field_mutation = "none"
 reason = "The builtin PartialEq derive compares a data type field by field."
 
 [[source.rust.macros.allow]]
 name = "PartialOrd"
+field_mutation = "none"
 reason = "The builtin PartialOrd derive orders a data type by declaration order."
 
 # Standard-library expansions. Each takes ordinary Rust as input, and the
@@ -326,16 +338,19 @@ reason = "The builtin PartialOrd derive orders a data type by declaration order.
 
 [[source.rust.macros.allow]]
 name = "assert"
+field_mutation = "none"
 resolution = "conservative"
 reason = "The std `assert` expansion evaluates an ordinary Rust condition and panics."
 
 [[source.rust.macros.allow]]
 name = "assert_eq"
+field_mutation = "none"
 resolution = "conservative"
 reason = "The std `assert_eq` expansion compares two ordinary Rust expressions and panics."
 
 [[source.rust.macros.allow]]
 name = "assert_ne"
+field_mutation = "none"
 resolution = "conservative"
 reason = "The std `assert_ne` expansion compares two ordinary Rust expressions and panics."
 
@@ -368,6 +383,7 @@ reason = "The std `include` expansion splices a literal Rust fragment that zrail
 
 [[source.rust.macros.allow]]
 name = "format"
+field_mutation = "none"
 resolution = "conservative"
 reason = "The std `format` expansion renders ordinary Rust expressions into a String."
 
@@ -377,6 +393,7 @@ reason = "The std `format_args` expansion borrows ordinary Rust expressions for 
 
 [[source.rust.macros.allow]]
 name = "write"
+field_mutation = "none"
 resolution = "conservative"
 reason = "The std `write` expansion formats ordinary Rust expressions into a writer."
 
@@ -400,20 +417,24 @@ reason = "The std `eprintln` expansion writes formatted output to stderr."
 
 [[source.rust.macros.allow]]
 name = "matches"
+field_mutation = "none"
 resolution = "conservative"
 reason = "The std `matches` expansion tests one ordinary Rust expression against a pattern."
 
 [[source.rust.macros.allow]]
 name = "panic"
+field_mutation = "none"
 reason = "The std `panic` expansion aborts the current thread; the house style reviews each use."
 
 [[source.rust.macros.allow]]
 name = "unreachable"
+field_mutation = "none"
 inputs = "opaque"
 reason = "The std `unreachable` expansion marks an impossible state; the house style reviews each use."
 
 [[source.rust.macros.allow]]
 name = "vec"
+field_mutation = "none"
 resolution = "conservative"
 reason = "The std `vec` expansion builds a Vec from ordinary Rust expressions."
 
@@ -579,6 +600,7 @@ package = "syn"
 
 [[source.rust.macros.allow]]
 name = "rafter_invariant_test::oracle_assert"
+field_mutation = "none"
 inputs = "opaque"
 reason = "The toolkit's `oracle_assert` records an oracle observation and evaluates an ordinary Rust condition."
 [source.rust.macros.allow.source]
@@ -589,6 +611,7 @@ ambient_inputs = "none"
 
 [[source.rust.macros.allow]]
 name = "rafter_invariant_test::oracle_assert_eq"
+field_mutation = "none"
 inputs = "opaque"
 reason = "The toolkit's `oracle_assert_eq` records an oracle observation and compares ordinary Rust expressions."
 [source.rust.macros.allow.source]
@@ -609,6 +632,7 @@ ambient_inputs = "none"
 
 [[source.rust.macros.allow]]
 name = "rafter_invariant_test::oracle_expect_err"
+field_mutation = "none"
 inputs = "opaque"
 reason = "The toolkit's `oracle_expect_err` records an oracle observation and asserts an ordinary Rust call fails."
 [source.rust.macros.allow.source]
@@ -629,6 +653,7 @@ ambient_inputs = "none"
 
 [[source.rust.macros.allow]]
 name = "rafter_invariant_test::oracle_violation"
+field_mutation = "none"
 inputs = "opaque"
 reason = "The toolkit's `oracle_violation` reports a named invariant violation to the active recorder."
 [source.rust.macros.allow.source]
@@ -639,6 +664,7 @@ ambient_inputs = "none"
 
 [[source.rust.macros.allow]]
 name = "rafter_invariant_test::detector_test"
+field_mutation = "none"
 reason = "The toolkit's `detector_test` attribute wraps a test body in a detector session. It is written in rafter-invariant-test-macros and re-exported by rafter-invariant-test, which is the origin every call site resolves to; that package's captured closure includes the proc-macro crate, so the digest still binds the code that actually expands."
 [source.rust.macros.allow.source]
 kind = "repository"
@@ -1202,6 +1228,122 @@ allow = [
   "crates/rafter-invariants/src/provenance/source/tracked.rs",
 ]
 reason = "Production verifier subprocesses launch only through the bounded descriptor-anchored execution path and its two reviewed provenance probes; the twenty-three test-only reachers this list used to name are covered by the profile rails, not by capability ownership."
+
+
+# The field-mutation ownership rail, raised once deny-unreviewed landed: with
+# every macro expansion reviewed, twenty-three of the allowances above carry
+# `field_mutation = "none"` — the narrow attestation that their expansions
+# write, mutably borrow, and mutate no governed field — and that claim is what
+# turns ~25,000 opaque-expansion candidates into the real mutation surface.
+# Every owner here is production-scoped, like the capability owner above:
+# tests construct scenarios by writing node state directly, and that freedom
+# is deliberate.
+#
+# Eight owners hold. Three more were drafted, verified against the engine, and
+# are parked below the eight until three specific engine gaps close:
+#
+#   * node-commit-index-authority and node-applied-index-authority each meet
+#     one write through a local binding of the owned type
+#     (construction.rs `volatile.commit_index = parts.commit_index`, and
+#     `node.volatile.applied_index = floor`), which the engine cannot resolve
+#     to one exact field identity — OWN-006 inside the owner's own allowed
+#     file, failing closed on writes the rule intends to permit.
+#   * node-configuration-index-authority (field-mutation on
+#     DerivedState::configuration) fires OWN-003 on dispatch.rs's match arm
+#     destructuring `Input::DangerousRawConfigurationProposal::configuration`
+#     — a by-value read of a same-named field on an unrelated type.
+#
+# One rule is wider than its first draft, on reviewed evidence rather than
+# ambition: leader-state writes flagged nine interior-bookkeeping sites
+# (`self.leader.ticks += 1` and kin), and the engine does not yet distinguish
+# assignment through a projection of a field from replacement of the field
+# itself, so the owner covers the whole leadership-module surface and says so.
+
+[[owner]]
+name = "node-term-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::state::core::PersistentState::current_term"
+allow = ["crates/rafter/src/node/election.rs", "crates/rafter/src/node/lifecycle.rs"]
+reason = "The current term advances only where an election or a lifecycle transition decides it."
+
+[[owner]]
+name = "node-vote-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::state::core::PersistentState::voted_for"
+allow = ["crates/rafter/src/node/election.rs", "crates/rafter/src/node/lifecycle.rs"]
+reason = "A vote is recorded only where an election or a lifecycle transition decides it."
+
+[[owner]]
+name = "node-role-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::state::core::VolatileState::role"
+allow = ["crates/rafter/src/node/election.rs", "crates/rafter/src/node/lifecycle.rs"]
+reason = "Role changes only through an election outcome or a lifecycle transition."
+
+[[owner]]
+name = "node-leader-state-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::leader"
+allow = [
+  "crates/rafter/src/node/lifecycle.rs",
+  "crates/rafter/src/node/election.rs",
+  "crates/rafter/src/node/transfer.rs",
+  "crates/rafter/src/node/replication/send.rs",
+  "crates/rafter/src/node/replication/authority.rs",
+]
+reason = "Leader state lives in the leadership modules: replaced wholesale at lifecycle transitions, and its interior bookkeeping (tick counters, pending transfer, deposition waiver, lease) advances only in election, transfer, and replication send/authority."
+
+[[owner]]
+name = "node-derived-state-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::derived"
+allow = ["crates/rafter/src/node/log.rs"]
+reason = "Derived state is rebuilt only where the log that derives it changes."
+
+[[owner]]
+name = "node-election-progress-authority"
+kind = "field-mutation"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::election"
+mutating_methods = ["advance_timeout", "begin_election", "begin_pre_vote", "record_pre_vote", "record_vote"]
+allow = ["crates/rafter/src/node/election.rs"]
+reason = "Election progress advances only in the election module."
+
+[[owner]]
+name = "node-election-lifecycle-authority"
+kind = "field-mutation"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::election"
+mutating_methods = ["enter_leadership", "reset_for_follower"]
+allow = ["crates/rafter/src/node/lifecycle.rs"]
+reason = "Entering leadership and falling back to follower are lifecycle transitions."
+
+[[owner]]
+name = "node-election-timeout-authority"
+kind = "field-mutation"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::election"
+mutating_methods = ["reset_timeout"]
+allow = [
+  "crates/rafter/src/node/election.rs",
+  "crates/rafter/src/node/replication/receive.rs",
+  "crates/rafter/src/node/replication/snapshot/receive/mod.rs",
+]
+reason = "The election timeout resets on an election step or on accepted leader traffic."
+
 
 # ---------------------------------------------------------------------------
 # Qualification gates and the architecture invariants they enforce. The
