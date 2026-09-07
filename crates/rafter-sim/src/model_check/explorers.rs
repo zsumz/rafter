@@ -1,3 +1,10 @@
+//! Bounded state-space explorers, one per property under check.
+//!
+//! Each explorer owns which actions are enabled from a state and which
+//! invariants run after every transition, so a check's coverage is decided in
+//! exactly one place. Explorers are internal; the entry points in `checks` are
+//! the only supported way to run one.
+
 mod budget;
 mod commit;
 mod election;

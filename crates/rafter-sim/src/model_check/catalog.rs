@@ -1,3 +1,10 @@
+//! The registry of reviewed invariant labels and their stable identifiers.
+//!
+//! A label resolves to an identifier only on an exact match with a
+//! simulator-owned reviewed invariant, so a check reporting an unregistered or
+//! renamed label fails closed as a harness error instead of being graded as a
+//! real protocol violation. This is the naming authority, not a checker.
+
 pub(super) const ST_01_STATE_WELL_FORMEDNESS: &str = "ST-01 state well-formedness";
 pub(super) const EL_01_TERM_MONOTONICITY: &str = "EL-01 term monotonicity";
 pub(super) const EL_02_ONE_DURABLE_VOTE_PER_TERM: &str = "EL-02 one durable vote per term";

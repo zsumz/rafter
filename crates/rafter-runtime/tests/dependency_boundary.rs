@@ -1,3 +1,9 @@
+//! The runtime's manifest stays free of edge and framework dependencies.
+//!
+//! A durable core that pulled in an async runtime, a logging facade, or a
+//! serialization framework would force those choices on every embedding. This
+//! reads the manifest text, so it catches an edge declared but not yet used.
+
 use std::{fs, path::Path};
 
 #[test]

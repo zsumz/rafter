@@ -1,3 +1,9 @@
+//! Local compaction refused, and local compaction that fails mid-write.
+//!
+//! A boundary above the durable commit index must be refused with the log left
+//! exactly as it was; a segment whose compaction fails must poison rather than
+//! leave the runtime describing a prefix the medium still holds.
+
 use super::*;
 
 #[test]

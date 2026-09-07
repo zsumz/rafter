@@ -1,3 +1,9 @@
+//! Caller-supplied proposal and read identifiers across the persist fence.
+//!
+//! The children cover tracked appends, read barriers, rejections that never
+//! touch the log, and what a restart deliberately does not carry. Shared here:
+//! reading the sequence number back out of a leader's replication traffic.
+
 use super::*;
 
 mod proposal;

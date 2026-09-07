@@ -1,3 +1,10 @@
+//! The proxy's event loop: one child, one restart schedule, one output stream.
+//!
+//! Maelstrom's traffic reaches the child unless a configured fault withholds
+//! it, a restart replays the recorded `init` so the run continues, and the
+//! second `init_ok` that produces is swallowed rather than forwarded twice. It
+//! injects and relays; it never answers Maelstrom on the child's behalf.
+
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -16,6 +23,7 @@ use super::protocol::{
     node_restart_stagger, reports_leader, role_state,
 };
 
+#[path = "io_threads.rs"]
 mod io_threads;
 
 use io_threads::{spawn_line_reader, spawn_stdin_reader, Event};

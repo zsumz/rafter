@@ -1,3 +1,10 @@
+//! Building the two-peer transport pair every runtime scenario starts from.
+//!
+//! One fixture owns the cluster identity, both TLS identities, the certificate
+//! directory, limits, and timeouts, and hands back started or paused transports
+//! over chosen stores, resolvers, directories, and group routes. It also owns
+//! the polling helper used in place of sleeping on a deadline.
+
 use std::{net::SocketAddr, time::Duration};
 
 use rafter::{AppendEntries, LogEntry, LogIndex, Message, NodeId, SharedEntries, Term};

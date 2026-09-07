@@ -1,3 +1,10 @@
+//! Controls for the LV-02 proposal progress and termination monitors.
+//!
+//! Proves an exhausted round bound makes each monitor fail red rather than time
+//! out quietly, that an unestablished authority-loss antecedent is reported as
+//! coverage rather than violation, and that a real run either commits its probe
+//! or names an explicit terminal outcome — never leaves it silently pending.
+
 use crate::{
     model_check::{catalog, FailureKind},
     SimSeed,

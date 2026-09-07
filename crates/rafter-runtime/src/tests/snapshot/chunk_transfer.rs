@@ -1,3 +1,10 @@
+//! Chunked snapshot transfer, from leader directive to follower promotion.
+//!
+//! Shared here: a scripted election, commits acknowledged by one follower while
+//! another lags honestly, and two stores that constrain the runtime — one whose
+//! state is reachable only through a guard, one that can serve no chunk at all.
+//! The scenarios themselves live in the children.
+
 use super::*;
 use rafter::{PendingSnapshotTransfer, StagedSnapshotChunk};
 

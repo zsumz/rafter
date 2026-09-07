@@ -36,13 +36,13 @@ pub enum SnapshotMetadataError {
 impl fmt::Display for SnapshotMetadataError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ZeroApplicationSnapshotVersion => {
+            SnapshotMetadataError::ZeroApplicationSnapshotVersion => {
                 formatter.write_str("application snapshot version cannot be zero")
             }
-            Self::ZeroLastIncludedIndex => {
+            SnapshotMetadataError::ZeroLastIncludedIndex => {
                 formatter.write_str("Raft snapshot last included index cannot be zero")
             }
-            Self::LastIncludedIndexAtMaximum => formatter
+            SnapshotMetadataError::LastIncludedIndexAtMaximum => formatter
                 .write_str("Raft snapshot last included index cannot be the maximum log index"),
             Self::ZeroLastIncludedTerm {
                 last_included_index,

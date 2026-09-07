@@ -1,3 +1,11 @@
+//! What a handle passes through, proven against a recording sender.
+//!
+//! The scenarios here are about the handle and nothing beneath it: a fake sender
+//! records every call and replays a scripted answer, so each assertion is about
+//! what [`RaftHandle`] forwarded — the group identity, the consistency level,
+//! the caller's options — and what it handed back. No Raft group is built and no
+//! protocol runs.
+
 use std::{
     collections::VecDeque,
     future::Future,

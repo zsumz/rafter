@@ -129,7 +129,11 @@ fn active_failpoints() -> MutexGuard<'static, Vec<Armed>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(test)]
 mod hard_state_test;
+#[cfg(test)]
 mod log_test;
+#[cfg(test)]
 mod snapshot_test;
+#[cfg(test)]
 mod support_test;

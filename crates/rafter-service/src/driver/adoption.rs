@@ -1,4 +1,15 @@
-#![allow(clippy::wildcard_imports)]
+//! What a set of groups must prove before this driver will own them.
+//!
+//! The in-memory driver's constructor, and the only place a caller's groups are
+//! judged: one group ID across the set, no node twice, none poisoned, none
+//! holding a waiter this driver did not create, and generated IDs seeded above
+//! every adopted watermark. It builds a whole cluster rather than installing one
+//! node, so there is no re-adoption here and no incarnation to replace.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

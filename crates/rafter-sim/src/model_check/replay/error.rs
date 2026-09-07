@@ -1,3 +1,10 @@
+//! The closed set of reasons a trace fails to replay as expected.
+//!
+//! Each variant separates a trace that could not be re-executed from one that
+//! executed but disagreed with its expectation, so a replay failure says
+//! whether the harness or the property is at fault. The set is closed and
+//! widening it is an explicit change.
+
 use std::{error::Error, fmt};
 
 use super::super::{Action, Failure, StateSummary};

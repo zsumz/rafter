@@ -1,3 +1,10 @@
+//! The file-backed session store across restart, corruption, and contention.
+//!
+//! Both directional high-water marks survive a restart and continue from there,
+//! a stale inbound decision writes nothing, creation and opening never stand in
+//! for each other, and a second handle, a wrong identity, a corrupt file, or an
+//! oversized one is refused rather than guessed at.
+
 #[path = "support/temp_dir.rs"]
 mod temp_dir;
 

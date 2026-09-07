@@ -1,3 +1,10 @@
+//! Proves the demo transport's framing and its reconnect behaviour.
+//!
+//! A peer message survives a length-prefixed round trip, a burst decodes in
+//! send order out of one buffer, an oversized frame is refused before any
+//! payload is allocated, and a down peer is retried before its last error is
+//! reported. Nothing here claims authentication; this transport has none.
+
 use std::collections::VecDeque;
 use std::io::{self, Cursor, ErrorKind, Write};
 

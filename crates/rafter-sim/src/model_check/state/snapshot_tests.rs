@@ -1,3 +1,10 @@
+//! Fail-closed scenarios for the snapshot installation detectors.
+//!
+//! Proves a verified installation does not clear an earlier missing reference
+//! or missing sender payload, that an uncommitted prefix is never witnessed,
+//! and that a changed identity or colliding descriptor at the same boundary is
+//! caught by exact payload comparison rather than by boundary equality.
+
 use super::*;
 use crate::model_check::{
     helpers::{bootstrap_with_snapshot, test_snapshot},

@@ -1,3 +1,10 @@
+//! What the RD-06 linearizability checker must accept and must refuse.
+//!
+//! Proves a read that misses a completed write is rejected, that overlapping
+//! operations may linearize either way, and that an unknown-outcome write may be
+//! included to explain a later read but cannot then be forgotten by a read that
+//! follows it. Building the history the checker reads is another file's job.
+
 use rafter::{LogIndex, NodeId, SharedPayload};
 
 use super::super::linearizability::check_client_history_linearizable;

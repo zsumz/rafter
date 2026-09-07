@@ -1,3 +1,9 @@
+//! Stores that refuse one specific snapshot or compaction write.
+//!
+//! Each double delegates everything it can and fails exactly one operation, so
+//! a scenario can name the write whose failure it is about and trust that
+//! nothing else was quietly broken underneath it. They assert nothing.
+
 use super::*;
 use rafter::{PendingSnapshotTransfer, StagedSnapshotChunk};
 use rafter_storage::{

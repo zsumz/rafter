@@ -1,3 +1,10 @@
+//! Proves recovery after an inbound snapshot promotes its prefix, not replays it.
+//!
+//! A follower that durably installed a snapshot and then crashed reopens with
+//! its application restored from that snapshot and only the committed suffix
+//! dispatched — never a log Apply for a snapshot-covered index. A snapshot whose
+//! application identity is not this harness's fails the reopen closed instead.
+
 use rafter::{
     AppendEntries, ApplicationSnapshotKind, Input, InstallSnapshot, LogEntry, LogIndex,
     MembershipConfig, MembershipSet, Message, NodeId, Output, RaftSnapshot, Term,

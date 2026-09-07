@@ -1,3 +1,10 @@
+//! The persist-before-output fence, one output class at a time.
+//!
+//! Leader proposals, follower appends, and configuration entries must be
+//! durable before the apply or acknowledgement that reveals them, and a store
+//! refusing the write must release nothing and poison. The store here refuses
+//! only the committed-configuration field, so a reopen shows which half landed.
+
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 

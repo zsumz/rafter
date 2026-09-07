@@ -1,3 +1,11 @@
+//! Follower suffix repair when a new leader replaces persisted entries.
+//!
+//! These prove the durable log follows the kernel's splice: the rewritten
+//! suffix is truncated before any acknowledgement escapes, the repair survives
+//! restart, the committed application index never moves backwards across it,
+//! and a rejoin committing past the conflict repairs instead of poisoning.
+//! Repair against a snapshot boundary is the crash-window module's subject.
+
 use super::*;
 use rafter_storage::FileRaftLogSegment;
 use std::{

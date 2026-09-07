@@ -1,3 +1,10 @@
+//! Proves the managed scheduler's bounds, ordering, and conservation of work.
+//!
+//! A pass visits ready groups in a deterministic order with one opportunity
+//! each, a quota sizes a turn without reordering the classes inside it, a
+//! refused admission returns its payload, and a worker is released only by an
+//! exact once completion this scheduler authorized. No threads, no clocks.
+
 use std::num::NonZeroUsize;
 
 use rafter::{LocalProposalId, LogIndex, MembershipConfig, MembershipSet, NodeId, Role, Term};

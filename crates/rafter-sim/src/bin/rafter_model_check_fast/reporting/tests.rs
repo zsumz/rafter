@@ -1,3 +1,10 @@
+//! Fail-closed behavior of the model-check and soak reporting events.
+//!
+//! Proves an event reports a pass only when classification, invariant
+//! identity, execution contract, and every liveness report survive validation,
+//! and that tampering with feature identity, scenario binding, preconditions,
+//! fairness, round budgets, or fault-cycle evidence downgrades it to an error.
+
 use std::time::Duration;
 
 use rafter_sim::{

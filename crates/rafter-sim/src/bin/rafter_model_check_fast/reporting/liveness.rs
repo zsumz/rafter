@@ -1,3 +1,10 @@
+//! Validation of the liveness reports a soak emits.
+//!
+//! The reported feature set must be exactly what the soak's configuration
+//! entitles it to claim — none missing, none extra, none duplicated — and each
+//! report's identity, evidence, and preconditions must match the expectation
+//! for that feature. Anything else is a harness error, not a pass.
+
 #[path = "liveness/expectations.rs"]
 mod expectations;
 #[path = "liveness/preconditions.rs"]

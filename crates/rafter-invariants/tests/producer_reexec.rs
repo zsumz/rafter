@@ -1,3 +1,10 @@
+//! Proves the producer runs only from an image it re-executed into.
+//!
+//! A mutable bootstrap copies itself into a digest-named managed image and
+//! re-executes there; the retained image accepts its own digest, while a
+//! forged digest and a real digest presented from the wrong path are both
+//! refused. It proves the binding, not what the producer then produces.
+
 #![cfg(unix)]
 
 use std::{

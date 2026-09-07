@@ -1,3 +1,10 @@
+//! Ledger identity and coverage rules for the execution-witness index.
+//!
+//! Proves a consumed prefix that was rewritten or reordered is caught as an
+//! instrumentation error rather than absorbed, that execution evidence moves the
+//! verifier hash without touching the protocol hash, and that AP-02's
+//! cross-replica coverage needs distinct nodes and the matching result class.
+
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use rafter::{

@@ -1,3 +1,10 @@
+//! What a successful bounded exploration reports about its own coverage.
+//!
+//! Protocol and verifier state counts stay separate so history kept only to
+//! check temporal properties cannot inflate the protocol space, and completion
+//! says whether the frontier was exhausted or a cap intervened — the
+//! difference between a proof and a partial search.
+
 use super::super::observations::ObservationSet;
 
 /// Summary for a successful bounded model-checking run.

@@ -34,28 +34,44 @@ use crate::state_machine::{
 };
 use crate::transport::PeerEnvelope;
 
+mod accessor;
 mod apply;
+mod construct;
+mod input;
 mod membership;
+mod membership_mark;
+mod observe;
+mod outcome;
 mod output;
+mod parts;
 mod poison;
 mod proposal;
+mod proposal_step;
 mod read;
+mod read_barrier;
+mod read_query;
+mod read_state;
 mod recovery;
 mod snapshot;
+mod state;
+mod step;
 mod transfer;
-mod types;
 mod validation;
 
-pub use types::{
-    GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, MembershipReportMark,
-    PoisonedWaiters, ProposalBatchBeginReport, ProposalBeginReport, RaftGroup, RaftGroupParts,
-    ReadBarrierBeginReport, ReadReport, StepReportOptions,
+pub use input::GroupInput;
+pub use membership_mark::MembershipReportMark;
+pub use outcome::{
+    ProposalBatchBeginReport, ProposalBeginReport, ReadBarrierBeginReport, ReadReport,
 };
+pub use parts::RaftGroupParts;
+pub use poison::{GroupFatalState, PoisonedWaiters};
+pub use state::{GroupStepReport, RaftGroup, StepReportOptions};
+pub use transfer::LeadershipTransferEvent;
 
-use types::{
-    report_has_proposal_lifecycle, ApplyEntryResult, CommittedConfigurationCrossing,
-    CompletedQueryRead, GrantedReadIndex, GroupResult, PendingQueryRead, PendingRead,
-    ProposalBatchBeginReportResult, ProposalBeginReportResult, ProposalBeginResult,
-    ReadBarrierBeginReportResult, ReadOutcomeResult, ReadReportResult, RuntimeGroupError,
-    StepReportResult,
+use construct::{
+    ApplyEntryResult, GroupResult, ProposalBatchBeginReportResult, ProposalBeginReportResult,
+    ProposalBeginResult, ReadBarrierBeginReportResult, ReadOutcomeResult, ReadReportResult,
+    RuntimeGroupError, StepReportResult,
 };
+use outcome::report_has_proposal_lifecycle;
+use read_state::{CompletedQueryRead, GrantedReadIndex, PendingQueryRead, PendingRead};

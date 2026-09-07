@@ -6,10 +6,14 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::{
-    os::unix::fs::PermissionsExt,
-    process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+use std::os::unix::fs::PermissionsExt;
+
+#[cfg(unix)]
+#[path = "ci_test_inventory_contract/support.rs"]
+mod fixture_support;
+#[cfg(unix)]
+use fixture_support::{
+    run_fixture, run_fixture_with_inventory, run_fixture_without_libtest_args, stderr, Fixture,
 };
 
 #[test]
@@ -320,65 +324,6 @@ fn direct_cargo_test_commands(root: &Path) -> Vec<(String, String)> {
     commands
 }
 
-#[cfg(unix)]
-fn run_fixture(root: &Path, bin: &Path, log: &Path, expected: &str) -> std::process::Output {
-    let system_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths = vec![bin.to_path_buf()];
-    paths.extend(std::env::split_paths(&system_path));
-    Command::new("bash")
-        .arg(root.join("scripts/cargo-test-exact"))
-        .args([expected, "family", "-p", "demo", "--", "--ignored"])
-        .env("PATH", std::env::join_paths(paths).unwrap())
-        .env("CARGO_TEST_EXACT_LOG", log)
-        .output()
-        .unwrap()
-}
-
-#[cfg(unix)]
-fn run_fixture_without_libtest_args(
-    root: &Path,
-    bin: &Path,
-    log: &Path,
-    expected: &str,
-) -> std::process::Output {
-    let system_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths = vec![bin.to_path_buf()];
-    paths.extend(std::env::split_paths(&system_path));
-    Command::new("bash")
-        .arg(root.join("scripts/cargo-test-exact"))
-        .args([expected, "family", "-p", "demo"])
-        .env("PATH", std::env::join_paths(paths).unwrap())
-        .env("CARGO_TEST_EXACT_LOG", log)
-        .output()
-        .unwrap()
-}
-
-#[cfg(unix)]
-fn run_fixture_with_inventory(
-    root: &Path,
-    bin: &Path,
-    log: &Path,
-    inventory: &Path,
-) -> std::process::Output {
-    let system_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths = vec![bin.to_path_buf()];
-    paths.extend(std::env::split_paths(&system_path));
-    Command::new("bash")
-        .arg(root.join("scripts/cargo-test-exact"))
-        .args(["2", "family", "--inventory"])
-        .arg(inventory)
-        .args(["-p", "demo"])
-        .env("PATH", std::env::join_paths(paths).unwrap())
-        .env("CARGO_TEST_EXACT_LOG", log)
-        .output()
-        .unwrap()
-}
-
-#[cfg(unix)]
-fn stderr(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -396,32 +341,4 @@ fn display_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
-}
-
-#[cfg(unix)]
-static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
-
-#[cfg(unix)]
-struct Fixture {
-    path: PathBuf,
-}
-
-#[cfg(unix)]
-impl Fixture {
-    fn new() -> Self {
-        let id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "rafter-cargo-test-exact-{}-{id}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self { path }
-    }
-}
-
-#[cfg(unix)]
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
 }

@@ -1,3 +1,10 @@
+//! The membership sets and configuration entries the transitions move between.
+//!
+//! Names the initial learner set, the four-voter set it is promoted into, and
+//! what remains after node two is removed, with the joint and final entry for
+//! each change. Every configuration the membership suites assert about comes
+//! from here, so a scenario names a transition rather than restating a set.
+
 use super::super::super::*;
 use rafter::{
     ConfigurationEntry, ConfigurationId, JointMembership, MembershipConfig, MembershipSet,

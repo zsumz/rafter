@@ -79,6 +79,10 @@ fn fallback_cleanup_failure_is_scoped_to_its_owning_execution() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "wall-clock deadline evidence is Linux-authoritative; loaded non-Linux hosts invert these timings"
+)]
 fn short_lived_children_always_produce_resource_telemetry() {
     for iteration in 0..32 {
         let output = run_shell(

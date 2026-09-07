@@ -1,3 +1,10 @@
+//! Raft-driven application snapshot installs.
+//!
+//! A snapshot reaches the state machine only once its descriptor is well
+//! formed and the state machine has declared it can interpret one, and the
+//! install is not accepted until the applied index proves it landed. Producing
+//! snapshots and moving their chunks belong outside this module.
+
 use super::{
     ApplicationSnapshot, ApplicationSnapshotError, Debug, GroupError, GroupResult, GroupStepReport,
     LogIndex, PersistedRaftRuntime, RaftGroup, RaftSnapshot, ReplicatedStateMachine, SnapshotEvent,

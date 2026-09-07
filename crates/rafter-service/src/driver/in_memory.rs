@@ -1,4 +1,15 @@
-#![allow(clippy::wildcard_imports)]
+//! The in-memory driver type, and everything an embedder calls on it directly.
+//!
+//! This file is the type and its public surface: the lifecycle a test or example
+//! drives by hand — elect, tick, batch, release — beside the
+//! [`DriverCommandSender`] surface a handle reaches through. Its neighbours hold
+//! the state and the per-operation loops, and nothing here holds a rule of its
+//! own beyond refusing every operation once the driver has shut down.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

@@ -1,3 +1,10 @@
+//! Proves production open refuses an application floor it cannot justify.
+//!
+//! A checkpoint claiming to have applied past the commit index, or past the end
+//! of the durable log, fails the reopen with its typed bootstrap error rather
+//! than starting a node that would silently skip entries it never applied. That
+//! a legitimate floor replays correctly is the recovery scenario's obligation.
+
 use std::path::Path;
 
 use rafter::{BootstrapValidationError, LogIndex, NodeId};

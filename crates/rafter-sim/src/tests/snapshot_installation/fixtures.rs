@@ -1,3 +1,9 @@
+//! Snapshot, bootstrap, and transfer builders for the installation suites.
+//!
+//! Elects a leader, forces a follower far enough behind that catch-up must go
+//! through a snapshot, and builds the descriptors and multi-chunk payloads the
+//! suites stream. These reach the situation; the suites judge it.
+
 use super::super::helpers::{
     deliver_append_entries, deliver_append_entries_response, pre_vote, pre_vote_response,
     request_vote,

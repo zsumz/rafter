@@ -1,3 +1,9 @@
+//! Shutdown drains what admission already accepted.
+//!
+//! Work taken before the sender stopped accepting must still reach the peer,
+//! and the transport must report itself stopping while it finishes — anything
+//! less silently loses frames a caller was told had been queued.
+
 mod support;
 
 use std::time::Duration;

@@ -1,3 +1,10 @@
+//! Hand-seeded starting states for commit points long prefixes rarely reach.
+//!
+//! Each seed pins a situation — a low empty probe, a divergent suffix, a new
+//! leader's no-op committing prior-term entries — and the check fails both on
+//! a safety violation and on bounds too shallow to reach the seeded point, so
+//! a shrinking depth cannot quietly turn a real check into a vacuous one.
+
 use std::collections::BTreeMap;
 
 use rafter::{LogIndex, NodeConfig, NodeId};

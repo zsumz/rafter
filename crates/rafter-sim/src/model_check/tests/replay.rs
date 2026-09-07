@@ -1,3 +1,10 @@
+//! Trace replay fidelity across ambiguous and epoch-changing actions.
+//!
+//! Proves a replayed trace reaches the expected final state, that an old
+//! leader's commit before a newer candidate wins is allowed, that replay
+//! delivers the exact envelope recorded when routing and message kind collide,
+//! and that an application-loss epoch transition survives replay.
+
 use rafter::{Message, NodeId, Role};
 
 use super::super::helpers::{config, proposal_payload, request_vote};

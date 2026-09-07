@@ -1,3 +1,10 @@
+//! The snapshot detectors the invariant registry pins by name.
+//!
+//! Every checker and bridge detector the catalog cites is defined here, with
+//! the cluster sweeps that carry a registered checker down to its per-node
+//! shape, so a registry row always resolves inside this file. Only renderings
+//! and unbound compatibility shapes live in the private submodules.
+
 use rafter::{LogIndex, NodeId, PendingSnapshotTransfer, RaftSnapshot};
 
 use crate::Cluster;
@@ -7,6 +14,22 @@ use super::{
     catalog, check_applied_payload_agreement, check_committed_prefixes,
     check_internal_derived_state, summarize, Action, Failure, RestartSnapshotState,
 };
+
+mod failures;
+mod geometry;
+mod transfer;
+
+use failures::{
+    snapshot_coverage_failure, snapshot_failure, snapshot_harness_failure, ss03_failure,
+    ss04_failure,
+};
+pub(super) use geometry::check_snapshot_log_geometry;
+pub(super) use transfer::check_snapshot_pending_byte_bounds_shape;
+
+#[cfg(test)]
+pub(super) use geometry::check_snapshot_log_geometry_shape;
+#[cfg(test)]
+pub(super) use transfer::check_snapshot_transfer_integrity;
 
 pub(crate) fn check_restart_snapshot_safety(
     state: &RestartSnapshotState,
@@ -59,7 +82,7 @@ pub(super) fn check_snapshot_covered_prefix_hidden(
     check_snapshot_covered_prefixes_in_cluster(state.cluster(), trace)
 }
 
-fn check_snapshot_covered_prefixes_in_cluster(
+pub(super) fn check_snapshot_covered_prefixes_in_cluster(
     cluster: &Cluster,
     trace: &[Action],
 ) -> Result<(), Failure> {
@@ -116,7 +139,7 @@ pub(super) fn check_snapshot_next_retained_index(
     check_snapshot_next_retained_indices_in_cluster(state.cluster(), trace)
 }
 
-fn check_snapshot_next_retained_indices_in_cluster(
+pub(super) fn check_snapshot_next_retained_indices_in_cluster(
     cluster: &Cluster,
     trace: &[Action],
 ) -> Result<(), Failure> {
@@ -200,7 +223,7 @@ pub(super) fn check_snapshot_persisted_boundary(
     check_snapshot_persisted_boundaries_in_cluster(state.cluster(), trace)
 }
 
-fn check_snapshot_persisted_boundaries_in_cluster(
+pub(super) fn check_snapshot_persisted_boundaries_in_cluster(
     cluster: &Cluster,
     trace: &[Action],
 ) -> Result<(), Failure> {
@@ -354,25 +377,6 @@ pub(super) fn check_snapshot_chunk_offsets_history(
     Ok(())
 }
 
-pub(super) fn check_snapshot_pending_byte_bounds_shape(
-    cluster: &Cluster,
-    node_id: NodeId,
-    received_bytes: u64,
-    total_payload_len: u64,
-    trace: &[Action],
-) -> Result<(), Failure> {
-    if received_bytes > total_payload_len {
-        return Err(ss04_failure(
-            cluster,
-            trace,
-            format!(
-                "{node_id} pending snapshot bytes {received_bytes} exceed total {total_payload_len}"
-            ),
-        ));
-    }
-    Ok(())
-}
-
 pub(super) fn check_snapshot_install_completeness_history(
     state: &ExplorationState,
     trace: &[Action],
@@ -440,33 +444,6 @@ pub(super) fn check_pending_snapshot_lifecycle_shape(
         ));
     }
     Ok(())
-}
-
-// Compatibility wrapper retained while registry records move to clause-specific detectors.
-#[cfg(test)]
-pub(super) fn check_snapshot_transfer_integrity(
-    cluster: &Cluster,
-    node_id: NodeId,
-    installed_snapshot_index: LogIndex,
-    pending: Option<&PendingSnapshotTransfer>,
-    trace: &[Action],
-) -> Result<(), Failure> {
-    if let Some(pending) = pending {
-        check_snapshot_pending_byte_bounds_shape(
-            cluster,
-            node_id,
-            pending.received_bytes(),
-            pending.total_payload_len,
-            trace,
-        )?;
-    }
-    check_pending_snapshot_lifecycle_shape(
-        cluster,
-        node_id,
-        installed_snapshot_index,
-        pending,
-        trace,
-    )
 }
 
 pub(super) fn check_snapshot_boundary_monotonicity(
@@ -537,93 +514,4 @@ pub(super) fn check_snapshot_transfer_identity(
         return Err(snapshot_failure(state, trace, message.clone()));
     }
     Ok(())
-}
-
-fn snapshot_failure(state: &ExplorationState, trace: &[Action], message: String) -> Failure {
-    Failure {
-        kind: crate::model_check::FailureKind::InvariantViolation,
-        invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
-        message,
-        trace: trace.to_vec(),
-        state: summarize(state.cluster()),
-    }
-}
-
-fn snapshot_harness_failure(
-    state: &ExplorationState,
-    trace: &[Action],
-    message: String,
-) -> Failure {
-    Failure {
-        kind: crate::model_check::FailureKind::HarnessError,
-        invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
-        message,
-        trace: trace.to_vec(),
-        state: summarize(state.cluster()),
-    }
-}
-
-fn snapshot_coverage_failure(
-    state: &ExplorationState,
-    trace: &[Action],
-    message: String,
-) -> Failure {
-    Failure {
-        kind: crate::model_check::FailureKind::CoverageNotReached,
-        invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
-        message,
-        trace: trace.to_vec(),
-        state: summarize(state.cluster()),
-    }
-}
-
-pub(super) fn check_snapshot_log_geometry(
-    cluster: &Cluster,
-    trace: &[Action],
-) -> Result<(), Failure> {
-    check_snapshot_covered_prefixes_in_cluster(cluster, trace)?;
-    check_snapshot_next_retained_indices_in_cluster(cluster, trace)?;
-    check_snapshot_persisted_boundaries_in_cluster(cluster, trace)
-}
-
-// Compatibility wrapper retained for the original detector fixture identity.
-#[cfg(test)]
-pub(super) fn check_snapshot_log_geometry_shape(
-    cluster: &Cluster,
-    node_id: NodeId,
-    snapshot_index: LogIndex,
-    first_log_index: LogIndex,
-    last_log_index: LogIndex,
-    retained_log_len: usize,
-    trace: &[Action],
-) -> Result<(), Failure> {
-    check_snapshot_next_retained_index_shape(
-        cluster,
-        node_id,
-        snapshot_index,
-        first_log_index,
-        last_log_index,
-        retained_log_len,
-        trace,
-    )
-}
-
-fn ss03_failure(cluster: &Cluster, trace: &[Action], message: String) -> Failure {
-    Failure {
-        kind: crate::model_check::FailureKind::InvariantViolation,
-        invariant: catalog::SS_03_SNAPSHOT_LOG_INDEX_GEOMETRY,
-        message,
-        trace: trace.to_vec(),
-        state: summarize(cluster),
-    }
-}
-
-fn ss04_failure(cluster: &Cluster, trace: &[Action], message: String) -> Failure {
-    Failure {
-        kind: crate::model_check::FailureKind::InvariantViolation,
-        invariant: catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
-        message,
-        trace: trace.to_vec(),
-        state: summarize(cluster),
-    }
 }

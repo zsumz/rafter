@@ -1,3 +1,10 @@
+//! Proves the typed host isolates groups as the untyped one does.
+//!
+//! Typed commands and results run independently per group, a driver that
+//! misreports its own group is excluded rather than trusted, and an envelope,
+//! report, or membership event naming another group is refused. What a group
+//! does internally is rafter-app's scenario, not this one.
+
 use std::cell::Cell;
 
 use rafter::{LogIndex, MembershipConfig, MembershipSet, NodeId, Role, Term};

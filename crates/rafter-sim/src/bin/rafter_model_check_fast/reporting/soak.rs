@@ -1,3 +1,10 @@
+//! Soak run summaries and the events CI grades them from.
+//!
+//! A soak may be reported as passing only once its report structure, its
+//! execution contract, and its liveness reports have all validated; any
+//! failure downgrades the event to a harness error and strips the feature and
+//! observation claims rather than emitting them unverified.
+
 use std::time::Duration;
 
 use rafter_sim::model_check::{SoakConfig, SoakSummary};

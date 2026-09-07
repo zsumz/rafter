@@ -1,3 +1,9 @@
+//! Frame sequence numbers within one connection start at one and never skip.
+//!
+//! The receiver's expectation advances only on the frame it was waiting for, so
+//! a duplicate or a gap is refused and leaves that expectation where it was —
+//! the property that makes a replayed or dropped frame detectable at all.
+
 use rafter_transport_tls::{ConnectionSequence, InboundSequence, OutboundSequence, SequenceError};
 
 #[test]

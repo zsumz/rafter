@@ -1,3 +1,11 @@
+//! What a leadership transfer answers, and what it deliberately does not.
+//!
+//! Every scenario here is request-level: an accepted transfer means the driver
+//! stepped the group and nothing refused, never that the target is now leader —
+//! the success case asserts the old leader is still the observed one. The three
+//! refusals pin that each reaches the caller as its own reason, beside whatever
+//! redirect the group could offer for it.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

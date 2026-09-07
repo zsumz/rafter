@@ -1,3 +1,10 @@
+//! The published example is exercised as a test, not merely compiled.
+//!
+//! The in-process lifecycle must reach its expected values and never publish an
+//! applied floor above the snapshot covering it, and the example's app-state
+//! record must be atomic and reject a corrupted payload. The process-per-node
+//! paths stay ignored: they need loopback TCP and child processes.
+
 #[allow(dead_code)]
 #[path = "../examples/replicated_kv.rs"]
 mod replicated_kv;

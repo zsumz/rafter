@@ -1,3 +1,10 @@
+//! Negative controls and boundaries for the client-history detectors.
+//!
+//! Proves a read completed below its local apply floor fails RD-04, that an
+//! unknown write outcome is never read as confirmed absence, and that tracked
+//! proposals are correlated by identity rather than payload — so repeated bytes
+//! stay distinct and contradictory events fail closed instead of passing.
+
 use super::super::client::check_client_history_read_write_invariants;
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};

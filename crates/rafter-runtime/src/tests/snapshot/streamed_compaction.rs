@@ -1,3 +1,10 @@
+//! Local compaction driven from a chunk source instead of an owned payload.
+//!
+//! The streamed path must reach the same durable place as the in-memory one:
+//! the payload read from the caller's source, the boundary compacted, and a
+//! descriptor installed carrying the membership metadata the runtime fills in.
+//! Rejections before any write belong to the bootstrap-compaction modules.
+
 use super::*;
 use rafter::InMemorySnapshotChunkSource;
 

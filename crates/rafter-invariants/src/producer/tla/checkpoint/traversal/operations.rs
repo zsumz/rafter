@@ -110,7 +110,10 @@ pub(in crate::producer::tla::checkpoint) fn scan_checkpoint_tree(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+)]
 fn read_sorted_entries_with_budget(
     root_path: &Path,
     root: &HeldDirectory,

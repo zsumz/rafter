@@ -1,3 +1,10 @@
+//! Negative controls for exact-restart, applied-floor, and read-barrier checks.
+//!
+//! Proves a restart that loses a vote, alters a payload, moves a configuration
+//! identity, or swaps CRC32-colliding snapshot bytes fails PS-03; a recovery
+//! that replays at or below its floor, skips a committed entry, or claims a
+//! floor past its bounds fails PS-04; an unregistered grant fails RD-03.
+
 use super::super::client::{check_read_grant_committed_floors, check_registered_read_grants};
 use super::super::persistence::{
     check_recovery_applied_floor_bounds, check_recovery_applied_floor_exclusion,

@@ -1,3 +1,10 @@
+//! Cluster, membership, and transition builders for the membership suites.
+//!
+//! Provides the four-node learner and stable-voter starting points plus the
+//! drivers carrying a configuration change through its joint and final
+//! entries, so a scenario begins from a legally reached configuration rather
+//! than a hand-set one.
+
 mod clusters;
 mod membership;
 mod snapshots;

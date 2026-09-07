@@ -1,3 +1,10 @@
+//! Per-peer and global inbound capacity are released exactly on drain.
+//!
+//! One peer must not be able to fill the shared queue, an unrelated peer must
+//! still be refused once the global bound is reached, and draining must return
+//! both reservations — a leak in either would starve the transport of the
+//! bounded memory its admission decisions depend on.
+
 use rafter::{LogIndex, Message, NodeId, RequestVote, Term};
 use rafter_service::AuthenticatedPeerEnvelope;
 

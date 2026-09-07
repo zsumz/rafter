@@ -27,6 +27,10 @@ fn managed_process_startup_allowance() -> Duration {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "wall-clock deadline evidence is Linux-authoritative; loaded non-Linux hosts invert these timings"
+)]
 fn natural_exit_after_the_deadline_cannot_be_reported_as_success() {
     // The observation must not happen until the target has exited on its own,
     // or the harness sees a live target and signals it. The stall is derived
@@ -159,6 +163,10 @@ fn target_cannot_execute_before_the_parent_releases_ready_ownership() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "wall-clock deadline evidence is Linux-authoritative; loaded non-Linux hosts invert these timings"
+)]
 fn observer_omission_of_a_live_anchor_is_a_harness_error() {
     omit_anchor_from_next_process_group_observation();
     let error = run_shell(
@@ -175,6 +183,10 @@ fn observer_omission_of_a_live_anchor_is_a_harness_error() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "wall-clock deadline evidence is Linux-authoritative; loaded non-Linux hosts invert these timings"
+)]
 fn observer_omission_of_live_target_members_is_a_harness_error() {
     // The omission can only be diagnosed on an observation taken after the
     // resource wrapper has exited, because that is what makes a still-held

@@ -1,3 +1,10 @@
+//! Snapshot chunks are resolved by the worker, never on the caller's thread.
+//!
+//! Admission must return while a blocked read continues behind it, and control
+//! traffic must keep flowing past it. Storage stays untouched until activation,
+//! a resolution finishing after shutdown cannot send, and a refusal, failure,
+//! wrong byte count, or missing resolver drops the chunk like a lost message.
+
 mod support;
 
 use std::{

@@ -1,3 +1,9 @@
+//! Inputs the hard-state scenarios script rather than derive.
+//!
+//! A granted pre-vote that starts a real election, and an append frame whose
+//! commit index forces the follower's final hard-state write. These fix the
+//! shape of the input; every assertion about it belongs to the caller.
+
 use super::super::*;
 use rafter::{Message, PreVoteResponse};
 

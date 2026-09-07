@@ -1,3 +1,10 @@
+//! The peer frame wire format, pinned to a golden vector.
+//!
+//! The encoding must reproduce the committed bytes exactly and decode back to
+//! the same frame; a mutated vector must be refused for sender disagreement, a
+//! non-canonical group, a declared length past the bound, a zero sequence, or
+//! trailing bytes — each checked before the body is parsed or trusted.
+
 mod support;
 
 use rafter::NodeId;

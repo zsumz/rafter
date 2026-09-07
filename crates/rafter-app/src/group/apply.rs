@@ -1,3 +1,10 @@
+//! Committed-entry application and the applied-index floor.
+//!
+//! Every committed entry reaches the state machine once, in index order, and
+//! the floor advances only on results that answer for the entries handed over;
+//! a state machine below the runtime's snapshot boundary is refused, never
+//! replayed. What commits is the kernel's decision, not this module's.
+
 use super::{
     ApplyBatch, ApplyEntry, ApplyEntryResult, Debug, GroupError, GroupResult, GroupStepReport,
     LocalProposalId, LogIndex, PersistedRaftRuntime, ProposalEvent, RaftGroup,

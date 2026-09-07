@@ -11,6 +11,12 @@ use sha2::{Digest, Sha256};
 
 use crate::execution::filesystem::OperationDeadline;
 
+mod identity;
+mod walk;
+
+use identity::FileIdentity;
+use walk::{inventory, verify_directory_permissions};
+
 #[derive(Clone, Debug)]
 pub(super) struct FilePlan {
     pub(super) digest: [u8; 32],
@@ -221,96 +227,6 @@ pub(super) fn checked_node_count(directories: usize, files: usize) -> Result<u64
         .ok_or_else(|| "sealed tree node count overflow".to_owned())
 }
 
-fn inventory(
-    root: &Path,
-    context: &str,
-    deadline: OperationDeadline,
-    maximum_nodes: u64,
-) -> Result<(BTreeSet<PathBuf>, BTreeSet<PathBuf>), String> {
-    let mut directories = BTreeSet::from([PathBuf::new()]);
-    let mut files = BTreeSet::new();
-    let mut pending = vec![root.to_owned()];
-    let mut nodes = 0_u64;
-    while let Some(directory) = pending.pop() {
-        check_deadline(deadline)?;
-        let entries = fs::read_dir(&directory).map_err(|error| {
-            format!("read {context} directory {}: {error}", directory.display())
-        })?;
-        for entry in entries {
-            check_deadline(deadline)?;
-            let entry = entry.map_err(|error| format!("read {context} entry: {error}"))?;
-            nodes = nodes
-                .checked_add(1)
-                .ok_or_else(|| format!("{context} node count overflow"))?;
-            if nodes > maximum_nodes {
-                return Err(format!(
-                    "{context} tree exceeds its node limit of {maximum_nodes}"
-                ));
-            }
-            let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
-                format!(
-                    "inspect {context} entry {}: {error}",
-                    entry.path().display()
-                )
-            })?;
-            let relative = entry
-                .path()
-                .strip_prefix(root)
-                .map_err(|_| format!("{context} entry escaped its root"))?
-                .to_owned();
-            if metadata.file_type().is_dir() {
-                directories.insert(relative);
-                pending.push(entry.path());
-            } else if metadata.file_type().is_file() {
-                files.insert(relative);
-            } else {
-                return Err(format!(
-                    "{context} contains a non-regular entry: {}",
-                    entry.path().display()
-                ));
-            }
-        }
-    }
-    check_deadline(deadline)?;
-    Ok((directories, files))
-}
-
-#[cfg(unix)]
-fn verify_directory_permissions(
-    root: &Path,
-    directories: &BTreeSet<PathBuf>,
-    context: &str,
-    deadline: OperationDeadline,
-) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    for relative in directories {
-        check_deadline(deadline)?;
-        let path = root.join(relative);
-        let mode = fs::symlink_metadata(&path)
-            .map_err(|error| format!("inspect {context} permissions {}: {error}", path.display()))?
-            .permissions()
-            .mode();
-        if mode & 0o222 != 0 {
-            return Err(format!(
-                "{context} directory became writable: {}",
-                path.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn verify_directory_permissions(
-    _root: &Path,
-    _directories: &BTreeSet<PathBuf>,
-    _context: &str,
-    _deadline: OperationDeadline,
-) -> Result<(), String> {
-    Ok(())
-}
-
 fn check_deadline(deadline: OperationDeadline) -> Result<(), String> {
     deadline.check().map_err(|error| error.to_string())
 }
@@ -329,85 +245,4 @@ fn verify_unix_mode(path: &Path, executable: bool, context: &str) -> Result<(), 
         return Err(format!("{context} permissions changed: {}", path.display()));
     }
     Ok(())
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FileIdentity {
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-    #[cfg(windows)]
-    volume: u32,
-    #[cfg(windows)]
-    index: u64,
-}
-
-impl FileIdentity {
-    #[cfg(unix)]
-    fn capture(path: &Path, directory: bool, context: &str) -> Result<Self, String> {
-        use std::os::unix::fs::MetadataExt;
-
-        let metadata = checked_metadata(path, directory, context)?;
-        Ok(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        })
-    }
-
-    #[cfg(windows)]
-    fn capture(path: &Path, directory: bool, context: &str) -> Result<Self, String> {
-        use cap_std::fs::MetadataExt;
-
-        checked_metadata(path, directory, context)?;
-        let metadata = if directory {
-            cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
-                .and_then(|directory| directory.dir_metadata())
-        } else {
-            cap_std::fs::File::open_ambient(path, cap_std::ambient_authority())
-                .and_then(|file| file.metadata())
-        }
-        .map_err(|error| format!("inspect {context} identity {}: {error}", path.display()))?;
-        Ok(Self {
-            volume: metadata.volume_serial_number().ok_or_else(|| {
-                format!(
-                    "{context} volume identity is unavailable: {}",
-                    path.display()
-                )
-            })?,
-            index: metadata.file_index().ok_or_else(|| {
-                format!("{context} file identity is unavailable: {}", path.display())
-            })?,
-        })
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn capture(path: &Path, _directory: bool, context: &str) -> Result<Self, String> {
-        Err(format!(
-            "{context} file identity is unsupported on this platform: {}",
-            path.display()
-        ))
-    }
-}
-
-#[cfg(any(unix, windows))]
-fn checked_metadata(
-    path: &Path,
-    directory: bool,
-    context: &str,
-) -> Result<std::fs::Metadata, String> {
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("inspect {context} identity {}: {error}", path.display()))?;
-    let matches_kind = if directory {
-        metadata.file_type().is_dir()
-    } else {
-        metadata.file_type().is_file()
-    };
-    if !matches_kind {
-        return Err(format!(
-            "{context} path changed file kind or became an alias: {}",
-            path.display()
-        ));
-    }
-    Ok(metadata)
 }

@@ -1,3 +1,10 @@
+//! Published crates document their whole public surface, with reviewed gaps.
+//!
+//! Missing rustdoc, undocumented exhaustive enums, untracked doc markers, and
+//! risky library expectations fail closed unless a path-exact allowlist entry
+//! carries them - and an unused entry fails the same way, so the allowlist
+//! can only shrink.
+
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
@@ -861,6 +868,16 @@ fn nearby_attribute_lines(lines: &[&str], index: usize) -> Vec<String> {
             result.push(trimmed.to_owned());
             continue;
         }
+        if let Some(start) = multiline_attribute_start(lines, cursor) {
+            let joined = lines[start..=cursor]
+                .iter()
+                .map(|line| line.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+            result.push(joined);
+            cursor = start;
+            continue;
+        }
         if trimmed.is_empty() && result.is_empty() {
             continue;
         }
@@ -868,6 +885,32 @@ fn nearby_attribute_lines(lines: &[&str], index: usize) -> Vec<String> {
     }
     result.reverse();
     result
+}
+
+/// Returns the opening line of a rustfmt-wrapped multi-line attribute whose
+/// closing line sits at `end`, found by balancing square brackets upward until
+/// the `#[` that opened it. Bounded so an unbalanced bracket inside a string
+/// literal cannot send the scan to the top of the file.
+fn multiline_attribute_start(lines: &[&str], end: usize) -> Option<usize> {
+    let closing = lines[end].trim_start();
+    if closing.starts_with("#[") || !closing.ends_with(']') || is_rustdoc_line(closing) {
+        return None;
+    }
+    let mut depth: i64 = 0;
+    let mut cursor = end + 1;
+    while cursor > 0 {
+        cursor -= 1;
+        let line = lines[cursor].trim_start();
+        depth += i64::try_from(line.chars().filter(|ch| *ch == ']').count()).unwrap_or(i64::MAX);
+        depth -= i64::try_from(line.chars().filter(|ch| *ch == '[').count()).unwrap_or(i64::MAX);
+        if depth <= 0 {
+            return line.starts_with("#[").then_some(cursor);
+        }
+        if end - cursor > 16 {
+            return None;
+        }
+    }
+    None
 }
 
 fn is_rustdoc_line(line: &str) -> bool {
@@ -1098,4 +1141,58 @@ fn display_path(workspace: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+}
+
+#[test]
+fn rustdoc_survives_multiline_attributes_between_docs_and_item() {
+    let source = r#"
+/// Documented enum with a wrapped suppression between docs and item.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "payloads ride inline"
+)]
+#[derive(Clone, Debug)]
+pub enum Wrapped {
+    A,
+}
+"#;
+    let lines: Vec<&str> = source.lines().collect();
+    let item_index = lines
+        .iter()
+        .position(|line| line.starts_with("pub enum Wrapped"))
+        .expect("fixture declares the enum");
+
+    let docs = rustdoc_before(&lines, item_index);
+    assert_eq!(
+        docs.len(),
+        1,
+        "docs must be visible through the wrapped attribute"
+    );
+
+    let attrs = attrs_before(&lines, item_index);
+    assert!(
+        attrs
+            .iter()
+            .any(|attr| attr.contains("large_enum_variant") && attr.contains("reason")),
+        "the wrapped attribute must surface as one joined attribute line"
+    );
+}
+
+#[test]
+fn unbalanced_brackets_do_not_send_the_attribute_scan_upward() {
+    let source = "
+const TABLE: [u8; 3] = [1, 2, 3];
+text.push(']');
+pub fn undocumented() {}
+";
+    let lines: Vec<&str> = source.lines().collect();
+    let item_index = lines
+        .iter()
+        .position(|line| line.starts_with("pub fn undocumented"))
+        .expect("fixture declares the fn");
+
+    assert!(
+        rustdoc_before(&lines, item_index).is_empty(),
+        "stray bracket lines must not be mistaken for attribute continuations"
+    );
 }

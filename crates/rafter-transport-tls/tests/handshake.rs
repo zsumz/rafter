@@ -1,3 +1,10 @@
+//! The client and server hello wire formats, pinned to golden vectors.
+//!
+//! Both must reproduce their committed bytes exactly and decode back unchanged,
+//! a refusal must have exactly one canonical shape, and truncation, trailing
+//! bytes, a zero session, or a zero frame bound must be refused during decode.
+//! Negotiation selects the highest common version, or none at all.
+
 mod support;
 
 use std::num::{NonZeroU16, NonZeroU32};

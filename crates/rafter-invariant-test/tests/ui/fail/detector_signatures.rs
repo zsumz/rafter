@@ -1,3 +1,10 @@
+//! Proves the signature a detector test is allowed to have.
+//!
+//! Async, const, unsafe, extern, generic, parameterized, and returning forms
+//! are each refused at compile time, leaving exactly the plain zero-argument
+//! function the gate can invoke unambiguously. The concrete `where` clause
+//! that stays legal is the passing fixtures' half.
+
 use rafter_invariant_test::detector_test;
 
 #[detector_test]

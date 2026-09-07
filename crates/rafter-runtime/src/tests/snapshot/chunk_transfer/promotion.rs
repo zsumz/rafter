@@ -1,3 +1,10 @@
+//! Finishing an installation the process died in the middle of.
+//!
+//! A fully staged but unpromoted transfer must be promoted at open and its
+//! covered log compacted, so the segment's next index is the kernel's — over
+//! in-memory and file-backed stores, and across a further reopen. A divergent
+//! suffix under the boundary must be gone, not merely hidden.
+
 use super::*;
 use std::path::Path;
 

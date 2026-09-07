@@ -1,3 +1,9 @@
+//! A completed TLS session without the required ALPN is not a Rafter peer.
+//!
+//! Chain validity and a mapped certificate are not enough: the protocol must
+//! have been negotiated, or a client speaking something else over the same PKI
+//! would be admitted into the transport.
+
 mod support;
 
 use std::sync::Arc;

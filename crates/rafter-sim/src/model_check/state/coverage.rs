@@ -1,3 +1,10 @@
+//! Marking which situations a state actually exhibits.
+//!
+//! Coverage is read from the state as it stands — applies, membership, reads,
+//! snapshots, cross-node log comparisons — so a check can tell a property that
+//! held from one never exercised. Marking observes only, and never touches
+//! protocol state.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::LogIndex;

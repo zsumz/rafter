@@ -1,3 +1,10 @@
+//! Progress under delay, lag, and leader loss.
+//!
+//! Proves an election completes after a temporary vote delay, that a stable
+//! leader commits on quorum delivery while a lagging follower still catches
+//! up, and that a surviving quorum elects a replacement and resumes committing
+//! after the leader is lost.
+
 use super::helpers::{
     deliver_append_entries, deliver_append_entries_response, direct_election_three_node_cluster,
     elect_node_one, elect_node_two_without_reaching_node_one, pre_vote, pre_vote_response,

@@ -1,3 +1,10 @@
+//! Fixtures the group scenarios are built from.
+//!
+//! A recording state machine and a scripted runtime that replay fixed outputs,
+//! inject one named fault at a time, and record what they were asked to do, so
+//! each scenario can name the failure it is about rather than arrange one.
+//! Nothing here asserts; the scenario that owns an obligation does that.
+
 #![allow(dead_code, unused_imports)]
 
 use std::{

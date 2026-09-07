@@ -1,3 +1,10 @@
+//! A bound-but-paused transport accepts work while touching nothing outside.
+//!
+//! Admission and policy publication must work while paused, with no TLS
+//! handshake attempted and no session number spent — and shutting down before
+//! start must spend none either, so a runtime can be assembled and abandoned
+//! without burning durable state.
+
 mod support;
 
 use std::{io::Write, net::TcpStream, time::Duration};

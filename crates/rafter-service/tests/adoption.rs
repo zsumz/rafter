@@ -1,5 +1,3 @@
-#![allow(clippy::wildcard_imports)]
-
 //! Which groups a driver may take, on both shipped drivers.
 //!
 //! The two answer the same question with the same error. `InMemoryRaftDriver`
@@ -7,6 +5,8 @@
 //! IDs; `TransportRaftDriver` takes one replica at a time and refuses one whose
 //! ID is not the ID it was built with. Both say
 //! [`ManagedDriverError::MixedGroups`].
+
+#![allow(clippy::wildcard_imports)]
 
 mod support;
 

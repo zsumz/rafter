@@ -1,3 +1,10 @@
+//! The per-commit and deep safety check batteries.
+//!
+//! Each check must exhaust its frontier: a completion short of that is an
+//! error, never a pass, because these depths back the reviewed per-evidence
+//! state floors in `verification/raft-invariants.yaml`. Bounds come from the
+//! selected profile; nothing here invents a budget of its own.
+
 use std::{error::Error, io, time::Instant};
 
 use rafter_sim::model_check::{

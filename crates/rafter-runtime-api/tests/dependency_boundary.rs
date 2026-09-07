@@ -1,3 +1,10 @@
+//! Proves rafter-runtime-api depends on the kernel and nothing else.
+//!
+//! It names `rafter` and no storage, runtime, application, service, codec, or
+//! transport crate, which is what lets a caller depend on the abstraction
+//! without inheriting an implementation of it. It reads the manifest; whether
+//! the trait stays implementable is proved by the crates that implement it.
+
 use std::{fs, path::Path};
 
 #[test]

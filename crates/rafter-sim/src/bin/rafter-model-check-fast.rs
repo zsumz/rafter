@@ -1,3 +1,10 @@
+//! The model-check driver CI runs: one profile per invocation.
+//!
+//! Every check this binary runs must either exhaust its frontier or fail the
+//! process, and each verdict must leave a machine-readable `RAFTER_EVENT` line
+//! behind, because CI grades a run from those lines rather than the exit code
+//! alone. Profile budgets are data, not policy; they live in `profile`.
+
 use std::{env, error::Error};
 
 #[path = "rafter_model_check_fast/profile.rs"]

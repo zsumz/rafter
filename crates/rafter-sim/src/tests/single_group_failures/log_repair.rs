@@ -1,3 +1,9 @@
+//! Repairing a follower whose log diverged from the new leader's.
+//!
+//! Proves a divergent follower suffix is repaired after failover, and that a
+//! new leader's no-op suffices to overwrite a follower's extra tail — entries
+//! that were never committed and must not survive.
+
 use super::super::helpers::{
     deliver_append_entries, deliver_append_entries_response, pre_vote, pre_vote_response,
     request_vote, three_node_cluster,

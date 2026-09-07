@@ -1,3 +1,10 @@
+//! Negative controls for the per-state commit and configuration detectors.
+//!
+//! Proves each fires on a constructed violation: a divergent committed entry, a
+//! commit index past local log coverage, a regressed commit or configuration
+//! floor, a configuration identity changed at one index, and two uncommitted
+//! configurations at once. A lossy restart must not clear those floors either.
+
 use super::super::commit::{
     check_commit_index_monotonicity, check_commit_index_within_local_log_bounds_shape,
     check_committed_configuration_identity, check_committed_configuration_index_monotonicity,

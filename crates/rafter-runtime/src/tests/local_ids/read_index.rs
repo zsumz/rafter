@@ -1,3 +1,9 @@
+//! Read identifiers survive the barrier, and survive its cancellation.
+//!
+//! A granted read must come back under the caller's own id, and losing
+//! leadership must cancel every outstanding read in registration order —
+//! released only once the term that caused the cancellation is durable.
+
 use super::*;
 
 #[test]

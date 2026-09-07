@@ -1,3 +1,10 @@
+//! The exact liveness features a soak configuration may report.
+//!
+//! Each expectation binds a feature to its invariant, clauses, scenario, and
+//! observation identity together with the evidence that feature must carry, so
+//! a report cannot claim a liveness property under the wrong scenario.
+//! Optional features appear only when the configuration actually enables them.
+
 use rafter_sim::model_check::SoakConfig;
 
 use super::{

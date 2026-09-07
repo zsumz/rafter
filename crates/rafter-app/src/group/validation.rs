@@ -1,3 +1,9 @@
+//! Addressing checks for inbound group requests.
+//!
+//! Nothing reaches the group's protocol state unless it names this group and,
+//! for peer traffic, this node; a mismatch is refused rather than adapted.
+//! Authenticity, ordering, and duplicate suppression belong to the transport.
+
 use super::{
     Debug, GroupError, GroupResult, PeerEnvelope, PersistedRaftRuntime, RaftGroup,
     ReadBarrierRequest, ReplicatedStateMachine,

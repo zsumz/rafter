@@ -1,3 +1,11 @@
+//! The boundary a handle reaches a driver through.
+//!
+//! One trait, and the obligations every implementation takes on rather than the
+//! mechanism any of them uses: a write resolves only after commit and apply, a
+//! caller's freshness floor is passed on unweakened, a consistency level a
+//! driver does not serve is refused rather than answered weaker, and shutdown
+//! leaves no waiter pending. Which levels a driver serves is its own choice.
+
 use std::{future::Future, pin::Pin};
 
 use rafter::NodeId;

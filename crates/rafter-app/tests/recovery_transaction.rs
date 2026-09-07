@@ -1,4 +1,3 @@
-#![allow(clippy::wildcard_imports)]
 //! The restart transaction, over the real durable stack.
 //!
 //! `gen7_boundary_probe` pins the ordering rule against a scripted runtime,
@@ -22,6 +21,8 @@
 //! where `4..=5` were, and `6`. The result reports applied index 6 against a
 //! committed application index of 6, so readiness passes and reads are served.
 //! Nothing later can find the hole.
+
+#![allow(clippy::wildcard_imports)]
 
 mod support;
 

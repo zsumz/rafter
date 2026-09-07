@@ -11,6 +11,13 @@ use super::super::{
 };
 use super::ManagedProcess;
 
+mod placement;
+mod quiescence;
+
+use quiescence::classify_target_quiescence;
+#[cfg(test)]
+pub(crate) use quiescence::classify_target_quiescence_for_test;
+
 #[cfg(test)]
 thread_local! {
     static NEXT_WRAPPER_EXIT_OBSERVATION_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
@@ -68,75 +75,6 @@ impl TargetObservation {
 }
 
 impl ManagedProcess {
-    pub(crate) fn promote_target_group(
-        &mut self,
-        process_group: u32,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        if !self.target.is_owned() {
-            return Err("target process-group anchor was already released".into());
-        }
-        if self.target.id() != process_group {
-            return Err(format!(
-                "target process group {process_group} does not match owned anchor group {}",
-                self.target.id()
-            )
-            .into());
-        }
-        let TargetPlacement::JoiningAnchorGroup { launcher } = self.placement else {
-            return Err(format!(
-                "target process group became ready from invalid placement {:?}",
-                self.placement
-            )
-            .into());
-        };
-        self.placement = TargetPlacement::InAnchorGroup { launcher };
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_target_group(
-        &mut self,
-        process_group: u32,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        if process_group != self.target.id() {
-            return Err("test target process group does not match its anchor".into());
-        }
-        self.placement = TargetPlacement::InAnchorGroup {
-            launcher: self.wrapper.id(),
-        };
-        Ok(())
-    }
-
-    pub(crate) fn record_published_target(
-        &mut self,
-        launcher: u32,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        if self.placement != TargetPlacement::UnpublishedInWrapperGroup {
-            return Err(format!(
-                "target launcher publication repeated from {:?}",
-                self.placement
-            )
-            .into());
-        }
-        self.placement = TargetPlacement::PublishedInWrapperGroup { launcher };
-        Ok(())
-    }
-
-    pub(crate) fn begin_target_group_transition(
-        &mut self,
-        launcher: u32,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        if self.placement != (TargetPlacement::PublishedInWrapperGroup { launcher }) {
-            return Err(format!(
-                "target launcher {launcher} began anchor transition from {:?}",
-                self.placement
-            )
-            .into());
-        }
-        self.placement = TargetPlacement::JoiningAnchorGroup { launcher };
-        Ok(())
-    }
-
     /// Observes the target group, treating a closed observation window as the
     /// error it has always been reported as.
     ///
@@ -314,56 +252,4 @@ impl ManagedProcess {
     pub(crate) fn record_target_kill_for_test(&mut self) {
         self.target.record_signal_for_test(ProcessSignal::Kill);
     }
-}
-
-fn classify_target_quiescence(
-    lease_before: TargetLeaseState,
-    lease_after: TargetLeaseState,
-    wrapper_exited: bool,
-    target_members: TargetMemberState,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    match (lease_before, lease_after) {
-        (TargetLeaseState::Released, TargetLeaseState::Held) => {
-            Err("target lifetime lease returned from EOF to a held state".into())
-        }
-        (TargetLeaseState::Released, TargetLeaseState::Released)
-            if target_members == TargetMemberState::Live =>
-        {
-            Err(
-                "target lifetime lease was released while the process observer reported live target members"
-                    .into(),
-            )
-        }
-        (TargetLeaseState::Held, TargetLeaseState::Held)
-            if wrapper_exited && target_members == TargetMemberState::Quiescent =>
-        {
-            Err(
-                "process observer omitted live target members while the target lifetime lease remained held after wrapper exit"
-                    .into(),
-            )
-        }
-        (TargetLeaseState::Released, TargetLeaseState::Released)
-            if wrapper_exited && target_members == TargetMemberState::Quiescent =>
-        {
-            Ok(true)
-        }
-        (
-            TargetLeaseState::Held,
-            TargetLeaseState::Held | TargetLeaseState::Released,
-        )
-        | (
-            TargetLeaseState::Released,
-            TargetLeaseState::Released,
-        ) => Ok(false),
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn classify_target_quiescence_for_test(
-    lease_before: TargetLeaseState,
-    lease_after: TargetLeaseState,
-    wrapper_exited: bool,
-    target_members: TargetMemberState,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    classify_target_quiescence(lease_before, lease_after, wrapper_exited, target_members)
 }

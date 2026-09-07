@@ -70,7 +70,10 @@ pub(crate) fn terminate_after_timeout(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+)]
 fn await_termination_after_term(
     process: &mut ManagedProcess,
     term_signal_sent: bool,

@@ -1,3 +1,10 @@
+//! Negative controls for the logical-log history detectors.
+//!
+//! Proves a leader that truncates its own term's log, an `AppendEntries` reply
+//! claiming success without a matching prev or the suffix it says it stored,
+//! and an equal index and term over different prefixes each fail. A snapshot
+//! boundary hides none of it: an unwitnessed prefix is coverage, not a pass.
+
 use super::super::history::{
     check_append_entries_prev_log_acceptance, check_append_entries_stored_suffix_acceptance,
 };

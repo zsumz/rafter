@@ -1,3 +1,10 @@
+//! Randomized soak execution across seeds and cluster shapes.
+//!
+//! Every soak validates its execution contract against the node configs and
+//! the config it is about to run before running them, so a reported result
+//! always describes the workload actually executed. Seed provenance is
+//! recorded because only a replayed seed reproduces an earlier run.
+
 use std::{
     error::Error,
     time::{Instant, SystemTime, UNIX_EPOCH},

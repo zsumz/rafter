@@ -1,3 +1,11 @@
+//! What the in-memory read path answers, and which refusal it names.
+//!
+//! Every scenario turns on telling one refusal from another: a freshness gap
+//! from an abandonment, the cluster's rejection from this driver's own exhausted
+//! bound, and a barrier the group ended during routing from one the read call
+//! observed itself. Read-ID accounting is pinned here too, because a barrier
+//! left reserved and a spent ID reissued are one mistake seen from two sides.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

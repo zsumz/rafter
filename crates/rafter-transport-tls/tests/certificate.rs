@@ -1,3 +1,10 @@
+//! The certificate-to-principal directory: rotation, conflicts, and bounds.
+//!
+//! Several fingerprints may name one principal, so a rotation needs no identity
+//! change; one fingerprint naming two principals is refused, because that is
+//! the ambiguity authentication cannot survive. The retained mapping stays
+//! finite, and fingerprint text round-trips in one canonical spelling.
+
 use rafter_transport_tls::{
     CertificateDirectory, CertificateDirectoryError, CertificateDirectoryLimits,
     CertificateFingerprint, PeerId,

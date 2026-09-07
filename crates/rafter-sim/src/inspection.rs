@@ -1,3 +1,10 @@
+//! Read-only observation surface over a simulated cluster.
+//!
+//! Every accessor here reports state the cluster already holds and must never
+//! advance the clock, step a node, or mutate recorded history; checkers and
+//! scenarios depend on looking without perturbing. Turning these readings
+//! into verdicts belongs to the invariant modules, not here.
+
 use std::collections::BTreeSet;
 
 use rafter::{

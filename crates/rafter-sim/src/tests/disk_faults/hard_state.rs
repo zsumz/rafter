@@ -1,3 +1,10 @@
+//! Hard state that outlived the log it referred to.
+//!
+//! Proves a lost unfsynced suffix leaves term and vote as the only survivors,
+//! that a hard-state/log reorder preserves the commit index and committed
+//! configuration even past the retained log, and that such an image reopens
+//! only once the retained log covers the commit it claims.
+
 use super::super::*;
 use super::fixtures::{
     committed_configuration_bootstrap, retained_last_log_index, test_node_config,

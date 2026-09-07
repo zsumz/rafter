@@ -1,3 +1,10 @@
+//! Whole-snapshot install: what persists first, and what must never escape.
+//!
+//! An install must stage, promote, and compact before the apply and success
+//! response are released, and a snapshot at or below the durable boundary must
+//! be acknowledged without touching the store. A failure at any of the three
+//! writes must suppress those outputs and poison instead.
+
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 

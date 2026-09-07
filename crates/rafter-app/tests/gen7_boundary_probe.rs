@@ -1,4 +1,3 @@
-#![allow(clippy::wildcard_imports)]
 //! Regression suite, adopted from the gen-7 hunt: *where* the snapshot-boundary
 //! verdict is taken.
 //!
@@ -32,6 +31,8 @@
 //! install the snapshot the boundary names, then apply the suffix, in one
 //! operation. What is still deferred past the pump is only the permanent
 //! verdict, and only for a batch that would apply nothing.
+
+#![allow(clippy::wildcard_imports)]
 
 mod support;
 

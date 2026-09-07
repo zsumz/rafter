@@ -1,3 +1,9 @@
+//! Determinism and fault behavior of the simulated network.
+//!
+//! Proves delivery can be reordered, dropped, and delayed on demand, and that
+//! a fixed seed reproduces the same random delivery order — the property every
+//! other scenario's reproducibility rests on.
+
 use super::helpers::{pre_vote, seeded_three_node_cluster, three_node_cluster};
 use super::*;
 use rafter::Message;

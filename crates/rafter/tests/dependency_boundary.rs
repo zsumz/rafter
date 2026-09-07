@@ -1,3 +1,10 @@
+//! The workspace dependency DAG stays explicit, reasoned, and kernel-empty.
+//!
+//! The kernel must keep an empty normal-dependency section, every workspace
+//! edge must be declared with a reason, and dev-dependency exceptions must
+//! stay both documented and alive; an undeclared or stale edge fails here
+//! before it becomes architecture.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,

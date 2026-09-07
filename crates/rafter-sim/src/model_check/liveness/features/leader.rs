@@ -1,3 +1,10 @@
+//! The LV-01 monitor for a quorum that never regains its partitioned minority.
+//!
+//! Proves a cluster with a minority permanently unreachable still converges on a
+//! stable leader, and that the leader is usable: a fresh proposal commits under
+//! it inside the bounded-fair round budget with the same node leading
+//! throughout. A leader replaced mid-window is a failure, not grounds to retry.
+
 use std::collections::BTreeSet;
 
 use rafter::NodeId;

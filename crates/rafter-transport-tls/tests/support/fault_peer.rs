@@ -1,3 +1,10 @@
+//! A real TLS peer that misbehaves on command.
+//!
+//! It completes mutual TLS and the peer handshake honestly, then does whatever
+//! its current behaviour says: refuse on frame limits, accept and close,
+//! capture frames, or capture one and close. That is what lets the retry,
+//! backoff, and recovery scenarios watch a sender against a peer they control.
+
 use std::{
     io::{self, Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},

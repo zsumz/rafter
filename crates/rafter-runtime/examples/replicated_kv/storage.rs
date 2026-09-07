@@ -1,3 +1,10 @@
+//! Opening the example's file-backed nodes and taking their snapshots.
+//!
+//! Recovery always goes through the applied-floor constructor, so the caller
+//! receives its unapplied committed entries explicitly; snapshots are built at
+//! the applied boundary and read back through the chunk source. Raft-owned
+//! snapshot metadata is filled in by the runtime, not here.
+
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},

@@ -1,3 +1,9 @@
+//! A chunk directive must reach the caller resolved, or not at all.
+//!
+//! The leader must turn its own directive into a real message carrying the
+//! installed snapshot's identity and bytes; a store that cannot serve the chunk
+//! must yield neither the raw directive nor a half-formed message.
+
 use super::*;
 
 #[test]

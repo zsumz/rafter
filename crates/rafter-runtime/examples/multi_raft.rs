@@ -445,8 +445,10 @@ fn run_phase(
     }
 }
 
-// Report-only arithmetic: precision loss in averages is irrelevant.
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "report-only arithmetic; precision loss in averages is irrelevant"
+)]
 fn print_report(cluster: &Cluster, baseline_rss_kilobytes: u64, rows: &[PhaseRow]) {
     let groups = cluster.groups;
     println!(

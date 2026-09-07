@@ -1,3 +1,10 @@
+//! Structural validation of liveness report JSON.
+//!
+//! Every object must carry exactly its expected field set with values of the
+//! expected type: an unknown field fails as hard as a missing one, so a
+//! renamed or newly added field cannot slip past unnoticed. These checks judge
+//! shape only, never whether the liveness claim itself is true.
+
 use std::collections::BTreeSet;
 
 pub(super) fn validate_required_evidence(

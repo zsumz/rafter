@@ -1,0 +1,1429 @@
+# Rafter's executable architecture, checked by zrail (https://github.com/zsumz/zrail).
+#
+# The contract owns workspace layers, source boundaries, resolved mutation
+# owners, module docs, sibling tests, and shrink-only size ratchets. Remaining
+# Rust guards retain stricter syntax and product-specific rules; see the
+# ownership map and qualification commands in docs/development.md.
+#
+# Everyday commands:
+#   zrail check                     # read-only architecture check
+#   zrail diff --base HEAD          # classify uncommitted architecture changes
+#   zrail update                    # refresh zrail.lock after reviewed changes
+#
+# The adoption debt ledger (per-file shrink-only ratchets) lives in
+# zrail-baseline.toml so this file stays the readable architecture document.
+#
+# Runs on zrail 0.0.3-rc.8 (contract schema 2, lock semantics epoch 6).
+# rc.7 resolves macro authority by logical namespace: an export set is proven
+# through glob re-export chains instead of over-approximated, an include!
+# splice borrows its mounting parent's dependency scope, macros and modules
+# stop sharing one namespace, and a reviewed allowance may grant conservative
+# name-only binding where an origin is genuinely unresolvable. Together those
+# closed the macro switch below — the last preset this contract was waiting
+# on. Every rail is now at its target posture.
+
+schema = 2
+adapters = ["rust"]
+imports = ["zrail-baseline.toml"]
+
+[repository]
+roots = ["crates"]
+exclude = [
+  # trybuild UI cases: compile-fail/pass sources built by the trybuild harness
+  # at test runtime, never by a Cargo target of this workspace.
+  "crates/rafter-invariant-test/tests/ui/**",
+  # Nested build directory produced by exact-package evidence runs.
+  "crates/rafter-invariants/target/**",
+  # Independent Cargo workspaces beside the product workspace: the reference
+  # consumers, the fuzz harness, and the benchmark comparison harness. Each
+  # keeps its own manifest graph and its own qualification lanes.
+  "reference/**",
+  "fuzz/**",
+  "bench-compare/**",
+]
+workspace_members = "exact"
+nested_git = "deny"
+submodules = "deny"
+symlinks = "inside"
+
+# ---------------------------------------------------------------------------
+# Dependency identity. The workspace DAG itself is layered below; the guard
+# test workspace_dependency_boundary_matches_declared_crate_graph additionally
+# pins exact per-crate edges with per-edge reasons, including the normal/dev
+# distinction that layer edges deliberately do not model.
+# ---------------------------------------------------------------------------
+
+[dependencies]
+mode = "locked"
+unassigned_packages = "deny"
+cycles = "deny"
+
+[[dependencies.crate_root]]
+package = "serde"
+root = "serde"
+reason = "The published serde library exposes the serde crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "1"
+
+[[dependencies.crate_root]]
+package = "serde_json"
+root = "serde_json"
+reason = "The published serde_json library exposes the serde_json crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "1"
+
+[[dependencies.crate_root]]
+package = "clap"
+root = "clap"
+reason = "The published clap library exposes the clap crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "4"
+
+[[dependencies.crate_root]]
+package = "proptest"
+root = "proptest"
+reason = "The published proptest library exposes the proptest crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "1"
+
+[[dependencies.crate_root]]
+package = "criterion"
+root = "criterion"
+reason = "The published criterion library exposes the criterion crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "0.5"
+
+[[dependencies.crate_root]]
+package = "syn"
+root = "syn"
+reason = "The published syn library exposes the syn crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "2"
+
+[[dependencies.crate_root]]
+package = "quote"
+root = "quote"
+reason = "The published quote library exposes the quote crate root."
+[dependencies.crate_root.source]
+kind = "registry"
+requirement = "1"
+
+# ---------------------------------------------------------------------------
+# Source policy.
+#
+# module_docs is "required": the module-contract convention that
+# readability_architecture_guard enforces for rafter, rafter-codec, and
+# rafter-storage now holds everywhere. The only six files without a leading
+# `//!` are the `include!`-mounted fragments, which cannot carry one — an inner
+# attribute after the splice point is E0753 — so they are ratcheted in the
+# ledger rather than exempted here.
+#
+# entrypoints is "declarative": every binary hands off to its library, with the
+# two reviewed exceptions reclassified below. rc.6 reads an entrypoint as
+# declarative only when its body is empty or a single expression handoff — no
+# branches, no macros, no blocks — which is what reclassified the second one.
+#
+# facades is "declarative", flipped under rc.6. The list this switch waited on
+# was 20 files holding 68 items behind a facade path, in two halves that only
+# looked like one class of debt. Ten were facades declaring their own module's
+# central type or constants inline — `Node`, `Message`, `NodeConfig` and its
+# defaults, `Cluster`, the driver type aliases, the ALPN constant. That was a
+# house pattern, not debt, and it needed a policy that could tell a declaration
+# from an implementation; rc.6's relaxed conventions are that policy, and all
+# ten now pass untouched.
+#
+# The other half did not change and was not expected to: nine parent modules
+# holding behavior their own child modules call. Each is reclassified as an
+# implementation below with the reason it belongs at that path, because in
+# every case the items are private to the subtree and moving them one level
+# down would have to widen their visibility to do it. A tenth reclassification,
+# rafter-invariant-test-macros/src/lib.rs, is a one-line move candidate rather
+# than a durable implementation, and is marked as such at the entry.
+# ---------------------------------------------------------------------------
+
+[source.rust]
+module_docs = "required"
+facades = "declarative"
+entrypoints = "declarative"
+tests = "sibling"
+
+# crates/rafter-maelstrom/src/main.rs is not a thin entrypoint that hands off
+# to a library: it is the Maelstrom harness itself, 291 lines of node state,
+# request routing, and reply obligations that exist only for that binary.
+[[source.rust.file_roles]]
+path = "crates/rafter-maelstrom/src/main.rs"
+role = "implementation"
+reason = "The Maelstrom harness is the binary; its node state and reply routing have no library to move behind."
+
+# rc.6 reads a declarative entrypoint as an empty body or a single expression
+# handoff — no branches, no macros, no blocks. crates/rafter-invariants/src/main.rs
+# hands off to `cli::run` but then maps its Result onto the process exit code,
+# which is a `match` with an arm that writes to stderr and returns exit code 2.
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/main.rs"
+role = "implementation"
+reason = "The binary owns the process exit contract: mapping the CLI result onto success, failure, and the reserved code-2 error channel is behavior with no library caller to move behind."
+
+# The nine implementations wearing a mod.rs. rc.6's relaxed declarative
+# conventions absorbed the ten central-type facades — a module may now declare
+# its own type, its defaults, its aliases, and its constants inline — which was
+# the half of this list that was never debt. What remains is the other half,
+# unchanged by the release: parent modules that hold behavior their own child
+# modules call. Each is reclassified here with the reason the implementation
+# belongs at that path rather than one level down, because in every case the
+# items are private to the subtree and moving them would have to widen their
+# visibility to do it.
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/producer/mod.rs"
+role = "implementation"
+reason = "The producer driver is the module: layer execution, bundle staging, and the StagedBundle Drop guard that deletes a partial bundle are one lifetime. Splitting the guard from the publish path it protects would let a half-written bundle outlive its owner."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/verification/maelstrom/lease/mod.rs"
+role = "implementation"
+reason = "Lease scanning is a three-stage pipeline — scan_node_logs, bind_history, finalize_scan — folding into one accumulator, with two private helpers that only that accumulator uses. The stages have no meaning apart from each other."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/verification/maelstrom/receipt/mod.rs"
+role = "implementation"
+reason = "Receipt validation is one entry function and the toolchain rule it delegates to. Both read the same receipt shape and validate_toolchain has no caller other than validate."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariants/src/verification/artifact/test_runner/mod.rs"
+role = "implementation"
+reason = "The module exists to install exactly one verifier. The zero-sized ExactTestVerifier, its DetectorLogVerifier implementation, and the static instance callers receive are a single registration; separating them would have to make the type public."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-invariant-test-macros/src/detector_test/mod.rs"
+role = "implementation"
+reason = "Parsing, validating, and expanding the attribute is the module's whole purpose, and each private validator is called only by the expansion step declared directly above it."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-transport-tls/src/directory/mod.rs"
+role = "implementation"
+reason = "InstalledPeerPolicy and TlsPeerDirectory are declared here, and these are their own inherent and Clone implementations. The child modules hold the directory's error and lease vocabulary, not its behavior."
+
+[[source.rust.file_roles]]
+path = "crates/rafter-transport-tls/src/session/file/mod.rs"
+role = "implementation"
+reason = "from_parts is the store's single private constructor, called twice from the open child module. It stays at the parent so no child has to learn the field layout, and so the Mutex-wrapped Inner it seals stays private to the subtree."
+
+[[source.rust.file_roles]]
+path = "crates/rafter/src/node/bootstrap/validate/mod.rs"
+role = "implementation"
+reason = "The author rule is deliberately sited in the one place that sees only a durable image, beside the BootstrapState validation that applies it. The log child module holds the per-entry checks these call."
+
+[[source.rust.file_roles]]
+path = "crates/rafter/src/node/replication/snapshot/receive/mod.rs"
+role = "implementation"
+reason = "Three private Node helpers shared by the chunk, disposition, and whole child modules. They are the follower-side snapshot authority those siblings agree on; moving them into any one of the three would invert the dependency."
+
+# Not an implementation by intent — a one-line move candidate. rc.6 reads a
+# procedural-macro entrypoint as declarative only when its body is a single
+# expression handoff, and this one binds a local first:
+#
+#     let arguments = arguments.into();
+#     detector_test::expand(&arguments, item.into()).into()
+#
+# Inlining that conversion into the call makes the file declarative and this
+# override stale. It is recorded as an override rather than a source edit
+# because the flip was scoped to policy.
+[[source.rust.file_roles]]
+path = "crates/rafter-invariant-test-macros/src/lib.rs"
+role = "implementation"
+reason = "The proc-macro entry converts its own argument stream before handing off, so the crate root holds one statement of behavior."
+
+[source.rust.macros]
+# "deny-unreviewed", landed on the fourth attempt. Every macro expansion in
+# the repository now binds a reviewed allowance below or is denied. The three
+# holds that survived rc.6 — 39 invocations no allowance spelling could reach
+# — each closed as an engine change in rc.7, not as a source edit here:
+#
+#   * 30 -> 0. The std invocations reaching the crate through the
+#     `pub(super) use crate::*` chains in crates/rafter/src/node/tests no
+#     longer carry a phantom `repository:rafter` candidate. rc.7 proves the
+#     export set of a glob chain, and package rafter defines no macros, so
+#     the compiler candidate stands alone and binds.
+#   * 8+1 -> 0 by grant. The `serde_json::json` in the `include!`-mounted
+#     maelstrom fragments (and one fixture site beside them) still resolve to
+#     an unresolved origin — a splice has no import graph of its own — but an
+#     allowance may now carry `resolution = "conservative"` and grant a
+#     reviewed name-only binding for exactly that boundary. The entry below
+#     does, and says why.
+#   * 1 -> 0. The `write!` beside `mod write` in rafter-service/src/error.rs:
+#     macros and modules now live in separate namespaces, as in Rust itself,
+#     so the collision is gone and the std allowance binds.
+#
+# The alternative was three source edits (privatize the node/tests globs,
+# de-`include!` the fragments, rename the write module); none was needed, and
+# the sources keep their natural shape.
+#
+# The allowlist that follows is the reviewed expansion surface: 61 entries,
+# authored at 0.0.1, re-proven at each engine generation since, and
+# reconciled to rc.7 by the engine's own findings — seven prelude-compromise
+# entries retired as unreachable once `proptest::prelude` resolved, and the
+# stale opaque-input claims went with them. Each entry names the narrowest
+# provenance class its occurrences actually resolve to; the engine enforces
+# that match per occurrence, so a loosened entry fails the gate rather than
+# widening silently. Twenty-three entries additionally attest
+# `field_mutation = "none"` — reviewed: their expansions write, mutably
+# borrow, and mutate no governed field — which is what lets the field
+# ownership rail at the bottom of this contract see through them.
+mode = "deny-unreviewed"
+
+# Compiler-builtin derives. The compiler expands these itself and zrail reads
+# the generated implementations directly, so they carry no provenance claim.
+
+[[source.rust.macros.allow]]
+name = "Clone"
+field_mutation = "none"
+reason = "The builtin Clone derive duplicates a data type field by field."
+
+[[source.rust.macros.allow]]
+name = "Copy"
+field_mutation = "none"
+reason = "The builtin Copy derive marks a data type as trivially duplicated."
+
+[[source.rust.macros.allow]]
+name = "Debug"
+field_mutation = "none"
+reason = "The builtin Debug derive renders a data type for diagnostics only."
+
+[[source.rust.macros.allow]]
+name = "Default"
+field_mutation = "none"
+reason = "The builtin Default derive composes per-field defaults."
+
+[[source.rust.macros.allow]]
+name = "Eq"
+field_mutation = "none"
+reason = "The builtin Eq derive asserts reflexive equality for a data type."
+
+[[source.rust.macros.allow]]
+name = "Hash"
+field_mutation = "none"
+resolution = "conservative"
+reason = "The builtin Hash derive feeds a data type's fields to a hasher."
+
+[[source.rust.macros.allow]]
+name = "Ord"
+field_mutation = "none"
+reason = "The builtin Ord derive orders a data type by declaration order."
+
+[[source.rust.macros.allow]]
+name = "PartialEq"
+field_mutation = "none"
+reason = "The builtin PartialEq derive compares a data type field by field."
+
+[[source.rust.macros.allow]]
+name = "PartialOrd"
+field_mutation = "none"
+reason = "The builtin PartialOrd derive orders a data type by declaration order."
+
+# Standard-library expansions. Each takes ordinary Rust as input, and the
+# hygiene rules above already govern the ones that can abort — `panic`,
+# `unreachable`, and the assert family are reviewed per use, not denied.
+
+[[source.rust.macros.allow]]
+name = "assert"
+field_mutation = "none"
+resolution = "conservative"
+reason = "The std `assert` expansion evaluates an ordinary Rust condition and panics."
+
+[[source.rust.macros.allow]]
+name = "assert_eq"
+field_mutation = "none"
+resolution = "conservative"
+reason = "The std `assert_eq` expansion compares two ordinary Rust expressions and panics."
+
+[[source.rust.macros.allow]]
+name = "assert_ne"
+field_mutation = "none"
+resolution = "conservative"
+reason = "The std `assert_ne` expansion compares two ordinary Rust expressions and panics."
+
+[[source.rust.macros.allow]]
+name = "debug_assert"
+reason = "The std `debug_assert` expansion is the assert family under debug assertions."
+
+[[source.rust.macros.allow]]
+name = "debug_assert_eq"
+reason = "The std `debug_assert_eq` expansion is the assert family under debug assertions."
+
+[[source.rust.macros.allow]]
+name = "debug_assert_ne"
+reason = "The std `debug_assert_ne` expansion is the assert family under debug assertions."
+
+[[source.rust.macros.allow]]
+name = "concat"
+resolution = "conservative"
+reason = "The std `concat` expansion joins literals into one literal at compile time."
+
+[[source.rust.macros.allow]]
+name = "env"
+resolution = "conservative"
+reason = "The std `env` expansion reads a build-time environment variable; the compile-environment effect it carries is modelled by the effect rails."
+
+[[source.rust.macros.allow]]
+name = "include"
+resolution = "conservative"
+reason = "The std `include` expansion splices a literal Rust fragment that zrail continues to analyze; the splice is its own origin, so the mounting suites bind this by spelling."
+
+[[source.rust.macros.allow]]
+name = "format"
+field_mutation = "none"
+resolution = "conservative"
+reason = "The std `format` expansion renders ordinary Rust expressions into a String."
+
+[[source.rust.macros.allow]]
+name = "format_args"
+reason = "The std `format_args` expansion borrows ordinary Rust expressions for a formatter."
+
+[[source.rust.macros.allow]]
+name = "write"
+field_mutation = "none"
+resolution = "conservative"
+reason = "The std `write` expansion formats ordinary Rust expressions into a writer."
+
+[[source.rust.macros.allow]]
+name = "writeln"
+resolution = "conservative"
+reason = "The std `writeln` expansion formats ordinary Rust expressions into a writer."
+
+[[source.rust.macros.allow]]
+name = "println"
+resolution = "conservative"
+reason = "The std `println` expansion writes formatted output to stdout."
+
+[[source.rust.macros.allow]]
+name = "eprint"
+reason = "The std `eprint` expansion writes formatted output to stderr."
+
+[[source.rust.macros.allow]]
+name = "eprintln"
+reason = "The std `eprintln` expansion writes formatted output to stderr."
+
+[[source.rust.macros.allow]]
+name = "matches"
+field_mutation = "none"
+resolution = "conservative"
+reason = "The std `matches` expansion tests one ordinary Rust expression against a pattern."
+
+[[source.rust.macros.allow]]
+name = "panic"
+field_mutation = "none"
+reason = "The std `panic` expansion aborts the current thread; the house style reviews each use."
+
+[[source.rust.macros.allow]]
+name = "unreachable"
+field_mutation = "none"
+inputs = "opaque"
+reason = "The std `unreachable` expansion marks an impossible state; the house style reviews each use."
+
+[[source.rust.macros.allow]]
+name = "vec"
+field_mutation = "none"
+resolution = "conservative"
+reason = "The std `vec` expansion builds a Vec from ordinary Rust expressions."
+
+[[source.rust.macros.allow]]
+name = "thread_local"
+inputs = "opaque"
+reason = "The std `thread_local` expansion declares per-thread statics; the item-position exemptions below name each file that hosts one."
+
+[[source.rust.macros.allow]]
+name = "std::thread_local"
+inputs = "opaque"
+reason = "The qualified spelling of the same std `thread_local` expansion, written where the detector session imports it explicitly."
+
+# Dependency expansions, each bound to the exact Cargo.lock package that
+# defines it. `inputs = "opaque"` marks a token DSL whose body is not ordinary
+# Rust and is therefore not analyzed as expressions.
+
+[[source.rust.macros.allow]]
+name = "serde::Serialize"
+reason = "The reviewed serde Serialize derive emits a data-only serializer for the annotated type."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "serde"
+
+[[source.rust.macros.allow]]
+name = "serde::Deserialize"
+reason = "The reviewed serde Deserialize derive emits a data-only deserializer for the annotated type."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "serde"
+
+[[source.rust.macros.allow]]
+name = "serde"
+reason = "The serde helper attribute only configures the derives above; it declares no items of its own."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "serde"
+
+[[source.rust.macros.allow]]
+name = "serde_json::json"
+resolution = "conservative"
+inputs = "opaque"
+reason = "The reviewed `json` expansion is a JSON token DSL that builds a serde_json::Value."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "serde_json"
+
+[[source.rust.macros.allow]]
+name = "json"
+resolution = "conservative"
+inputs = "opaque"
+reason = "The same serde_json `json` expansion written unqualified inside an include-mounted fragment, where the splice leaves no exact origin to bind."
+
+[[source.rust.macros.allow]]
+name = "clap::Parser"
+reason = "The reviewed clap Parser derive emits the invariant CLI's argument parser."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "clap"
+
+[[source.rust.macros.allow]]
+name = "clap::Subcommand"
+reason = "The reviewed clap Subcommand derive emits the invariant CLI's subcommand dispatch."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "clap"
+
+[[source.rust.macros.allow]]
+name = "command"
+resolution = "conservative"
+reason = "The reviewed clap `command` expansion seeds a builder from the crate's own Cargo metadata."
+
+[[source.rust.macros.allow]]
+name = "arg"
+resolution = "conservative"
+reason = "The reviewed clap `arg` expansion builds one argument from a flag-and-help spelling zrail reads directly."
+
+# The property suites open with `use proptest::prelude::*`. A glob makes every
+# prelude name a feasible candidate for the spellings written beneath it, and
+# zrail binds an invocation only when all of them are allowed — so each prelude
+# candidate is named here beside the bare spelling actually written.
+
+[[source.rust.macros.allow]]
+name = "proptest::prelude::proptest"
+inputs = "opaque"
+reason = "The reviewed `proptest` expansion is a strategy-and-body token DSL that declares the generated test items named below."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "proptest"
+
+[[source.rust.macros.allow]]
+name = "proptest::prelude::prop_oneof"
+inputs = "opaque"
+reason = "The reviewed `prop_oneof` expansion is a weighted-strategy token DSL."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "proptest"
+
+[[source.rust.macros.allow]]
+name = "proptest::prelude::prop_assert_eq"
+inputs = "opaque"
+reason = "The reviewed `prop_assert_eq` expansion compares ordinary Rust expressions and returns a test failure."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "proptest"
+
+[[source.rust.macros.allow]]
+name = "criterion::criterion_group"
+inputs = "opaque"
+reason = "The reviewed `criterion_group` expansion declares a benchmark group; the item-position exemptions below name each bench file."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "criterion"
+
+[[source.rust.macros.allow]]
+name = "criterion::criterion_main"
+inputs = "opaque"
+reason = "The reviewed `criterion_main` expansion declares a benchmark entrypoint; the item-position exemptions below name each bench file."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "criterion"
+
+[[source.rust.macros.allow]]
+name = "quote::quote"
+inputs = "opaque"
+reason = "The reviewed `quote` expansion is a token-tree DSL; it is how the proc-macro crate writes its output."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "quote"
+
+[[source.rust.macros.allow]]
+name = "syn::Token"
+inputs = "opaque"
+reason = "The reviewed `Token` expansion names a Rust token type from punctuation that is not itself an expression."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "syn"
+
+[[source.rust.macros.allow]]
+name = "syn::parse_quote"
+inputs = "opaque"
+reason = "The reviewed `parse_quote` expansion is a token-tree DSL parsed into a syn syntax node."
+[source.rust.macros.allow.source]
+kind = "cargo-lock"
+package = "syn"
+
+# Repository-owned expansions, in two groups with two different provenance
+# proofs. The seven cross-crate toolkit exports — the six `oracle_*` rules and
+# the `detector_test` attribute — are consumed from crates other than the one
+# that defines them, so no `definition` path can name their origin; they bind
+# through rc.6's repository source authority, which resolves the providing
+# package, hashes its owned input closure into the lock, and carries the
+# `ambient_inputs = "none"` attestation reviewed below. The remaining six are
+# local `macro_rules!` that collapse a repeated test or impl shape inside one
+# module, and each is narrowed to the exact file that defines it.
+#
+# `ambient_inputs = "none"` is a review claim, not an engine proof. It holds
+# here because the six `oracle_*` rules are `macro_rules!` — token-driven by
+# construction — and because rafter-invariant-test-macros is a proc-macro crate
+# with no build script and no `env!`, `option_env!`, `std::env`, `std::fs`,
+# `include*!`, or process use anywhere in its sources; its whole dependency set
+# is proc-macro2, quote, and syn. Output depends only on invocation tokens.
+
+[[source.rust.macros.allow]]
+name = "rafter_invariant_test::oracle_assert"
+field_mutation = "none"
+inputs = "opaque"
+reason = "The toolkit's `oracle_assert` records an oracle observation and evaluates an ordinary Rust condition."
+[source.rust.macros.allow.source]
+kind = "repository"
+package = "rafter-invariant-test"
+directory = "crates/rafter-invariant-test"
+ambient_inputs = "none"
+
+[[source.rust.macros.allow]]
+name = "rafter_invariant_test::oracle_assert_eq"
+field_mutation = "none"
+inputs = "opaque"
+reason = "The toolkit's `oracle_assert_eq` records an oracle observation and compares ordinary Rust expressions."
+[source.rust.macros.allow.source]
+kind = "repository"
+package = "rafter-invariant-test"
+directory = "crates/rafter-invariant-test"
+ambient_inputs = "none"
+
+[[source.rust.macros.allow]]
+name = "rafter_invariant_test::oracle_assert_ne"
+inputs = "opaque"
+reason = "The toolkit's `oracle_assert_ne` records an oracle observation and compares ordinary Rust expressions."
+[source.rust.macros.allow.source]
+kind = "repository"
+package = "rafter-invariant-test"
+directory = "crates/rafter-invariant-test"
+ambient_inputs = "none"
+
+[[source.rust.macros.allow]]
+name = "rafter_invariant_test::oracle_expect_err"
+field_mutation = "none"
+inputs = "opaque"
+reason = "The toolkit's `oracle_expect_err` records an oracle observation and asserts an ordinary Rust call fails."
+[source.rust.macros.allow.source]
+kind = "repository"
+package = "rafter-invariant-test"
+directory = "crates/rafter-invariant-test"
+ambient_inputs = "none"
+
+[[source.rust.macros.allow]]
+name = "rafter_invariant_test::oracle_invoke_recorder"
+inputs = "opaque"
+reason = "The toolkit's `oracle_invoke_recorder` routes an observation to the active recorder."
+[source.rust.macros.allow.source]
+kind = "repository"
+package = "rafter-invariant-test"
+directory = "crates/rafter-invariant-test"
+ambient_inputs = "none"
+
+[[source.rust.macros.allow]]
+name = "rafter_invariant_test::oracle_violation"
+field_mutation = "none"
+inputs = "opaque"
+reason = "The toolkit's `oracle_violation` reports a named invariant violation to the active recorder."
+[source.rust.macros.allow.source]
+kind = "repository"
+package = "rafter-invariant-test"
+directory = "crates/rafter-invariant-test"
+ambient_inputs = "none"
+
+[[source.rust.macros.allow]]
+name = "rafter_invariant_test::detector_test"
+field_mutation = "none"
+reason = "The toolkit's `detector_test` attribute wraps a test body in a detector session. It is written in rafter-invariant-test-macros and re-exported by rafter-invariant-test, which is the origin every call site resolves to; that package's captured closure includes the proc-macro crate, so the digest still binds the code that actually expands."
+[source.rust.macros.allow.source]
+kind = "repository"
+package = "rafter-invariant-test"
+directory = "crates/rafter-invariant-test"
+ambient_inputs = "none"
+
+[[source.rust.macros.allow]]
+name = "impl_oracle_call"
+inputs = "opaque"
+definition = "crates/rafter-invariant-test/src/oracle/call.rs"
+reason = "The reviewed `impl_oracle_call` expansion declares the oracle-call impls for one arity in the file that defines it."
+
+[[source.rust.macros.allow]]
+name = "delegated_test"
+inputs = "opaque"
+definition = "crates/rafter-invariants/src/verification/detector/source_tests/call_flow.rs"
+reason = "The reviewed `delegated_test` expansion declares one call-flow delegation case per invocation."
+
+[[source.rust.macros.allow]]
+name = "identity_and_resolution_tests"
+inputs = "opaque"
+definition = "crates/rafter-invariants/src/verification/detector/source_tests.rs"
+reason = "The reviewed `identity_and_resolution_tests` expansion declares the shared identity and resolution cases for one detector source."
+
+[[source.rust.macros.allow]]
+name = "ignored_tlc_mutation_test"
+inputs = "opaque"
+definition = "crates/rafter-invariants/src/producer/tla_mutation_tests.rs"
+reason = "The reviewed `ignored_tlc_mutation_test` expansion declares one ignored TLC mutation case per invocation."
+
+[[source.rust.macros.allow]]
+name = "assert_stale"
+inputs = "opaque"
+definition = "crates/rafter-invariants/src/verification/source/tests.rs"
+reason = "The reviewed `assert_stale` expansion asserts one staleness outcome over ordinary Rust expressions."
+
+[[source.rust.macros.allow]]
+name = "debug_display"
+inputs = "opaque"
+definition = "crates/rafter-multiraft/src/managed/error.rs"
+reason = "The reviewed `debug_display` expansion declares the paired Debug and Display impls for one managed error."
+
+# Item-position expansions still need per-file graph exemptions regardless of
+# macro mode; scripts/zrail-reconcile regenerates the block between the
+# markers from `zrail check --format json`.
+# >>> generated: observed spellings
+
+[[source.rust.item_macros]]
+path = "crates/rafter-codec/benches/codec.rs"
+name = "criterion::criterion_group"
+reason = "The reviewed `criterion_group` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-codec/benches/codec.rs"
+name = "criterion::criterion_main"
+reason = "The reviewed `criterion_main` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-codec/tests/properties.rs"
+name = "proptest"
+reason = "The reviewed `proptest` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariant-test/src/detector/session.rs"
+name = "std::thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariant-test/src/oracle/call.rs"
+name = "impl_oracle_call"
+reason = "The reviewed `impl_oracle_call` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/anchor.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/internal_command/test_support.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/launch/program.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/managed/cleanup.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/managed/target.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/output/test_support.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/process_group.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/reaper.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/signal.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/spawn/lease.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/execution/process/telemetry/test_support.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/producer/process/budget/active.rs"
+name = "thread_local"
+reason = "The reviewed `thread_local` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/producer/tla_mutation_tests.rs"
+name = "ignored_tlc_mutation_test"
+reason = "The reviewed `ignored_tlc_mutation_test` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/verification/detector/source_tests.rs"
+name = "identity_and_resolution_tests"
+reason = "The reviewed `identity_and_resolution_tests` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-invariants/src/verification/detector/source_tests/call_flow.rs"
+name = "delegated_test"
+reason = "The reviewed `delegated_test` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter-multiraft/src/managed/error.rs"
+name = "debug_display"
+reason = "The reviewed `debug_display` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter/benches/kernel.rs"
+name = "criterion::criterion_group"
+reason = "The reviewed `criterion_group` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter/benches/kernel.rs"
+name = "criterion::criterion_main"
+reason = "The reviewed `criterion_main` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter/tests/leader_append_only_property.rs"
+name = "proptest"
+reason = "The reviewed `proptest` expansion declares items in this file."
+
+[[source.rust.item_macros]]
+path = "crates/rafter/tests/properties.rs"
+name = "proptest"
+reason = "The reviewed `proptest` expansion declares items in this file."
+
+# <<< generated: observed spellings
+
+[source.rust.hygiene]
+# Production reach only; sibling tests and #[cfg(test)] modules are exempt.
+# `expect` with a message is the house style for impossible states, so it is
+# deliberately absent from deny_methods; `panic!`/`unreachable!` likewise
+# remain reviewed per use rather than denied.
+unsafe = "deny"
+lint_suppressions = "reasoned"
+deny_methods = ["unwrap"]
+deny_macros = ["todo", "unimplemented", "dbg"]
+
+# File-size budgets transcribe file_size_guard.rs: 300-line implementation
+# target with a 1,000-line hard stop, facade target 100, scenario-suite target
+# 400, harness target 600. The hard values are class backstops; the per-file
+# teeth are the shrink-only ratchets in zrail-baseline.toml, which pin every
+# over-target file at its adoption size.
+#
+# The facade backstop is 225 rather than 1,000. It was raised to the shared
+# 1,000 at adoption only because a class hard stop then applied to ratcheted
+# files too; the rc series exempts them, so every facade still over 100 lines
+# is held by its own ratchet and the class limit can return to the reviewed
+# number. A new facade may be born up to 225 lines; past that it is a module.
+
+[source.rust.size.facade]
+target = 100
+hard = 225
+
+[source.rust.size.implementation]
+target = 300
+hard = 1000
+
+[source.rust.size.test]
+target = 400
+hard = 1500
+
+[source.rust.size.auxiliary]
+target = 600
+hard = 1500
+
+# ---------------------------------------------------------------------------
+# Effects. Layers marked no-ambient-services may not reach the network, an
+# async runtime, a database, a container runtime, or ambient entropy from any
+# file, tests included. Filesystem, process, clock, and thread effects are not
+# denied there because guard tests legitimately spawn cargo and git.
+#
+# sealed-production adds the stricter rule for the layers whose shipped code
+# reaches nothing at all. Six carry it: checksum, kernel, runtime-boundary,
+# wire, application, and embedding — the sans-IO half of the stack plus the two
+# embeddings, whose async surface is the caller's runtime rather than one they
+# bind. Seven refuse, each for a reason that is the layer's job: durability
+# writes (filesystem, process), runtime persists and ticks (filesystem,
+# wall-clock, environment, process), transport-dev and transport open sockets
+# (network, thread, and for TLS filesystem and wall-clock too), test-toolkit
+# spawns and reads the environment (process, environment), verification runs
+# the simulator and the Maelstrom harness (wall-clock, environment, process,
+# filesystem, thread), and evidence-tooling is the pipeline that launches
+# verifiers (all six, 727 occurrences). Those are architecture, not debt, and
+# the scopes below already hold the strictest of them to named symbol denies.
+# ---------------------------------------------------------------------------
+
+[profiles.no-ambient-services]
+[profiles.no-ambient-services.effects]
+deny = [
+  "network",
+  "async-runtime",
+  "database",
+  "container-runtime",
+  "randomness",
+]
+
+# The stricter rule, and the reason it can exist: production reachability
+# excludes integration tests, benchmarks, examples, and anything beneath
+# #[cfg(test)], so a layer can be held to total purity in the code that ships
+# while its own suites still spawn cargo, touch the clock, and write scratch
+# directories. no-ambient-services stays attached beside this one because it
+# governs those suites too.
+[profiles.sealed-production]
+reachability = "production"
+[profiles.sealed-production.effects]
+deny = [
+  "filesystem",
+  "network",
+  "process",
+  "thread",
+  "wall-clock",
+  "environment",
+  "async-runtime",
+  "database",
+  "container-runtime",
+  "randomness",
+]
+
+# ---------------------------------------------------------------------------
+# Layers. Arrows follow the README's model: a sans-IO kernel, a
+# persist-before-output runtime boundary, durable storage, an embedded
+# application layer, service/multiraft embeddings, and transports at the edge.
+# Layer edges cover every Cargo edge kind, so dev-only test-toolkit and
+# harness edges appear here too; the dependency_boundary guard keeps the
+# normal/dev distinction exact.
+# ---------------------------------------------------------------------------
+
+[[layer]]
+name = "checksum"
+packages = ["rafter-crc32"]
+may_depend_on = []
+profiles = ["no-ambient-services", "sealed-production"]
+reason = "A dependency-free CRC32C primitive shared by storage and wire formats."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "kernel"
+packages = ["rafter"]
+may_depend_on = ["test-toolkit"]
+profiles = ["no-ambient-services", "sealed-production"]
+reason = "The deterministic sans-IO protocol kernel; its only workspace edge is the dev-only invariant-test toolkit."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "runtime-boundary"
+packages = ["rafter-runtime-api"]
+may_depend_on = ["kernel"]
+profiles = ["no-ambient-services", "sealed-production"]
+reason = "The persist-before-output contract between the kernel and any runtime."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "durability"
+packages = ["rafter-storage"]
+may_depend_on = ["kernel", "checksum", "test-toolkit"]
+profiles = ["no-ambient-services"]
+reason = "Hard-state, log, and snapshot stores beneath the runtime."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "wire"
+packages = ["rafter-codec"]
+may_depend_on = ["kernel", "checksum"]
+profiles = ["no-ambient-services", "sealed-production"]
+reason = "The versioned peer-message wire format, independent of storage formats."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "runtime"
+packages = ["rafter-runtime"]
+may_depend_on = [
+  "kernel",
+  "runtime-boundary",
+  "durability",
+  "test-toolkit",
+  "transport-dev",
+]
+reason = "The durable persist-before-output node; its examples exercise the dev transport, so that edge is dev-only."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "application"
+packages = ["rafter-app"]
+may_depend_on = [
+  "kernel",
+  "runtime-boundary",
+  "runtime",
+  "durability",
+  "test-toolkit",
+]
+profiles = ["no-ambient-services", "sealed-production"]
+reason = "The embedded replicated state machine; runtime and durability edges are dev-only acceptance harnesses."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "embedding"
+packages = ["rafter-service", "rafter-multiraft"]
+may_depend_on = [
+  "kernel",
+  "application",
+  "runtime-boundary",
+  "runtime",
+  "durability",
+]
+profiles = ["no-ambient-services", "sealed-production"]
+reason = "Async service handles and the many-group host; runtime and durability edges are dev-only acceptance harnesses."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "transport-dev"
+packages = ["rafter-transport-tcp-insecure"]
+may_depend_on = ["kernel", "wire"]
+reason = "The deliberately insecure TCP transport for examples, tests, and local clusters."
+
+[layer.dependencies]
+external = "none"
+
+[[layer]]
+name = "transport"
+packages = ["rafter-transport-tls"]
+may_depend_on = [
+  "kernel",
+  "wire",
+  "checksum",
+  "embedding",
+  "application",
+  "runtime",
+  "durability",
+]
+reason = "The authenticated production transport; application, runtime, and durability edges are dev-only composition fixtures."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "test-toolkit"
+packages = ["rafter-invariant-test", "rafter-invariant-test-macros"]
+may_depend_on = []
+reason = "The detector/oracle toolkit and its proc macros, shared by every crate's invariant tests; its lifecycle suites exercise Unix sockets, so it carries no purity profile."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "verification"
+packages = ["rafter-sim", "rafter-maelstrom"]
+may_depend_on = ["kernel", "wire", "runtime", "durability", "test-toolkit"]
+profiles = ["no-ambient-services"]
+reason = "Deterministic simulation, model checking, and the Maelstrom process harness."
+
+[layer.dependencies]
+external = "locked"
+
+[[layer]]
+name = "evidence-tooling"
+packages = ["rafter-invariants"]
+may_depend_on = ["kernel", "verification"]
+reason = "The invariant evidence pipeline; it spawns bounded verifier processes and reaches Unix sockets, so it carries no purity profile."
+
+[layer.dependencies]
+external = "locked"
+
+# ---------------------------------------------------------------------------
+# Format isolation. Disk formats and wire formats evolve independently; these
+# denies keep either from quietly borrowing the other, in any dependency kind.
+# ---------------------------------------------------------------------------
+
+[[dependency]]
+name = "storage-owns-disk-formats"
+from = "rafter-storage"
+deny = ["rafter-codec"]
+reason = "Durable formats must not couple to the peer wire format."
+
+[[dependency]]
+name = "codec-owns-wire-formats"
+from = "rafter-codec"
+deny = ["rafter-storage"]
+reason = "The peer wire format must not couple to durable storage formats."
+
+[[dependency]]
+name = "runtime-boundary-stays-minimal"
+from = "rafter-runtime-api"
+deny = ["rafter-storage", "rafter-codec", "tokio"]
+reason = "The runtime contract stays a kernel-only boundary with no storage, wire, or async-runtime reach."
+
+# ---------------------------------------------------------------------------
+# Source scopes transcribe source_boundary.rs, tightened to everything the
+# code already avoids. They cover sibling tests inside src too: the kernel's
+# own tests stay deterministic.
+# ---------------------------------------------------------------------------
+
+[[scope]]
+name = "kernel-sans-io"
+include = ["crates/rafter/src/**"]
+reason = "The protocol kernel is sans-IO and deterministic: no filesystem, network, process, thread, clock, environment, or async runtime."
+
+[scope.symbols]
+deny = [
+  "std::fs",
+  "std::net",
+  "std::io",
+  "std::process",
+  "std::thread",
+  "std::time",
+  "std::env",
+  "tokio",
+  "async_trait",
+]
+
+[[scope]]
+name = "runtime-boundary-sans-io"
+include = ["crates/rafter-runtime-api/src/**"]
+reason = "The runtime contract defines persistence obligations without performing IO or binding an async runtime."
+
+[scope.symbols]
+deny = [
+  "std::fs",
+  "std::net",
+  "std::io",
+  "std::process",
+  "std::thread",
+  "std::time",
+  "std::env",
+  "tokio",
+  "async_trait",
+]
+
+[[scope]]
+name = "application-io-free"
+include = ["crates/rafter-app/src/**"]
+reason = "The embedded state-machine layer stays deterministic; durability and IO belong to the runtime beneath it."
+
+[scope.symbols]
+deny = [
+  "std::fs",
+  "std::net",
+  "std::io",
+  "std::process",
+  "std::thread",
+  "std::time",
+  "std::env",
+  "tokio",
+]
+
+[[scope]]
+name = "multiraft-io-free"
+include = ["crates/rafter-multiraft/src/**"]
+reason = "The many-group host schedules deterministically; sockets, clocks, and disks stay with its embedder."
+
+[scope.symbols]
+deny = [
+  "std::fs",
+  "std::net",
+  "std::io",
+  "std::process",
+  "std::thread",
+  "std::time",
+  "std::env",
+  "tokio",
+]
+
+# ---------------------------------------------------------------------------
+# Owners.
+# ---------------------------------------------------------------------------
+
+# A directory owner has no production/test split to narrow — a fixture tree is
+# owned wherever it is reached — so this one stays "all". The capability owner
+# below is the opposite case: it is narrowed to production reach, which is what
+# shrank its allow list from 29 files to the six that actually launch.
+[[owner]]
+name = "adversarial-fixtures"
+kind = "directory"
+match = "**/fixtures"
+reachability = "all"
+allow = [
+  "crates/rafter-transport-tls/tests/fixtures",
+  "crates/rafter-sim/src/tests/dynamic_membership/fixtures",
+  "crates/rafter-invariants/src/evidence/fixtures",
+  "crates/rafter-invariants/src/verdict/fixtures",
+  "crates/rafter-invariants/src/verdict/report/fixtures",
+  "crates/rafter-invariants/src/verification/simulator/schedule/tests/fixtures",
+]
+reason = "Deliberately broken or data-only fixture trees have named, reviewed owners."
+
+[[owner]]
+name = "process-launch-capability"
+kind = "capability"
+within = ["crates/rafter-invariants/src/**"]
+match = "std::process::Command"
+reachability = "production"
+allow = [
+  "crates/rafter-invariants/src/execution/process/anchor.rs",
+  "crates/rafter-invariants/src/execution/process/internal_command.rs",
+  "crates/rafter-invariants/src/execution/process/launch.rs",
+  "crates/rafter-invariants/src/execution/process/spawn.rs",
+  "crates/rafter-invariants/src/provenance/image.rs",
+  "crates/rafter-invariants/src/provenance/source/tracked.rs",
+]
+reason = "Production verifier subprocesses launch only through the bounded descriptor-anchored execution path and its two reviewed provenance probes; the twenty-three test-only reachers this list used to name are covered by the profile rails, not by capability ownership."
+
+
+# The field-mutation ownership rail, raised once deny-unreviewed landed: with
+# every macro expansion reviewed, twenty-three of the allowances above carry
+# `field_mutation = "none"` — the narrow attestation that their expansions
+# write, mutably borrow, and mutate no governed field — and that claim is what
+# turns ~25,000 opaque-expansion candidates into the real mutation surface.
+# Every owner here is production-scoped, like the capability owner above:
+# tests construct scenarios by writing node state directly, and that freedom
+# is deliberate.
+#
+# Eight owners hold. Three more were drafted, verified against the engine, and
+# are parked below the eight until three specific engine gaps close:
+#
+#   * node-commit-index-authority and node-applied-index-authority each meet
+#     one write through a local binding of the owned type
+#     (construction.rs `volatile.commit_index = parts.commit_index`, and
+#     `node.volatile.applied_index = floor`), which the engine cannot resolve
+#     to one exact field identity — OWN-006 inside the owner's own allowed
+#     file, failing closed on writes the rule intends to permit.
+#   * node-configuration-index-authority (field-mutation on
+#     DerivedState::configuration) fires OWN-003 on dispatch.rs's match arm
+#     destructuring `Input::DangerousRawConfigurationProposal::configuration`
+#     — a by-value read of a same-named field on an unrelated type.
+#
+# One rule is wider than its first draft, on reviewed evidence rather than
+# ambition: leader-state writes flagged nine interior-bookkeeping sites
+# (`self.leader.ticks += 1` and kin), and the engine does not yet distinguish
+# assignment through a projection of a field from replacement of the field
+# itself, so the owner covers the whole leadership-module surface and says so.
+
+[[owner]]
+name = "node-term-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::state::core::PersistentState::current_term"
+allow = ["crates/rafter/src/node/election.rs", "crates/rafter/src/node/lifecycle.rs"]
+reason = "The current term advances only where an election or a lifecycle transition decides it."
+
+[[owner]]
+name = "node-vote-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::state::core::PersistentState::voted_for"
+allow = ["crates/rafter/src/node/election.rs", "crates/rafter/src/node/lifecycle.rs"]
+reason = "A vote is recorded only where an election or a lifecycle transition decides it."
+
+[[owner]]
+name = "node-role-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::state::core::VolatileState::role"
+allow = ["crates/rafter/src/node/election.rs", "crates/rafter/src/node/lifecycle.rs"]
+reason = "Role changes only through an election outcome or a lifecycle transition."
+
+[[owner]]
+name = "node-leader-state-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::leader"
+allow = [
+  "crates/rafter/src/node/lifecycle.rs",
+  "crates/rafter/src/node/election.rs",
+  "crates/rafter/src/node/transfer.rs",
+  "crates/rafter/src/node/replication/send.rs",
+  "crates/rafter/src/node/replication/authority.rs",
+]
+reason = "Leader state lives in the leadership modules: replaced wholesale at lifecycle transitions, and its interior bookkeeping (tick counters, pending transfer, deposition waiver, lease) advances only in election, transfer, and replication send/authority."
+
+[[owner]]
+name = "node-derived-state-authority"
+kind = "field-write"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::derived"
+allow = ["crates/rafter/src/node/log.rs"]
+reason = "Derived state is rebuilt only where the log that derives it changes."
+
+[[owner]]
+name = "node-election-progress-authority"
+kind = "field-mutation"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::election"
+mutating_methods = ["advance_timeout", "begin_election", "begin_pre_vote", "record_pre_vote", "record_vote"]
+allow = ["crates/rafter/src/node/election.rs"]
+reason = "Election progress advances only in the election module."
+
+[[owner]]
+name = "node-election-lifecycle-authority"
+kind = "field-mutation"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::election"
+mutating_methods = ["enter_leadership", "reset_for_follower"]
+allow = ["crates/rafter/src/node/lifecycle.rs"]
+reason = "Entering leadership and falling back to follower are lifecycle transitions."
+
+[[owner]]
+name = "node-election-timeout-authority"
+kind = "field-mutation"
+reachability = "production"
+within = ["crates/rafter/src/**"]
+match = "crate::node::Node::election"
+mutating_methods = ["reset_timeout"]
+allow = [
+  "crates/rafter/src/node/election.rs",
+  "crates/rafter/src/node/replication/receive.rs",
+  "crates/rafter/src/node/replication/snapshot/receive/mod.rs",
+]
+reason = "The election timeout resets on an election step or on accepted leader traffic."
+
+
+# ---------------------------------------------------------------------------
+# Qualification gates and the architecture invariants they enforce. The
+# machine-readable completion manifest in docs/work-completion.md remains the
+# authority for the full evidence pipeline; these entries bind the
+# architecture-guard subset to its tests and hosted gate.
+# ---------------------------------------------------------------------------
+
+[[gate]]
+name = "rustdoc"
+kind = "local"
+path = "scripts/rustdoc-check"
+reason = "Builds the publishable crates under -D warnings -D missing-docs; the local half of the public-surface guarantee."
+
+[[gate]]
+name = "ci"
+kind = "ci"
+path = ".github/workflows/ci.yml"
+inputs = [
+  ".github/actions/setup-rust/action.yml",
+  ".github/actions/configure-invariant-cargo/action.yml",
+  "verification/github-actions.lock",
+]
+requires = ["rustdoc"]
+reason = "Pull-request qualification: lint, workspace tests, reference consumers, and the deterministic invariant aggregate."
+
+[[invariant]]
+id = "RAFTER-KERNEL-01"
+title = "The protocol kernel stays sans-IO with an empty dependency section"
+status = "enforced"
+document = "README.md#boundaries"
+evidence = [
+  "rust-test:crates/rafter/tests/dependency_boundary.rs::rafter_core_dependency_boundary_has_no_higher_layer_dependencies",
+  "rust-test:crates/rafter/tests/source_boundary.rs::source_boundary_guard_enforces_lower_layer_source_rules",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-GRAPH-01"
+title = "Every workspace dependency edge is declared and reasoned"
+status = "enforced"
+document = "README.md#crates"
+evidence = [
+  "rust-test:crates/rafter/tests/dependency_boundary.rs::workspace_dependency_boundary_matches_declared_crate_graph",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-READ-01"
+title = "Reviewed modules open with architectural contracts"
+status = "enforced"
+document = "docs/work-completion.md#public-surface-and-architecture-completion"
+evidence = [
+  "rust-test:crates/rafter/tests/readability_architecture_guard.rs::production_modules_begin_with_an_architectural_contract",
+  "rust-test:crates/rafter/tests/readability_architecture_guard.rs::test_modules_begin_with_a_scenario_contract",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-READ-02"
+title = "File sizes ratchet downward under reviewed limits"
+status = "enforced"
+document = "docs/work-completion.md#public-surface-and-architecture-completion"
+evidence = [
+  "rust-test:crates/rafter/tests/file_size_guard.rs::file_size_guard_enforces_module_size_limits",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-READ-03"
+title = "Inline test modules stay small or move to sibling files"
+status = "enforced"
+document = "docs/work-completion.md#public-surface-and-architecture-completion"
+evidence = [
+  "rust-test:crates/rafter/tests/test_location_guard.rs::test_location_guard_limits_large_inline_test_modules",
+  "gate:ci",
+]
+
+[[invariant]]
+id = "RAFTER-DOC-01"
+title = "Published crates document their entire public surface"
+status = "enforced"
+document = "docs/work-completion.md#public-surface-and-architecture-completion"
+evidence = [
+  "rust-test:crates/rafter/tests/public_api_docs_guard.rs::public_api_docs_guard_detects_missing_docs_and_enum_policy",
+  "gate:rustdoc",
+  "gate:ci",
+]

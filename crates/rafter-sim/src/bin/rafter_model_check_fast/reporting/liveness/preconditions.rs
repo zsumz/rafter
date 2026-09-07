@@ -1,3 +1,10 @@
+//! Precondition and fault-cycle checks behind each liveness claim.
+//!
+//! A liveness report is admissible only when its evidence shows the fault it
+//! claims to survive was really installed, exercised, and healed, and that
+//! delivery fairness was untampered. Absent or inconsistent evidence fails the
+//! report closed instead of counting as a satisfied condition.
+
 use std::collections::BTreeSet;
 
 use super::{

@@ -8,8 +8,9 @@ use std::{
 use super::{
     architecture_support::{
         assert_domain_source_imports_follow_manifest, declared_module_graph,
-        declares_implementation, display_path, domain, invariant_rust_files, is_test_module, read,
-        rust_files, starts_with_module_contract, workspace_root,
+        declares_implementation, display_path, domain, invariant_rust_files,
+        is_include_mounted_fragment, is_test_module, read, rust_files, starts_with_module_contract,
+        workspace_root,
     },
     invariant_tooling::{
         ENFORCED_DOMAIN_SOURCES, INVARIANT_DOMAINS, REVIEWED_DOMAIN_IMPORT_EXCEPTIONS,
@@ -177,6 +178,9 @@ fn modeled_invariant_domains_require_module_contracts_without_legacy_allowance()
     modeled.insert("crates/rafter-invariants/src/producer/simulator/liveness");
     for relative in modeled {
         for path in rust_files(&root.join(relative)) {
+            if is_include_mounted_fragment(&display_path(&root, &path)) {
+                continue;
+            }
             assert!(
                 starts_with_module_contract(&read(&path)),
                 "{} needs a `//!` module contract",

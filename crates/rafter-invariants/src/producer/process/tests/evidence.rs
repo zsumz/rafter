@@ -16,6 +16,10 @@ use crate::{
 };
 
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "wall-clock deadline evidence is Linux-authoritative; loaded non-Linux hosts invert these timings"
+)]
 fn timed_child_is_killed_at_its_soft_timeout() {
     let environment = super::super::base_environment();
     let arguments = [OsString::from("-e"), OsString::from("sleep 5")];

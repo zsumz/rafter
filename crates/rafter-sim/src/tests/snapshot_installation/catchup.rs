@@ -1,3 +1,10 @@
+//! Bringing a follower forward by snapshot rather than by log entries.
+//!
+//! Proves a follower behind the compacted prefix installs the exact durable
+//! payload and keeps its suffix, that a divergent suffix is discarded rather
+//! than left beside the snapshot, and that snapshot bytes never surface as a
+//! committed log entry. A newer snapshot term also fences the stale leader.
+
 use super::super::helpers::{pre_vote, pre_vote_response};
 use super::super::*;
 use super::fixtures::{

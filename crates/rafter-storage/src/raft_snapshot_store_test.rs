@@ -337,7 +337,7 @@ fn in_memory_snapshot_store_rejects_streamed_snapshot_payload_checksum_mismatch(
         fn snapshot_chunk(&self, request: SnapshotChunkRequest<'_>) -> Option<Vec<u8>> {
             let start = usize::try_from(request.offset).ok()?;
             let end = start.checked_add(request.len as usize)?;
-            self.0.get(start..end).map(<[u8]>::to_vec)
+            self.0.get(start..end).map(Vec::from)
         }
     }
 

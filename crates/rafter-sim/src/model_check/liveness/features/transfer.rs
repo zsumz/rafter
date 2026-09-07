@@ -1,3 +1,10 @@
+//! The LV-03 monitor for leadership transfer to a caught-up voter.
+//!
+//! Proves an issued transfer reaches an explicit terminal state — the target
+//! becomes the quiescent leader, or the transfer is rejected — inside its
+//! bounded round budget. Having no caught-up voter to name is a coverage
+//! failure rather than a pass; an exhausted budget is a liveness violation.
+
 use std::collections::BTreeSet;
 
 use rafter::NodeId;
@@ -221,42 +228,5 @@ fn issue_liveness_transfer(state: &mut ExplorationState, leader: NodeId, target:
 }
 
 #[cfg(test)]
-mod tests {
-    use rafter::NodeId;
-
-    use super::transfer_rejection_observed;
-    use crate::records::TransferRejected;
-
-    #[test]
-    fn explicit_transfer_rejection_matches_only_the_exact_request_after_its_floor() {
-        let rejections = [TransferRejected {
-            node_id: NodeId(1),
-            target: NodeId(2),
-        }];
-
-        assert!(transfer_rejection_observed(
-            &rejections,
-            0,
-            NodeId(1),
-            NodeId(2)
-        ));
-        assert!(!transfer_rejection_observed(
-            &rejections,
-            1,
-            NodeId(1),
-            NodeId(2)
-        ));
-        assert!(!transfer_rejection_observed(
-            &rejections,
-            0,
-            NodeId(1),
-            NodeId(3)
-        ));
-        assert!(!transfer_rejection_observed(
-            &rejections,
-            0,
-            NodeId(2),
-            NodeId(2)
-        ));
-    }
-}
+#[path = "transfer_test.rs"]
+mod tests;

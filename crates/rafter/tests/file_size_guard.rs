@@ -1,3 +1,10 @@
+//! File sizes ratchet downward under reviewed per-class limits.
+//!
+//! Facades, implementations, protocol scenarios, and harness files each carry
+//! a target, a soft line, and a hard stop; growth past the hard stop needs a
+//! reasoned allowlist entry, and an entry that outlives its excuse is itself
+//! a failure.
+
 use std::{
     fmt::Write as _,
     fs,
@@ -57,6 +64,17 @@ fn file_size_guard_enforces_module_size_limits() {
 
     validate_allowlist(&workspace, &files, &mut violations);
     for path in files {
+        let relative = display_path(&workspace, &path);
+        // Keep excluded sources, explicit facade paths, and the stricter
+        // protocol scenario ceiling. zrail owns the remaining size classes.
+        if !relative.starts_with("fuzz/")
+            && !relative.starts_with("crates/rafter-invariant-test/tests/ui/")
+            && !FACADE_PATHS.contains(&relative.as_str())
+            && !TEST_FACADE_PATHS.contains(&relative.as_str())
+            && !is_rafter_core_test(&relative)
+        {
+            continue;
+        }
         check_file_size(
             &workspace,
             &path,

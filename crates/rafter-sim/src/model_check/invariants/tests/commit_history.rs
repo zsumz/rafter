@@ -1,3 +1,10 @@
+//! Negative controls for commit certificates and leader completeness.
+//!
+//! Proves a certificate is validated against the membership effective for its
+//! entry — both joint majorities, voters only, current term only — and that
+//! LG-05 is rechecked whenever committed history grows or commit authority
+//! arrives late, rather than being settled at its first observation.
+
 use rafter::{
     BootstrapLogEntry, BootstrapState, CommittedConfiguration, ConfigurationEntry, ConfigurationId,
     JointMembership, LogIndex, NodeConfig, NodeId, Role, Term,

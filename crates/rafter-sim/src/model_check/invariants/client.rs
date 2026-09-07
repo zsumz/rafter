@@ -1,3 +1,10 @@
+//! The client-visible read and write obligations over one explored state.
+//!
+//! Owns RD-03's committed-floor rule — a granted barrier must have been
+//! registered and must cover everything committed at that registration — RD-04's
+//! rule that a read is answered only from applied state, and the RD-06
+//! linearizability entry point. An instrumentation gap is a harness error here.
+
 use super::{catalog, summarize, Action, Failure};
 use super::{
     check_client_history_linearizable, BTreeMap, ClientRead, ClientReadOutcome, ClientReadProof,

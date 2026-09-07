@@ -1,7 +1,13 @@
+//! Shared fixtures and driving routines for model-check states.
+//!
+//! The bounded explorers pin the minimal protocol — no pre-vote, no
+//! check-quorum — so their state spaces stay exactly the historically verified
+//! ones, and each leg opts in explicitly. Every driver here moves the cluster
+//! through the instrumented transition engine, never around it.
+
 use rafter::{
-    ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,
-    BootstrapLogEntry, BootstrapState, LogIndex, MembershipConfig, Message, NodeConfig, NodeId,
-    RaftSnapshot, RaftSnapshotMetadata, Role, SnapshotGroupId, Term,
+    ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, LogIndex,
+    Message, NodeConfig, NodeId, RaftSnapshotMetadata, Role, SnapshotGroupId, Term,
 };
 
 use crate::Cluster;
@@ -11,6 +17,13 @@ use crate::Envelope;
 use super::{
     scheduling::Operation, state::apply_to_state, state::ExplorationState, NodeSummary, ProposalId,
     StateSummary,
+};
+
+mod fixtures;
+
+pub(super) use fixtures::{
+    bootstrap_state, bootstrap_with_snapshot, large_snapshot_payload, test_snapshot,
+    test_snapshot_with_committed_membership,
 };
 
 pub(super) fn proposal_payload(proposal_id: ProposalId) -> Vec<u8> {
@@ -186,112 +199,6 @@ pub(super) fn request_vote(from: NodeId, to: NodeId) -> impl FnMut(&Envelope) ->
     }
 }
 
-pub(super) fn bootstrap_state(
-    current_term: Term,
-    entries: &[(u64, Term, &[u8])],
-) -> BootstrapState {
-    BootstrapState {
-        current_term,
-        voted_for: None,
-        commit_index: LogIndex::ZERO,
-        committed_configuration: None,
-        snapshot: None,
-        log: entries
-            .iter()
-            .map(|(index, term, payload)| {
-                BootstrapLogEntry::application(LogIndex(*index), *term, (*payload).to_vec())
-            })
-            .collect(),
-    }
-}
-
-pub(super) fn bootstrap_with_snapshot(
-    current_term: Term,
-    snapshot: RaftSnapshot,
-    entries: &[(u64, Term, &[u8])],
-) -> BootstrapState {
-    BootstrapState {
-        current_term,
-        voted_for: None,
-        commit_index: LogIndex::ZERO,
-        committed_configuration: None,
-        snapshot: Some(snapshot),
-        log: entries
-            .iter()
-            .map(|(index, term, payload)| {
-                BootstrapLogEntry::application(LogIndex(*index), *term, (*payload).to_vec())
-            })
-            .collect(),
-    }
-}
-
-/// Builds a snapshot descriptor for `payload` and returns both; the caller
-/// seeds the payload into each node whose store must hold the content.
-pub(super) fn test_snapshot(
-    writer_id: u64,
-    last_included_index: u64,
-    last_included_term: u64,
-    hard_state_term: u64,
-    payload: &[u8],
-) -> (RaftSnapshot, Vec<u8>) {
-    let metadata = test_snapshot_metadata(
-        writer_id,
-        last_included_index,
-        last_included_term,
-        hard_state_term,
-    );
-    let snapshot = RaftSnapshot::from_payload(metadata, payload);
-    (snapshot, payload.to_vec())
-}
-
-pub(super) fn test_snapshot_with_committed_membership(
-    writer_id: u64,
-    last_included_index: u64,
-    last_included_term: u64,
-    hard_state_term: u64,
-    payload: &[u8],
-    membership: MembershipConfig,
-) -> (RaftSnapshot, Vec<u8>) {
-    let metadata = test_snapshot_metadata(
-        writer_id,
-        last_included_index,
-        last_included_term,
-        hard_state_term,
-    )
-    .with_committed_membership(membership);
-    let snapshot = RaftSnapshot::from_payload(metadata, payload);
-    (snapshot, payload.to_vec())
-}
-
-fn test_snapshot_metadata(
-    writer_id: u64,
-    last_included_index: u64,
-    last_included_term: u64,
-    hard_state_term: u64,
-) -> RaftSnapshotMetadata {
-    RaftSnapshotMetadata::new(
-        SnapshotGroupId::new("sim-data-group").expect("valid snapshot group id"),
-        NodeId(writer_id),
-        LogIndex(last_included_index),
-        Term(last_included_term),
-        Term(hard_state_term),
-        ApplicationSnapshotMetadata::new(
-            ApplicationSnapshotKind::new("stream_data").expect("valid snapshot kind"),
-            ApplicationSnapshotVersion::new(1).expect("valid snapshot version"),
-        ),
-    )
-    .expect("valid snapshot metadata")
-}
-
-pub(super) fn large_snapshot_payload() -> Vec<u8> {
-    let mut payload = Vec::with_capacity(70 * 1024);
-    while payload.len() < 70 * 1024 {
-        payload.extend_from_slice(b"snapshot-model-check-payload");
-    }
-    payload.truncate(70 * 1024);
-    payload
-}
-
 pub(super) fn summarize(cluster: &Cluster) -> StateSummary {
     StateSummary {
         nodes: cluster
@@ -313,4 +220,24 @@ pub(super) fn summarize(cluster: &Cluster) -> StateSummary {
             })
             .collect(),
     }
+}
+
+fn test_snapshot_metadata(
+    writer_id: u64,
+    last_included_index: u64,
+    last_included_term: u64,
+    hard_state_term: u64,
+) -> RaftSnapshotMetadata {
+    RaftSnapshotMetadata::new(
+        SnapshotGroupId::new("sim-data-group").expect("valid snapshot group id"),
+        NodeId(writer_id),
+        LogIndex(last_included_index),
+        Term(last_included_term),
+        Term(hard_state_term),
+        ApplicationSnapshotMetadata::new(
+            ApplicationSnapshotKind::new("stream_data").expect("valid snapshot kind"),
+            ApplicationSnapshotVersion::new(1).expect("valid snapshot version"),
+        ),
+    )
+    .expect("valid snapshot metadata")
 }

@@ -1,3 +1,9 @@
+//! Shared vocabulary for the transport's integration tests.
+//!
+//! Group codecs — one exact, one canonicalizing — a stock Raft message, and a
+//! hex fixture decoder: the pieces every scenario needs before it can say
+//! anything about the transport. Nothing here exercises the transport itself.
+
 #![allow(dead_code)]
 
 pub mod runtime;

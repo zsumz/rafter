@@ -1,3 +1,10 @@
+//! The post-heal liveness phase and the bounds that must fail it.
+//!
+//! Proves the phase elects a leader and commits its probe with no random steps,
+//! that reviewed seeds find a stable usability window and leave every abandoned
+//! probe with an explicit outcome, and that a zero or exhausted round bound
+//! reports LV-01 red instead of passing on a schedule that never converged.
+
 use std::collections::BTreeSet;
 
 use super::super::super::helpers::{config as node_config, three_node_configs};

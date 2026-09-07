@@ -1,3 +1,10 @@
+//! Re-execution of one recorded trace action against a live state.
+//!
+//! An action must resolve to the same operation it originally named — the same
+//! ready envelope, the same promotion barrier, the same proposal — or replay
+//! fails with a typed error rather than substituting a near match, because a
+//! quietly different action would be replaying a different run.
+
 use rafter::NodeId;
 
 use super::super::{

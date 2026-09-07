@@ -1,3 +1,10 @@
+//! The crate's public safety checks, one per verified property.
+//!
+//! Each exported entry point runs a bounded exploration to exhaustion and
+//! returns either a summary or a typed failure; callers choose bounds and node
+//! configurations but never assemble the invariant suite themselves. The
+//! exploration machinery behind these entry points stays private.
+
 mod bounded;
 mod purpose;
 mod read;

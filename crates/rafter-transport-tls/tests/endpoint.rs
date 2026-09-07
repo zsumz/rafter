@@ -1,3 +1,10 @@
+//! Where a peer is reached, and how that answer changes safely.
+//!
+//! Server names have one canonical spelling, so two books cannot disagree about
+//! the same peer. Replacement is whole and versioned — idempotent when nothing
+//! changed, refusing a duplicate set without disturbing what is installed — and
+//! refresh advances the generation while leaving the values alone.
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use rafter_transport_tls::{

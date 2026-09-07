@@ -1,3 +1,9 @@
+//! Compacting the local log behind a snapshot the node built for itself.
+//!
+//! The children cover refusals made before any write, the metadata the runtime
+//! fills in on the accepted path, and hydrating over a log that still retains
+//! the covered prefix. Shared here: metadata for a named writer at a boundary.
+
 use super::*;
 
 mod errors;

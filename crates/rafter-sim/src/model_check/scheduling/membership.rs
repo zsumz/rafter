@@ -1,3 +1,10 @@
+//! Membership actions a leader may legally propose from a given state.
+//!
+//! An action is offered only when the current effective configuration admits
+//! it — a learner that exists, a promotion whose barrier the leader actually
+//! holds, a voter removal leaving a non-empty voter set — so the explorer
+//! never schedules a change the protocol would refuse on arrival.
+
 use rafter::{MembershipConfig, MembershipSet, NodeId, Role};
 
 use super::super::{Action, Bounds, ExplorationState, SoakAction};

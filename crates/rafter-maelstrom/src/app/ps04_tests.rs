@@ -1,3 +1,10 @@
+//! PS-04 applied-floor recovery through the production Maelstrom entry points.
+//!
+//! Groups the durability, floor-validation, and snapshot-promotion suites, and
+//! proves the headline scenario itself: a crash mid-persist reopens at the
+//! durable application floor and replays the committed suffix exactly once, so
+//! a redelivered recovery output changes neither the state nor the checkpoint.
+
 use rafter::NodeId;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 

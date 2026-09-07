@@ -1,3 +1,10 @@
+//! Send refuses at the bound instead of blocking the caller.
+//!
+//! Admission is synchronous and nonblocking, so the frame past the per-peer
+//! bound must come back as a typed refusal naming its class and depth, the
+//! transport must report itself degraded, and a stopped transport must refuse
+//! outright rather than accept work it can never deliver.
+
 mod support;
 
 use rafter_service::RaftTransport;

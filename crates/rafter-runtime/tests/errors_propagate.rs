@@ -1,3 +1,9 @@
+//! Runtime errors work with `?` and keep their cause reachable.
+//!
+//! A construction failure must convert into a boxed standard error, print what
+//! actually went wrong, and still expose the underlying bootstrap error through
+//! `source` — so an embedding's own error handling loses nothing by wrapping.
+
 use rafter::{NodeConfig, NodeId, Term};
 use rafter_runtime::DurableRaftNode;
 use rafter_storage::{InMemoryRaftHardStateStore, RaftHardState, RaftHardStateStore};

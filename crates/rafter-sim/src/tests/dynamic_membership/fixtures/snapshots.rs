@@ -1,3 +1,10 @@
+//! Snapshot metadata and whole-cluster compaction for the membership suites.
+//!
+//! Builds the snapshot descriptors those scenarios bootstrap from, and drives
+//! every node through compaction and restart together, so a reconfiguration's
+//! committed membership has to come back from snapshot metadata rather than
+//! from a retained log the compaction was supposed to have discarded.
+
 use super::super::super::*;
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,

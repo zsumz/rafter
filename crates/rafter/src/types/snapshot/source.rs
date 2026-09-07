@@ -104,7 +104,7 @@ impl SnapshotChunkSource for InMemorySnapshotChunkSource {
         }
         let start = usize::try_from(request.offset).ok()?;
         let end = start.checked_add(request.len as usize)?;
-        payload.get(start..end).map(<[u8]>::to_vec)
+        payload.get(start..end).map(Vec::from)
     }
 }
 

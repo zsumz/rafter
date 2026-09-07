@@ -1,3 +1,10 @@
+//! Group-scoped bindings between Raft node IDs and authenticated principals.
+//!
+//! One principal may hold different node IDs in different groups, while inside
+//! a single group the mapping stays one-to-one. Policy replacement is whole,
+//! the retirement floor only rises, a retired ID is never rebindable or
+//! reauthorized, and an unknown group answers no to everything.
+
 use rafter::NodeId;
 use rafter_service::{AuthenticatedPeerValidator, PeerPolicy};
 use rafter_transport_tls::{DirectoryError, DirectoryLimits, PeerId, TlsPeerDirectory};

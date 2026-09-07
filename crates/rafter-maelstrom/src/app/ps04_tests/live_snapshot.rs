@@ -1,3 +1,10 @@
+//! Proves an inbound snapshot's identity is checked before anything persists.
+//!
+//! A follower handed an `InstallSnapshot` whose group, kind, or version is not
+//! this harness's leaves its application state and its snapshot floor exactly
+//! as they were and writes no application file at all; only the matching case
+//! installs. That the runtime promoted it durably is another file's scenario.
+
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotVersion, Input, InstallSnapshot, LogIndex,
     MembershipConfig, MembershipSet, Message, NodeId, Output, SnapshotGroupId, Term,

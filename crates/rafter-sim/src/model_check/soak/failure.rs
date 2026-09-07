@@ -1,3 +1,10 @@
+//! The failure a soak returns when an invariant breaks mid-run.
+//!
+//! A failure carries the seed, the step, and the full action trace alongside
+//! the underlying invariant failure, so the run can be reproduced exactly
+//! rather than merely described. It reports where safety broke and does not
+//! interpret why.
+
 use std::{error::Error, fmt};
 
 use crate::SimSeed;

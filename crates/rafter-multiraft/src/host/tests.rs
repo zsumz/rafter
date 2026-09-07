@@ -1,3 +1,10 @@
+//! Proves the manual host keeps one group's work inside that group.
+//!
+//! Every route — a step, a peer envelope, a report a driver hands back, the
+//! metrics roll-up — names a group, and one naming the wrong group is refused
+//! before it can reach or contaminate a neighbour. Scheduling and fairness are
+//! not this host's, so no scenario here asks it for them.
+
 use std::cell::Cell;
 
 use rafter::{

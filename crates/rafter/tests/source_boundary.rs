@@ -1,3 +1,10 @@
+//! Lower layers must not reach upward or sideways for capabilities.
+//!
+//! The kernel, app layer, and runtime boundary each carry a forbidden-token
+//! list - filesystem, network, async runtimes, higher-layer crates - and any
+//! occurrence in their sources fails here with the reason the boundary
+//! exists.
+
 use std::{
     env, fs,
     path::{Path, PathBuf},

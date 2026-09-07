@@ -1,3 +1,9 @@
+//! What reopen must not do: change a clean node, or boot an unrepairable one.
+//!
+//! The crash-window repair is only trustworthy if it is inert on storage that
+//! never crashed, and loud on a log compacted beyond any snapshot — data
+//! acknowledged down there is gone, and a silent boot would conceal it.
+
 use super::*;
 use rafter_invariant_test::oracle_assert;
 

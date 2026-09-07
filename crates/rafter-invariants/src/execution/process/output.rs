@@ -77,7 +77,10 @@ pub(super) fn finish_managed_process(
     outcome
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+)]
 pub(super) fn collect_process_output(
     process: &mut ManagedProcess,
     target_group_ack: &mut UnixStream,

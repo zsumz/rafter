@@ -1,3 +1,10 @@
+//! Assigning the bounded TLA+ symbols a rendered trace needs.
+//!
+//! Nodes, proposal values, and read requests all come from fixed constant sets
+//! in the generated config, so a trace needing more of any of them is refused
+//! with a typed error rather than rendered against symbols the specification
+//! never declares.
+
 use rafter::NodeId;
 
 use super::super::errors::TlaTraceRenderError;

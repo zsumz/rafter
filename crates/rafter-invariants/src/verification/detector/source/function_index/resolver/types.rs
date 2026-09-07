@@ -155,7 +155,7 @@ impl LocalCallResolver {
             Expr::Path(_) => {
                 let name = unqualified_expression_name(expression)?;
                 if name == "self" {
-                    return self_type.map(<[String]>::to_vec);
+                    return self_type.map(Vec::from);
                 }
                 value_types
                     .get(&name)

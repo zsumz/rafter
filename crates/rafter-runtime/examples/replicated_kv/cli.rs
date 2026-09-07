@@ -1,3 +1,9 @@
+//! Argument parsing for the example's three entry points.
+//!
+//! It chooses between the in-process demo, the process-per-node cluster, and a
+//! single child node, then asserts the report each returns. It owns no Raft
+//! behaviour: every flag resolves to a call into one of the scenarios.
+
 use std::path::PathBuf;
 
 use rafter::NodeId;

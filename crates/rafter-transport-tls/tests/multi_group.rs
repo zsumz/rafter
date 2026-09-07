@@ -1,3 +1,9 @@
+//! One authenticated connection carries several groups without confusing them.
+//!
+//! Each group keeps its own node identities and arrives correctly routed over a
+//! single connection in each direction, and the inbound memory charged stays
+//! the group bound — multiplexing must multiply neither connections nor budget.
+
 mod support;
 
 use std::time::Duration;

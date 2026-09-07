@@ -16,7 +16,10 @@ mod verdict;
 use crate::producer::test_exec;
 use issue::{merge_issue, SimulatorIssue};
 
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "the contract re-export exists for verification suites the compiler does not count as users"
+)]
 pub(crate) use events::passing_simulator_event_contract;
 pub(super) use runner::run;
 

@@ -1,3 +1,10 @@
+//! Proves the registry's own declarations agree with its contents.
+//!
+//! Declared totals, per-kind counts, identifier prefixes, families, tiers, and
+//! clause bindings are each recomputed from the entries and compared, so a
+//! catalog cannot claim a size or a shape it does not have. Whether evidence
+//! actually backs an entry belongs to the evidence scenarios.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,

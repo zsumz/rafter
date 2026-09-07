@@ -1,4 +1,16 @@
-#![allow(clippy::wildcard_imports)]
+//! Answering one read inside the call that asked for it.
+//!
+//! The read slice of the in-memory driver state machine: reserve a barrier when
+//! the level needs one, then drive this driver's own network until the outcome
+//! is terminal, so no caller is left holding a pending future. The caller's
+//! freshness floor travels verbatim, and a barrier this driver stops waiting on
+//! is cancelled before its refusal returns — abandonment is this driver's own
+//! decision and claims nothing about the cluster.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use super::*;
 

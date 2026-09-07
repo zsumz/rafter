@@ -1,3 +1,10 @@
+//! Field-level message corruption against the running kernel.
+//!
+//! Proves corrupted in-memory frames never panic a node and that the cluster
+//! reconverges afterward. Byzantine field values can legitimately break
+//! cluster guarantees, so this checks absorption and recovery, not that safety
+//! holds while the corruption is still in flight.
+
 use super::super::*;
 use super::fixtures::{commit_payload, elect_node_one_with_pre_vote, production_cluster, LEADER};
 

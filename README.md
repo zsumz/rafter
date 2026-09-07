@@ -44,9 +44,10 @@ rafter-codec        peer-message wire format
 rafter-sim          simulation and model checking
 ```
 
-Use the lower crates when you want full control. Use the higher crates when you
-want application structure without surrendering storage, transport, scheduling,
-identity, or recovery policy.
+Start at the layer that fits your application. Each keeps storage, transport,
+scheduling, identity, and recovery policy in your hands. See the
+[architecture guide](./docs/architecture.md) for the step loop and the
+persist-before-output contract.
 
 ## API Layers
 
@@ -87,78 +88,52 @@ for output in node.step(Input::Tick) {
 | Need | Crate |
 | --- | --- |
 | Protocol kernel | [`rafter`](./crates/rafter/README.md) |
-| Durable node | [`rafter-runtime`](./crates/rafter-runtime/README.md) + [`rafter-storage`](./crates/rafter-storage/README.md) |
+| Durable node | [`rafter-runtime-api`](./crates/rafter-runtime-api/README.md), [`rafter-storage`](./crates/rafter-storage/README.md), [`rafter-runtime`](./crates/rafter-runtime/README.md) |
 | Embedded state machine | [`rafter-app`](./crates/rafter-app/README.md) |
 | Async managed handle | [`rafter-service`](./crates/rafter-service/README.md) |
 | Many Raft groups | [`rafter-multiraft`](./crates/rafter-multiraft/README.md) |
-| Simulation | [`rafter-sim`](./crates/rafter-sim/README.md) |
+| Wire format and integrity | [`rafter-codec`](./crates/rafter-codec/README.md), [`rafter-crc32`](./crates/rafter-crc32/README.md) |
+| Peer transport | [`rafter-transport-tls`](./crates/rafter-transport-tls/README.md), [`rafter-transport-tcp-insecure`](./crates/rafter-transport-tcp-insecure/README.md) (development only) |
+| Simulation and workload testing | [`rafter-sim`](./crates/rafter-sim/README.md), [`rafter-maelstrom`](./crates/rafter-maelstrom/README.md) |
+| Repository verification | `rafter-invariants`, `rafter-invariant-test`, `rafter-invariant-test-macros` — [verification guide](./docs/raft-invariants.md) |
 
 ## Reference Consumers
 
-Rafter's 1.0 plan includes three independent acceptance systems: a replicated
-ledger, a fenced lock service, and a sharded counter service. They exist to
-prove application durability, linearizable authority, and managed multi-group
-scheduling without moving product policy into Rafter. All three use versioned
-public Rafter dependencies in canonical manifests and run in source and
-exact-package modes. The ledger and lock add durable process histories; the
-lock also carries a bounded authenticated production-composition fixture. The
-counter drives the public managed scheduler through deterministic 64, 1,024,
-and 4,096-group profiles plus durable process coverage. Their contracts,
-isolation rules, and executable verification lanes live in
-[`docs/reference-consumers.md`](./docs/reference-consumers.md), with the stable
-proof map in [`docs/work-completion.md`](./docs/work-completion.md).
+Three independent applications exercise Rafter through its public APIs:
+
+- **Replicated ledger:** application durability and recovery.
+- **Fenced lock service:** linearizable authority and authenticated composition.
+- **Sharded counter:** managed scheduling across 64, 1,024, and 4,096 groups.
+
+Each runs against both checkout sources and exact package archives, with durable
+process coverage. See [reference consumers](./docs/reference-consumers.md) for
+the contracts and [work completion](./docs/work-completion.md) for the proof map.
 
 ## Testing
 
 ```sh
-cargo test --workspace
-cargo test -p rafter-sim
-cargo run --release -p rafter-sim --bin rafter-model-check-fast
-cargo run --locked -p rafter-invariants -- run-all --profile pr
-scripts/maelstrom-lin-kv
-scripts/reference-source-check
-scripts/reference-package-check
-scripts/reference-package-process-check
+cargo install zcheck --locked
+cargo install zrail --version 0.0.3-rc.8 --locked
+zcheck
 ```
 
-The reference consumers live in their own Cargo workspace, which the root
-`Cargo.toml` excludes, so `cargo test --workspace` above does not reach them.
-The three reference commands cover checkout-patched source, exact package
-archives, and exact-package process/MSRV evidence. CI checks the deterministic
-and MSRV lanes on pull requests and runs the full process lanes on main.
+[zcheck](https://github.com/zsumz/zcheck) runs formatting, lints, documentation,
+architecture checks, and workspace tests, with logs and a receipt for each run.
+Use `zcheck plan check` to inspect the tasks or `zcheck run full` for deeper lanes.
 
-The repository also carries fuzz seeds, TLA+ specs, Maelstrom workloads, and a
-simulation harness that can replay and explore bounded failure schedules.
-The Raft verification contract lives in
-[`docs/raft-invariants.md`](./docs/raft-invariants.md), generated from the
-machine-readable catalog at
-[`verification/raft-invariants.yaml`](./verification/raft-invariants.yaml).
-The model-check profiles, state-count semantics, and reproducible overhead
-measurement procedure are documented in
-[`docs/model-checking.md`](./docs/model-checking.md).
-`run-all` loads one immutable execution plan, runs every required layer, and
-aggregates only the evidence produced by that invocation. `check` is the
-separate aggregation-only command for existing result bundles. The
-production `run` and `run-all` evidence subprocesses require Linux
-descriptor-bound executable launch and fail closed on other operating systems.
-The macOS CI lane exercises launcher mechanics under test-only fallback; it
-does not produce accepted invariant evidence. The
-deterministic PR aggregate emits exactly one verdict for each of the 44
-reviewed IDs. Branch protection on `main` requires the stable `invariants-pr`
-job; missing, malformed, incomplete, or stale evidence makes that job red.
-Evidence artifacts are isolated by workflow run attempt. After a partial
-GitHub Actions rerun, rerun every invariant evidence job together; a lone
-aggregate rerun intentionally reports missing evidence instead of reusing a
-prior attempt.
-Maelstrom supplies sampled end-to-end evidence in nightly and weekly profiles
-and is intentionally excluded from the deterministic PR verdict. Scheduled
-`invariants-nightly` and `invariants-weekly` jobs run every required layer,
-render the same 44-row report, and remain red on missing evidence or exhausted
-coverage budgets.
+[zrail](https://github.com/zsumz/zrail) checks the reviewed architecture in
+[`zrail.toml`](./zrail.toml): crate layers, sans-IO boundaries, capability and
+mutation owners, macro allowances, module docs, sibling tests, and file-size
+ratchets. CI checks the same locked contract on every pull request.
+
+Simulation, TLA+, Maelstrom, and the reference applications provide the runtime
+evidence. See [development and checks](./docs/development.md) for commands,
+platform requirements, and the Rafter-specific guards that remain alongside zrail.
 
 ## Benchmarks
 
-Three-node in-memory protocol benchmark, 512-byte payloads, aarch64 Linux.
+Recorded five-run medians: three-node in-memory protocol benchmark, 512-byte
+payloads, aarch64 Linux.
 Lower latency is better; higher throughput is better.
 
 | Library | Serial props/s | Serial p99 us | Pipelined props/s | Pipelined p99 us |
@@ -167,8 +142,11 @@ Lower latency is better; higher throughput is better.
 | `raft-rs` | 379,723 | 7.4 | 653,298 | 234.3 |
 | `openraft` | 111,254 | 19.2 | 540,752 | 172.3 |
 
-Results come from [`bench-compare/results/latest.json`](./bench-compare/results/latest.json).
-Run them locally with:
+Results and per-run measurements are in
+[`bench-compare/results/latest.json`](./bench-compare/results/latest.json).
+These are hardware-sensitive protocol measurements; commit-latency boundaries
+differ across implementations. Reproduce the comparison or measure Rafter's
+durable runtime with:
 
 ```sh
 scripts/bench-compare.sh
@@ -195,8 +173,9 @@ snapshot validation
 
 ## Status
 
-Rafter is pre-1.0. The core invariants, durable formats, simulation coverage,
-and Maelstrom tests are treated seriously; APIs are still expected to move.
+Rafter is pre-1.0. APIs and durable formats remain alpha. See the
+[changelog](./CHANGELOG.md) for recent work and [release guide](./RELEASE.md)
+for published versions and compatibility boundaries.
 
 ## License
 

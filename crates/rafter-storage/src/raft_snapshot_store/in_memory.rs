@@ -193,9 +193,6 @@ impl SnapshotChunkSource for InMemoryRaftSnapshotStore {
         }
         let start = usize::try_from(request.offset).ok()?;
         let end = start.checked_add(request.len as usize)?;
-        current
-            .application_payload
-            .get(start..end)
-            .map(<[u8]>::to_vec)
+        current.application_payload.get(start..end).map(Vec::from)
     }
 }

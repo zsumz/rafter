@@ -1,3 +1,10 @@
+//! The TLA+ formula text for one rendered action.
+//!
+//! Delivery actions quantify over the message set and pin sender, recipient,
+//! and message type, so a rendered step can fire only on the message it was
+//! projected from. This emits syntax; whether an action is representable was
+//! already settled during projection.
+
 use rafter::NodeId;
 
 use super::plan::TlaRenderedAction;

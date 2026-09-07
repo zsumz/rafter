@@ -1,3 +1,10 @@
+//! A blocked peer recovers without anything locally noticing the repair.
+//!
+//! An endpoint refused on configuration must be sparsely reprobed and recover
+//! on its own at an unchanged endpoint generation, while another endpoint stays
+//! ordinarily transient. One locally successful frame must not collapse the
+//! backoff that keeps session numbers from being spent in a loop.
+
 mod support;
 
 #[path = "support/fault_peer.rs"]

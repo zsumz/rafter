@@ -1,3 +1,10 @@
+//! The LV-03 monitor for a follower brought forward by snapshot transfer.
+//!
+//! Proves a lagging follower installs the expected snapshot — exact bytes, exact
+//! boundary, recorded as a real install — within its bounded-fair round budget.
+//! An exhausted budget is a liveness violation, and a completion the terminal
+//! recorder cannot evidence is a harness error rather than a quiet pass.
+
 use std::collections::BTreeSet;
 
 use rafter::NodeId;

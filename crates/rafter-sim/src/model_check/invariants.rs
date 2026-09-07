@@ -1,3 +1,10 @@
+//! Composition of the invariant suites run after each explored transition.
+//!
+//! A suite fixes exactly which checks a property owes and the order they run
+//! in, so a passing check means every listed invariant held rather than the
+//! ones a caller remembered. Individual predicates live in the submodules;
+//! nothing here decides what an invariant means.
+
 use std::collections::BTreeMap;
 
 use rafter::{LogEntry, LogIndex, MembershipConfig, NodeId, Role, Term};

@@ -1,7 +1,13 @@
+//! Membership request translation and the group's membership event stream.
+//!
+//! A configuration this replica moved through stays owed until a report
+//! carrying it reaches a caller, whatever caused the move; effective and
+//! committed are two independent facts, reported effective first. Which
+//! configurations are legal is the kernel's judgement, not this module's.
+
 use super::{
-    CommittedConfigurationCrossing, Debug, GroupStepReport, LogIndex, MembershipChange,
-    MembershipConfig, MembershipEvent, MembershipReportMark, PersistedRaftRuntime,
-    ProposalRejection, RaftGroup, RaftInput, RaftOutput, ReplicatedStateMachine, Term,
+    Debug, GroupStepReport, MembershipChange, MembershipEvent, PersistedRaftRuntime,
+    ProposalRejection, RaftGroup, RaftInput, ReplicatedStateMachine,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -190,136 +196,5 @@ where
                 membership: committed_membership.clone(),
             });
         self.reported_membership.committed = committed_membership;
-    }
-
-    /// Queues every committed configuration one step's outputs name, before any
-    /// of them is handled.
-    ///
-    /// **Infallible, and that is its whole job.** The scan that handles outputs
-    /// is fallible per output — decoding an `Apply` payload runs inside it — so
-    /// a configuration entry sitting behind a payload the state machine refuses
-    /// is one the scan never reaches. Queueing here makes "the commit index
-    /// crossed this configuration" a fact of the step rather than a consequence
-    /// of the step succeeding, which is the same promise the mark already makes
-    /// for the two memberships beside it.
-    ///
-    /// It borrows the vector rather than consuming it, so the handling scan
-    /// still sees every output in kernel order. Nothing is reported from here:
-    /// the queue is drained by [`RaftGroup::record_membership_changes`] at the
-    /// end of the step, in index order and after the effective comparison, so
-    /// the reported order is exactly what it was.
-    pub(super) fn queue_committed_configurations(&mut self, outputs: &[RaftOutput]) {
-        for output in outputs {
-            if let RaftOutput::ConfigurationCommitted {
-                index,
-                term,
-                previous,
-                configuration,
-            } = output
-            {
-                self.record_committed_configuration(
-                    *index,
-                    *term,
-                    previous.clone(),
-                    configuration.membership_config(),
-                );
-            }
-        }
-    }
-
-    /// Queues one committed configuration the kernel named.
-    ///
-    /// Held on the group rather than pushed straight into the report, because the
-    /// report's membership list is ordered effective-then-committed and the
-    /// kernel's outputs arrive before the effective comparison has run. Queueing
-    /// is also what makes the fact survive a step that fails after it: the queue
-    /// is part of the mark, so it is owed on exactly the same terms as the two
-    /// memberships beside it.
-    pub(super) fn record_committed_configuration(
-        &mut self,
-        index: LogIndex,
-        term: Term,
-        previous: MembershipConfig,
-        membership: MembershipConfig,
-    ) {
-        self.reported_membership
-            .crossed
-            .push(CommittedConfigurationCrossing {
-                index,
-                term,
-                previous,
-                membership,
-            });
-    }
-
-    /// Takes the mark the membership reporting is currently owed against.
-    ///
-    /// Paired with [`RaftGroup::restore_membership_report_mark`] at every site
-    /// that builds a report and then decides it cannot return it.
-    pub(super) fn membership_report_mark(&self) -> MembershipReportMark {
-        self.reported_membership.clone()
-    }
-
-    /// Puts back everything a report carried, because that report is being
-    /// discarded.
-    ///
-    /// The one operation that makes "the mark advances when a report is
-    /// returned" true rather than approximately true. A report a caller never
-    /// receives reported nothing, so the delta it carried is owed again.
-    ///
-    /// **Two halves, and the second is why the discarded report is an argument.**
-    /// The two memberships come from `mark`, taken *before* the report was built,
-    /// which restores the whole comparison-derived delta including anything an
-    /// earlier failure had already left owed. The crossing queue cannot come from
-    /// there: the kernel outputs that filled it arrived *after* `mark` was taken,
-    /// so putting back the mark's own queue would drop exactly the committed
-    /// configurations this step discovered. It is rebuilt from the discarded
-    /// report instead, which holds one `Applied` per owed transition in order and
-    /// is therefore a faithful record of what the group was about to hand over.
-    /// Re-reporting it produces the same event sequence: the final comparison
-    /// then finds the committed membership already accounted for and adds
-    /// nothing.
-    ///
-    /// **Only the crossings are put back, and an endpoint observation must not
-    /// be.** The discarded report can end with a
-    /// [`MembershipEvent::CommittedEndpoint`], and that fact is *already*
-    /// restored by the line above: `mark.committed` is the pre-report value, so
-    /// the comparison re-derives the endpoint on the next report by itself.
-    /// Pushing it into the crossing queue as well would re-emit it as an
-    /// `Applied` — a crossing at an index no configuration entry sits at, which
-    /// is exactly the provenance lie the two variants exist to prevent, and a
-    /// consumer would advance its crossing position over history it never saw.
-    ///
-    /// The match names every variant rather than ending in a wildcard, and
-    /// within the defining crate `#[non_exhaustive]` does not license one. So a
-    /// fourth variant stops the build here and is classified deliberately,
-    /// instead of defaulting into the queue or silently out of it.
-    pub(super) fn restore_membership_report_mark(
-        &mut self,
-        mark: MembershipReportMark,
-        discarded: &GroupStepReport<G, A::CommandResult>,
-    ) {
-        self.reported_membership = mark;
-        self.reported_membership.crossed = discarded
-            .membership_events
-            .iter()
-            .filter_map(|event| match event {
-                MembershipEvent::Applied {
-                    index,
-                    term,
-                    previous,
-                    membership,
-                    ..
-                } => Some(CommittedConfigurationCrossing {
-                    index: *index,
-                    term: *term,
-                    previous: previous.clone(),
-                    membership: membership.clone(),
-                }),
-                MembershipEvent::CommittedEndpoint { .. }
-                | MembershipEvent::EffectiveChanged { .. }
-                | MembershipEvent::Rejected { .. } => None,
-            })
-            .collect();
     }
 }

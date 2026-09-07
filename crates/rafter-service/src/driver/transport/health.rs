@@ -1,5 +1,3 @@
-#![allow(clippy::wildcard_imports)]
-
 //! What an operator reads off a running driver.
 //!
 //! Every accessor here is an observation and none of them is an operation. They
@@ -14,6 +12,11 @@
 //! failing. Everything else is current *state*, and falls back to zero or
 //! `Serving` when the condition ends. Alert on the second; read the first to
 //! tell a link that has always worked from one that recovered.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 

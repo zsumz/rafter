@@ -1,3 +1,10 @@
+//! The read-index explorer over schedules mixing reads with message faults.
+//!
+//! Every entered state runs the full commit-safety suite plus the read-barrier
+//! check before expansion, so a barrier undercutting the committed floor it
+//! was registered against is caught at the state that produced it. Read
+//! budgets come from the bounds; this explorer sets none of its own.
+
 use super::super::{
     invariants::{
         check_commit_history, check_commit_safety, check_election_history, check_election_safety,

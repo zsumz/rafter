@@ -1,3 +1,10 @@
+//! The three broad bounded explorations: election, commit, and membership.
+//!
+//! Each entry point builds a fresh cluster, explores every schedule within its
+//! bounds, and returns a summary only once the frontier is exhausted. Bounds
+//! are the caller's; what counts as a violation belongs to the explorer's
+//! invariant suite rather than to these wrappers.
+
 use rafter::NodeConfig;
 
 use crate::Cluster;

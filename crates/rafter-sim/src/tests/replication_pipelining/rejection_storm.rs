@@ -1,3 +1,10 @@
+//! Duplicated append rejections against a divergent follower.
+//!
+//! Proves a storm of duplicated and deliberately stale rejections collapses to
+//! a single probe and converges within a bounded number of rounds, instead of
+//! letting each rejection rewind the leader's progress and restart the search
+//! for the matching prefix.
+
 use super::super::helpers::{
     config, deliver_append_entries, deliver_append_entries_response, pre_vote, pre_vote_response,
     request_vote,

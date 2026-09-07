@@ -1,3 +1,10 @@
+//! The budgets and scheduler knobs one soak run executes under.
+//!
+//! Every capability starts at zero and is opted into explicitly, so a soak can
+//! do only what its configuration granted and a summary describes exactly that
+//! workload. Tick skew models one process driving its kernel faster than its
+//! peers; the seed makes the whole run reproducible.
+
 use rafter::NodeId;
 
 use crate::SimSeed;

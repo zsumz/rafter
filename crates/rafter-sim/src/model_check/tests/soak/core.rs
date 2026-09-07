@@ -1,3 +1,10 @@
+//! Determinism and restart coverage of the baseline soak profile.
+//!
+//! Proves the fast profile is reproducible from its seed, that an ordinary
+//! restart preserves the durable state digest exactly, and that a soak really
+//! does exercise repeated restarts across different nodes rather than
+//! reporting the capability without using it.
+
 use rafter::NodeId;
 
 use super::super::super::helpers::{elect_node_one, three_node_configs};

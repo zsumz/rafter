@@ -44,7 +44,10 @@ impl PendingProcessOutput {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+)]
 pub(super) fn finalize_process_output(
     started: Instant,
     termination_policy: TerminationPolicy,

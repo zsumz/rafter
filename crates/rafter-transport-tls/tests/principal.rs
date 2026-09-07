@@ -1,3 +1,9 @@
+//! Peer and cluster identities are exact bytes, not normalized names.
+//!
+//! Case is preserved and significant, since the value comes from a certificate
+//! and must match what was mapped. Empty, control-bearing, and oversized values
+//! are refused, and the bound counts UTF-8 bytes rather than characters.
+
 use rafter_transport_tls::{ClusterId, IdentityError, IdentityKind, PeerId, MAX_ID_BYTES};
 
 #[test]

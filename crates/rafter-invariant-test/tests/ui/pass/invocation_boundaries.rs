@@ -1,3 +1,10 @@
+//! Proves the arity and trailing-comma range the oracle macros accept.
+//!
+//! Zero through eight arguments compile for both the expecting and the
+//! recording macro, with and without a trailing comma, so the hand-written
+//! adapter list cannot lose an end of its range unnoticed. What the macros
+//! refuse is proved by the failing fixtures.
+
 use rafter_invariant_test::{oracle_expect_err, oracle_invoke_recorder};
 
 fn reject_zero() -> Result<(), ()> {

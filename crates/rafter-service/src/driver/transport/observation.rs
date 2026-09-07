@@ -1,5 +1,3 @@
-#![allow(clippy::wildcard_imports)]
-
 //! What one membership event asserts, before anything is concluded from it.
 //!
 //! Split from [`super::control_plane`] along the line between a *fact* and a
@@ -15,6 +13,11 @@
 //! epoch bookkeeping, and the transport call — and a reader checking the
 //! `#[non_exhaustive]` wildcard had to read all three to see that it changed
 //! nothing.
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "the driver is one state machine deliberately split across focused files, each opening the shared driver namespace"
+)]
 
 use std::collections::BTreeSet;
 

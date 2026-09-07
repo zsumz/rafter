@@ -1,3 +1,9 @@
+//! Pre-vote elections and the disruption they exist to prevent.
+//!
+//! Proves a pre-vote cluster still elects a leader, and that a node rejoining
+//! after a partition does not depose the sitting leader — the whole point of
+//! requiring a non-binding round before any term increment.
+
 use super::helpers::three_node_cluster;
 use super::*;
 use rafter::Message;

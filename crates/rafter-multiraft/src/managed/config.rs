@@ -1,3 +1,10 @@
+//! The fixed bounds one managed scheduler runs under.
+//!
+//! The bounds are validated once at construction and never move afterwards, so
+//! a scheduler cannot be configured into a state where its per-group bound is
+//! unreachable. It carries no runtime counters and enforces nothing; the
+//! scheduler reads these and does the enforcing.
+
 use std::{error::Error, fmt, num::NonZeroUsize};
 
 /// Bounds fixed for one managed scheduler.

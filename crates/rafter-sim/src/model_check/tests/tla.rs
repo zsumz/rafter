@@ -1,3 +1,10 @@
+//! TLA+ projection, rendering, and the bounds that refuse a trace.
+//!
+//! Proves actions project to the abstract vocabulary and unsupported ones are
+//! named as gaps, that a rendered spec is TLC-checkable and its `traceVars`
+//! names every variable `Raft.tla` declares, and that node, value, and
+//! read-request overruns are rejected instead of silently truncated.
+
 use rafter::NodeId;
 
 use super::super::{

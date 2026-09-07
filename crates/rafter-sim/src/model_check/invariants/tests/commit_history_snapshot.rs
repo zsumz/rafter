@@ -1,3 +1,10 @@
+//! Leader completeness across snapshot boundaries.
+//!
+//! Proves a committed prefix hidden behind a witnessed snapshot is accepted
+//! while an unwitnessed snapshot at the same boundary is rejected, that a
+//! transfer carries its logical prefix witness to the installed follower, and
+//! that snapshot-only committed state is not counted as a vacuous success.
+
 use rafter::{LogIndex, Message, NodeId, RaftSnapshot, Term};
 
 use super::super::super::{

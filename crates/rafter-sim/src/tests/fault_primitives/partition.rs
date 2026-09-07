@@ -1,3 +1,9 @@
+//! Sustained partitions across an election and the heal that follows.
+//!
+//! Proves a partition installed before an election keeps holding through it,
+//! and that traffic resumes once healed while messages dropped during the
+//! partition stay dropped, as on a real network.
+
 use super::super::helpers::direct_election_config;
 use super::super::*;
 use super::fixtures::{commit_payload, elect_node_one_with_pre_vote, LEADER};

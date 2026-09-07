@@ -1,3 +1,10 @@
+//! Shared fixtures and the negative-control suites for every invariant.
+//!
+//! Each submodule proves its detector actually fires on a constructed
+//! violation, so a green invariant means the check is able to fail rather than
+//! that it never looks. The cluster, membership, and message builders here are
+//! the common vocabulary those controls are written in.
+
 use std::collections::BTreeSet;
 
 use rafter::{

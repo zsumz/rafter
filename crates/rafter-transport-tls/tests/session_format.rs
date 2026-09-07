@@ -1,3 +1,10 @@
+//! The persisted session-state format, pinned to a golden vector.
+//!
+//! The encoding must reproduce the committed bytes and decode back unchanged,
+//! and every mutation — bad checksum, duplicate or empty peer records, a count
+//! past the encoded bound, a zero bound, an unknown version, trailing bytes —
+//! must be refused. The absolute file bound is finite and covers the vector.
+
 mod support;
 
 use rafter_transport_tls::{

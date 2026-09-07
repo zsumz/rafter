@@ -1,3 +1,10 @@
+//! Fairness, schedule replayability, and leader-stability detector scenarios.
+//!
+//! Proves the quiescent-leader monitor survives a heartbeat between
+//! observations, that tick and delivery starvation are rejected at their
+//! positive bounds, that a seeded schedule replays and varies by seed while an
+//! offset continues it, and that an undrained delivery frontier is rejected.
+
 use super::*;
 use crate::{
     model_check::{

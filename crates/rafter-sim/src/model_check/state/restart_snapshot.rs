@@ -1,3 +1,10 @@
+//! Seeded starting states for restart and snapshot-transfer exploration.
+//!
+//! The expected snapshot pairs the descriptor the kernel tracks with the
+//! payload bytes it no longer carries, because content invariants compare
+//! bytes the kernel cannot supply. Divergent payloads are kept deliberately so
+//! a mismatched install is detectable rather than merely improbable.
+
 use rafter::{
     BootstrapLogEntry, BootstrapState, CommittedConfiguration, ConfigurationEntry, ConfigurationId,
     LogIndex, MembershipConfig, MembershipSet, Message, NodeId, RaftSnapshot, SharedPayload,

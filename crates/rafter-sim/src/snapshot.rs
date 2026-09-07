@@ -1,3 +1,10 @@
+//! Per-node snapshot payload storage and inbound chunk staging.
+//!
+//! Chunks may only accumulate in strict offset order under one unchanging
+//! descriptor, and a promoted transfer must match the descriptor's length and
+//! checksum and equal the bytes its leader serves. Violations abort as kernel
+//! contract breaches; nothing here decides when a snapshot is taken.
+
 use rafter::{NodeId, RaftSnapshot, StagedSnapshotChunk};
 
 use crate::{records::StagedSnapshotTransfer, Cluster};

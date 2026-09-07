@@ -1,3 +1,10 @@
+//! Session stores for tests: one that works and records, two that refuse.
+//!
+//! The memory store keeps real session state while counting and timestamping
+//! allocations, which is how the backoff and epoch scenarios read the
+//! transport's behaviour. The failing stores refuse allocation, or every
+//! operation, so fail-closed paths can be reached without a filesystem.
+
 use std::{
     error::Error,
     fmt,

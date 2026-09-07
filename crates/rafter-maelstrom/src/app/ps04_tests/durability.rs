@@ -1,3 +1,10 @@
+//! Proves the application checkpoint is replaced atomically or not at all.
+//!
+//! A crash after the temp file syncs leaves the previous checkpoint intact; a
+//! crash after the atomic rename leaves the replacement readable; only a
+//! completed persist crosses the directory sync. A torn checkpoint would make
+//! the applied floor PS-04 recovery trusts a lie, which is what this rules out.
+
 use std::io;
 
 use rafter::LogIndex;

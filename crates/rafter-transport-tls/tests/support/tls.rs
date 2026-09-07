@@ -1,3 +1,10 @@
+//! Fixture TLS material and an in-memory mutual handshake.
+//!
+//! Certificates for two peers, a rotation successor, an untrusted root, and a
+//! loop that drives two rustls connections to completion without a socket — so
+//! authentication scenarios need no network. It asserts nothing about the
+//! transport's own admission policy.
+
 use std::{error::Error, io};
 
 use rafter_transport_tls::{TlsIdentity, TlsServerName};

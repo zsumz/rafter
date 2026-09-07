@@ -1,3 +1,10 @@
+//! The seeded rotation ordering ticks and deliveries within a round.
+//!
+//! Ordering derives purely from the seed and the round, tick, wave, and
+//! delivery ordinals, so a run replays from its seed alone while still varying
+//! across seeds. A round offset continues the sequence instead of restarting
+//! it, so a resumed scenario does not re-explore round zero.
+
 use rafter::NodeId;
 
 use crate::{model_check::state::ExplorationState, SimSeed};

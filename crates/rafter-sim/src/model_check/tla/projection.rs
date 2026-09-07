@@ -1,3 +1,10 @@
+//! Mapping simulator actions onto the abstract TLA+ action vocabulary.
+//!
+//! Every action either projects to a named TLA+ action or is refused as a
+//! named abstraction gap — responses, snapshot transfer, pre-vote, membership
+//! change, application-state loss — because the abstract spec deliberately
+//! omits them. Nothing is approximated to make a trace fit.
+
 use super::super::{Action, MessageKind};
 use super::errors::TlaProjectionFailure;
 use super::types::{TlaAbstractionGap, TlaAction, TlaProjection, TlaTraceStep};

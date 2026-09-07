@@ -1,3 +1,10 @@
+//! Loading local TLS material, and refusing anything ambiguous about it.
+//!
+//! Bytes and files must produce the same identity, private key material must
+//! never reach a debug string, and a missing, duplicated, malformed, or
+//! mismatched role is refused — as is each oversized file, on its length. The
+//! local certificate must map to the peer the transport claims to be.
+
 mod support;
 #[path = "support/temp_dir.rs"]
 mod temp_dir;

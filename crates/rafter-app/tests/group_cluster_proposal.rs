@@ -1,3 +1,10 @@
+//! Proves one proposal's journey across a three-node election.
+//!
+//! A group that wins pre-vote and vote leads two followers, appends a client
+//! proposal without applying it, and completes it only once a quorum
+//! acknowledges the replication. The peers are scripted responses, so nothing
+//! here proves what a real follower would have replied.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

@@ -1,3 +1,10 @@
+//! Terminal read-output and rejection recording scenarios.
+//!
+//! Proves rejected and canceled reads are preserved in emission order with
+//! their reasons intact, that a reused `ReadId` receives a distinct
+//! simulator-local generation, and that a restart retires a pending
+//! generation before that identifier can be reused.
+
 use rafter::{
     LeadershipTransferRejection, LocalProposalId, NodeConfig, NodeId, Output, ProposalRejection,
     ReadId, ReadIndexCancelReason, ReadIndexRejection, Role, Term,

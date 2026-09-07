@@ -1,3 +1,11 @@
+//! What a failed write proves about the command it carried.
+//!
+//! The fate is the subject: an entry that reached the local log is never
+//! reported as refused whatever category the failure had, a batch reports one
+//! fate per entry rather than one across every entry, and a write naming a group
+//! this driver does not own is refused by identity. An unresolved write names
+//! which reason left it unresolved, because that is what a caller retries on.
+
 #![allow(clippy::wildcard_imports)]
 
 mod support;

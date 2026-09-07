@@ -1,3 +1,10 @@
+//! Randomized membership traces and their replay.
+//!
+//! Proves a recorded randomized add-voter trace replays to the same summary it
+//! produced, and that a reconfiguration survives snapshot compaction followed
+//! by restarting every node — the case where configuration identity must come
+//! back from a snapshot rather than from a retained log.
+
 use std::fmt;
 
 use super::super::helpers::elect_node_one;

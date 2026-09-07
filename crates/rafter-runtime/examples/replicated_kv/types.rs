@@ -1,3 +1,9 @@
+//! The shared vocabulary of the example: node set, timings, and reports.
+//!
+//! Both scenarios agree on these so their results can be compared and asserted
+//! by one set of tests. The values are chosen to make a small demo quiesce
+//! quickly, and carry no recommendation for any real deployment.
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 

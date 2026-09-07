@@ -1,3 +1,10 @@
+//! Controls for the quorum-only leader monitor, red and green.
+//!
+//! Proves a zero-round budget makes both the convergence and usability monitors
+//! report a starved schedule instead of passing, and that with a real budget the
+//! reachable quorum elects a leader, commits under it, and emits clause-exact
+//! evidence. Whether the derived bound is well chosen is the driver's question.
+
 use crate::{
     model_check::{catalog, FailureKind},
     SimSeed,

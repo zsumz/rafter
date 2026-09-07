@@ -1,3 +1,10 @@
+//! Dynamic-membership soak coverage and its liveness baseline.
+//!
+//! Proves a membership soak reaches the joint transition phases and the full
+//! membership action set, that its liveness reports bind to a stable baseline,
+//! and that a later commit does not retroactively fail an earlier leader
+//! completeness result.
+
 use std::collections::BTreeSet;
 
 use rafter::NodeId;

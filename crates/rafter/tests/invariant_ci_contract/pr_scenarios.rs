@@ -148,7 +148,9 @@ fn assert_pr_aggregate_contract(workflow: &str) {
 
 fn assert_pr_documentation(root: &Path) {
     let readme = read(&root.join("README.md"));
-    assert!(readme.contains("Branch protection on `main` requires the stable `invariants-pr`"));
+    assert!(readme.contains("./docs/development.md"));
+    let readme = read(&root.join("docs/development.md"));
+    assert!(readme.contains("The stable `invariants-pr` job fails on missing, malformed,"));
     assert!(readme.contains("Evidence artifacts are isolated by workflow run attempt"));
 }
 

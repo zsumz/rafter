@@ -1,3 +1,10 @@
+//! The architectural guard on the model-check transition boundary.
+//!
+//! Proves every driver mutates the cluster through the instrumented boundary,
+//! that the capability is owned by state with no mutable deref, and that the
+//! direct-transition allowlist is exact: every entry is used, and allowing one
+//! function does not exempt another in the same file.
+
 use std::{
     fs,
     path::{Path, PathBuf},

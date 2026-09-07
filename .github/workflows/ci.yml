@@ -107,6 +107,63 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/verify-action-pins
 
+  zrail:
+    name: zrail
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          # zrail's canonical qualification toolchain; the workspace default
+          # (1.88) predates zrail's own 1.96 source floor. The contract is
+          # static analysis, so this toolchain never builds rafter itself.
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: install the pinned zrail release
+        run: cargo install zrail --version 0.0.3-rc.8 --locked
+      - name: architecture contract
+        # zrail.toml is the declarative architecture (layers, scopes, owners,
+        # size ratchets); zrail.lock binds it to exact repository state. Any
+        # drift — a new dependency edge, a grown ratcheted file, a changed
+        # gate input (including this workflow) — fails here and is refreshed
+        # with a reviewed `zrail update`.
+        run: zrail check
+
+  zcheck:
+    name: zcheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          # zcheck's source floor is Rust 1.96; the workspace default (1.88)
+          # predates it. The manifest is validated and planned, not executed,
+          # so this toolchain never builds rafter itself.
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: install the pinned zcheck release
+        run: cargo install zcheck --version 0.0.1 --locked
+      - name: qualification manifest validity
+        run: zcheck validate
+      - name: qualification graphs plan against this checkout
+        # Planning resolves every task, dependency, and platform projection
+        # without executing the gates, which CI already runs as its own
+        # required jobs; task drift against renamed scripts or crates fails
+        # here instead of rotting silently.
+        run: |
+          zcheck plan check
+          zcheck plan full
+
   test:
     name: test
     runs-on: ubuntu-24.04
@@ -125,9 +182,9 @@ jobs:
         run: scripts/cargo-test-exact 6 dependency_boundary --workspace
       - name: source boundary tests
         run: scripts/cargo-test-exact 2 source_boundary -p rafter
-      - name: file-size guard
+      - name: residual file-size guard
         run: scripts/cargo-test-exact 1 file_size_guard -p rafter -- --nocapture
-      - name: test-location guard
+      - name: fuzz test-location guard
         run: scripts/cargo-test-exact 3 - -p rafter --test test_location_guard -- --nocapture
       - name: public API/docs guard
         run: scripts/cargo-test-exact 8 - -p rafter --test public_api_docs_guard -- --nocapture

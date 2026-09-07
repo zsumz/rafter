@@ -1,3 +1,10 @@
+//! Drivers that carry a configuration change through to its final entry.
+//!
+//! Proposes the joint entry, delivers it, then proposes and delivers the final
+//! one, so a scenario arrives at a committed reconfiguration by the real
+//! two-phase path instead of a hand-set membership. The election helpers let a
+//! scenario name the leader it needs without restating the tick counts.
+
 use super::super::super::*;
 use super::membership::{
     add_voter_final_entry, add_voter_joint_entry, remove_node_two_final_entry,

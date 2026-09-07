@@ -1,3 +1,10 @@
+//! Profile selection, seed parsing, and summary formatting scenarios.
+//!
+//! Proves CI's default stays the fast profile, that advertised bounds are
+//! derived from the same values the checks execute, that malformed seeds and
+//! misapplied `--seed` fail loudly instead of silently, and that failure
+//! timelines and summary lines carry their trace and state counts.
+
 use rafter_sim::{model_check::FailureKind, SimSeed};
 
 use super::{

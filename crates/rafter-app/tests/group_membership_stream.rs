@@ -1,5 +1,3 @@
-#![allow(clippy::wildcard_imports)]
-
 //! The completeness contract for a group's membership event stream.
 //!
 //! A transport driver follows these events to keep its peer set current, so the
@@ -17,6 +15,8 @@
 //! back; [`MembershipEvent::Applied`] says which one the cluster has committed.
 //! A consumer may only widen for the first and may only narrow for the second,
 //! so collapsing them would lose the distinction that makes either safe.
+
+#![allow(clippy::wildcard_imports)]
 
 mod support;
 

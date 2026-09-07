@@ -1,3 +1,10 @@
+//! Hand-built states that place exploration at a rare commit point directly.
+//!
+//! Each seed constructs a situation a random prefix reaches only with
+//! vanishing probability — a stale empty append against a pre-committed
+//! follower, a divergent suffix, a new leader's no-op over prior-term entries
+//! — and records the commit authority it presumes so checks stay non-vacuous.
+
 use rafter::{
     AppendEntries, BootstrapLogEntry, BootstrapState, CommittedConfiguration, ConfigurationEntry,
     ConfigurationId, JointMembership, LogIndex, MembershipSet, Message, NodeConfig, NodeId, Term,

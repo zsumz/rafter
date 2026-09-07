@@ -1,3 +1,10 @@
+//! Dirty-disk recovery images derived from a clean bootstrap state.
+//!
+//! Every image emitted here must be a durable state some crash could leave
+//! behind: a write-order prefix, a torn tail, a lost unfsynced suffix, or hard
+//! state that outran its log. Reopening one must either succeed or fail with a
+//! typed bootstrap error; nothing here repairs an image or touches storage.
+
 use rafter::{BootstrapLogEntry, BootstrapState, LogIndex};
 
 /// Simulated disk recovery image after a crash at a modeled persistence point.

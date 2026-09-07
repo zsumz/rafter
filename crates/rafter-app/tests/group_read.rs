@@ -1,10 +1,20 @@
+//! Proves what a group's read path may and may not answer with.
+//!
+//! A linearizable read is served only once the state machine has applied every
+//! application entry at or below its read index — no more, so a leader's `Noop`
+//! tail cannot stall it forever, and no less, so an unapplied write inside the
+//! cut cannot be read past. Granting that index correctly is the kernel's job.
+
 #![allow(clippy::wildcard_imports)]
 
+#[path = "group_read/support.rs"]
+mod read_support;
 mod support;
 
 use std::collections::BTreeSet;
 
 use rafter_invariant_test::oracle_assert;
+use read_support::assert_empty_report;
 use support::*;
 
 #[test]
@@ -1276,16 +1286,4 @@ fn a_state_machine_that_skips_an_application_entry_poisons_before_a_read_can_gra
         .begin_read_barrier_outcome(read_request(read_id, None))
         .expect_err("a poisoned group can never grant a barrier");
     assert!(matches!(refused, GroupError::Poisoned { .. }));
-}
-
-fn assert_empty_report(report: &GroupStepReport<u64, Vec<u8>>) {
-    assert_eq!(report.group_id, 7);
-    assert!(report.peer_messages.is_empty());
-    assert!(report.applied.is_empty());
-    assert!(report.proposal_events.is_empty());
-    assert!(report.read_events.is_empty());
-    assert!(report.leadership_transfer_events.is_empty());
-    assert!(report.snapshot_events.is_empty());
-    assert!(report.membership_events.is_empty());
-    assert_eq!(report.metrics, None);
 }

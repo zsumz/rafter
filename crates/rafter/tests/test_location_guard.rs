@@ -1,3 +1,10 @@
+//! Inline test modules stay small or move to sibling files.
+//!
+//! An inline `#[cfg(test)]` module may hold a bounded number of lines before
+//! it must become a sibling `_test.rs` module; the allowlist for oversized
+//! holdouts requires a reason and fails when the holdout shrinks back under
+//! the limit.
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -265,7 +272,8 @@ fn is_implementation_source(relative_path: &str) -> bool {
 }
 
 fn guarded_implementation_rust_files(workspace: &Path) -> Vec<PathBuf> {
-    let mut files = implementation_rust_files(&workspace.join("crates"));
+    // zrail owns product sibling-test placement; fuzz remains excluded.
+    let mut files = Vec::new();
     let fuzz_root = workspace.join("fuzz");
     if fuzz_root.exists() {
         files.extend(implementation_rust_files(&fuzz_root));

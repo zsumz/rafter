@@ -1,3 +1,10 @@
+//! Partial inbound transfers are durable, resumable, and never outlive their use.
+//!
+//! Staging must survive a restart and let the transfer finish where it stopped;
+//! a transfer the kernel no longer tracks — stale at open, or abandoned by
+//! winning an election — must be cleared from the medium, proven through a
+//! second handle rather than the runtime's own store.
+
 use super::*;
 use rafter::StagedSnapshotChunk;
 

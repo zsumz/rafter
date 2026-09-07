@@ -1,3 +1,11 @@
+//! What a caller states about a managed operation, and what it gets back.
+//!
+//! The vocabulary both shipped drivers speak in: the two option types, built
+//! through setters because both are `#[non_exhaustive]`; the batch entry that
+//! carries its own options, because a batch shares one proposing step and not
+//! one fate; and the two receipts. Plain values — nothing here reaches driver
+//! state, and nothing here decides whether an option is honored.
+
 use rafter::{LogIndex, Term};
 use rafter_app::{proposal::ClientRequestId, read::ReadProof};
 

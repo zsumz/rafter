@@ -77,6 +77,26 @@ pub(crate) fn legacy_verifier_references(root: &Path, files: &[PathBuf], namespa
         .sum()
 }
 
+/// Rust fragments spliced into a mounting suite through `include!`.
+///
+/// A fragment is not a module of its own: inner `//!` attributes are invalid
+/// at the splice position, so it cannot carry a module contract, and its size
+/// is audited by the mounting suite's fragment budget instead of the sweep.
+/// The `.rs` spelling is required by the architecture contract, which resolves
+/// literal `include!` targets only against indexable Rust sources.
+pub(crate) const INCLUDE_MOUNTED_FRAGMENTS: &[&str] = &[
+    "crates/rafter-invariants/src/artifact_verify/tests/reports.rs",
+    "crates/rafter-invariants/src/artifact_verify/tests/resources.rs",
+    "crates/rafter-invariants/src/artifact_verify/tests/schedule.rs",
+    "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/bundle_fixture.rs",
+    "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/scenarios.rs",
+    "crates/rafter-invariants/src/verification/maelstrom/tests/full_bundle/serialized_fixture.rs",
+];
+
+pub(crate) fn is_include_mounted_fragment(path: &str) -> bool {
+    INCLUDE_MOUNTED_FRAGMENTS.contains(&path)
+}
+
 pub(crate) fn is_test_module(path: &str) -> bool {
     Path::new(path).components().any(|component| {
         let value = component.as_os_str().to_string_lossy();

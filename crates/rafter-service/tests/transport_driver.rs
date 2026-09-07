@@ -6,15 +6,18 @@
 
 #![allow(clippy::wildcard_imports)]
 
+#[path = "transport_driver/support.rs"]
+mod driver_support;
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use driver_support::vote_envelope;
 use rafter_app::proposal::ClientRequestId;
 use rafter_service::{
-    AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError, DriverServiceState,
-    DriverUnavailableReason, InboundEnvelopeError, PeerPolicy, RaftTransport,
-    TransportDriverOptions, TransportRaftDriver, WriteOptions,
+    AuthenticatedPeerEnvelopeError, DriverServiceState, DriverUnavailableReason,
+    InboundEnvelopeError, PeerPolicy, RaftTransport, TransportDriverOptions, TransportRaftDriver,
+    WriteOptions,
 };
 use support::transport::*;
 use support::*;
@@ -834,19 +837,4 @@ fn a_zero_bound_is_refused_at_construction() {
         ),
         "got {error:?}"
     );
-}
-
-fn vote_envelope(from: NodeId, to: NodeId) -> AuthenticatedPeerEnvelope<u64, Principal> {
-    AuthenticatedPeerEnvelope {
-        group_id: GROUP,
-        authenticated_peer: Principal::for_node(from),
-        raft_from: from,
-        raft_to: to,
-        message: Message::RequestVote(RequestVote {
-            term: Term(9),
-            candidate_id: from,
-            last_log_index: LogIndex::ZERO,
-            last_log_term: Term(0),
-        }),
-    }
 }

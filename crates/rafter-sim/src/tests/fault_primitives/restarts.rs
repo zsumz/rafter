@@ -1,3 +1,10 @@
+//! Lossy restarts and exactly what a crash is allowed to take.
+//!
+//! Proves a lossy restart preserves durable hard state, the local committed
+//! prefix, and entries covered by an in-flight success acknowledgement, while
+//! replaying only the required application suffix. The marked restart pins the
+//! documented amnesia case where acknowledged entries are deliberately lost.
+
 use super::super::*;
 use super::fixtures::{
     applied_payloads, commit_payload, elect_node_one_with_pre_vote, production_cluster, LEADER,

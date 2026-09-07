@@ -68,45 +68,6 @@ fn storage_test_modules_begin_with_a_scenario_contract() {
 }
 
 #[test]
-fn storage_production_modules_keep_test_bodies_in_separate_files() {
-    let workspace = workspace_root();
-    let root = workspace.join(STORAGE_SOURCE_ROOT);
-    let mut violations = Vec::new();
-
-    for path in production_rust_files(&root) {
-        let source = read(&path);
-        let lines = source.lines().collect::<Vec<_>>();
-        for (line_index, line) in lines.iter().enumerate() {
-            if line.trim() != "#[cfg(test)]" {
-                continue;
-            }
-            let Some((next_index, next)) = lines
-                .iter()
-                .enumerate()
-                .skip(line_index + 1)
-                .find(|(_, candidate)| !candidate.trim().is_empty())
-            else {
-                continue;
-            };
-            let next = next.trim_start();
-            if next.starts_with("mod ") && next.contains('{') {
-                violations.push(format!(
-                    "{}:{} embeds a test module body; move it to a sibling test file",
-                    display_path(&workspace, &path),
-                    next_index + 1
-                ));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "embedded storage-test violations:\n{}",
-        violations.join("\n")
-    );
-}
-
-#[test]
 fn storage_facades_remain_declarative() {
     let workspace = workspace_root();
     let mut violations = Vec::new();

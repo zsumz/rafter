@@ -1,3 +1,9 @@
+//! A snapshot whose covered prefix is still physically in the segment.
+//!
+//! Hydration must treat the boundary as logical: ignore the retained prefix
+//! during suffix repair, and refuse a retained boundary entry whose term
+//! contradicts the snapshot. Compacting it away must leave the same node.
+
 use super::*;
 
 #[test]

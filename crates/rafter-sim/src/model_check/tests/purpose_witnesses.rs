@@ -1,3 +1,10 @@
+//! Purpose witnesses fire only under the feature that justifies them.
+//!
+//! Proves the production-commit witness needs the production features actually
+//! in effect, the window-one witness a genuinely full single-batch window, the
+//! lease fast path an effective active lease, and that joint recovery rejects
+//! a mutated stable membership rather than accepting the near match.
+
 use rafter::{NodeConfig, NodeId};
 
 use crate::Cluster;

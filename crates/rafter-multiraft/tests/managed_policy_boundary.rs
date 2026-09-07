@@ -1,3 +1,10 @@
+//! Proves the managed scheduler stays neutral about products and transports.
+//!
+//! No source under `src/managed` may name an application schema, a sharding or
+//! session policy, a concrete transport, or a test-only hook, and the detector
+//! is itself proved against one fixture per forbidden shape. It reads text; it
+//! judges nothing about the scheduling those sources actually do.
+
 use std::{
     fs,
     path::{Path, PathBuf},

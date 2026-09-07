@@ -1,3 +1,9 @@
+//! Cluster builders and message predicates shared by the scenario suites.
+//!
+//! Provides three-node clusters, seeded and direct-election variants, election
+//! drivers, and the envelope predicates suites filter traffic with, so every
+//! scenario starts from the same vocabulary. Nothing here asserts.
+
 use super::*;
 use rafter::Message;
 

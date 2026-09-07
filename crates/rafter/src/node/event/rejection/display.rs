@@ -14,14 +14,14 @@ impl fmt::Display for ReadIndexRejection {
                 formatter,
                 "read barrier rejected: node is a {role} in term {term}, not the leader"
             ),
-            Self::NoCommitInCurrentTerm => formatter.write_str(
+            ReadIndexRejection::NoCommitInCurrentTerm => formatter.write_str(
                 "read barrier rejected: the leader has not committed an entry in its current term",
             ),
             Self::LeadershipTransferInProgress { target } => write!(
                 formatter,
                 "read barrier rejected: a leadership transfer to {target} is in progress"
             ),
-            Self::TooManyPendingReads => formatter.write_str(
+            ReadIndexRejection::TooManyPendingReads => formatter.write_str(
                 "read barrier rejected: too many barriers are awaiting quorum confirmation",
             ),
         }
@@ -31,10 +31,14 @@ impl fmt::Display for ReadIndexRejection {
 impl fmt::Display for LeadershipTransferRejection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::NotLeader => "this node is not the leader",
-            Self::TargetIsSelf => "the transfer target is the leader itself",
-            Self::TargetNotVoter => "the transfer target is not an effective voter",
-            Self::TransferAlreadyInProgress => "a leadership transfer is already in progress",
+            LeadershipTransferRejection::NotLeader => "this node is not the leader",
+            LeadershipTransferRejection::TargetIsSelf => "the transfer target is the leader itself",
+            LeadershipTransferRejection::TargetNotVoter => {
+                "the transfer target is not an effective voter"
+            }
+            LeadershipTransferRejection::TransferAlreadyInProgress => {
+                "a leadership transfer is already in progress"
+            }
         })
     }
 }
@@ -70,7 +74,7 @@ impl fmt::Display for ProposalRejection {
                 formatter,
                 "proposal rejected: a leadership transfer to {target} is in progress"
             ),
-            Self::Configuration(rejection) => write!(formatter, "{rejection}"),
+            ProposalRejection::Configuration(rejection) => write!(formatter, "{rejection}"),
         }
     }
 }
@@ -122,13 +126,14 @@ impl fmt::Display for ConfigurationProposalRejection {
                 formatter,
                 "configuration proposal rejected: derived membership is invalid: {error}"
             ),
-            Self::TargetMembershipUnchanged => formatter.write_str(
+            ConfigurationProposalRejection::TargetMembershipUnchanged => formatter.write_str(
                 "configuration proposal rejected: target membership matches the current membership",
             ),
-            Self::TargetMembershipDoesNotMatchJointNewSide => formatter.write_str(concat!(
-                "configuration proposal rejected: target membership does not match ",
-                "the joint configuration's new side",
-            )),
+            ConfigurationProposalRejection::TargetMembershipDoesNotMatchJointNewSide => formatter
+                .write_str(concat!(
+                    "configuration proposal rejected: target membership does not match ",
+                    "the joint configuration's new side",
+                )),
             Self::PromotionTargetNotLearner { .. }
             | Self::DuplicatePromotionBarrier { .. }
             | Self::UnusedPromotionBarrier { .. }

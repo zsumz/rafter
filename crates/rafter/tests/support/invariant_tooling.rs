@@ -1,10 +1,5 @@
 //! Reviewed ownership and debt baselines for the invariant-tooling migration.
 
-pub(super) const PRODUCTION_TARGET_LINES: usize = 300;
-pub(super) const TEST_TARGET_LINES: usize = 400;
-pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 13;
-pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 10;
-pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 0;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 0;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_IMAGE_REFERENCES: usize = 0;
 pub(super) const MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES: usize = 0;

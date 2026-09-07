@@ -1,6 +1,10 @@
 //! Stable and joint membership sets plus quorum-oriented validation.
 
-use std::{collections::BTreeSet, error::Error, fmt};
+use std::collections::BTreeSet;
+
+mod validate;
+
+use validate::{majority, union_node_ids, validate_unique, DuplicateKind};
 
 use super::NodeId;
 
@@ -275,76 +279,4 @@ impl JointMembership {
     fn has_quorum_set(&self, acknowledgements: &BTreeSet<NodeId>) -> bool {
         self.old.has_quorum_set(acknowledgements) && self.new.has_quorum_set(acknowledgements)
     }
-}
-
-impl fmt::Display for MembershipValidationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyVoters => {
-                write!(formatter, "Raft membership must contain at least one voter")
-            }
-            Self::DuplicateVoter { node_id } => {
-                write!(
-                    formatter,
-                    "Raft membership voter {node_id} appears more than once"
-                )
-            }
-            Self::DuplicateLearner { node_id } => {
-                write!(
-                    formatter,
-                    "Raft membership learner {node_id} appears more than once"
-                )
-            }
-            Self::LearnerVoterOverlap { node_id } => {
-                write!(
-                    formatter,
-                    "Raft membership node {node_id} cannot be both voter and learner"
-                )
-            }
-        }
-    }
-}
-
-impl Error for MembershipValidationError {}
-
-#[derive(Clone, Copy)]
-enum DuplicateKind {
-    Voter,
-    Learner,
-}
-
-fn validate_unique(
-    mut nodes: Vec<NodeId>,
-    kind: DuplicateKind,
-) -> Result<Vec<NodeId>, MembershipValidationError> {
-    nodes.sort_unstable();
-    let mut previous = None;
-    for node in nodes.iter().copied() {
-        if previous == Some(node) {
-            return Err(match kind {
-                DuplicateKind::Voter => MembershipValidationError::DuplicateVoter { node_id: node },
-                DuplicateKind::Learner => {
-                    MembershipValidationError::DuplicateLearner { node_id: node }
-                }
-            });
-        }
-        previous = Some(node);
-    }
-    Ok(nodes)
-}
-
-fn union_node_ids<I, J>(left: I, right: J) -> Vec<NodeId>
-where
-    I: IntoIterator<Item = NodeId>,
-    J: IntoIterator<Item = NodeId>,
-{
-    left.into_iter()
-        .chain(right)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-const fn majority(voter_count: usize) -> usize {
-    (voter_count / 2) + 1
 }

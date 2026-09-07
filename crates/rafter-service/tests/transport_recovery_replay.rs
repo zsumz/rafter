@@ -1,5 +1,3 @@
-#![allow(clippy::wildcard_imports)]
-
 //! What a restart replays, and what it must not conclude from replaying it.
 //!
 //! Everything here is a **real recovery**: durable Raft state on one side, a
@@ -22,6 +20,8 @@
 //! So each crossing carries the transition the kernel computed where the
 //! chronology is known, and a replayed one proves exactly the removals it
 //! proved the first time — from any state, in any order, however many times.
+
+#![allow(clippy::wildcard_imports)]
 
 mod support;
 

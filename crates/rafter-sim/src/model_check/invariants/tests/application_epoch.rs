@@ -1,3 +1,10 @@
+//! Application-state loss starts a new epoch without rewriting history.
+//!
+//! Proves a replay after loss may legally reach an index the previous epoch
+//! already applied but must carry the same command, that a surviving snapshot
+//! floor still bounds the new epoch, and that AP-01 fires on an apply before
+//! commit, an apply twice within one epoch, or a grant from a stale epoch.
+
 use super::super::applied::{
     check_applied_commit_bound, check_applied_cursor_monotonicity, check_applied_exactly_once,
     check_execution_history_agreement,

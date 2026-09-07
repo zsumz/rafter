@@ -1,3 +1,11 @@
+//! The fixture every service test binary is written against.
+//!
+//! One key-value state machine, the group and driver builders over it, the two
+//! scripted runtimes that produce outcomes a real node reaches only by luck, and
+//! the two polling helpers standing in for an async runtime. Shared rather than
+//! repeated, so the suites differ in what they assert and not in what they are
+//! asserting against. Nothing here is a scenario; every one lives in a sibling.
+
 #![allow(dead_code, unused_imports)]
 
 /// A replica whose two membership facts a test moves by hand.

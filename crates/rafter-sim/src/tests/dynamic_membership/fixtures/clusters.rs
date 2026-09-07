@@ -1,3 +1,10 @@
+//! Four-node starting clusters for the membership scenarios.
+//!
+//! Builds the learner and stable-voter shapes those suites begin from, seeded
+//! through a real snapshot bootstrap so a scenario opens on a configuration it
+//! could have legally reached. The minimal-protocol variants exist only for
+//! scenarios whose successive candidacies pre-vote stickiness would deny.
+
 use super::super::super::helpers::{config, direct_election_config};
 use super::super::super::*;
 use super::membership::{initial_learner_membership, stable_four_voter_membership};

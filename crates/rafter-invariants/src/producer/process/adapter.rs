@@ -159,7 +159,10 @@ pub(super) fn timed_with_timeout_after_run(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each capability and stage input is passed explicitly so ownership stays visible at every call site"
+)]
 fn timed_with_timeout_and_policy_and_descriptors_after_bind(
     program: &str,
     arguments: &[OsString],

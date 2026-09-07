@@ -1,3 +1,10 @@
+//! Typed reasons a trace cannot become a runnable TLA+ specification.
+//!
+//! A projection failure names the exact action and the abstraction gap that
+//! excludes it; a render failure names the bounded symbol set it exhausted. An
+//! unrepresentable trace is refused with a reason rather than rendered into a
+//! spec that quietly checks something weaker.
+
 use std::{error::Error, fmt};
 
 use rafter::NodeId;

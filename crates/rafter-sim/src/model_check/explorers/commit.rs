@@ -1,3 +1,10 @@
+//! The commit-safety explorer and the commit points it must witness.
+//!
+//! Every entered state runs the election, log, commit-history, and
+//! commit-safety suites before a successor is expanded, so a violation is
+//! caught at the shallowest state exhibiting it. Reached apply, configuration,
+//! and commit points are recorded so seeded checks can demand them.
+
 use std::collections::BTreeSet;
 
 use rafter::{LogIndex, NodeId};

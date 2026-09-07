@@ -1,3 +1,10 @@
+//! Proves the generated invariant document is current and complete.
+//!
+//! Rendering the parsed registry must reproduce `docs/raft-invariants.md`
+//! exactly, every entry must appear in its list, and the model-check labels
+//! the catalog names must be registered. It compares rendered text; the
+//! registry's internal consistency is judged by its own scenarios.
+
 use std::{collections::BTreeSet, fs, path::Path};
 
 use rafter_invariants::{render_registry_markdown, RegistryDocument};

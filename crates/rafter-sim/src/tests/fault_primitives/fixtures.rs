@@ -1,3 +1,9 @@
+//! Cluster and commit helpers for the fault-primitive suites.
+//!
+//! Builds a production-configured cluster, drives a pre-vote election, and
+//! commits payloads so a scenario begins from genuinely replicated state.
+//! These prepare situations and assert nothing themselves.
+
 use super::super::helpers::config;
 use super::super::*;
 

@@ -1,3 +1,10 @@
+//! Seeded starting states and the coverage they must actually reach.
+//!
+//! Proves each seed reaches its intended commit point, that a shallow bound
+//! reports coverage-not-reached instead of passing, that failure kind is
+//! explicit rather than inferred from message text, and that seeded probes
+//! confirm only the prefix they genuinely share.
+
 use rafter::{LogIndex, Message, NodeId};
 
 use super::super::helpers::{

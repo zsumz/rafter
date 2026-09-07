@@ -1,0 +1,187 @@
+# Rafter's local qualification graph, run by zcheck (https://github.com/zsumz/zcheck).
+#
+# `zcheck` answers "is this checkout good?" with the same gates CI requires on
+# every pull request: the lint surface, the architecture contract, and the
+# workspace test suite. Deeper evidence lanes (invariants, model checking, the
+# reference consumers) are separate tasks under `zcheck run full` because they
+# are slow and, for the invariant evidence, Linux-authoritative — scheduled CI
+# remains the authority for those, per docs/work-completion.md.
+#
+# Platform honesty: workspace-wide clippy is Linux-only because the invariant
+# evidence executor's descriptor-bound launch path compiles only on Linux and
+# dead-codes elsewhere; macOS runs the same lints over every other crate. The
+# skipped branch stays visible in the plan instead of claiming Linux proof.
+
+schema = 1
+default = "check"
+
+[execution]
+jobs = 4
+default_timeout = "30m"
+repository_state = "preserve"
+
+# --- lint surface (mirrors the CI lint job) --------------------------------
+
+[tasks.format]
+description = "Validate workspace Rust formatting."
+run = ["cargo", "fmt", "--all", "--", "--check"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.format-fuzz]
+description = "Validate fuzz-workspace formatting; fuzz/ keeps its own manifest outside the workspace."
+run = ["cargo", "fmt", "--manifest-path", "fuzz/Cargo.toml", "--all", "--", "--check"]
+tools = ["cargo"]
+resources = ["fuzz-target"]
+
+[tasks.clippy]
+description = "Run workspace Clippy with warnings denied; Linux-only because the invariant launcher dead-codes on other hosts."
+platforms = ["linux"]
+run = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.clippy-macos]
+description = "Run Clippy with warnings denied over every crate except the Linux-gated invariant tooling."
+platforms = ["macos"]
+run = [
+  "cargo", "clippy",
+  "-p", "rafter",
+  "-p", "rafter-app",
+  "-p", "rafter-codec",
+  "-p", "rafter-crc32",
+  "-p", "rafter-invariant-test",
+  "-p", "rafter-invariant-test-macros",
+  "-p", "rafter-maelstrom",
+  "-p", "rafter-multiraft",
+  "-p", "rafter-runtime",
+  "-p", "rafter-runtime-api",
+  "-p", "rafter-service",
+  "-p", "rafter-sim",
+  "-p", "rafter-storage",
+  "-p", "rafter-transport-tcp-insecure",
+  "-p", "rafter-transport-tls",
+  "--all-targets", "--", "-D", "warnings",
+]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.clippy-fuzz]
+description = "Run fuzz-workspace Clippy with warnings denied."
+run = ["cargo", "clippy", "--manifest-path", "fuzz/Cargo.toml", "--all-targets", "--", "-D", "warnings"]
+tools = ["cargo"]
+resources = ["fuzz-target"]
+
+[tasks.clippy-bench]
+description = "Run bench-compare Clippy without default features; the third-party comparison binaries need protoc."
+run = ["cargo", "clippy", "--manifest-path", "bench-compare/Cargo.toml", "--locked", "--no-default-features", "--all-targets", "--", "-D", "warnings"]
+tools = ["cargo"]
+resources = ["bench-target"]
+
+[tasks.transport-memory]
+description = "Run the transport receive-memory allocation gate."
+run = ["cargo", "run", "--manifest-path", "bench-compare/Cargo.toml", "--locked", "--no-default-features", "--bin", "check-transport-receive-memory"]
+tools = ["cargo"]
+resources = ["bench-target"]
+
+[tasks.rustdoc]
+description = "Build the publishable crates under -D warnings -D missing-docs, then the workspace under -D warnings."
+run = ["scripts/rustdoc-check"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+inputs = ["RELEASE.md"]
+
+[tasks.work-completion]
+description = "Verify the stable proof references in the work-completion manifest."
+run = ["scripts/work-completion-check"]
+tools = ["awk"]
+inputs = [
+  "docs/work-completion.md",
+  ".github/workflows/ci.yml",
+  ".github/workflows/nightly.yml",
+  ".github/workflows/weekly.yml",
+]
+
+[tasks.tla-telemetry]
+description = "Run the TLA+ continuation sampler's adversarial checks against stubbed tools."
+run = ["scripts/tests/tla_continuation_telemetry_test.sh"]
+tools = ["awk", "perl"]
+
+[tasks.lint]
+description = "Validate formatting, lints, documentation, and proof references."
+needs = [
+  "format",
+  "format-fuzz",
+  "clippy",
+  "clippy-macos",
+  "clippy-fuzz",
+  "clippy-bench",
+  "transport-memory",
+  "rustdoc",
+  "work-completion",
+  "tla-telemetry",
+]
+
+# --- architecture ----------------------------------------------------------
+
+[tasks.zrail]
+description = "Check the declarative architecture contract against the locked repository state."
+run = ["zrail", "check"]
+tools = ["zrail"]
+inputs = ["zrail.toml", "zrail-baseline.toml", "zrail.lock"]
+
+[tasks.architecture]
+description = "Validate the reviewed architecture without executing repository code."
+needs = ["zrail"]
+
+# --- tests -----------------------------------------------------------------
+
+[tasks.test]
+description = "Run the complete workspace test suite; the reference consumers keep their own workspace and lanes."
+run = ["cargo", "test", "--workspace"]
+timeout = "45m"
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.check]
+description = "Qualify the checkout with the pull-request-tier local gates."
+needs = ["lint", "architecture", "test"]
+
+# --- deeper evidence lanes (not in the default graph) ----------------------
+
+[tasks.invariants-pr]
+description = "Run the deterministic 44-invariant PR aggregate; Linux descriptor-bound launch, fail-closed elsewhere."
+platforms = ["linux"]
+run = ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run-all", "--profile", "pr"]
+timeout = "45m"
+tools = ["cargo"]
+resources = ["cargo-target"]
+inputs = [
+  "verification/raft-invariants.yaml",
+  "verification/raft-invariant-profiles.json",
+]
+
+[tasks.model-check]
+description = "Run the fast bounded model-check profile."
+run = ["cargo", "run", "--release", "-p", "rafter-sim", "--bin", "rafter-model-check-fast"]
+timeout = "45m"
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.reference-source]
+description = "Run the checkout-patched reference-consumer acceptance systems."
+run = ["scripts/reference-source-check"]
+timeout = "60m"
+tools = ["cargo"]
+resources = ["reference-target"]
+
+[tasks.reference-package]
+description = "Run the exact-package reference-consumer acceptance systems."
+run = ["scripts/reference-package-check"]
+timeout = "60m"
+tools = ["cargo", "tar"]
+resources = ["reference-target"]
+
+[tasks.full]
+description = "Qualify the checkout and every locally runnable deeper evidence lane."
+needs = ["check", "invariants-pr", "model-check", "reference-source", "reference-package"]
