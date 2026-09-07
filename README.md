@@ -64,8 +64,7 @@ persist-before-output contract.
 ```rust
 use rafter::{Input, Node, NodeConfig, NodeId, Output};
 
-let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 10)
-    .expect("valid raft config");
+let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 10).expect("valid raft config");
 let mut node = Node::new(config);
 
 for output in node.step(Input::Tick) {
