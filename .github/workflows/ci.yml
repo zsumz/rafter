@@ -6,7 +6,7 @@
 # repository settings, not in this file. Branch protection on `main` must
 # list these required status checks:
 #
-#   lint, test, reference-source, reference-package, reference-package-msrv,
+#   lint, zrail, test, reference-source, reference-package, reference-package-msrv,
 #   fuzz-smoke, invariants-pr
 #
 # `reference-process` is deliberately absent from that list: it only runs on
@@ -126,6 +126,8 @@ jobs:
           cache-on-failure: true
       - name: install the pinned zrail release
         run: cargo install zrail --version 0.0.3-rc.8 --locked
+      - name: Fetch locked dependency archives for macro analysis
+        run: cargo fetch --locked
       - name: architecture contract
         # zrail.toml is the declarative architecture (layers, scopes, owners,
         # size ratchets); zrail.lock binds it to exact repository state. Any
@@ -187,7 +189,7 @@ jobs:
       - name: fuzz test-location guard
         run: scripts/cargo-test-exact 3 - -p rafter --test test_location_guard -- --nocapture
       - name: public API/docs guard
-        run: scripts/cargo-test-exact 8 - -p rafter --test public_api_docs_guard -- --nocapture
+        run: scripts/cargo-test-exact 10 - -p rafter --test public_api_docs_guard -- --nocapture
       - name: invariant docs guard
         run: python3 scripts/render-raft-invariants-doc --check
       - name: workspace tests

@@ -45,6 +45,10 @@ ceilings only shrink unless a change is explicitly reviewed. Run `zrail check`
 after edits and inspect `zrail diff --base HEAD` before updating the lock.
 Every proposed grant must receive an explicit approval or denial with a reason.
 
+zrail resolves dependency macro exports offline from Cargo's registry archives.
+On a fresh checkout, run `cargo fetch --locked` before invoking `zrail check`
+directly. The zcheck graph and CI perform this fetch before architecture analysis.
+
 Rafter retains guards where its requirements exceed the published zrail engine:
 leading `//!` module comments, strict facade shapes and named module layouts,
 narrower scenario-size limits,

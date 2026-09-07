@@ -1203,7 +1203,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "a85a585ce9e93a15631ea7e57938e81e18b8be7b1c25cefb93898b70a1aa7100"
+sha256 = "7d7db57028da37ac7d3ef2f37f2f0da3c814a97dbed94b115e69eba7f7845097"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1230,12 +1230,12 @@ inputs_sha256 = "d33a14fc45f06272ebe9cdfc49dc6efa4010f66a1dac5154097a64454cb9295
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "8a14d2328826fa9818142307f1137e841150652b5038179e5baf028bd08a5310"
+inputs_sha256 = "de08f73bf762d04e1720d062c25eb27e1acee89430f7ff79ad5af52c6cb17170"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "d0f3e289862e0a804505a98770611c982a07f3d0c782250e62c8598e045720a0"
+inputs_sha256 = "50a9ae66394a313bc72a6991dde89e39be13089922d6d740b655c8877d211d85"
 
 [[macro_source]]
 allowance = "clap::Parser"

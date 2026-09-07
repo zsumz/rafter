@@ -25,7 +25,7 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
         "scripts/cargo-test-exact 2 source_boundary -p rafter",
         "scripts/cargo-test-exact 1 file_size_guard -p rafter -- --nocapture",
         "scripts/cargo-test-exact 3 - -p rafter --test test_location_guard -- --nocapture",
-        "scripts/cargo-test-exact 8 - -p rafter --test public_api_docs_guard -- --nocapture",
+        "scripts/cargo-test-exact 10 - -p rafter --test public_api_docs_guard -- --nocapture",
         "scripts/cargo-test-exact 1 - -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture",
         "scripts/cargo-test-exact 64 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1",

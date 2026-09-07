@@ -124,7 +124,13 @@ needs = [
 
 # --- architecture ----------------------------------------------------------
 
+[tasks.fetch]
+description = "Fetch locked dependency archives so offline macro export analysis works on a fresh checkout."
+run = ["cargo", "fetch", "--locked"]
+tools = ["cargo"]
+
 [tasks.zrail]
+needs = ["fetch"]
 description = "Check the declarative architecture contract against the locked repository state."
 run = ["zrail", "check"]
 tools = ["zrail"]
