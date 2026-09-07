@@ -32,24 +32,20 @@
 
 ## Model
 
+The kernel turns ticks, peer messages, and client requests into explicit outputs.
+It performs no IO. A durable embedding handles each step in this order:
+
 ```txt
-rafter              pure Raft kernel
-rafter-runtime-api  persist-before-output runtime boundary
-rafter-storage      hard-state, log, and snapshot stores
-rafter-runtime      durable node wrapper
-rafter-app          embedded state-machine layer
-rafter-service      async handle and transport traits
-rafter-multiraft    many-group host
-rafter-codec        peer-message wire format
-rafter-sim          simulation and model checking
+input -> Raft step -> persist required changes -> send messages / apply entries
 ```
 
-Start at the layer that fits your application. Each keeps storage, transport,
-scheduling, identity, and recovery policy in your hands. See the
-[architecture guide](./docs/architecture.md) for the step loop and the
-persist-before-output contract.
+`rafter-runtime` enforces this persist-before-output boundary. You supply the
+transport, application state machine, and scheduling policy. See the
+[architecture guide](./docs/architecture.md) for the runtime contract and recovery.
 
 ## API Layers
+
+Choose the layer that matches how much of the integration you want Rafter to provide.
 
 | Layer | Reach for it when |
 | --- | --- |

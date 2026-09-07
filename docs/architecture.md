@@ -2,7 +2,7 @@
 
 This is the embedder's tour: what each layer owes the one above it, where
 your code sits, and which rules are load-bearing. The README's
-[Model](../README.md#model) table names the crates; this document explains
+[Crates](../README.md#crates) table lists the packages; this document explains
 the machine they form. The verification story has its own documents —
 [raft-invariants.md](./raft-invariants.md) and
 [model-checking.md](./model-checking.md) — and the architecture described
