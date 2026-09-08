@@ -37,6 +37,8 @@ pub enum PeerBehavior {
     AcceptThenClose = 1,
     CaptureFrames = 2,
     CaptureOneThenClose = 3,
+    AcceptThenCloseAndPause = 4,
+    PauseAccepting = 5,
 }
 
 #[derive(Debug)]
@@ -179,9 +181,18 @@ fn serve(
         .expect("fault peer codec");
 
     while !stop.load(Ordering::Acquire) {
+        if behavior.load(Ordering::Acquire) == PeerBehavior::PauseAccepting as u8 {
+            thread::sleep(Duration::from_millis(2));
+            continue;
+        }
         match listener.accept() {
             Ok((socket, _)) => {
                 let selected = PeerBehavior::from_u8(behavior.load(Ordering::Acquire));
+                if selected == PeerBehavior::AcceptThenCloseAndPause {
+                    // Publish the pause before closing, so a caller repairing
+                    // the peer after a write failure cannot lose its update.
+                    behavior.store(PeerBehavior::PauseAccepting as u8, Ordering::Release);
+                }
                 if let Err(error) = serve_one(
                     socket,
                     selected,
@@ -238,6 +249,8 @@ fn serve_one(
     let handshake = match behavior {
         PeerBehavior::RejectFrameLimit => incompatible,
         PeerBehavior::AcceptThenClose
+        | PeerBehavior::AcceptThenCloseAndPause
+        | PeerBehavior::PauseAccepting
         | PeerBehavior::CaptureFrames
         | PeerBehavior::CaptureOneThenClose => compatible,
     };
@@ -256,10 +269,11 @@ fn serve_one(
             debug_assert!(!accepted);
             Ok(())
         }
-        PeerBehavior::AcceptThenClose => {
+        PeerBehavior::AcceptThenClose | PeerBehavior::AcceptThenCloseAndPause => {
             debug_assert!(accepted);
             close(&mut stream)
         }
+        PeerBehavior::PauseAccepting => unreachable!("paused peer does not accept sockets"),
         PeerBehavior::CaptureFrames => {
             debug_assert!(accepted);
             capture_frames(&mut stream, codec, classes)
@@ -373,6 +387,8 @@ impl PeerBehavior {
             1 => Self::AcceptThenClose,
             2 => Self::CaptureFrames,
             3 => Self::CaptureOneThenClose,
+            4 => Self::AcceptThenCloseAndPause,
+            5 => Self::PauseAccepting,
             _ => Self::RejectFrameLimit,
         }
     }
