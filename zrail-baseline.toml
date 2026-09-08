@@ -340,11 +340,6 @@ reason = "Pre-adoption module facade holding implementation; shrink toward the 1
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter/src/node/election.rs"
-reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter/src/node/log.rs"
 reason = "Pre-adoption implementation size held as shrink-only debt; split along its internal seams toward the 300-line target."
 

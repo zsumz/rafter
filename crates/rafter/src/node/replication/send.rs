@@ -43,7 +43,7 @@ impl Node {
     pub(in crate::node) fn broadcast_append_entries_into(&mut self, outputs: &mut Vec<Output>) {
         self.leader.heartbeat_sequence += 1;
         self.leader.heartbeat_elapsed = 0;
-        self.refresh_leader_progress_index();
+        self.reconcile_replication_progress();
 
         let local_id = self.id();
         let replica_count = self.leader.progress.replica_count();
@@ -89,7 +89,7 @@ impl Node {
         outputs: &mut Vec<Output>,
         batch_cache: &mut LogBatchCache,
     ) {
-        self.refresh_leader_progress_index();
+        self.reconcile_replication_progress();
         self.replicate_to_follower_with_cache_fresh(follower_id, demand, outputs, batch_cache);
     }
 

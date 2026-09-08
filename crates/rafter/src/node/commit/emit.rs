@@ -1,13 +1,12 @@
-//! Commit-index advancement and ordered application output.
+//! Ordered effects for the committed prefix, without executing the application.
 
 use crate::{LogEntryKind, LogIndex, MembershipConfig};
 
 use super::super::{Node, Output, Role};
-use super::tracker::CommitTracker;
 
 impl Node {
-    /// Drains application outputs for committed log entries that have not yet
-    /// been applied in this process.
+    /// Drains outputs for committed entries above the core dispatch cursor.
+    /// This prepares effects; the embedding executes them after persistence.
     ///
     /// This is the recovery companion to
     /// [`Node::from_bootstrap_applied_through`](crate::Node::from_bootstrap_applied_through):
@@ -22,42 +21,14 @@ impl Node {
     /// log mutation maintain that invariant.
     #[must_use]
     pub fn drain_committed_outputs(&mut self) -> Vec<Output> {
-        self.apply_committed()
-    }
-
-    pub(in crate::node) fn advance_commit_index(&mut self) -> Vec<Output> {
         let mut outputs = Vec::new();
-        self.advance_commit_index_into(&mut outputs);
+        self.emit_committed_outputs(&mut outputs);
         outputs
     }
 
-    pub(in crate::node) fn advance_commit_index_into(&mut self, outputs: &mut Vec<Output>) {
-        self.refresh_leader_progress_index();
-
-        let Some(committable_index) = CommitTracker::new(&self.leader.progress).committable_index()
-        else {
-            return;
-        };
-        if committable_index <= self.volatile.commit_index {
-            return;
-        }
-        if self.term_at(committable_index) != Some(self.current_term()) {
-            return;
-        }
-
-        self.volatile.commit_index = committable_index;
-        self.apply_committed_into(outputs);
-    }
-
-    fn apply_committed(&mut self) -> Vec<Output> {
-        let mut outputs = Vec::new();
-        self.apply_committed_into(&mut outputs);
-        outputs
-    }
-
-    pub(in crate::node) fn apply_committed_into(&mut self, outputs: &mut Vec<Output>) {
-        while self.volatile.applied_index < self.volatile.commit_index {
-            let index = self.volatile.applied_index.next();
+    pub(in crate::node) fn emit_committed_outputs(&mut self, outputs: &mut Vec<Output>) {
+        while self.volatile.dispatched_index < self.volatile.commit_index {
+            let index = self.volatile.dispatched_index.next();
             let Some(entry) = self.entry_at(index) else {
                 break;
             };
@@ -73,7 +44,7 @@ impl Node {
             // same replicas.
             let configuration = entry.configuration_entry().cloned();
 
-            self.volatile.applied_index = index;
+            self.volatile.dispatched_index = index;
             let local_proposal_id = self
                 .volatile
                 .local_proposals
@@ -104,24 +75,9 @@ impl Node {
         }
     }
 
-    /// The membership in effect immediately before the entry at `index`.
-    ///
-    /// **The half of a committed transition only this walk can supply**, and the
-    /// reason [`Output::ConfigurationCommitted`] carries a transition rather
-    /// than a state. Here the answer is a lookup against the log this node
-    /// holds; at a consumer it would be a guess about which of its own past
-    /// states corresponds to a historical index, and a consumer replaying old
-    /// entries against a newer state guesses wrong in the direction that retires
-    /// live replicas.
-    ///
-    /// Total by construction, through the three layers
-    /// [`Node::membership_at_index`](crate::Node::membership_at_index) already
-    /// resolves in order: the newest configuration entry strictly below `index`,
-    /// then the boundary configuration of an installed snapshot, then the
-    /// bootstrap membership. `index` is at least
-    /// [`LogIndex::ZERO`](crate::LogIndex)`.next()` here — the walk reads
-    /// `applied_index.next()` and the applied index is never negative — so the
-    /// subtraction below cannot underflow.
+    /// Historical predecessor for this entry, resolved from the retained log,
+    /// snapshot membership, or bootstrap membership. Comparing a replayed
+    /// transition against the consumer's later membership can retire live IDs.
     fn membership_before(&self, index: LogIndex) -> MembershipConfig {
         self.membership_at_index(LogIndex(index.0.saturating_sub(1)))
     }

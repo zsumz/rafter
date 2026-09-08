@@ -144,16 +144,16 @@ impl Node {
                 self.volatile.commit_index
             ));
         }
-        if self.volatile.applied_index > self.volatile.commit_index {
+        if self.volatile.dispatched_index > self.volatile.commit_index {
             return Err(format!(
                 "applied index {} exceeds commit index {}",
-                self.volatile.applied_index, self.volatile.commit_index
+                self.volatile.dispatched_index, self.volatile.commit_index
             ));
         }
-        if self.volatile.applied_index < self.snapshot_index() {
+        if self.volatile.dispatched_index < self.snapshot_index() {
             return Err(format!(
                 "applied index {} is behind installed snapshot boundary {}",
-                self.volatile.applied_index,
+                self.volatile.dispatched_index,
                 self.snapshot_index()
             ));
         }

@@ -36,7 +36,10 @@ impl ProgressSet {
             .collect();
     }
 
-    pub(in crate::node) fn rebuild(
+    /// Preserves existing replicas' observed progress across a slot change,
+    /// initializes new replicas as probes, and refreshes local log evidence.
+    /// Follower acknowledgement state cannot be reconstructed from our log.
+    pub(in crate::node) fn reconcile_membership(
         &mut self,
         membership: &MembershipConfig,
         self_id: NodeId,

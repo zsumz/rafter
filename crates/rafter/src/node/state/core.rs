@@ -27,7 +27,9 @@ pub(in crate::node) struct PersistentState {
 pub(in crate::node) struct VolatileState {
     pub role: Role,
     pub commit_index: LogIndex,
-    pub applied_index: LogIndex,
+    /// Committed prefix processed for output dispatch, including entries with
+    /// no application output and the caller's effective recovery floor.
+    pub dispatched_index: LogIndex,
     /// Local-only proposal correlation. This is volatile by design: it is not
     /// replicated, persisted, snapshotted, or restored after restart.
     pub local_proposals: LocalProposalTracker,
@@ -46,7 +48,7 @@ impl Default for VolatileState {
         Self {
             role: Role::Follower,
             commit_index: LogIndex::ZERO,
-            applied_index: LogIndex::ZERO,
+            dispatched_index: LogIndex::ZERO,
             local_proposals: LocalProposalTracker::default(),
             incoming_snapshot: None,
             leader_hint: None,
@@ -56,12 +58,12 @@ impl Default for VolatileState {
 }
 
 impl VolatileState {
-    /// Builds follower volatile state with commit and apply floors at `index`.
-    pub(in crate::node) fn at_applied_index(index: LogIndex) -> Self {
+    /// Builds follower volatile state with commit and dispatch floors at `index`.
+    pub(in crate::node) fn at_dispatched_index(index: LogIndex) -> Self {
         Self {
             role: Role::Follower,
             commit_index: index,
-            applied_index: index,
+            dispatched_index: index,
             local_proposals: LocalProposalTracker::default(),
             incoming_snapshot: None,
             leader_hint: None,

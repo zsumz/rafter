@@ -14,3 +14,5 @@ mod read;
 mod replication;
 mod snapshot;
 mod transfer;
+#[path = "../../tests/support/protocol_walkthrough_driver.rs"]
+mod walkthroughs;

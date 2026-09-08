@@ -14,6 +14,13 @@ is incomplete coverage, not a pass.
 The invariant gate's ownership, dependency rules, and trust boundaries live in
 [Invariant tooling architecture](invariant-tooling-architecture.md).
 
+## Reading a counterexample
+
+The [protocol rule guide](protocol-rules.md) connects the reported invariant,
+exact replay actions, per-action state summaries, production transition, and
+existing detector. Traces are not minimized: replay stops at the first observed
+failure and does not claim global minimality.
+
 ## Weekly Simulator Demotion
 
 The weekly invariants lane invokes the `raft-nightly` profile, not

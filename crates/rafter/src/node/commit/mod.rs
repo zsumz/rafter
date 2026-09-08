@@ -1,11 +1,10 @@
-//! Commit-index derivation and committed-entry application.
+//! Commit authorization and ordered dispatch of the committed prefix.
 //!
-//! The tracker derives the highest index stored on the effective stable or
-//! joint quorum. Advancement accepts only a current-term candidate; applying
-//! that commit emits ordered effects for the entire newly committed prefix.
+//! Advancement places quorum replication beside the current-term restriction.
+//! Dispatch emits the newly committed effects; the embedding executes them.
 
-mod apply;
-mod tracker;
+mod advance;
+mod emit;
 
 #[cfg(test)]
-mod tracker_test;
+mod quorum_test;

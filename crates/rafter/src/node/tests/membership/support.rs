@@ -72,7 +72,7 @@ fn committed_leader_with_configuration(
     leader.become_leader();
     let committed = leader.last_log_index();
     leader.volatile.commit_index = committed;
-    leader.volatile.applied_index = committed;
+    leader.volatile.dispatched_index = committed;
     leader
 }
 

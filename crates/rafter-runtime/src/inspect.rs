@@ -59,8 +59,11 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         self.node.commit_index()
     }
 
-    /// Returns the highest log index this runtime has emitted application
-    /// outputs through.
+    /// Returns the committed prefix the core has processed for output dispatch.
+    ///
+    /// Includes no-ops, configurations, and the effective recovery floor. It
+    /// does not establish application execution or its durability. A poisoned
+    /// runtime can have prepared outputs that were never released.
     ///
     /// This is the floor a local compaction may not exceed — see
     /// [`RaftRuntimeError::SnapshotAheadOfApplied`]. On a node recovered with
@@ -69,8 +72,17 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// compact must drain first, or declare its floor at construction with
     /// [`DurableRaftNode::with_storage_and_snapshot_store_applied_through`].
     #[must_use]
+    pub fn dispatched_index(&self) -> rafter::LogIndex {
+        self.node.dispatched_index()
+    }
+
+    /// Compatibility alias for [`DurableRaftNode::dispatched_index`].
+    ///
+    /// This cursor describes core dispatch, not application execution. The
+    /// existing name remains available without deprecation warnings.
+    #[must_use]
     pub fn applied_index(&self) -> rafter::LogIndex {
-        self.node.applied_index()
+        self.dispatched_index()
     }
 
     /// Returns the highest log index known to the local Raft kernel.

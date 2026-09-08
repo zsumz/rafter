@@ -40,7 +40,7 @@ pub(super) fn pipelining_leader(
 
 pub(super) fn seed_replicating(leader: &mut Node, follower: NodeId, match_index: LogIndex) {
     *leader
-        .try_follower_progress_mut(follower)
+        .reconcile_follower_progress_mut(follower)
         .expect("active follower") = Progress {
         match_index,
         next_index: match_index.next(),

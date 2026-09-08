@@ -2,10 +2,10 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "bbd2a43bf8eff6845b904effc8aef94582fdd611d22090dbd4490a790a40b578"
+contract_sha256 = "cbd07a3908f628c40b09b8555372a2d8d285df2adfe2a8ca1ba07e4fc251c419"
 
 [analysis]
-inventory_sha256 = "ea5ea87b871187676cffdea710a74df02fad390fbe3b826008959feae59298b8"
+inventory_sha256 = "08ed177ee519e062c796d624238817f8b83fa8b3c7072e76aab9de34ae1c8a0b"
 exclusions_sha256 = "938ddad6868e3a6a928a0720de503d2c6745c1ed05522321fd81e0d2a9f4c6ca"
 cargo_lock_sha256 = "842f09a5e4891422572b95ec5140da82b6b1c8278e29c9cf3e7f0ed6e41dcca5"
 cargo_features_sha256 = "24b61d47c1d7b3cd8877a438029133a089a7d479a1f0f5c247da70fa1064d7b2"
@@ -13,22 +13,22 @@ feature_worlds_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991
 feature_worlds = 0
 packages = 16
 targets = 148
-physical_rust_files = 1935
-base_source_contexts = 3320
+physical_rust_files = 1944
+base_source_contexts = 3330
 derived_source_contexts = 0
-source_facts = 715768
-projection_queries = 2820764
+source_facts = 717981
+projection_queries = 2829556
 projected_facts = 2503
 unresolved_bindings = 0
 analyzer_semantics = 6
 
 [[analysis.contract_source]]
 path = "zrail-baseline.toml"
-sha256 = "0e3344e2ed76b350e82a877e3a6ea0f466356e22128163fdd1d82a6ffb09cd8d"
+sha256 = "1902d69e5cda7ba822bcd4f15bfbf053a26b3f42efcedd3ca22098090ae69ca0"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "69ee96f724ea7dd1658f30f0b96a6905c09addfcf3a092d0a04038a51e7ee299"
+sha256 = "053bfc0321e9ae27167d46f103098c2beb136b1f14aa67d1d9914fbf90de34dd"
 
 [[package]]
 name = "rafter"
@@ -1246,12 +1246,12 @@ inputs_sha256 = "d33a14fc45f06272ebe9cdfc49dc6efa4010f66a1dac5154097a64454cb9295
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "b030adb42f316300c2cbcf6f3d78c41bb6ff6123bea5d393137aa74326134cbd"
+inputs_sha256 = "f86339738a064ebce94b99834b8e6c634b458d77da1aa1e58617d7df3a587a9f"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "3e577f71cefcdeb47ba9c1328bc082113ce7843fe6046a0b9ebc493a09503f1c"
+inputs_sha256 = "74f3ae9bfa3c7a3304e996115b97603a95a12b6489ba3e212c659e4e8531ab08"
 
 [[macro_source]]
 allowance = "clap::Parser"
@@ -1695,11 +1695,6 @@ value = 407
 rule = "rust.file-size"
 target = "crates/rafter/src/lib.rs"
 value = 144
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter/src/node/election.rs"
-value = 312
 
 [[ratchet]]
 rule = "rust.file-size"

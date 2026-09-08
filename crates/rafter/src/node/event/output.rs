@@ -48,7 +48,7 @@ pub enum Output {
         term: Term,
     },
     /// Volatile local tracking for a proposal was cleared before the proposal
-    /// applied on this node.
+    /// was dispatched by this core.
     ///
     /// This is local-only correlation metadata. It is not replicated,
     /// persisted, sent on the wire, stored in snapshots, or part of Raft's
@@ -65,6 +65,7 @@ pub enum Output {
         reason: LocalProposalDropReason,
     },
     /// The committed entry at `index` is ready for the state machine.
+    /// Returning this value does not execute the command or persist it.
     ///
     /// `local_proposal_id` is present only when this process still has
     /// volatile local tracking for a tracked proposal at the same index and
@@ -79,62 +80,16 @@ pub enum Output {
         /// Local-only proposal correlation, when still tracked.
         local_proposal_id: Option<LocalProposalId>,
     },
-    /// The configuration entry at `index` crossed the commit index.
+    /// One committed configuration transition, emitted in log order.
     ///
-    /// **One output per configuration entry the commit index crossed, in index
-    /// order, and that is the whole reason it exists.** One step can advance the
-    /// commit index across several configuration entries at once — a lagging
-    /// replica catching up receives them in a single `AppendEntries` whose
-    /// leader commit covers all of them — and a consumer that instead sampled
-    /// [`Node::committed_membership`](crate::Node::committed_membership) once
-    /// after the step would see only the last. Every configuration between is a
-    /// membership the cluster genuinely committed: it authorized replicas, and
-    /// the identities it named are spent whether or not any later configuration
-    /// still names them. Sampling loses exactly the ones that lived and died
-    /// inside one step, and loses them silently, because the sampled value can
-    /// be identical before and after.
+    /// `previous` is the membership immediately before this entry, not the
+    /// consumer's current membership. Replay must not compare historical
+    /// entries against a later configuration. Every crossed configuration is
+    /// emitted, including intermediate transitions within a single step.
     ///
-    /// `index` and `term` name the configuration entry itself rather than the
-    /// commit index the step reached, so the outputs of one step are totally
-    /// ordered by `index` and a consumer can correlate each membership with the
-    /// entry that carried it.
-    ///
-    /// This is a *committed* fact and therefore permanent: unlike the effective
-    /// configuration, which a new leader can truncate back off the log, a
-    /// configuration reported here can never be taken back. Consumers that may
-    /// only narrow a peer set or retire an identity on a committed fact may act
-    /// on each of these.
-    ///
-    /// **A snapshot install emits none of these**, and cannot: a snapshot
-    /// carries only the committed configuration at its boundary, so
-    /// configurations that committed and were superseded below that boundary
-    /// are not reconstructible from it. See
-    /// [`Output::ApplySnapshot`] and
-    /// [`Node::install_local_snapshot`](crate::Node::install_local_snapshot).
-    ///
-    /// # A transition, not a state
-    ///
-    /// `previous` and `configuration` are the two ends of one committed move,
-    /// and carrying both is what makes this output mean the same thing wherever
-    /// it is folded. A consumer that retires identities wants the *difference* —
-    /// which replicas this configuration admitted, which it removed — and a
-    /// membership state alone cannot answer that. It has to be subtracted from
-    /// something, and the only correct something is the membership that stood
-    /// immediately before, which the consumer can supply only if its own state
-    /// happens to sit exactly there.
-    ///
-    /// That "happens to" is the whole problem. These outputs are replayed: a
-    /// process recovering from durable storage receives every configuration
-    /// entry above its applied floor, and a process that already holds a *later*
-    /// membership — from a checkpoint, or from a snapshot boundary — computes
-    /// `later − historical` and reads every replica the newer configurations
-    /// added as a removal. An addition-only history retires replicas that way,
-    /// permanently, which is the opposite of the fact it was handed.
-    ///
-    /// Computed here the difference is chronological by construction, because
-    /// this walk knows the configuration in effect before each entry and the
-    /// consumer does not. So a consumer may fold these in any order, from any
-    /// starting state, any number of times.
+    /// Snapshot installation emits no historical transitions: it retains only
+    /// the boundary membership. See [`Output::ApplySnapshot`] and the
+    /// [replay argument and executable cases](https://github.com/zsumz/rafter/blob/main/crates/rafter/CONFIGURATION_REPLAY.md).
     ConfigurationCommitted {
         /// Log index of the committed configuration entry.
         index: LogIndex,
@@ -142,15 +97,8 @@ pub enum Output {
         term: Term,
         /// The membership in effect immediately before `configuration`.
         ///
-        /// A membership rather than a [`ConfigurationEntry`], and that is not a
-        /// loss of provenance — it is the only total answer. The state before
-        /// the first configuration entry of a log is the bootstrap membership,
-        /// and the state before the first one above a snapshot boundary is the
-        /// boundary configuration; neither is an entry in the retained log, so
-        /// an entry-typed field would have to be optional. An `Option` here
-        /// would hand the consumer back exactly the question this field exists
-        /// to answer — "what do I subtract?" — and it would be absent precisely
-        /// at a boundary, which is where a wrong answer costs a live replica.
+        /// This also covers bootstrap and snapshot predecessors, which need
+        /// not correspond to a retained configuration entry.
         previous: MembershipConfig,
         /// Configuration entry that crossed the commit index.
         configuration: ConfigurationEntry,
@@ -203,7 +151,9 @@ pub enum Output {
     ReadIndexGranted {
         /// Local-only read barrier identity.
         read_id: ReadId,
-        /// Applied-index floor required before reading application state.
+        /// Committed log barrier. The embedding must execute application
+        /// entries through this position before reading; no-ops and
+        /// configurations do not produce application-command callbacks.
         read_index: LogIndex,
     },
     /// A read-index request was rejected without being registered.

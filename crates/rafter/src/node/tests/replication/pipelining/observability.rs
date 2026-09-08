@@ -25,7 +25,7 @@ fn leader_replication_progress_reports_the_state_of_every_mode() {
     // its position; follower 4 is mid-snapshot.
     seed_replicating(&mut leader, NodeId(3), LogIndex(4));
     let behind = leader
-        .try_follower_progress_mut(NodeId(4))
+        .reconcile_follower_progress_mut(NodeId(4))
         .expect("active follower");
     behind.next_index = LogIndex(3);
     behind.mode = ProgressMode::Snapshot { next_offset: 7 };

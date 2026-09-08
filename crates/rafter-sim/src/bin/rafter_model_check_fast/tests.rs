@@ -119,6 +119,7 @@ fn failure_timeline_lines_include_failure_and_trace_context() {
         lines,
         vec![
             "ERROR test model failure name=raft-commit failure_kind=invariant-violation invariant=commit_safety error_message=\"committed prefix diverged\"",
+            "INFO test trace provenance reduction=none replay=replay_raft_trace observations=ReplayReport::states",
             "DEBUG test trace step step=0 action=\"tick n1\"",
             "DEBUG test trace step step=1 action=\"deliver n1->n2\"",
         ]

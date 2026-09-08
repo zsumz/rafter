@@ -356,7 +356,7 @@ const MATURE_TEST_MODULES: &[&str] = &[
     "crates/rafter/src/node/tests/transfer.rs",
     "crates/rafter/src/node/tests/transfer/handoff.rs",
     "crates/rafter/src/message/shared_entries_test.rs",
-    "crates/rafter/src/node/commit/tracker_test.rs",
+    "crates/rafter/src/node/commit/quorum_test.rs",
     "crates/rafter/src/node/replication/response_test.rs",
     "crates/rafter/src/node/state/derived_test.rs",
     "crates/rafter/src/node/state/election_test.rs",
@@ -400,7 +400,7 @@ fn mature_test_domains_mirror_the_source_tree() {
             "crates/rafter/src/message/mod.rs",
             "mod shared_entries_test;",
         ),
-        ("crates/rafter/src/node/commit/mod.rs", "mod tracker_test;"),
+        ("crates/rafter/src/node/commit/mod.rs", "mod quorum_test;"),
         (
             "crates/rafter/src/node/replication/mod.rs",
             "mod response_test;",

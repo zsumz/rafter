@@ -9,6 +9,11 @@
 mod failure;
 #[path = "reporting/liveness.rs"]
 mod liveness;
+#[path = "reporting/rules.rs"]
+mod rules;
+#[cfg(test)]
+#[path = "reporting/rules_test.rs"]
+mod rules_test;
 #[path = "reporting/soak.rs"]
 mod soak;
 #[path = "reporting/summary.rs"]

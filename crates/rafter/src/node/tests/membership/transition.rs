@@ -41,7 +41,7 @@ fn leave_joint_derives_stable_configuration_from_joint_new_side() {
         joint,
     )]);
     leader.volatile.commit_index = LogIndex(1);
-    leader.volatile.applied_index = LogIndex(1);
+    leader.volatile.dispatched_index = LogIndex(1);
 
     let outputs = leader.step(Input::LeaveJoint);
 

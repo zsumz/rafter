@@ -39,6 +39,7 @@ The underlying commands remain directly runnable:
 ```sh
 cargo test --workspace
 cargo test -p rafter-sim
+cargo test --locked -p rafter --lib node::tests::walkthroughs
 cargo run --release -p rafter-sim --bin rafter-model-check-fast
 cargo run --locked -p rafter-invariants -- run-all --profile pr
 scripts/maelstrom-lin-kv
@@ -47,6 +48,14 @@ scripts/reference-package-check
 scripts/reference-package-process-check
 zrail check
 ```
+
+The [production walkthroughs](../crates/rafter/PROTOCOL_WALKTHROUGHS.md) are
+generated from the real core test scenarios. `scripts/render-protocol-walkthroughs`
+renders their tables; `--check` verifies them. The normal core tests also check
+the generated document. The renderer never updates the pre-refactor behavioral
+baseline. That separate observation fixture records merged main `2a58d6e3`,
+including every intermediate state and ordered output for each stepping API.
+See the [reading work record](protocol-reading-plan.md) for comparison scope.
 
 The reference consumers occupy an independent workspace, excluded by the root
 `Cargo.toml`. The three reference commands cover checkout-patched source, exact

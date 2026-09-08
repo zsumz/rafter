@@ -6,7 +6,7 @@ use super::*;
 fn leader_sends_install_snapshot_when_follower_is_behind_compacted_prefix() {
     let (mut leader, source) = leader_with_snapshot_payload(b"snapshot bytes".to_vec());
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(4);
 
@@ -38,7 +38,7 @@ fn leader_sends_install_snapshot_when_follower_is_behind_compacted_prefix() {
 fn leader_sends_log_suffix_after_successful_install_snapshot_response() {
     let mut leader = leader_with_snapshot_and_suffix();
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
 
@@ -77,9 +77,9 @@ fn leader_sends_log_suffix_after_successful_install_snapshot_response() {
 fn stale_install_snapshot_response_does_not_regress_replication_state() {
     let mut leader = leader_with_snapshot_and_suffix();
     leader.volatile.commit_index = LogIndex(5);
-    leader.volatile.applied_index = LogIndex(5);
+    leader.volatile.dispatched_index = LogIndex(5);
     let progress = leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower");
     progress.match_index = LogIndex(5);
     progress.next_index = LogIndex(6);
@@ -110,9 +110,9 @@ fn stale_install_snapshot_response_does_not_regress_replication_state() {
 fn overstated_install_snapshot_response_is_clamped_to_leader_tail() {
     let mut leader = leader_with_snapshot_and_suffix();
     leader.volatile.commit_index = LogIndex(5);
-    leader.volatile.applied_index = LogIndex(5);
+    leader.volatile.dispatched_index = LogIndex(5);
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
 
@@ -141,9 +141,9 @@ fn overstated_install_snapshot_response_is_clamped_to_leader_tail() {
 fn delayed_duplicate_response_for_older_transfer_is_ignored() {
     let mut leader = leader_with_snapshot_and_suffix();
     leader.volatile.commit_index = LogIndex(4);
-    leader.volatile.applied_index = LogIndex(4);
+    leader.volatile.dispatched_index = LogIndex(4);
     let progress = leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower");
     progress.match_index = LogIndex(4);
     progress.next_index = LogIndex(5);
@@ -185,7 +185,7 @@ fn delayed_duplicate_response_for_older_transfer_is_ignored() {
 fn duplicate_ack_within_current_transfer_does_not_regress_offset() {
     let mut leader = leader_with_snapshot_and_suffix();
     let progress = leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower");
     progress.next_index = LogIndex(1);
     progress.mode = ProgressMode::Snapshot { next_offset: 10 };

@@ -28,7 +28,7 @@ fn snapshot_mode_pauses_pipelining_and_resumes_with_a_window_fill_after_installa
     leader.become_leader();
     // Follower 2's send position lies behind the compacted prefix.
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(2);
 
@@ -111,7 +111,7 @@ fn snapshot_peer_does_not_break_shared_append_fanout_to_log_peers() {
     seed_replicating(&mut leader, NodeId(2), LogIndex(3));
     seed_replicating(&mut leader, NodeId(3), LogIndex(3));
     leader
-        .try_follower_progress_mut(NodeId(4))
+        .reconcile_follower_progress_mut(NodeId(4))
         .expect("active follower")
         .next_index = LogIndex(2);
 

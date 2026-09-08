@@ -1,5 +1,8 @@
 # Architecture
 
+Start with the [production-core walkthroughs](../crates/rafter/PROTOCOL_WALKTHROUGHS.md)
+and [protocol reading paths](../crates/rafter/ARCHITECTURE.md#start-with-a-behavior).
+
 This is the embedder's tour: what each layer owes the one above it, where
 your code sits, and which rules are load-bearing. The README's
 [Crates](../README.md#crates) table lists the packages; this document explains

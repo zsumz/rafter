@@ -254,7 +254,7 @@ fn follower_ignores_snapshot_at_or_below_commit_index() {
     push_log_entry(&mut follower, Term(1), b"four");
     push_log_entry(&mut follower, Term(1), b"five");
     follower.volatile.commit_index = LogIndex(5);
-    follower.volatile.applied_index = LogIndex(5);
+    follower.volatile.dispatched_index = LogIndex(5);
 
     let snapshot = test_snapshot(3, 1, 1, b"stale snapshot");
     let outputs = follower.step(Input::Message {

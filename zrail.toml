@@ -1240,7 +1240,7 @@ reason = "Production verifier subprocesses launch only through the bounded descr
 #   * node-commit-index-authority and node-applied-index-authority each meet
 #     one write through a local binding of the owned type
 #     (construction.rs `volatile.commit_index = parts.commit_index`, and
-#     `node.volatile.applied_index = floor`), which the engine cannot resolve
+#     `node.volatile.dispatched_index = floor`), which the engine cannot resolve
 #     to one exact field identity — OWN-006 inside the owner's own allowed
 #     file, failing closed on writes the rule intends to permit.
 #   * node-configuration-index-authority (field-mutation on

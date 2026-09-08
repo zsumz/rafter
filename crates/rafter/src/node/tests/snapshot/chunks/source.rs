@@ -7,7 +7,7 @@ fn resolved_snapshot_chunk_mirrors_directive_and_slices_payload() {
     let payload = large_snapshot_payload();
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
 
@@ -53,7 +53,7 @@ fn unresolvable_snapshot_chunk_directive_is_dropped() {
 
     let (mut leader, _source) = leader_with_snapshot_payload(large_snapshot_payload());
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
     let chunk = snapshot_chunk_send_from_output(
