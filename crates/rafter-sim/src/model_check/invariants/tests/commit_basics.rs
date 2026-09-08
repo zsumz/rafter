@@ -2,14 +2,13 @@
 //!
 //! Proves each fires on a constructed violation: a divergent committed entry, a
 //! commit index past local log coverage, a regressed commit or configuration
-//! floor, a configuration identity changed at one index, and two uncommitted
-//! configurations at once. A lossy restart must not clear those floors either.
+//! floor, and a configuration identity changed at one index. A lossy restart
+//! must not clear those floors either.
 
 use super::super::commit::{
     check_commit_index_monotonicity, check_commit_index_within_local_log_bounds_shape,
     check_committed_configuration_identity, check_committed_configuration_index_monotonicity,
     check_cross_node_committed_prefix_agreement,
-    check_no_overlapping_uncommitted_configurations_in_bootstrap,
 };
 use super::*;
 use crate::model_check::observations::Observation;
@@ -177,42 +176,6 @@ fn lossy_restart_preserves_temporal_commit_and_configuration_floors() {
     );
     assert!(check_commit_index_monotonicity(&state, &[]).is_err());
     assert!(check_committed_configuration_monotonicity(&state, &[]).is_err());
-}
-
-#[::rafter_invariant_test::detector_test]
-fn serialized_configuration_checker_detects_two_uncommitted_configurations() {
-    let cluster = one_node_cluster();
-    let membership =
-        MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("fixture membership is valid");
-    let mut bootstrap = bootstrap_state(Term(2), &[]);
-    for (index, config_id) in [(1, 41), (2, 42)] {
-        bootstrap.log.push(BootstrapLogEntry::configuration(
-            LogIndex(index),
-            Term(2),
-            ConfigurationEntry::stable(ConfigurationId(config_id), membership.clone()),
-        ));
-    }
-
-    let failure = oracle_expect_err!(
-        check_no_overlapping_uncommitted_configurations_in_bootstrap(
-            &cluster,
-            NodeId(1),
-            &bootstrap,
-            &[],
-        ),
-        "two uncommitted configurations must violate MB-03",
-    );
-    oracle_assert_eq!(
-        failure.invariant(),
-        catalog::MB_03_SERIALIZED_CONFIGURATION_CHANGES
-    );
-    oracle_assert!(
-        failure
-            .message
-            .contains("2 uncommitted configuration entries"),
-        "unexpected failure message: {}",
-        failure.message
-    );
 }
 
 fn state_with_committed_configuration(config_id: ConfigurationId) -> ExplorationState {

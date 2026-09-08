@@ -4,6 +4,33 @@ use super::support::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
+fn local_configuration_proposal_waits_for_predecessor_commit() {
+    let mut leader = committed_leader_with_learner_config();
+    let _ = leader.step(Input::AddLearner {
+        learner_id: NodeId(5),
+    });
+    let pending = leader.last_log_index();
+    oracle_assert!(pending > leader.commit_index());
+    let rejected = leader.step(Input::AddLearner {
+        learner_id: NodeId(6),
+    });
+    oracle_assert_eq!(leader.last_log_index(), pending);
+    oracle_assert!(rejected.iter().any(|output| matches!(output,
+        Output::RejectProposal {
+            reason: ProposalRejection::Configuration(
+                ConfigurationProposalRejection::UncommittedConfiguration { index }
+            ), ..
+        } if *index == pending
+    )));
+    let _ = acknowledge(&mut leader, NodeId(2), pending);
+    oracle_assert_eq!(leader.commit_index(), pending);
+    let _ = leader.step(Input::AddLearner {
+        learner_id: NodeId(6),
+    });
+    oracle_assert_eq!(leader.last_log_index(), pending.next());
+}
+
+#[test]
 fn follower_rejects_second_uncommitted_configuration_entry() {
     let mut follower = node(2, &[1, 3, 4]);
     let joint = joint_configuration(ConfigurationId(9));

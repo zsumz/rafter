@@ -104,6 +104,9 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: &Ope
         state.transfers_issued += 1;
     }
     let effects = apply_to_cluster(&mut state.cluster.0, operation);
+    if let Some(proposer) = configuration_proposer {
+        state.record_configuration_proposal(&before, proposer);
+    }
     let configuration_append = configuration_last_index_before.and_then(|(proposer, before)| {
         let after = state.cluster.last_log_index(proposer);
         (after > before).then_some(ConfigurationAppend {
