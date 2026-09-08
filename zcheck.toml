@@ -120,7 +120,20 @@ needs = [
   "rustdoc",
   "work-completion",
   "tla-telemetry",
+  "durable-bench-tests",
 ]
+
+[tasks.durable-bench-tests]
+description = "Verify durable benchmark configuration and evidence validation."
+needs = ["durable-bench-config"]
+run = ["python3", "-m", "unittest", "scripts/tests/test_bench_durable.py"]
+tools = ["python3"]
+
+[tasks.durable-bench-config]
+description = "Test the standalone durable benchmark's bounded workload configuration."
+run = ["cargo", "test", "--manifest-path", "bench-compare/Cargo.toml", "--locked", "--no-default-features", "--bin", "bench-rafter-durable"]
+tools = ["cargo"]
+resources = ["bench-target"]
 
 # --- architecture ----------------------------------------------------------
 
@@ -191,3 +204,18 @@ resources = ["reference-target"]
 [tasks.full]
 description = "Qualify the checkout and every locally runnable deeper evidence lane."
 needs = ["check", "invariants-pr", "model-check", "reference-source", "reference-package"]
+
+# Performance evidence stays opt-in, separate from concurrent correctness work.
+[tasks.build-durable-bench]
+description = "Build the sustained durable benchmark with locked standalone dependencies."
+run = ["cargo", "build", "--manifest-path", "bench-compare/Cargo.toml", "--release", "--locked", "--no-default-features", "--bin", "bench-rafter-durable"]
+tools = ["cargo"]
+resources = ["bench-target"]
+
+[tasks.bench-durable]
+description = "Record repeated fixed durable workloads with process CPU and batch latency."
+needs = ["build-durable-bench"]
+run = ["scripts/bench-durable"]
+tools = ["python3"]
+resources = ["benchmark-host"]
+timeout = "60m"
