@@ -65,7 +65,8 @@ def main():
     if sys.argv[1:] not in ([], ["--dry-run"]):
         raise ValueError("usage: scripts/zrail-reconcile [--dry-run]")
     result = subprocess.run(
-        ["zrail", "check", "--format", "json"], capture_output=True, text=True, check=False
+        ["zrail", "check", "--format", "json"],
+        cwd=CONTRACT.parent, capture_output=True, text=True, check=False
     )
     if result.returncode not in (0, 1):
         raise ValueError(f"zrail check failed: {result.stderr}")

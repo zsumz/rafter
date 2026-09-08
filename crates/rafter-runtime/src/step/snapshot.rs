@@ -43,10 +43,9 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
                         .compact_prefix_through(snapshot.metadata.last_included_index)
                         .map_err(RaftRuntimeError::LogCompact)?;
                 }
-                // A committed configuration is durable in the log entry that
-                // carries it and in the hard state that names the commit index,
-                // both of which this step's fence has already written. There is
-                // no second copy for this runtime to keep.
+                // The remaining log and final hard-state writes make a
+                // committed configuration durable before outputs escape.
+                // This snapshot phase does not persist another copy.
                 RaftOutput::ConfigurationCommitted { .. }
                 | RaftOutput::SendSnapshotChunk { .. }
                 | RaftOutput::LocalProposalAppended { .. }

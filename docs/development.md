@@ -14,6 +14,7 @@ zcheck
 
 Rafter remains qualified on Rust 1.88. These developer tools have a newer
 Rust source requirement; the explicit 1.97.1 install toolchain matches CI.
+The qualification scripts also require Python 3.11 or newer.
 
 The default graph in [`zcheck.toml`](../zcheck.toml) runs formatting, Clippy,
 rustdoc, proof-reference checks, the architecture contract, and workspace tests.

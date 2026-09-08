@@ -1219,11 +1219,11 @@ sha256 = "a5f1d1036378a673269addb26223ee593eb340bd11a36e0aff4a177cabc996c5"
 
 [[gate.input]]
 path = "scripts/tests/review_policy_test.py"
-sha256 = "e6d9f5681c5538cf28cb4164196841670a88bf817b5aaec0a69da68f9bf390d4"
+sha256 = "e82fc776949cd198e04885c066a33565fb1182f0e20b2aeac133b88175ea28e3"
 
 [[gate.input]]
 path = "scripts/zrail-reconcile"
-sha256 = "6093c87b8f5641ff21711c3098e46c4f8ecdd87acab32f5b9487580713a78245"
+sha256 = "47fbd7ddc88fbd309c3e061261a2a7de8278b925f93e4fd1984f4f2224edb2ec"
 
 [[gate.input]]
 path = "verification/github-actions.lock"
@@ -1251,7 +1251,7 @@ inputs_sha256 = "de08f73bf762d04e1720d062c25eb27e1acee89430f7ff79ad5af52c6cb1717
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "109a0c1ada80358cf420e3bb698988521a8ad18c7daeb9cfe5376f6a6642d78e"
+inputs_sha256 = "99ca3ee8c7bd45660df1bc27123801f6567cbcf2672d3c7860405d614c8509d9"
 
 [[macro_source]]
 allowance = "clap::Parser"

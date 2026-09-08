@@ -6,6 +6,7 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,27 @@ class ReconcileTests(unittest.TestCase):
             with patch.object(reconcile, "CONTRACT", contract), patch.object(sys, "argv", ["zrail-reconcile"]), patch.object(reconcile.subprocess, "run", return_value=report):
                 with self.assertRaises(ValueError):
                     reconcile.main()
+            self.assertEqual(contract.read_text(), CONTRACT)
+
+    def test_another_working_directory_cannot_supply_reconciliation_findings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo, foreign, commands = root / "repo", root / "foreign", root / "bin"
+            (repo / "scripts").mkdir(parents=True)
+            foreign.mkdir()
+            commands.mkdir()
+            helper = repo / "scripts/zrail-reconcile"
+            helper.write_bytes((ROOT / "scripts/zrail-reconcile").read_bytes())
+            contract = repo / "zrail.toml"
+            contract.write_text(CONTRACT)
+            (repo / "report.json").write_text('{"findings": []}')
+            (foreign / "report.json").write_text(json.dumps({"findings": [STALE]}))
+            checker = commands / "zrail"
+            checker.write_text("#!/usr/bin/env python3\nfrom pathlib import Path\nprint(Path('report.json').read_text())\n")
+            checker.chmod(0o755)
+            env = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"])
+            result = subprocess.run([sys.executable, str(helper)], cwd=foreign, env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(contract.read_text(), CONTRACT)
 
     def test_unknown_item_is_not_reviewed_by_generation(self):
