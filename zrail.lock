@@ -16,7 +16,7 @@ targets = 148
 physical_rust_files = 1935
 base_source_contexts = 3320
 derived_source_contexts = 0
-source_facts = 715783
+source_facts = 715768
 projection_queries = 2820764
 projected_facts = 2503
 unresolved_bindings = 0
@@ -1246,12 +1246,12 @@ inputs_sha256 = "d33a14fc45f06272ebe9cdfc49dc6efa4010f66a1dac5154097a64454cb9295
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "0a2b01e75772d846178a995657ff9fb166ebfe9f6141a2f0257a4e64284c3285"
+inputs_sha256 = "b030adb42f316300c2cbcf6f3d78c41bb6ff6123bea5d393137aa74326134cbd"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "83c9ff7a34853a8df25835eca369bb0d20b8f76742f5697581216679769f6b58"
+inputs_sha256 = "3e577f71cefcdeb47ba9c1328bc082113ce7843fe6046a0b9ebc493a09503f1c"
 
 [[macro_source]]
 allowance = "clap::Parser"
@@ -1754,7 +1754,7 @@ value = 471
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter/tests/properties.rs"
-value = 1023
+value = 1016
 
 [[ratchet]]
 rule = "rust.file-size"
