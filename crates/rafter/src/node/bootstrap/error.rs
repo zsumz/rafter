@@ -90,7 +90,9 @@ pub enum BootstrapValidationError {
         /// Boundary term recorded by the retained log.
         entry_term: Term,
     },
-    /// More than one configuration change remains uncommitted.
+    /// Legacy rejection of several configurations above durable commitment.
+    /// Accepted catch-up histories now recover without inferring commitment;
+    /// this variant remains available for compatibility with stored errors.
     MultipleUncommittedConfigurationEntries {
         /// Index of the first uncommitted configuration.
         first_index: LogIndex,
@@ -116,16 +118,17 @@ pub enum BootstrapValidationError {
         /// Missing committed-configuration position.
         committed_configuration_index: LogIndex,
     },
-    /// Configuration identity at the durable position disagrees with hard state.
+    /// Durable sources disagree about configuration identity at one index.
     CommittedConfigurationIdMismatch {
         /// Log position of the configuration.
         index: LogIndex,
-        /// Configuration identity recorded in hard state.
+        /// Configuration identity recorded by the first durable source.
         expected: crate::ConfigurationId,
-        /// Configuration identity recovered from the entry.
+        /// Conflicting identity from another durable source.
         actual: crate::ConfigurationId,
     },
-    /// Hard state does not name the latest configuration at or below commit.
+    /// Legacy rejection of an older hard-state configuration identity.
+    /// Validated older identities now normalize to the latest justified state.
     CommittedConfigurationNotLatest {
         /// Configuration position recorded in hard state.
         recorded_index: LogIndex,
@@ -240,7 +243,7 @@ impl BootstrapValidationError {
                 formatter,
                 concat!(
                     "Raft bootstrap committed configuration at index {index} has id ",
-                    "{actual} but hard state recorded {expected}"
+                    "{actual} but another durable source recorded {expected}"
                 ),
                 index = index,
                 actual = actual,

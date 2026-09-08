@@ -15,12 +15,14 @@ use rafter::{
 use std::path::PathBuf;
 
 mod commit_publication;
+mod configuration_recovery;
 mod conflict_repair;
 mod crash_window;
 mod file_backed_fixture;
 mod group_commit;
 mod hard_state;
 mod local_ids;
+mod mutation_cuts;
 mod persistence_contract;
 mod persistence_ordering;
 mod recording_stores;

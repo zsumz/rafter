@@ -101,8 +101,10 @@ impl Node {
     /// The matching prefix is skipped, the first divergent index truncates the
     /// local suffix, and the remainder appends. Validation completes before
     /// mutation, so rejection needs no rollback. A divergence at or below the
-    /// commit index is rejected, as is a result containing more than one
-    /// uncommitted configuration after this frame's commit floor takes effect.
+    /// commit index is rejected. A new configuration cannot overlap another
+    /// configuration above this frame's confirmed commit floor. Prior-term
+    /// configurations are accepted history: a recovered leader may need to
+    /// replicate them and its no-op before relearning their commitment.
     fn splice_entries_after(
         &mut self,
         prev_log_index: LogIndex,
@@ -125,8 +127,9 @@ impl Node {
         }
 
         let Some((first_offset, first_index)) = divergence else {
-            // The whole batch already matches. The log's existing
-            // single-uncommitted-configuration invariant remains sufficient.
+            // The whole batch already matches, so no configuration is added.
+            // This also lets a recovered catch-up suffix learn commitment
+            // that crashed before its final hard-state publication.
             return Some(Vec::new());
         };
 
@@ -138,15 +141,18 @@ impl Node {
             configuration_commit_floor,
             first_index,
         );
-        let incoming_configurations = entries.as_slice()[first_offset..]
+        let (incoming_configurations, introduces_configuration) = entries.as_slice()
+            [first_offset..]
             .iter()
             .enumerate()
             .filter(|(offset, entry)| {
                 let index = LogIndex(first_index.0 + *offset as u64);
                 index > configuration_commit_floor && entry.kind.is_configuration()
             })
-            .count();
-        if surviving_configurations + incoming_configurations > 1 {
+            .fold((0, false), |(count, current_term), (_, entry)| {
+                (count + 1, current_term || entry.term == self.current_term())
+            });
+        if introduces_configuration && surviving_configurations + incoming_configurations > 1 {
             return None;
         }
 

@@ -155,21 +155,19 @@ impl Node {
         &self,
         commit_index: LogIndex,
     ) -> Option<CommittedConfiguration> {
-        self.derived
-            .configuration
-            .committed_state_at(
-                self.snapshot_index().next(),
-                &self.persistent.log,
-                commit_index,
-            )
-            .or_else(|| {
-                self.persistent
-                    .committed_configuration
-                    .filter(|state| state.index <= commit_index)
-            })
-            .or_else(|| {
-                self.snapshot_committed_configuration_state()
-                    .filter(|state| state.index <= commit_index)
-            })
+        let retained = self.derived.configuration.committed_state_at(
+            self.snapshot_index().next(),
+            &self.persistent.log,
+            commit_index,
+        );
+        [
+            retained,
+            self.persistent.committed_configuration,
+            self.snapshot_committed_configuration_state(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|state| state.index <= commit_index)
+        .max_by_key(|state| state.index)
     }
 }

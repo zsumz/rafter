@@ -5,8 +5,7 @@ use snapshot::{persisted_entry, raft_snapshot};
 
 mod batched_suffix;
 mod file_backed;
-mod stores;
-use stores::{Cut, Mutation, Observed};
+use super::mutation_cuts::{Cut, Mutation, Observed};
 
 type MemoryImage = DurableRaftNodeStorage<
     InMemoryRaftHardStateStore,

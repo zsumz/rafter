@@ -69,7 +69,7 @@ impl<H: RaftHardStateStore> RaftHardStateStore for Observed<H> {
         self.cut
             .record(Mutation::HardState)
             .map_err(|source| RaftHardStateStoreWriteError::Io {
-                operation: "snapshot crash cut",
+                operation: "durable crash cut",
                 path: PathBuf::from("hard-state"),
                 source: source.into(),
             })
@@ -85,7 +85,7 @@ impl<L: RaftLogSegment> RaftLogSegment for Observed<L> {
         self.cut
             .record(Mutation::Append)
             .map_err(|source| RaftLogSegmentAppendError::Io {
-                operation: "snapshot crash cut",
+                operation: "durable crash cut",
                 source: source.into(),
             })
     }
@@ -95,7 +95,7 @@ impl<L: RaftLogSegment> RaftLogSegment for Observed<L> {
         self.cut
             .record(Mutation::Truncate)
             .map_err(|source| RaftLogSegmentTruncateError::Io {
-                operation: "snapshot crash cut",
+                operation: "durable crash cut",
                 source: source.into(),
             })
     }
@@ -108,7 +108,7 @@ impl<L: RaftLogSegment> RaftLogSegment for Observed<L> {
         self.cut
             .record(Mutation::Compact)
             .map_err(|source| RaftLogSegmentCompactError::Io {
-                operation: "snapshot crash cut",
+                operation: "durable crash cut",
                 source: source.into(),
             })
     }
@@ -180,7 +180,7 @@ impl<S: SnapshotChunkSource> SnapshotChunkSource for Observed<S> {
 
 fn snapshot_error(source: io::Error) -> RaftSnapshotStoreWriteError {
     RaftSnapshotStoreWriteError::Io {
-        operation: "snapshot crash cut",
+        operation: "durable crash cut",
         path: PathBuf::from("snapshots"),
         source: source.into(),
     }
