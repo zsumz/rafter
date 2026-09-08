@@ -1,5 +1,5 @@
-//! Group commit: a batch of inputs persists with one durable flush per
-//! store, and no output from any batched input escapes before that flush.
+//! Group commit amortizes suffix appends across a batch of inputs.
+//! No output from any batched input escapes before all persistence completes.
 
 use std::{cell::Cell, rc::Rc};
 

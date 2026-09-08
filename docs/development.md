@@ -6,16 +6,31 @@ Install [zcheck](https://github.com/zsumz/zcheck) and the same
 [zrail release](https://github.com/zsumz/zrail/releases/tag/v0.0.3-rc.8) as CI:
 
 ```sh
-cargo install zcheck --locked
-cargo install zrail --version 0.0.3-rc.8 --locked
+rustup toolchain install 1.97.1 --profile minimal
+cargo +1.97.1 install zcheck --version 0.0.1 --locked
+cargo +1.97.1 install zrail --version 0.0.3-rc.8 --locked
 zcheck
 ```
+
+Rafter remains qualified on Rust 1.88. These developer tools have a newer
+Rust source requirement; the explicit 1.97.1 install toolchain matches CI.
 
 The default graph in [`zcheck.toml`](../zcheck.toml) runs formatting, Clippy,
 rustdoc, proof-reference checks, the architecture contract, and workspace tests.
 `zcheck plan check` shows the graph. Each run records logs and a receipt.
 `zcheck run full` adds the deeper local lanes; inspect the plan for platform
-requirements. Invariant evidence execution requires Linux. On macOS, the local
+requirements. Invariant evidence execution requires Linux, Python 3.11+, Java
+21, and the pinned TLC JAR at `tools/cache/tla2tools.jar`. Install the asset from
+[the pinned TLC release](https://github.com/zactionsz/tla-tools/releases/tag/tla2tools-2026.08.11.125311)
+and verify it against `tools/tla/SHA256SUMS` before running
+`scripts/invariants-pr-preflight`. CI installs the reviewed asset through its
+pinned `zactionsz/tla-tools` action.
+
+The full invariant task allows eight hours: its required layers have sequential
+budgets of 40 minutes for tests, 40 for simulation, and 338 for TLA, plus an hour
+for compilation, aggregation, and finalization. The preflight checks this sum
+against the manifest so a profile change cannot silently outgrow its parent.
+The default `zcheck` graph remains the shorter development check. On macOS, the local
 Clippy task excludes the Linux-specific invariant executor; Linux CI checks it.
 
 The underlying commands remain directly runnable:
@@ -44,6 +59,22 @@ to reviewed repository state. `zrail-baseline.toml` holds per-file adoption debt
 ceilings only shrink unless a change is explicitly reviewed. Run `zrail check`
 after edits and inspect `zrail diff --base HEAD` before updating the lock.
 Every proposed grant must receive an explicit approval or denial with a reason.
+`scripts/zrail-reconcile` only prunes stale generated allowances. New spellings,
+item sites, unknown origins, and opaque-input changes require a manual identity
+review; the helper leaves the contract untouched if any such finding exists.
+Its successful exit means the generated block is stable; only `zrail check`
+provides the architecture verdict.
+
+PR CI fetches `pull_request.base.sha` and runs `zrail diff --deny-grants`
+against that authority after checking the proposed contract. Grants, adoption
+debt increases, and unknown changes block the required `zrail` check pending
+an `architecture-policy-review` environment approval. The retained artifact
+binds the full diff to the base, proposal, and run attempt. The designated
+maintainer must explicitly approve or deny every change with a reason before
+approving that deployment; a refreshed lock or an approval file in the same
+patch cannot supply that decision. A new PR push cancels the previous run.
+Repository settings require this environment review and the documented PR
+checks while retaining signed commits and linear history.
 
 zrail resolves dependency macro exports offline from Cargo's registry archives.
 On a fresh checkout, run `cargo fetch --locked` before invoking `zrail check`

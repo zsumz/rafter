@@ -704,7 +704,7 @@ definition = "crates/rafter-multiraft/src/managed/error.rs"
 reason = "The reviewed `debug_display` expansion declares the paired Debug and Display impls for one managed error."
 
 # Item-position expansions still need per-file graph exemptions regardless of
-# macro mode; scripts/zrail-reconcile regenerates the block between the
+# macro mode; scripts/zrail-reconcile only prunes stale entries between the
 # markers from `zrail check --format json`.
 # >>> generated: observed spellings
 
@@ -1361,6 +1361,10 @@ inputs = [
   ".github/actions/setup-rust/action.yml",
   ".github/actions/configure-invariant-cargo/action.yml",
   "verification/github-actions.lock",
+  "zcheck.toml",
+  "scripts/zrail-reconcile",
+  "scripts/invariants-pr-preflight",
+  "scripts/tests/review_policy_test.py",
 ]
 requires = ["rustdoc"]
 reason = "Pull-request qualification: lint, workspace tests, reference consumers, and the deterministic invariant aggregate."
