@@ -55,7 +55,7 @@ pub(super) enum Observation {
     CrossEpochExecutionWitnessPairs,
     SameIndexApplicationResultPairs,
     SameIndexConfigurationResultPairs,
-    StatesWithOneUncommittedConfiguration,
+    ConfigurationProposalPredecessorChecks,
     CommittedConfigurationAdvances,
     SameIndexCommittedConfigurationIdentityChecks,
     RegisteredReadGrants,

@@ -29,8 +29,9 @@ use client::{check_client_history_linearizability, check_client_history_read_wri
 use commit::{
     check_commit_index_monotonicity, check_committed_configuration_monotonicity,
     check_committed_prefixes, check_membership_quorum_validity,
-    check_no_overlapping_uncommitted_configurations, check_required_committed_configurations,
+    check_required_committed_configurations,
 };
+use configuration::check_serialized_configuration_proposals;
 #[cfg(test)]
 use election::check_election_certificate_voters;
 pub(super) use election::{check_election_history, check_election_safety};
@@ -56,7 +57,7 @@ pub(super) fn check_commit_safety(
     check_snapshot_log_geometry(state.cluster(), trace)?;
     check_committed_prefixes(state.cluster(), trace)?;
     check_membership_quorum_validity(state.cluster(), trace)?;
-    check_no_overlapping_uncommitted_configurations(state.cluster(), trace)?;
+    check_serialized_configuration_proposals(state, trace)?;
     check_client_history_read_write_invariants(state, trace)?;
     check_client_history_linearizability(state, trace)?;
     check_required_applied_payloads(state, trace)?;
@@ -66,6 +67,7 @@ pub(super) fn check_commit_safety(
 mod applied;
 mod client;
 mod commit;
+mod configuration;
 mod election;
 mod history;
 mod persistence;

@@ -62,10 +62,11 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore> DurableRaft
         // Finish an installation interrupted between its final staged chunk
         // and its promotion: a COMPLETE durable staging cannot be resumed
         // (the kernel rejects complete transfers as not-installed), so left
-        // in place it would fail every reopen. Promoting here is exactly the
-        // write the crashed process would have performed next — the staged
-        // content was validated chunk by chunk, and no acknowledgement of
-        // the installed snapshot escaped before the crash. A complete
+        // in place it would fail every reopen. Use the live installation
+        // operation: it removes a conflicting boundary and suffix before
+        // promotion can discard the staging that makes this recoverable.
+        // The staged content was validated chunk by chunk, and no installed
+        // acknowledgement escaped before the crash. A complete
         // staging at or below the current snapshot boundary is instead the
         // leftover of a crash between promotion and the staging clear; it is
         // stale, and the kernel's resume path below reports it as such so
@@ -83,12 +84,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore> DurableRaft
                     transfer.total_payload_len,
                     transfer.application_payload_crc32,
                 );
-                snapshot_store
-                    .promote_staged_snapshot(&descriptor)
-                    .map_err(RaftRuntimeError::SnapshotWrite)?;
-                log_segment
-                    .compact_prefix_through(staged_boundary)
-                    .map_err(RaftRuntimeError::LogCompact)?;
+                crate::snapshot_install::install_staged_snapshot(
+                    &mut log_segment,
+                    &mut snapshot_store,
+                    &descriptor,
+                    hard_state.commit_index,
+                )?;
             }
         }
 
@@ -101,14 +102,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore> DurableRaft
             snapshot.metadata.last_included_index
         });
 
-        // Guard the snapshot-persist / log-compaction crash window. The write
-        // path persists the snapshot first, then compacts the log, so a crash
-        // between the two leaves a durable snapshot ahead of the log's
-        // compacted prefix — which is indistinguishable from the supported
-        // retained-full-log mode and boots correctly through bootstrap
-        // filtering below. The inverse, a log compacted *past* what the
-        // snapshot covers, is unrepairable acknowledged-data loss: fail loudly
-        // with a precise error rather than a generic contiguity gap.
+        // Installation removes a conflicting boundary and suffix while the
+        // complete staging is still durable, then promotes before compacting.
+        // A promoted snapshot can therefore coexist with either a matching
+        // retained full log or a tail below its boundary. Validate the former
+        // at bootstrap and repair the latter below. A log compacted *past*
+        // the snapshot is unrepairable acknowledged-data loss: fail loudly.
         let compacted_through = log_segment.compacted_through();
         if compacted_through > snapshot_index {
             return Err(RaftRuntimeError::CompactionAheadOfSnapshot {

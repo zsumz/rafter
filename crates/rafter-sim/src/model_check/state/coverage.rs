@@ -27,7 +27,6 @@ impl ExplorationState {
             self.mark_observation(Observation::WellFormedStatesChecked);
         }
         self.observe_application_coverage();
-        self.observe_membership_coverage();
         self.observe_read_coverage();
         self.observe_snapshot_coverage();
         self.observe_cross_node_log_coverage();
@@ -72,23 +71,6 @@ impl ExplorationState {
             .any(|indexes| indexes.len() >= 2)
         {
             self.mark_observation(Observation::MultipleOrderedAppliesSameEpoch);
-        }
-    }
-
-    fn observe_membership_coverage(&mut self) {
-        let exactly_one = self.cluster.nodes.keys().any(|node_id| {
-            let bootstrap = self.cluster.bootstrap_state(*node_id);
-            bootstrap
-                .log
-                .iter()
-                .filter(|entry| {
-                    entry.index > bootstrap.commit_index && entry.kind.is_configuration()
-                })
-                .count()
-                == 1
-        });
-        if exactly_one {
-            self.mark_observation(Observation::StatesWithOneUncommittedConfiguration);
         }
     }
 

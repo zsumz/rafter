@@ -18,8 +18,8 @@ pub struct BootstrapState {
     pub commit_index: LogIndex,
     /// Identity of the latest committed configuration entry when it is known
     /// to the durable runtime. Bootstrap verifies it against any retained log
-    /// entry it still covers; compacted entries are represented by snapshot
-    /// committed-configuration metadata.
+    /// entry it still covers and normalizes to a newer justified identity;
+    /// compacted entries are represented by snapshot configuration metadata.
     pub committed_configuration: Option<CommittedConfiguration>,
     /// The persisted snapshot descriptor: metadata plus payload length. The
     /// payload itself stays in the application's snapshot store; the kernel
@@ -28,6 +28,11 @@ pub struct BootstrapState {
     pub snapshot: Option<RaftSnapshot>,
     /// Retained log entries above the snapshot boundary. A matching boundary
     /// entry may be included as a validation sentinel and is not retained.
+    ///
+    /// An accepted catch-up suffix can contain several configuration entries
+    /// above the durable commit index when publication was interrupted. They
+    /// remain uncommitted locally: the latest governs effective membership,
+    /// while new configuration proposals wait for commitment of the suffix.
     pub log: Vec<BootstrapLogEntry>,
 }
 

@@ -63,9 +63,11 @@ const FAST_MODEL_BOUNDS: LocalModelBounds = LocalModelBounds {
     commit_proposals: 2,
     commit_production_depth: 7,
     membership_depth: 6,
-    membership_changes: 1,
+    // MB-03 must observe a proposal with an actual predecessor configuration.
+    membership_changes: 2,
     membership_restart_snapshot_depth: 8,
-    membership_restart_snapshot_restarts: 1,
+    // Exercise a second recovery boundary while retaining the PR state floor.
+    membership_restart_snapshot_restarts: 2,
     seeded_commit_depth: 1,
     seeded_commit_restarts: 1,
     leadership_noop_depth: 8,

@@ -92,7 +92,7 @@ scheduling properties that are not per-group Raft consensus properties.
 | `AP-02` | All replicas that apply the same log index apply the same command/configuration and obtain the same deterministic state transition. |
 | `MB-01` | Stable configurations have a nonempty voter set; joint configurations have nonempty old and new voter sets; voter/learner identities are valid and disjoint within each set. |
 | `MB-02` | Stable quorum is a strict majority; joint quorum is a majority of both halves; duplicate or nonmember acknowledgements never manufacture a quorum. |
-| `MB-03` | A log contains at most one uncommitted configuration entry, so membership changes cannot overlap. |
+| `MB-03` | New configuration proposals are serialized: admission requires the predecessor configuration to be committed at the proposer. Replication and recovery may retain multiple historical configurations above a replica's locally known commit index. |
 | `MB-04` | Configuration changes follow the legal stable/joint/stable shape; committed configuration index and identity never regress or conflict. |
 | `MB-05` | Effective and committed membership are derived consistently from retained log, installed snapshot, and bootstrap state across restart and compaction. |
 | `MB-06` | Learners do not campaign and never count toward election, commit, read, or lease quorums, while remaining eligible for replication and snapshot catch-up. |
@@ -228,8 +228,8 @@ named temporal or witness-based verdicts.
 | `MB-02` | `MB-02.a` | tests | direct | `crates/rafter/tests/properties.rs#membership_stable_quorum_matches_a_direct_majority_recount` |
 | `MB-02` | `MB-02.b` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
 | `MB-02` | `MB-02.c` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
-| `MB-03` | `MB-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_no_overlapping_uncommitted_configurations`; negative fixture `serialized_configuration_checker_detects_two_uncommitted_configurations` |
-| `MB-03` | `MB-03.a` | tests | direct | `crates/rafter/src/node/tests/membership/serialization.rs#follower_rejects_second_uncommitted_configuration_entry` |
+| `MB-03` | `MB-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/configuration.rs#check_serialized_configuration_proposals`; negative fixture `serialized_configuration_checker_detects_proposal_before_predecessor_commit` |
+| `MB-03` | `MB-03.a` | tests | direct | `crates/rafter/src/node/tests/membership/serialization.rs#local_configuration_proposal_waits_for_predecessor_commit` |
 | `MB-04` | `MB-04.a` | maelstrom | e2e | `scripts/maelstrom-lin-kv-membership-change#RAFTER_MAELSTROM_MEMBERSHIP_PLAN` |
 | `MB-04` | `MB-04.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_configuration_index_monotonicity`; negative fixture `committed_configuration_monotonicity_detects_regression` |
 | `MB-04` | `MB-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_configuration_identity`; negative fixture `committed_configuration_identity_detects_same_index_conflict` |
@@ -431,7 +431,7 @@ named temporal or witness-based verdicts.
 | `MB-02.a` | `MB-02` | A stable quorum is a strict majority of voters. |
 | `MB-02.b` | `MB-02` | A joint quorum is a strict majority of each voter half. |
 | `MB-02.c` | `MB-02` | Duplicate and nonmember acknowledgements cannot manufacture a quorum. |
-| `MB-03.a` | `MB-03` | A logical log contains at most one uncommitted configuration entry. |
+| `MB-03.a` | `MB-03` | A new local configuration proposal is admitted only after its predecessor configuration is committed at the proposing node. |
 | `MB-04.a` | `MB-04` | Configuration changes follow the legal stable-to-joint-to-stable transition shape. |
 | `MB-04.b` | `MB-04` | The committed configuration index never decreases. |
 | `MB-04.c` | `MB-04` | A committed configuration index never acquires a conflicting configuration identity. |
@@ -993,14 +993,14 @@ Next (future_strengthening): Treat the independent property suite as the primary
 
 Kind: safety. Tier: feature.
 
-Statement: A log contains at most one uncommitted configuration entry, so membership changes cannot overlap.
+Statement: New configuration proposals are serialized: admission requires the predecessor configuration to be committed at the proposer. Replication and recovery may retain multiple historical configurations above a replica's locally known commit index.
 
 Scope: Dynamic membership state, quorum consumers, restart, compaction, and leadership transfer in one Raft group.
 
 Assumptions: Node identities are stable; membership entries and snapshot metadata are decoded without corruption.
 
 Required clauses:
-- `MB-03.a`: A logical log contains at most one uncommitted configuration entry.
+- `MB-03.a`: A new local configuration proposal is admitted only after its predecessor configuration is committed at the proposing node.
 
 Evidence now:
 - TLA+: none (no direct registry evidence in this layer)
@@ -1008,7 +1008,7 @@ Evidence now:
 - Tests: D: clause-bound executable evidence; see evidence references
 - Maelstrom: none (no direct registry evidence in this layer)
 
-Next (future_strengthening): Retain the atomic overlapping-configuration ID and transition-level negative fixture.
+Next (future_strengthening): Retain frozen proposal-time predecessor and commit witnesses, recovery and catch-up positive controls, and a negative fixture that detects overlap even after later commitment.
 
 #### `MB-04` Monotone configuration transition and identity
 

@@ -1,4 +1,8 @@
-//! Ordered validation of the retained log and committed configuration identity.
+//! Ordered validation and materialization of the retained log.
+//!
+//! Accepted catch-up entries can precede durable commit publication. Their
+//! count does not establish which configurations are committed: retain them
+//! all, leaving commit knowledge and proposal serialization to the node.
 
 use crate::{CommittedConfiguration, LogEntry, LogIndex, RaftSnapshotMetadata, Term};
 
@@ -32,8 +36,6 @@ struct LogValidation<'a> {
 
     expected_index: LogIndex,
     last_log_index: LogIndex,
-    first_uncommitted_configuration: Option<LogIndex>,
-    latest_committed_configuration: Option<CommittedConfiguration>,
     materialized_log: Vec<LogEntry>,
 }
 
@@ -52,8 +54,6 @@ impl<'a> LogValidation<'a> {
             stored_committed_configuration,
             expected_index: snapshot_index.next(),
             last_log_index: snapshot_index,
-            first_uncommitted_configuration: None,
-            latest_committed_configuration: None,
             materialized_log: Vec::new(),
         }
     }
@@ -68,12 +68,16 @@ impl<'a> LogValidation<'a> {
         }
         if entry.index == snapshot_index {
             if let Some(snapshot) = self.snapshot {
-                return validate_boundary_entry(&entry, snapshot);
+                validate_boundary_entry(&entry, snapshot)?;
+                return super::configuration::validate_boundary_configuration(
+                    &entry,
+                    snapshot,
+                    self.stored_committed_configuration,
+                );
             }
         }
 
         self.validate_retained_entry(&entry)?;
-        self.record_configuration(&entry)?;
 
         self.expected_index = entry.index.next();
         self.last_log_index = entry.index;
@@ -112,34 +116,6 @@ impl<'a> LogValidation<'a> {
         Ok(())
     }
 
-    fn record_configuration(
-        &mut self,
-        entry: &BootstrapLogEntry,
-    ) -> Result<(), BootstrapValidationError> {
-        let Some(configuration) = entry.kind.configuration_entry() else {
-            return Ok(());
-        };
-
-        if entry.index <= self.commit_index {
-            self.latest_committed_configuration = Some(CommittedConfiguration {
-                index: entry.index,
-                config_id: configuration.config_id(),
-            });
-            return Ok(());
-        }
-
-        if let Some(first_index) = self.first_uncommitted_configuration {
-            return Err(
-                BootstrapValidationError::MultipleUncommittedConfigurationEntries {
-                    first_index,
-                    second_index: entry.index,
-                },
-            );
-        }
-        self.first_uncommitted_configuration = Some(entry.index);
-        Ok(())
-    }
-
     fn finish(self) -> Result<Vec<LogEntry>, BootstrapValidationError> {
         if self.commit_index > self.last_log_index {
             return Err(BootstrapValidationError::CommitIndexBeyondLog {
@@ -148,80 +124,8 @@ impl<'a> LogValidation<'a> {
             });
         }
 
-        validate_committed_configuration(
-            self.stored_committed_configuration,
-            self.latest_committed_configuration,
-            self.snapshot,
-            self.commit_index,
-        )?;
         Ok(self.materialized_log)
     }
-}
-
-fn validate_committed_configuration(
-    stored: Option<CommittedConfiguration>,
-    latest_retained: Option<CommittedConfiguration>,
-    snapshot: Option<&RaftSnapshotMetadata>,
-    commit_index: LogIndex,
-) -> Result<(), BootstrapValidationError> {
-    let Some(stored) = stored else {
-        return Ok(());
-    };
-    if stored.index > commit_index {
-        return Err(
-            BootstrapValidationError::CommittedConfigurationAheadOfCommit {
-                committed_configuration_index: stored.index,
-                commit_index,
-            },
-        );
-    }
-
-    if let Some(latest_retained) = latest_retained {
-        return validate_retained_committed_configuration(stored, latest_retained);
-    }
-
-    let snapshot_index = snapshot_index(snapshot);
-    if stored.index > snapshot_index {
-        return Err(BootstrapValidationError::CommittedConfigurationMissing {
-            committed_configuration_index: stored.index,
-        });
-    }
-    if snapshot
-        .and_then(RaftSnapshotMetadata::committed_membership)
-        .is_some()
-    {
-        return Ok(());
-    }
-    Err(
-        BootstrapValidationError::CompactedCommittedConfigurationWithoutSnapshotMembership {
-            committed_configuration_index: stored.index,
-        },
-    )
-}
-
-fn validate_retained_committed_configuration(
-    stored: CommittedConfiguration,
-    latest_retained: CommittedConfiguration,
-) -> Result<(), BootstrapValidationError> {
-    if stored.index < latest_retained.index {
-        return Err(BootstrapValidationError::CommittedConfigurationNotLatest {
-            recorded_index: stored.index,
-            latest_index: latest_retained.index,
-        });
-    }
-    if stored.index > latest_retained.index {
-        return Err(BootstrapValidationError::CommittedConfigurationMissing {
-            committed_configuration_index: stored.index,
-        });
-    }
-    if stored.config_id != latest_retained.config_id {
-        return Err(BootstrapValidationError::CommittedConfigurationIdMismatch {
-            index: stored.index,
-            expected: stored.config_id,
-            actual: latest_retained.config_id,
-        });
-    }
-    Ok(())
 }
 
 fn validate_boundary_entry(

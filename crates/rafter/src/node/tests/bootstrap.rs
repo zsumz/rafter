@@ -6,6 +6,8 @@ pub(super) use super::helpers::{
 pub(super) use super::*;
 
 mod application;
+mod configuration;
+mod configuration_progress;
 mod snapshot;
 mod state;
 mod support;
