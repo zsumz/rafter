@@ -27,6 +27,7 @@ mod recording_stores;
 mod recovery;
 mod replay_recovery;
 mod snapshot;
+mod snapshot_reconciliation;
 
 use recovery::{dynamic_membership_recovery_fixture, elect_runtime_leader_with_grant};
 

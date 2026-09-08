@@ -304,22 +304,31 @@ flushed before the bundle is returned.
 
 ## Cross-store recovery order
 
-The supported durable direction for snapshot installation is:
+Incoming snapshot installation uses the same runtime operation during a live
+step and when reopening a complete staged transfer:
 
-1. make the complete snapshot current;
-2. compact the log prefix through the snapshot boundary.
+1. stage the complete validated transfer durably;
+2. compare the retained entry at the snapshot boundary with the snapshot term;
+   if it differs, truncate that boundary entry and the entire suffix above it;
+3. promote the complete staged transfer to the current snapshot;
+4. compact the log prefix through the snapshot boundary;
+5. finish the step's log writes before publishing final hard-state commit metadata.
 
-A crash between those operations leaves a current snapshot ahead of the log's
-compaction marker. Runtime recovery can safely finish compaction or filter the
-retained full log against the snapshot boundary.
+Truncation precedes promotion, so a crash during truncation leaves complete
+staging that recovery can install again. A matching boundary preserves its
+suffix. A conflicting boundary and suffix are both gone before promotion can
+clear staging or compaction can erase the boundary evidence. A committed
+boundary conflict is rejected instead of truncated.
+
+A crash after promotion leaves either a matching retained full log, validated
+at bootstrap, or a log ending below the snapshot boundary, whose compaction
+recovery completes. Retained boundary-term validation remains mandatory.
 
 The inverse state—a log compacted beyond the current snapshot boundary—means
 the durable node has discarded history not covered by a durable snapshot and
 must fail loudly.
 
-Similarly, a complete staged transfer may be promoted during runtime recovery
-when no acknowledgement of installation escaped before the crash. These are
-cross-store protocol decisions and remain owned by `rafter-runtime`; the
+These cross-store protocol decisions remain owned by `rafter-runtime`; the
 storage crate provides the verified artifacts and durable primitives needed to
 make them safely.
 
