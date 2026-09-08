@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Run fixed durable workloads in isolated processes and preserve every sample."""
+
+import argparse
+import datetime
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import platform
+import resource
+import statistics
+import subprocess
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def save(path, value):
+    path.write_text(json.dumps(value, indent=2) + "\n")
+
+
+def positive(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return number
+
+
+def cpu_stat():
+    path = Path("/proc/stat")
+    return path.read_text() if path.exists() else None
+
+
+def validate(report, case, batches, snapshot_bytes):
+    if report.get("harness") != "rafter-bench-cluster" or len(report.get("workloads", [])) != 1:
+        raise ValueError("expected exactly one durable workload report")
+    workload = report["workloads"][0]
+    if case == "snapshot":
+        expected = {"name": "snapshot_transfer", "payload_bytes": snapshot_bytes}
+    else:
+        batch = int(case.removeprefix("batch-"))
+        expected = {"name": "proposals", "batch_size": batch, "proposals": batch * batches,
+                    "payload_bytes": 256, "proposal_batches": batches}
+        if workload["commit_latency_ms"]["samples"] != batch * batches:
+            raise ValueError("proposal latency sample count differs from the workload")
+        if workload["batch_completion_latency_ms"]["samples"] != batches:
+            raise ValueError("batch latency sample count differs from the workload")
+    if any(workload.get(key) != value for key, value in expected.items()):
+        raise ValueError(f"workload shape differs from requested case: {case}")
+
+    def finite(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                finite(item)
+        elif isinstance(value, (int, float)) and (not math.isfinite(value) or value < 0):
+            raise ValueError("negative or non-finite benchmark metric")
+
+    finite(workload)
+    if workload["elapsed_ms"] <= 0:
+        raise ValueError("workload elapsed time must be positive")
+    return workload
+
+
+def aggregate(samples):
+    first = samples[0]
+    if isinstance(first, dict):
+        if any(sample.keys() != first.keys() for sample in samples):
+            raise ValueError("inconsistent benchmark fields")
+        return {key: aggregate([sample[key] for sample in samples]) for key in first}
+    if isinstance(first, (int, float)):
+        return statistics.median(samples)
+    if any(sample != first for sample in samples):
+        raise ValueError("inconsistent benchmark identities")
+    return first
+
+
+def run_sample(binary, case, args, out, label):
+    command = [str(binary), "--directory", str(args.directory)]
+    if case == "snapshot":
+        command += ["--workload", "snapshot", "--snapshot-bytes", str(args.snapshot_bytes)]
+    else:
+        batch = int(case.removeprefix("batch-"))
+        command += ["--workload", "proposals", "--proposals", str(batch * args.batches),
+                    "--batch-sizes", str(batch)]
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    started = time.monotonic()
+    before_cpu = cpu_stat()
+    timeout = None
+    with (out / f"{label}.json").open("w") as stdout, (out / f"{label}.stderr").open("w") as stderr:
+        try:
+            result = subprocess.run(command, stdout=stdout, stderr=stderr, timeout=args.timeout)
+            exit_code = result.returncode
+        except subprocess.TimeoutExpired as error:
+            timeout = error
+            exit_code = None
+    elapsed = time.monotonic() - started
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    execution = {"command": command, "exit_code": exit_code, "timed_out": timeout is not None,
+                 "wall_seconds": elapsed,
+                 "user_seconds": after.ru_utime - before.ru_utime,
+                 "system_seconds": after.ru_stime - before.ru_stime,
+                 "proc_stat_before": before_cpu, "proc_stat_after": cpu_stat()}
+    save(out / f"{label}.execution.json", execution)
+    if timeout:
+        raise timeout
+    result.check_returncode()
+    return validate(json.loads((out / f"{label}.json").read_text()), case, args.batches, args.snapshot_bytes)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "bench-compare/target"))
+    parser.add_argument("--binary", type=Path, default=target / "release/bench-rafter-durable")
+    parser.add_argument("--baseline", type=Path, help="optional baseline for alternating A/B runs")
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--directory", type=Path, default=Path(os.environ.get("TMPDIR", "/tmp")))
+    parser.add_argument("--runs", type=positive, default=4)
+    parser.add_argument("--batches", type=positive, default=2048)
+    parser.add_argument("--snapshot-bytes", type=positive, default=128 * 1024 * 1024)
+    parser.add_argument("--timeout", type=positive, default=300)
+    args = parser.parse_args()
+    if not 1000 <= args.batches <= 8192 or args.runs < 3:
+        parser.error("evidence requires 1000..8192 batches and at least three runs")
+    if args.snapshot_bytes > 1024 * 1024 * 1024:
+        parser.error("snapshot bytes must not exceed 1 GiB")
+    args.directory = args.directory.resolve(strict=True)
+    if not args.directory.is_dir():
+        parser.error("--directory must name an existing directory")
+    binaries = {"candidate" if args.baseline else "current": args.binary.resolve(strict=True)}
+    if args.baseline:
+        binaries = {"baseline": args.baseline.resolve(strict=True), **binaries}
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    out = args.output or ROOT / "target/bench-durable" / timestamp
+    out.mkdir(parents=True, exist_ok=False)
+    save(out / "metadata.json", {
+        "started_at_utc": timestamp, "machine": platform.uname()._asdict(),
+        "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+        "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "binaries": {name: {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                     for name, path in binaries.items()},
+        "runs": args.runs, "batches": args.batches, "snapshot_bytes": args.snapshot_bytes,
+        "scratch_parent": str(args.directory),
+        "aggregation": "Median of run metrics, including each run percentile; no pooled percentiles.",
+    })
+    cases = ["batch-1", "batch-8", "batch-32", "batch-128", "snapshot"]
+    samples = {arm: {case: [] for case in cases} for arm in binaries}
+    order = []
+    for run in range(args.runs):
+        arms = list(binaries) if run % 2 == 0 else list(reversed(binaries))
+        rotated = cases[run % len(cases):] + cases[:run % len(cases)]
+        for case in rotated:
+            for arm in arms:
+                label = f"run-{run + 1}-{case}-{arm}"
+                print(label, flush=True)
+                order.append(label)
+                save(out / "execution-order.json", order)
+                samples[arm][case].append(run_sample(binaries[arm], case, args, out, label))
+    results = {}
+    for arm, workloads in samples.items():
+        results[arm] = {}
+        for case, values in workloads.items():
+            rate = "throughput_mib_per_s" if case == "snapshot" else "proposals_per_s"
+            results[arm][case] = {"median": aggregate(values), "rate": rate,
+                                  "rate_min": min(value[rate] for value in values),
+                                  "rate_max": max(value[rate] for value in values)}
+    save(out / "results.json", {"runs": args.runs, "results": results})
+    print(f"Evidence: {out}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

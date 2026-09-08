@@ -119,6 +119,55 @@ for local Rafter evidence and rerun full mode on a machine with protoc.
 Benchmark numbers are hardware-sensitive. Treat checked-in reports as evidence
 from one machine, not as a permanent scoreboard.
 
+## Sustained durable measurements
+
+`bench-rafter-durable` extends the root workspace's durable smoke scenario with
+fixed proposal counts, selectable batch sizes and payloads, workload isolation,
+and an explicit scratch parent. It stays in this standalone package so the
+performance harness has its own locked build and qualification lane.
+
+```sh
+RUSTUP_TOOLCHAIN=1.96.1 zcheck run bench-durable
+```
+
+This opt-in task builds the binary and runs `scripts/bench-durable`. By default,
+each of four rounds measures 2,048 batches at sizes 1, 8, 32, and 128, followed
+in rotating workload order by a 128 MiB snapshot. Every workload gets its own
+process and fresh stores. The runner records raw JSON, stderr, exit status,
+process user/system CPU time, host identity, binary hashes, execution order,
+and Linux `/proc/stat` snapshots. Results are medians of run metrics, including
+each run's percentiles; raw samples remain available. Output directories must
+be new, and failed or timed-out trials retain their output and execution record.
+
+For a comparison, build both revisions with the same compiler, lockfile,
+features, and harness, preserve their binaries, and run:
+
+```sh
+scripts/bench-durable --baseline /path/to/baseline --binary /path/to/candidate \
+  --output /path/to/new-evidence-directory
+```
+
+The two arms alternate A/B then B/A in successive rounds for every workload.
+Use `--directory` to select an existing scratch parent on representative
+storage. Both arms must use the same filesystem and CPU allocation. Run this
+lane separately from builds and correctness tests to avoid competing for the
+benchmark host. CPU steal or storage contention still limits attribution.
+
+The proposal report includes one commit-latency sample per proposal and one
+batch-completion sample per submitted batch. These are distinct populations:
+many proposals share a durability cycle. `phase_ms` separates leader steps
+from synchronous message pumping. Snapshot `preparation_ms` measures source
+snapshot creation separately from the existing transfer timer, which includes
+receiver staging and final promotion. The original no-argument smoke sizes
+remain available through either durable binary.
+
+All three nodes share one filesystem and messages are delivered synchronously.
+These closed-loop workloads measure protocol and storage work; they do not
+model network latency, arrival queues, or independently provisioned disks.
+Trace synchronization calls separately from timed evidence, since syscall
+tracing changes execution time. A batch-size sweep is not a claim about a
+production batching policy or service-level tail latency.
+
 ## CI usage
 
 The `Benchmarks` workflow runs a one-run Rafter-only smoke check on pull
