@@ -58,15 +58,13 @@ fn message(message: &Message) -> String {
             "pre-vote request for prospective term {}; candidate {}; last entry {} / term {}",
             vote.term.0, vote.candidate_id.0, vote.last_log_index.0, vote.last_log_term.0
         ),
-        Message::PreVoteResponse(vote) => format!(
-            "pre-vote {} for prospective term {}",
+        Message::PreVoteResponse(vote) => {
             if vote.vote_granted {
-                "granted"
+                format!("pre-vote granted for prospective term {}", vote.term.0)
             } else {
-                "rejected"
-            },
-            vote.term.0
-        ),
+                format!("pre-vote rejected; responder term {}", vote.term.0)
+            }
+        }
         Message::RequestVote(vote) => format!(
             "vote request for term {}; candidate {}; last entry {} / term {}",
             vote.term.0, vote.candidate_id.0, vote.last_log_index.0, vote.last_log_term.0

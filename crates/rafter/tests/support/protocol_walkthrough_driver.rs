@@ -9,6 +9,8 @@ mod document;
 mod election_write;
 #[path = "../../src/node/tests/walkthroughs/formatting.rs"]
 mod formatting;
+#[path = "../../src/node/tests/walkthroughs/formatting_test.rs"]
+mod formatting_test;
 #[path = "../../src/node/tests/walkthroughs/observation.rs"]
 mod observation;
 #[path = "../../src/node/tests/walkthroughs/read_barrier.rs"]
