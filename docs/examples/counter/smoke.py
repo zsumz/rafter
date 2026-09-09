@@ -201,7 +201,10 @@ def exercise(binary, root):
         for node in peers:
             cluster.start(node)
         leader = cluster.leader()
-        value = cluster.request(leader, "/value")["value"]
+        # A local leader status can precede a usable read barrier after an election.
+        # Retrying this read is safe; never retry the uncertain increment above.
+        value = cluster.wait("linearizable read after quorum recovery", lambda:
+                             cluster.request(leader, "/value"))["value"]
         assert value in (10, 11), value
         cluster.converged(value)
         print("PASS: quorum loss returns an error without claiming a write was undone", flush=True)

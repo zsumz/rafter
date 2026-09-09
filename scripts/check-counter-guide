@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the standalone app copied from the guide; --update refreshes its snippets."""
+"""Verify the teaching excerpts and build the guide's complete source reference."""
 import argparse
 import os
 from pathlib import Path
@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from textwrap import dedent
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / "docs/examples/counter"
@@ -19,6 +20,26 @@ FILES = {
 }
 BLOCK = re.compile(r"(<!-- counter-file: ([^\n]+) -->\n```[^\n]*\n)(.*?)(^```)",
                    re.MULTILINE | re.DOTALL)
+SNIPPET = re.compile(r"<!-- counter-snippet: ([^\n]+) -->\n```rust\n(.*?)^```",
+                     re.MULTILINE | re.DOTALL)
+
+
+def check_excerpts(text):
+    excerpts = list(SNIPPET.finditer(text))
+    if not excerpts:
+        raise SystemExit("guide has no checked teaching excerpts")
+    for match in excerpts:
+        name, expected = match[1], dedent(match[2]).strip()
+        if name not in FILES:
+            raise SystemExit(f"unknown source file for excerpt: {name}")
+        lines = (PROJECT / name).read_text().splitlines()
+        length = len(expected.splitlines())
+        if not expected or not any(
+            dedent("\n".join(lines[start:start + length])).strip() == expected
+            for start in range(len(lines) - length + 1)
+        ):
+            raise SystemExit(f"teaching excerpt differs from {name}; update the explanation and excerpt")
+    print(f"PASS: {len(excerpts)} teaching excerpts match the standalone application", flush=True)
 
 
 def main():
@@ -34,12 +55,15 @@ def main():
         text = BLOCK.sub(lambda match: match[1] + (PROJECT / match[2]).read_text() + match[4], text)
         GUIDE.write_text(text)
         print("Refreshed the guide's complete application files.")
+        check_excerpts(text)
         return
     for match in matches:
         if match[3] != (PROJECT / match[2]).read_text():
             raise SystemExit(f"guide copy differs from {match[2]}; run with --update")
 
-    # Compile the actual pasted files outside the repository, not an example
+    check_excerpts(text)
+
+    # Compile the complete source reference outside the repository, not an example
     # target that could accidentally rely on a workspace-only dependency.
     with tempfile.TemporaryDirectory(prefix="rafter-counter-guide-") as temporary:
         copied = Path(temporary)

@@ -1,33 +1,398 @@
 # Getting started
 
-Let's build a counter shared by **three separate server processes**. You can add
-to it, read it from any server, and restart the servers without losing completed
-writes. The servers talk to each other over TLS.
+Rafter gives you the pieces to keep application state in agreement across
+servers. You choose how much of the stack to use, and your code defines what
+that shared state means.
 
-This is one complete application. All the files are below; you don't need to
-borrow code from another example.
+We'll build a counter that three servers share. A client sends **add five**;
+Rafter gets the servers to agree on that command; your code adds five and saves
+the result. That separation is the basis of the whole stack.
 
-## 1. Create the project folder
+The small code excerpts below come from one [standalone counter](./examples/counter).
+Read them as a tour of the integration points. The complete files and commands
+to run it are at the end.
 
-You'll need **Rust with rustup, OpenSSL, curl, and a C compiler** on macOS or
-Linux. The project selects Rust 1.88, which rustup can install for you.
+## 1. Choose where to start
 
-```sh
-mkdir -p rafter-counter/src
-cd rafter-counter
+Start with the part of your system you want Rafter to handle:
+
+| You want… | Use… | You provide… |
+| --- | --- | --- |
+| Just the Raft algorithm | `rafter` | Storage, networking, a loop to drive it, and application behavior |
+| A durable group inside your own host | `rafter-storage` + `rafter-runtime` + `rafter-app` | Application behavior and storage, message routing, and the host's execution loop |
+| The supplied peer transport and write/read calls too | Add `rafter-service` + `rafter-transport-tls` | Application behavior and storage, peer configuration, and your client-facing API and execution loop |
+
+Each higher layer uses the layers below it. With the full stack, your loop
+calls the service driver, which handles the lower-level steps.
+
+At the smallest layer, **`rafter::Node` takes inputs and returns work to do**:
+
+```rust
+let outputs = node.step(input);
 ```
 
-Keep all the following files in this folder. You can also copy the
-[complete starter folder](./examples/counter) if you already have a Rafter checkout.
-It builds independently of that checkout.
+An input might be a tick, a peer message, or a proposed command. Outputs can ask
+you to save Raft state, send a message, or apply a committed command. This core
+performs no IO: your host must do that work in the right order. For example, a
+vote must be saved before sending the message that grants it.
 
-## 2. Add the application files
+Choose the core alone when you want to implement those connections yourself.
+For our counter, we'll use the supplied storage, runtime, application, service,
+and TLS layers. Each takes over a piece of that work. None chooses what adding
+five means or what API your clients use.
 
-Expand each filename and copy its complete contents. The small counter is the
-application you own; the other files connect it to Rafter, disk storage, and TLS.
+## 2. Define your application's behavior
 
-Cargo downloads the Rafter libraries from a pinned revision, so this example
-uses the same APIs each time. You don't need to clone the library separately.
+**`rafter-app` provides the `ReplicatedStateMachine` trait. You implement it.**
+A state machine is simply your data plus the rules for changing and reading it.
+
+Our counter's implementation chooses these types:
+
+<!-- counter-snippet: src/counter.rs -->
+```rust
+type Command = u64;
+type CommandResult = u64;
+type Query = ();
+type QueryResult = u64;
+```
+
+A command is the amount to add. Its result is the new value. A query takes no
+arguments (`()`) and returns the current value. A different application could
+use a command enum such as `CreateJob` and `FinishJob`, with its own result types.
+
+The trait gives you three jobs:
+
+| Your methods | What you implement |
+| --- | --- |
+| `encode_command` / `decode_command` | Turn a command into bytes every replica interprets the same way |
+| `apply_batch` / `read` | Change or read your application state |
+| `applied_index` / `build_snapshot` / `install_snapshot` | Report saved progress and save or restore a complete application image |
+
+**Rafter decides which commands are committed and their order. Your
+`apply_batch` decides what those commands do.** Here is the counter's update
+inside that method:
+
+<!-- counter-snippet: src/counter.rs -->
+```rust
+next.value = next.value.saturating_add(entry.command);
+next.applied = entry.index.0;
+```
+
+`entry.command` is the amount. `entry.index` identifies its position in the Raft
+log. The counter stops at `u64::MAX`; another overflow policy would be an
+application decision. Given the same starting state and commands, every replica
+must produce the same result. Put timestamps or random choices in the command
+when you need them, so replicas use the same values.
+
+The method saves the new state before reporting success:
+
+<!-- counter-snippet: src/counter.rs -->
+```rust
+disk::save(&self.file, &next)?;
+self.state = next;
+```
+
+`disk::save` is **our application's helper**, not a Rafter API. It saves the
+counter value and applied index together. If the server restarts with value
+`5` and that command's index, it knows the increment is already included.
+Saving only the value would leave recovery unable to tell whether to add it again.
+
+You can use a database transaction instead of this helper. The requirement is
+the same: when `apply_batch` succeeds, both the effects and their applied index
+must survive a restart. Return one `ApplyResult` for each command in the batch,
+in order. Rafter uses those results to complete the corresponding requests.
+For a richer application, put ordinary rejections such as "job already finished"
+in `CommandResult`; an `apply_batch` error means the group cannot safely continue.
+
+## 3. Add durable Raft storage and connect your state machine
+
+There are **two kinds of saved state** in this application:
+
+| State | Who saves it? |
+| --- | --- |
+| Raft's votes, command log, and snapshot records | `rafter-storage`, driven by `rafter-runtime` |
+| The counter value and which commands it includes | Your `Counter` implementation |
+
+**`rafter-storage` supplies the file stores.** Open the bundle for this server:
+
+<!-- counter-snippet: src/main.rs -->
+```rust
+let (hard_state, log, snapshots) =
+    FileRaftNodeStores::open(directory.join("raft"))?.into_parts();
+let app = Counter::open(&directory)?;
+let applied = app.applied_index()?;
+```
+
+`FileRaftNodeStores` also locks the directory against another live writer.
+`Counter::open` is our code loading the saved application state. Each server has
+its own directory; the example's separate `init` command creates it once.
+
+**`rafter-runtime` decides when Raft's storage must be written.** Its
+`DurableRaftNode` saves required changes before releasing messages or commands
+for the next layer to act on. You do not need to implement that ordering yourself.
+Here, "runtime" refers to that durability work; your host still chooses the
+threads or async runtime that execute it.
+
+On startup, recover it using the counter's saved progress:
+
+<!-- counter-snippet: src/main.rs -->
+```rust
+let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
+    config, hard_state, log, snapshots, applied,
+)?;
+let (raft, outputs) = recovered.into_parts();
+let group = RaftGroup::with_applied_index(GROUP, NodeId(id), raft, app, applied);
+```
+
+`config` contains this server's node ID, its peers, and timing settings.
+`GROUP` identifies the one shared counter; `id` identifies this replica.
+
+The last line is **`rafter-app` joining the durable node to your state machine**.
+`RaftGroup` delivers committed commands to `apply_batch`, coordinates reads, and
+matches application results to proposals. It uses the same `applied` value as
+recovery so commands already saved by your application are not applied twice.
+Keep `outputs`: recovery can produce work too. We'll give it to the service
+when we connect the group in step 5.
+
+At this point, you have a durable application group. If you already have a
+network and execution loop, you can drive `RaftGroup` directly and route its
+outgoing messages yourself. The next two crates provide another way to do that.
+
+## 4. Use Rafter's TLS transport
+
+**`rafter-transport-tls` opens peer connections, encrypts traffic, authenticates
+peers, and handles bounded queues and reconnects.** You configure who those
+peers are and where to reach them.
+
+Our `peers::open` helper prepares that configuration, then uses the public builder:
+
+<!-- counter-snippet: src/peers.rs -->
+```rust
+let transport = TlsPeerTransport::builder(config, GroupCodec)
+    .identity(identity)
+    .certificates(certificates)
+    .directory(directory_map.clone())
+    .endpoints(endpoints)
+    .session_store(sessions)
+    .bind_paused()?;
+```
+
+Here is what your application supplies to that builder:
+
+| Input | In this counter |
+| --- | --- |
+| `config` | Cluster and local peer IDs, a listening address, limits, and timeouts |
+| `GroupCodec` | A small implementation that encodes our numeric group ID |
+| `identity` | This server's certificate, private key, and trusted CA |
+| `certificates` | Which certificates belong to each allowed peer |
+| `directory_map` | Which Raft node ID belongs to each peer in the group |
+| `endpoints` | The network addresses and TLS server names of the other servers |
+| `sessions` | A `FileTransportSessionStore` reopened from this server's saved files |
+
+Rafter supplies the session store implementation. Your application creates it
+once and reopens it on restart; this keeps connection history intact. Likewise,
+Rafter checks certificates, but your deployment issues and rotates them.
+
+`bind_paused` prepares the transport without activating traffic. We'll attach the
+group's peer policy before starting it. These are **server-to-server connections**;
+your HTTP or other client-facing API remains a separate choice.
+
+## 5. Connect the service and submit requests
+
+**`rafter-service` connects the group to a transport and gives callers futures
+for write and read results.** It lets request handling wait for a result while
+the server continues driving Raft.
+
+In our example, `Driver` is a type alias for `TransportRaftDriver` using our
+counter, durable runtime, TLS sender, and peer validator. We connect them here:
+
+<!-- counter-snippet: src/main.rs -->
+```rust
+let (transport, validator) = peers::open(id, &directory)?;
+let driver = Driver::with_control_plane_checkpoint(
+    group,
+    outputs,
+    transport.sender(),
+    validator,
+    TransportDriverOptions::default(),
+    checkpoint::load(&directory.join("checkpoint"), id)?,
+)?;
+```
+
+This passes on the recovery outputs from step 3 and connects the sender and
+validator from step 4. The checkpoint is the service's saved membership record.
+`checkpoint::load` and `checkpoint::save` are application helpers: Rafter defines
+the record and its rules, while we choose how to keep it on disk.
+
+Save the resulting record, then start peer traffic:
+
+<!-- counter-snippet: src/main.rs -->
+```rust
+checkpoint::save(
+    &directory.join("checkpoint"),
+    id,
+    driver.control_plane_checkpoint(),
+)?;
+transport.start()?;
+```
+
+Our HTTP handler parses `/add/5` into an increment and submits it on the leader:
+
+<!-- counter-snippet: src/http.rs -->
+```rust
+let (id, future) = driver.begin_write(increment.unwrap(), WriteOptions::default())?;
+let result = wait(future).map(|receipt| receipt.result);
+```
+
+`begin_write` returns a request ID and a future. A successful receipt contains
+the result from your `apply_batch`. The `wait` here is our helper for polling a
+future on the HTTP thread; an async caller can await it instead. **The Raft loop
+must keep running elsewhere while the request waits.** We'll cover that next.
+
+Reads have a corresponding API:
+
+<!-- counter-snippet: src/http.rs -->
+```rust
+let (id, future) = driver.begin_read((), ReadOptions::default())?;
+let result = wait(future).map(|receipt| receipt.result);
+```
+
+The default read checks leadership and waits for the necessary commands to be
+applied before calling your `read` method. This is a *linearizable read*: it
+accounts for writes completed before the read began. Reading the counter's
+local value directly may return stale data on a follower.
+
+**Your API handles client concerns.** This example chooses HTTP, redirects
+followers to the leader, and sets a request timeout. On timeout it abandons the
+waiter, not the command: a submitted increment may still commit. Safe retries
+need application request IDs and remembered results; Raft alone does not make
+repeating `/add/5` harmless.
+
+## 6. Keep the server moving
+
+**You own the execution loop.** Rafter's TLS transport runs its connection
+workers, but your host still delivers incoming envelopes to the driver, supplies
+ticks, and advances pending reads. Our loop's central work is:
+
+<!-- counter-snippet: src/main.rs -->
+```rust
+for envelope in inbound.drain(64)? {
+    if let Err(InboundEnvelopeError::Driver { source }) = driver.deliver(envelope) {
+        return Err(source.into());
+    }
+}
+if Instant::now() >= next_tick {
+    driver.tick()?;
+    next_tick = Instant::now() + Duration::from_millis(20);
+}
+driver.drive_pending_reads()?;
+```
+
+`inbound` comes from `transport.inbound()`. Delivering an envelope or ticking the
+driver steps the group, performs required persistence, applies committed work,
+and routes outgoing messages through the configured sender. The example chooses
+a 20 ms tick interval; the core itself never reads a clock.
+
+The complete loop also saves checkpoint changes and stops on terminal failures.
+Startup checks saved state before serving. The HTTP handler waits on a separate
+thread so a waiting client cannot prevent the replicas from reaching agreement.
+You can organize those tasks differently in your own host.
+
+## Follow one write through the stack
+
+With all the pieces connected, `/add/5` follows this path:
+
+1. **Your HTTP handler** parses the amount and calls `begin_write` on the leader.
+2. **`rafter`** orders the command and replicates it. **`rafter-runtime`** saves
+   required Raft state through **`rafter-storage`** before releasing outputs;
+   the service routes peer traffic through **`rafter-transport-tls`**.
+3. Once a majority has durably accepted the command, **`rafter-app`** calls your
+   `apply_batch` when that command is ready to be applied in order.
+4. **Your counter** updates its value and saves it together with the applied index.
+5. **`rafter-service`** completes the write's future with the application result.
+   **Your HTTP handler** turns it into `{"value":5}`.
+
+Each replica applies committed commands to its own application state. A
+successful write does not require waiting for the slowest replica, so one
+follower can catch up later.
+
+## Make it your application
+
+To build a job queue, replace the counter's command, result, and query types;
+implement the job transitions in `apply_batch`; and save your jobs and applied
+index together. Then expose the API your clients need. The durable Raft and TLS
+connections can stay in place.
+
+You can also change one infrastructure choice at a time:
+
+| You want… | What to change |
+| --- | --- |
+| Your own storage engine for Raft records | Implement the `rafter-storage` traits and pass your stores to `DurableRaftNode` |
+| Your own peer transport | Implement the `rafter-service` transport and peer-validation contracts instead of using the TLS sender and directory |
+| Many independent groups in one host | Consider `rafter-multiraft` for scheduling those groups |
+
+Using your own application database is a separate decision from replacing Raft's
+stores. You can keep Rafter's file stores and save your application state in your
+database, or supply both.
+
+A **snapshot** is a saved application image at a particular applied index.
+Your implementation defines that image and restores it; you also decide when
+to create one and compact old log entries. The counter implements snapshot
+methods, but this small starter keeps its log and does not schedule compaction
+or configure outbound snapshot transfer. Its three members are fixed.
+
+You also own deployment choices: peer addresses, certificates, membership
+changes, client authentication, and when a recovered server may accept requests.
+The [architecture guide](./architecture.md) and
+[TLS configuration guide](../crates/rafter-transport-tls/README.md) expand those
+contracts when you need them.
+
+## Run the counter and explore
+
+The [standalone project](./examples/counter) contains all the files used above.
+It has its own Cargo workspace and pinned Rafter Git dependencies. You can run
+it from that folder or move the folder outside the Rafter checkout.
+
+On macOS or Linux, install Rust/rustup, OpenSSL, curl, and a C compiler. The
+project selects Rust 1.88. Run once from the counter folder:
+
+```sh
+sh certs.sh
+cargo build
+cargo run -- init
+```
+
+Start `cargo run -- node 1`, `cargo run -- node 2`, and `cargo run -- node 3` in
+three terminals in that same folder. After they choose a leader, use a fourth:
+
+```sh
+curl --location --fail -X POST http://127.0.0.1:8001/add/5
+curl --location --fail http://127.0.0.1:8002/value
+```
+
+Both return `{"value":5}`. Stop all three with Ctrl+C, restart them with the same
+node commands, and read again: the value is still `5`. Keep `data/` and `certs/`;
+run initialization only for a new cluster. A write made during startup can fail
+while the servers choose a leader; an uncertain write must not be blindly retried.
+
+To connect the behavior to the code, try these in order:
+
+1. Change the amount in `/add/5`. It becomes `entry.command` in `apply_batch`.
+2. Stop one server and write through a running server. Two replicas can still
+   agree. Restart the third and watch its `/status` value catch up.
+3. Replace the counter's addition with another deterministic rule. Start a
+   fresh exercise with empty data and the same new code on every replica, so old
+   log entries are not interpreted with new meanings.
+
+The client HTTP listeners are local-only. TLS protects the peer connections,
+and the exercise's generated certificates expire after 30 days.
+
+<details>
+<summary><strong>Complete application files</strong> — Optional source reference</summary>
+
+These are the full files behind the excerpts. To assemble the project manually,
+create a `rafter-counter/src` folder and save each file at the path shown. You
+can also use the standalone project directly.
 
 <details>
 <summary><strong>Cargo.toml</strong> — Dependencies</summary>
@@ -890,164 +1255,4 @@ pub fn load(path: &Path, node: u64) -> io::Result<PeerControlPlaneCheckpoint<u64
 
 </details>
 
-## 3. Prepare the certificates and data
-
-Run these once, from your `rafter-counter` folder:
-
-```sh
-sh certs.sh
-cargo build
-cargo run -- init
-```
-
-The certificate script prints OpenSSL's progress, then `Created local TLS
-certificates in certs/.` The last command prints:
-
-```text
-Created data for nodes 1, 2, and 3. Run init only once.
-```
-
-Each server now has its own certificate and data directory:
-
-| Server | Saved data | Client API | TLS peer connection |
-| --- | --- | --- | --- |
-| 1 | `data/node-1` | `127.0.0.1:8001` | `127.0.0.1:7001` |
-| 2 | `data/node-2` | `127.0.0.1:8002` | `127.0.0.1:7002` |
-| 3 | `data/node-3` | `127.0.0.1:8003` | `127.0.0.1:7003` |
-
-The setup commands refuse to replace existing folders. Keep these same files
-when restarting; creating a new cluster is a separate operation.
-
-## 4. Start the three servers
-
-Open three terminals in the same `rafter-counter` folder. Leave each command
-running.
-
-**Terminal 1**
-
-```sh
-cargo run -- node 1
-```
-
-**Terminal 2**
-
-```sh
-cargo run -- node 2
-```
-
-**Terminal 3**
-
-```sh
-cargo run -- node 3
-```
-
-Each prints its client and peer addresses. For example:
-
-```text
-Node 1: http://127.0.0.1:8001 (peer TLS on 127.0.0.1:7001)
-```
-
-The servers choose a **leader** to coordinate writes. Give them a moment to
-connect before making your first request.
-
-## 5. Add and read a value
-
-Use a fourth terminal. Add five to the counter:
-
-```sh
-curl --location --fail -X POST http://127.0.0.1:8001/add/5
-```
-
-**Expected result:**
-
-```json
-{"value":5}
-```
-
-Now read it through a different server:
-
-```sh
-curl --location --fail http://127.0.0.1:8002/value
-```
-
-**Expected result:** `{"value":5}`.
-
-Add three more through server 3:
-
-```sh
-curl --location --fail -X POST http://127.0.0.1:8003/add/3
-```
-
-**Expected result:** `{"value":8}`.
-
-`--location` lets curl follow a server's redirect to the current leader. A
-successful write means the command was agreed and the leader saved the new
-counter value. Reads use Rafter's linearizable read API, so they account for
-writes completed before the read began.
-
-To see a server's role, local saved value, and authenticated TLS connections:
-
-```sh
-curl --fail http://127.0.0.1:8001/status
-```
-
-`/status` is a local diagnostic view. Use `/value` when you need the agreed value.
-
-## 6. Restart and keep your data
-
-Press **Ctrl+C in all three server terminals**. Restart them with the same
-commands from step 4, in the same folder. Keep `data/` and `certs/` as they are;
-you don't need to run setup again.
-
-Once the servers have chosen a leader, read the counter:
-
-```sh
-curl --location --fail http://127.0.0.1:8001/value
-```
-
-**Expected result:** `{"value":8}`.
-
-The app saves both the value and which commands are already included. On
-restart, it resumes from that point instead of adding those commands twice.
-
-You can also stop just one server and continue using the other two. If the
-leader stops, allow a moment for a new leader to be chosen. Three servers need
-two available to agree on new writes.
-
-<details>
-<summary><strong>If a request fails</strong></summary>
-
-Use `/status` to check that at least two servers are running and have connected.
-A request made during startup or an election can return `503` while the group
-chooses a leader.
-
-A write that times out may still complete. Don't automatically repeat an
-increment after an uncertain result: it could add the amount twice. A real
-client can attach its own request IDs and have the application remember results
-for safe retries.
-
-Missing or corrupt saved files stop a server from starting. The app does not
-silently reset a counter it cannot recover.
-
 </details>
-
-## The layers you just used
-
-| Part | Who provides it? |
-| --- | --- |
-| Agree on the order of commands | `rafter` |
-| Save and recover Raft's state | `rafter-storage` and `rafter-runtime` |
-| Apply commands to the counter | `rafter-app` plus your `Counter` type |
-| Track writes and serve consistent reads | `rafter-service` |
-| Encrypt and authenticate server connections | `rafter-transport-tls` |
-| Counter behavior, saved counter value, and HTTP API | This application |
-
-For a smaller stack, use just `rafter` and supply your own storage, network, and
-processing loop. You can also replace one component at a time. Add
-`rafter-multiraft` when you need many independent groups in one process.
-
-This starter uses three fixed members and keeps its Raft log without automatic
-compaction. Its HTTP client API is local-only; TLS protects the peer connections.
-The generated certificates are for this local exercise and expire after 30 days.
-For deployment choices, continue with the [architecture guide](./architecture.md)
-and [TLS configuration](../crates/rafter-transport-tls/README.md).
