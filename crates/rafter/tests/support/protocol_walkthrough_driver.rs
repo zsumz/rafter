@@ -3,10 +3,20 @@
 
 #[path = "../../src/node/tests/walkthroughs/append_membership.rs"]
 mod append_membership;
+#[path = "../../src/node/tests/walkthroughs/document.rs"]
+mod document;
 #[path = "../../src/node/tests/walkthroughs/election_write.rs"]
 mod election_write;
+#[path = "../../src/node/tests/walkthroughs/formatting.rs"]
+mod formatting;
 #[path = "../../src/node/tests/walkthroughs/observation.rs"]
 mod observation;
+#[path = "../../src/node/tests/walkthroughs/read_barrier.rs"]
+mod read_barrier;
+#[path = "../../src/node/tests/walkthroughs/replies_test.rs"]
+mod replies_test;
+#[path = "../../src/node/tests/walkthroughs/steps.rs"]
+mod steps;
 #[path = "../../src/node/tests/walkthroughs/support.rs"]
 mod support;
 
@@ -16,7 +26,7 @@ fn scenarios() -> Vec<Scenario> {
     vec![
         election_write::election_and_write(),
         election_write::higher_term_rejection(),
-        election_write::read_barrier(),
+        read_barrier::scenario(),
         append_membership::append_conflict(),
         append_membership::joint_quorum(),
     ]

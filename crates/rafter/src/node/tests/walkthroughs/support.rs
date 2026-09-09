@@ -1,12 +1,13 @@
 //! Scripted inputs and checkpoints, using the public production transition boundary.
 
+pub(super) use super::steps::{AppendReply, ReplyOutcome, Step};
 pub(super) use crate::*;
 
 pub(super) struct Scenario {
     pub name: &'static str,
     pub explanation: &'static str,
     pub node: Node,
-    pub steps: Vec<(&'static str, Vec<Input>)>,
+    pub steps: Vec<Step>,
     pub expected: (Term, Role, LogIndex, LogIndex, usize),
 }
 
@@ -22,51 +23,42 @@ pub(super) fn message(from: u64, message: Message) -> Input {
     }
 }
 
-pub(super) fn vote(from: u64, term: u64, pre_vote: bool) -> Input {
-    if pre_vote {
-        message(
-            from,
-            Message::PreVoteResponse(PreVoteResponse {
-                term: Term(term),
-                voter_id: NodeId(from),
-                vote_granted: true,
-            }),
-        )
-    } else {
-        message(
-            from,
-            Message::RequestVoteResponse(RequestVoteResponse {
-                term: Term(term),
-                voter_id: NodeId(from),
-                vote_granted: true,
-            }),
-        )
-    }
-}
-
-pub(super) fn ack(from: u64, term: u64, index: u64, sequence: u64, success: bool) -> Input {
+pub(super) fn pre_vote_granted(from: u64, term: u64) -> Input {
     message(
         from,
-        Message::AppendEntriesResponse(AppendEntriesResponse {
+        Message::PreVoteResponse(PreVoteResponse {
             term: Term(term),
-            follower_id: NodeId(from),
-            match_index: LogIndex(index),
-            sequence,
-            success,
+            voter_id: NodeId(from),
+            vote_granted: true,
         }),
     )
 }
 
-pub(super) fn campaign(term: u64) -> Vec<(&'static str, Vec<Input>)> {
+pub(super) fn vote_granted(from: u64, term: u64) -> Input {
+    message(
+        from,
+        Message::RequestVoteResponse(RequestVoteResponse {
+            term: Term(term),
+            voter_id: NodeId(from),
+            vote_granted: true,
+        }),
+    )
+}
+
+pub(super) fn campaign(term: u64) -> Vec<Step> {
     vec![
-        ("Election timeout starts pre-vote", vec![Input::Tick; 10]),
-        (
+        Step::inputs("Election timeout starts pre-vote",
+            "Pre-voting asks whether an election could succeed without changing the durable term or vote.",
+            vec![Input::Tick; 10]),
+        Step::inputs(
             "Pre-vote quorum starts a binding election",
-            vec![vote(2, term, true)],
+            "A pre-vote quorum permits a real election: advance the term, vote for self, and request binding votes.",
+            vec![pre_vote_granted(2, term)],
         ),
-        (
+        Step::inputs(
             "Binding quorum elects a leader and appends its no-op",
-            vec![vote(2, term, false)],
+            "The binding quorum establishes leadership. The new-term no-op provides an entry that can authorize commitment of its prefix.",
+            vec![vote_granted(2, term)],
         ),
     ]
 }
