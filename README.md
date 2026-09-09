@@ -13,8 +13,6 @@
 </p>
 
 <p align="center">
-  <a href="./docs/getting-started.md">Getting Started</a>
-  <span> · </span>
   <a href="#model">Model</a>
   <span> · </span>
   <a href="#api-layers">API Layers</a>
@@ -50,9 +48,8 @@ runtime contract and recovery.
 ## API Layers
 
 Start with the kernel for full control, or choose a higher layer for more
-integration. The [getting started guide](./docs/getting-started.md) walks through
-a minimal kernel example and a full composition with storage, managed handles,
-and TLS.
+integration. Follow the [getting started guide](./docs/getting-started.md) for
+a step-by-step walkthrough.
 
 | Layer | Reach for it when |
 | --- | --- |

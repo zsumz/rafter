@@ -1,92 +1,108 @@
 # Getting started
 
-Rafter lets you build a replicated application a layer at a time. You can use
-only the Raft protocol, or combine the supplied storage, runtime, application,
-service, and TLS transport crates. You can also replace individual pieces.
+Rafter helps multiple copies of your app agree on changes. You decide what a
+change does; Rafter makes sure the copies agree on the order.
 
-A **state machine** is your application's data and the rules for changing it.
-For a key-value store, a command might mean “set `alpha` to `one`.” Raft puts
-commands in an agreed order; your state machine applies them in that order.
+Let's start with a tiny app that saves and reads a value. Then we'll choose
+which parts of Rafter to use and try an app with disk storage and TLS.
 
-## Choose a starting point
+## 1. Run your first example
 
-| Start here | Rafter provides | You provide |
-| --- | --- | --- |
-| [Minimal: the kernel](#minimal-the-kernel) | Elections, replication, and commitment through `rafter`. | Storage and recovery, networking, ticks, application state, and the loop connecting them. |
-| [Full stack: the supplied components](#full-stack-the-supplied-components) | Durable Raft storage and runtime, state-machine integration, managed write/read handles, and authenticated TLS peer connections. | Application behavior and durable application state, configuration and credentials, the service loop, and a client-facing API. |
+You'll need Rust 1.88 and a copy of this repository. Run this command from the
+repository's root folder.
 
-Choose the full stack when you want Rafter to handle most of the consensus
-plumbing. Choose the kernel when you already have storage and networking to
-integrate. Both use the same protocol core.
-
-“Full stack” here means a composition of libraries in your application. You
-still build and run the application; the crates do not start a generic server.
-
-## Before you start
-
-Run the commands below from the root of a Rafter checkout. Rafter supports Rust
-1.88; the TLS reference check also needs the `rustfmt` and `clippy` components,
-a native C toolchain for its cryptography dependency, and permission to start
-local processes and listen on loopback ports.
-
-The examples use the code in your checkout. For your own application, keep its
-Rafter dependencies on the same checkout or a compatible set of published
-versions. The dependency snippets below assume your application and the
-`rafter` checkout are sibling directories.
-
-## Minimal: the kernel
-
-Your application can depend on just one crate:
-
-```toml
-[dependencies]
-rafter = { path = "../rafter/crates/rafter" }
+```sh
+cargo run -p rafter-service --example replicated_kv_service
 ```
 
-Try the complete kernel example:
+This starts three copies of a small key-value app inside one process. It saves
+`alpha = one`, reads the value back, and shuts down.
+
+**Look for this line:**
+
+```text
+linearizable read returned alpha=Some("one")
+```
+
+> This first example keeps everything in memory. It is a quick way to learn the
+> API. Step 4 uses a separate app with disk storage and real TLS connections.
+
+## 2. Follow a write and a read
+
+These are the two calls used by the example, shown inside an async function
+after creating its `raft` handle:
+
+```rust
+// Save a value.
+let write = raft.write(("alpha".to_owned(), "one".to_owned())).await?;
+
+// Read it back.
+let read = raft
+    .read("alpha".to_owned(), rafter_service::ReadConsistency::Linearizable)
+    .await?;
+
+assert_eq!(read.result, Some("one".to_owned()));
+```
+
+For the write, Rafter gets the group to agree on the command. Your app then
+applies it: in this case, storing `one` under the key `alpha`.
+
+`Linearizable` asks for a read that accounts for writes completed before the
+read began, even though the app has multiple copies.
+
+Your data and the code that changes it are called a **state machine**. In this
+example, that's a Rust map and the code that inserts and looks up values.
+
+**Open the [example source](../crates/rafter-service/examples/replicated_kv_service.rs)**
+to see the complete setup and the small KV state machine.
+
+## 3. Choose how much Rafter to use
+
+Rafter is a set of libraries. You can use just the core, use the supplied
+components together, or mix them with your own.
+
+### Minimal: use just the core
+
+Choose this when you want to plug Raft into storage and networking you already
+have. Your app depends on **`rafter`** and connects the pieces itself.
+
+Try the smaller example:
 
 ```sh
 cargo run -p rafter --example pure_raft
 ```
 
-It creates three nodes in one process, elects node 1, proposes
-`set account:7 balance=42`, and prints that all three nodes applied the command.
-The “network” is an in-memory queue and time advances through explicit ticks.
-This is a protocol demonstration with no durable storage.
+**What you'll see:** node 1 becomes the leader, and all three nodes report
+applying `set account:7 balance=42`.
 
-Read [the example](../crates/rafter/examples/pure_raft.rs) from `main` downward.
-The integration has four parts:
+The [source](../crates/rafter/examples/pure_raft.rs) shows the basic loop: give
+Rafter a timer tick or a message, deliver the messages it produces, and apply
+commands when Rafter says they are agreed. This example uses a message queue
+and has no disk storage.
 
-1. Create a `Node` with a unique `NodeId`, its peers, and an election timeout.
-2. Call `Node::step` with ticks, received messages, or client proposals.
-3. Deliver `Output::Send` messages to the addressed peers.
-4. Apply `Output::Apply` commands to your application state, in order.
+### Full stack: use the supplied components
 
-The kernel treats command bytes as opaque. The example prints them; a real KV
-application would decode the command and update its map. A proposal being
-locally appended is not yet a committed write. To associate a request with its
-outcome, see [tracked proposals](../crates/rafter/examples/tracked_proposal.rs).
+Choose this when you want Rafter to provide more of the pieces. This is a good
+starting point if you don't already have storage and networking to integrate.
 
-A **linearizable read** acts like a read from a single up-to-date copy of the
-data. Obtain a Raft read barrier and wait until your state machine has applied
-through it before reading the value. Reading the local map alone can return
-stale data.
+| Piece | What it does |
+| --- | --- |
+| `rafter` | Gets the copies of your app to agree on commands. |
+| `rafter-storage` + `rafter-runtime` | Save Raft's own state to disk and recover it after a restart. |
+| `rafter-app` | Connects those commands to your state machine. |
+| `rafter-service` | Gives your app the write and read API from step 2. |
+| `rafter-transport-tls` | Encrypts connections between servers and checks who is connecting. |
 
-### Making the minimal path durable
+You still write the application: what its commands do, how it saves its data,
+and how clients talk to it. You also provide the server addresses and TLS
+credentials. Rafter's libraries run inside that application.
 
-Once data must survive a restart, the host must persist Raft's required state
-before releasing the resulting messages or application work. On recovery, it
-must also know which commands the application has already durably applied.
+<details>
+<summary><strong>Adding the crates to your own project</strong></summary>
 
-You can implement that integration yourself, or add `rafter-runtime` with
-`rafter-storage`. The runtime enforces the persist-before-output ordering, and
-the storage crate supplies both file stores and traits for custom backends.
-See the [recovery contract](./architecture.md#recovery-and-snapshots) and the
-[file storage layout](../crates/rafter-storage/README.md#standard-file-layout).
-
-## Full stack: the supplied components
-
-For one durable Raft group with managed handles and TLS peers, use these crates:
+For a local project beside this `rafter` checkout, add the pieces you want to
+its `Cargo.toml`. The minimal path needs only the first line under
+`[dependencies]`; the full stack uses all six.
 
 ```toml
 [dependencies]
@@ -98,62 +114,18 @@ rafter-service = { path = "../rafter/crates/rafter-service" }
 rafter-transport-tls = { path = "../rafter/crates/rafter-transport-tls" }
 ```
 
-The main pieces fit together like this:
+These paths use the same code as the examples. Adjust them if your folders are
+arranged differently.
 
-```text
-Your client API
-    |
-rafter-service: write/read handles and managed driver <--> TLS peer transport
-    |
-rafter-app: RaftGroup + your state machine
-    |
-rafter-runtime: durable Raft execution
-    |
-rafter + rafter-storage: protocol and persisted Raft state
-```
+</details>
 
-### 1. Learn the write and read API
+## 4. Try disk storage and TLS
 
-Start with the small managed KV example:
+The repository includes a complete example app that manages locks: it decides
+which client can use a shared resource. It uses Rafter's supplied layers,
+including TLS between servers, plus its own code for saving application data.
 
-```sh
-cargo run -p rafter-service --example replicated_kv_service
-```
-
-It writes `alpha=one`, reads it with linearizable consistency, prints metrics,
-and shuts down. The client-facing calls look like this inside an async function,
-after obtaining a `RaftHandle` from the driver:
-
-```rust
-let write = raft.write(("alpha".to_owned(), "one".to_owned())).await?;
-let read = raft
-    .read("alpha".to_owned(), rafter_service::ReadConsistency::Linearizable)
-    .await?;
-assert_eq!(read.result, Some("one".to_owned()));
-```
-
-This example uses in-memory storage and delivery so you can see the API with
-little setup. It does not yet use TLS or survive a process restart.
-
-Your KV type implements `ReplicatedStateMachine`: encode/decode commands, apply
-committed batches, answer queries, and report its applied index. See the
-[complete KV implementation](../crates/rafter-service/examples/replicated_kv_service.rs).
-
-For durable state, save the application data and its **applied index** together.
-That index says “these commands are already reflected in the saved data.” Saving
-it ahead of the data could cause recovery to skip a command whose effects were
-lost. Rafter persists its log; your application defines how to persist its own
-state. The [KV state file example](../crates/rafter-runtime/examples/replicated_kv/app_state.rs)
-shows one simple way to store the map and index as one durable record.
-
-### 2. Run a complete composition with TLS and recovery
-
-The repository's fenced-lock reference application combines the supplied layers
-with durable application storage and an actual service loop. It manages locks
-instead of KV pairs, but its startup, transport, and recovery wiring show how to
-assemble the stack for your own state machine.
-
-Run its local process suite:
+Run the app's test suite:
 
 ```sh
 scripts/reference-source-check -- \
@@ -161,93 +133,60 @@ scripts/reference-source-check -- \
   -- --ignored --test-threads=1
 ```
 
-This command also checks formatting, lints, and builds the reference workspace's
-docs. It deliberately patches the reference dependencies to this checkout;
-running Cargo directly inside `reference/` would instead resolve its published
-dependencies. The first build takes longer than the small examples above.
+The tests start real server processes, perform writes and reads, check recovery
+after a restart, and clean up when finished. They also check who can connect and
+how servers join or leave the group.
 
-The suite starts local replica processes using dedicated test certificates and
-temporary directories. Its five tests cover authenticated peer connections,
-committed lock operations and reads, restart recovery, membership replacement,
-and connection limits. Successful output includes `5 passed` and
-`reference source mode passed`. The harness stops its processes and cleans up
-the temporary data.
+**Look for five passing tests, followed by:**
 
-In the first test, a client opens a session, acquires a lock, and queries the
-current lock token. In the recovery test, a replica restarts from its durable
-state; missing or corrupt recovery metadata prevents it from serving requests.
-Read the [scenarios](../reference/fenced-lock/tests/process_production.rs) beside
-the [process harness](../reference/fenced-lock/tests/support/production_process.rs)
-to follow the requests.
+```text
+reference source mode passed
+```
 
-The test certificates are for local exercises. The supplied TLS crate protects
-**peer traffic**; the reference application's small client listener is separate
-and needs its own access and transport policy in a deployment.
+The command also checks formatting, lints, and documentation, so its first run
+takes longer than the earlier examples. Use this script to test the libraries
+from your checkout.
 
-### 3. Assemble your application's startup
+> This is a local test run, using test certificates. TLS protects the connections
+> between servers. Your application's client-facing API needs its own setup.
 
-Use the [reference process](../reference/fenced-lock/src/bin/lock-production-node/main.rs)
-and its [replica setup](../reference/fenced-lock/src/bin/lock-node/replica.rs) as
-the worked recipe:
+<details>
+<summary><strong>What this command needs</strong></summary>
 
-1. Configure stable replica identities, group membership, peer addresses, TLS
-   credentials, and resource limits. Build the TLS runtime paused, so workers
-   cannot start exchanging messages before recovery is ready.
-2. Acquire exclusive ownership of the replica's directory. Open the file-backed
-   Raft stores and your application store; read the application's durable
-   applied index.
-3. Recover `DurableRaftNode` through that index and construct `RaftGroup` at the
-   same index. Retain the recovery outputs for the managed driver.
-4. Construct the driver with the group, recovery outputs, TLS sender and peer
-   validator, and restored control-plane checkpoint (membership and retired
-   identities). This lets it handle recovered snapshots, entries, and outgoing
-   work in order. Persist checkpoint changes and reopen the durable TLS session
-   state before starting workers.
-5. Start transport workers and drive ticks, inbound authenticated messages, and
-   pending read barriers. Serve client requests only after recovery is complete
-   and the application has applied all known committed application commands.
+Install the Rust tools used by the check if you don't have them:
 
-The [TLS adapter](../reference/fenced-lock/src/bin/lock-production-node/peer_link/mod.rs)
-shows how `TlsPeerTransport` takes credentials, a certificate-to-peer mapping,
-a per-group peer directory, an endpoint book, and a durable session store. Its
-sender implements the service transport trait; its inbound queue supplies
-authenticated envelopes to the driver.
+```sh
+rustup component add rustfmt clippy
+```
 
-The service manages request tracking and read/write results, while your event
-loop keeps the group progressing. Async handles do not replace that loop. In
-particular, the reference calls `tick`, `deliver`, and `drive_reads`; omitting
-read progress can leave a linearizable query waiting indefinitely.
+The TLS dependency also needs a native C compiler. The tests need to create
+temporary files, start child processes, and open local network ports.
 
-On restart, reopen the same stores and identity. Keep application data, its
-applied index, Raft files, the service checkpoint, and TLS session metadata as
-part of the recovery design. For readiness, compare the application's applied
-index with the **committed application index**: Raft also commits internal
-entries that never become application commands.
+</details>
 
-### What remains application-specific
+## 5. Make it your own
 
-You define your commands, queries, durable state, and snapshot format. If you
-use snapshots over TLS, wire a `SnapshotChunkResolver` into the transport and
-implement application snapshot support; a TLS connection alone does not supply
-the snapshot bytes. See [snapshot transport](../crates/rafter-transport-tls/README.md#nonblocking-service-boundary).
+Start small and build up:
 
-You also choose certificate issuance and rotation, peer discovery, membership
-operations, client API and retry behavior, and deployment. Rafter provides the
-building blocks those decisions use. The
-[full composition contract](./reference-consumers.md#production-composition)
-explains the reference application's choices in more detail.
+1. **Change the app's behavior.** Use the [KV example](../crates/rafter-service/examples/replicated_kv_service.rs)
+   as a starting point. Define your commands and how each one changes your data.
+2. **Save your app's data.** Save both the data and a record of which commands
+   are already included, so a restart can continue from the right place. The
+   [KV state file example](../crates/rafter-runtime/examples/replicated_kv/app_state.rs)
+   shows one way to do that.
+3. **Connect your servers.** Follow the [complete app's setup](../reference/fenced-lock/src/bin/lock-production-node/main.rs)
+   to combine storage, TLS, and the loop that keeps Rafter processing work.
+   Start with one group of servers before adding more groups.
 
-## Add or replace layers as needed
+You can replace individual pieces as your app grows. Use your own storage or
+transport, skip the service layer if you prefer direct calls, or add
+`rafter-multiraft` when one process needs to manage many independent groups.
 
-| If you need… | Use… |
+For the details you'll need as you build:
+
+| Next question | Read this |
 | --- | --- |
-| Your own network protocol | The service transport and authenticated-envelope traits instead of the TLS implementation. |
-| Your own storage engine | The storage traits with `rafter-runtime`. |
-| Direct embedded calls without managed handles | `rafter-app` and its `RaftGroup`. |
-| Many Raft groups in one process | `rafter-multiraft`, after you have a working single-group composition. |
-
-Start with one group and a small command. Get a write, a linearizable read, and
-recovery working before adding sharding or membership automation. Continue with
-the [architecture guide](./architecture.md), [crate map](../README.md#crates),
-or [reference consumers](./reference-consumers.md) when you need the deeper
-contracts.
+| How do the pieces fit together? | [Architecture](./architecture.md) |
+| How do I recover safely after a restart? | [Recovery and snapshots](./architecture.md#recovery-and-snapshots) |
+| How do I configure TLS and peer identities? | [TLS transport](../crates/rafter-transport-tls/README.md) |
+| How does the complete example work? | [Reference applications](./reference-consumers.md#production-composition) |
