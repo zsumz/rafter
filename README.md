@@ -3,13 +3,13 @@
 </p>
 
 <p align="center">
-  <strong>Build the Raft stack your application needs.</strong>
+  <strong>A deterministic Raft stack for systems that own their runtime.</strong>
 </p>
 
 <p align="center">
-  Use the deterministic <code>rafter</code> kernel with your own storage,
-  transport, and execution model, or build on Rafter's durable storage, runtime,
-  application, service, and mutually authenticated TLS transport layers.
+  Rafter gives you a sans-IO protocol core, durable storage/runtime layers,
+  simulation tools, and small embedding crates without taking over your
+  transport, task model, or application state machine.
 </p>
 
 <p align="center">
