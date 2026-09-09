@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Build the standalone app copied from the guide; --update refreshes its snippets."""
+import argparse
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+PROJECT = ROOT / "docs/examples/counter"
+GUIDE = ROOT / "docs/getting-started.md"
+FILES = {
+    "Cargo.toml", "rust-toolchain.toml", ".gitignore", "certs.sh",
+    "src/main.rs", "src/counter.rs", "src/peers.rs", "src/http.rs",
+    "src/disk.rs", "src/checkpoint.rs",
+}
+BLOCK = re.compile(r"(<!-- counter-file: ([^\n]+) -->\n```[^\n]*\n)(.*?)(^```)",
+                   re.MULTILINE | re.DOTALL)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--update", action="store_true", help="refresh inline files without running Cargo")
+    args = parser.parse_args()
+    text = GUIDE.read_text()
+    matches = list(BLOCK.finditer(text))
+    names = [match[2] for match in matches]
+    if len(names) != len(FILES) or set(names) != FILES:
+        raise SystemExit("guide must contain every application file exactly once")
+    if args.update:
+        text = BLOCK.sub(lambda match: match[1] + (PROJECT / match[2]).read_text() + match[4], text)
+        GUIDE.write_text(text)
+        print("Refreshed the guide's complete application files.")
+        return
+    for match in matches:
+        if match[3] != (PROJECT / match[2]).read_text():
+            raise SystemExit(f"guide copy differs from {match[2]}; run with --update")
+
+    # Compile the actual pasted files outside the repository, not an example
+    # target that could accidentally rely on a workspace-only dependency.
+    with tempfile.TemporaryDirectory(prefix="rafter-counter-guide-") as temporary:
+        copied = Path(temporary)
+        for match in matches:
+            destination = copied / match[2]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(match[3])
+        shutil.copyfile(PROJECT / "Cargo.lock", copied / "Cargo.lock")
+        shutil.copyfile(PROJECT / "smoke.py", copied / "smoke.py")
+        shutil.copytree(PROJECT / "tests", copied / "tests")
+        env = dict(os.environ)
+        target = Path(env.get("CARGO_TARGET_DIR", ROOT / "target/counter-guide")).resolve()
+        env["CARGO_TARGET_DIR"] = str(target)
+        commands = [
+            ["cargo", "fmt", "--all", "--", "--check"],
+            ["cargo", "clippy", "--locked", "--all-targets", "--", "-D", "warnings"],
+            ["cargo", "test", "--locked"],
+            ["cargo", "build", "--locked"],
+            [sys.executable, "smoke.py", str(target / "debug/rafter-counter")],
+        ]
+        for command in commands:
+            print("Running:", " ".join(command), flush=True)
+            subprocess.run(command, cwd=copied, env=env, check=True)
+    print("PASS: the complete app copied from the guide builds and survives the process checks")
+
+
+if __name__ == "__main__":
+    main()
