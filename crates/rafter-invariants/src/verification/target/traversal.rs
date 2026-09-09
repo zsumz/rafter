@@ -2,6 +2,9 @@
 
 mod items;
 mod module_path;
+mod source_path;
+#[cfg(test)]
+mod source_path_test;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -107,22 +110,7 @@ impl<'a> ModuleGraphCollector<'a> {
     }
 
     pub(super) fn bound_source_path(&self, path: &Path) -> Result<PathBuf, String> {
-        let metadata = fs::symlink_metadata(path)
-            .map_err(|error| format!("inspect module source {}: {error}", path.display()))?;
-        if !metadata.file_type().is_file() {
-            return Err(format!(
-                "module source is not a regular file: {}",
-                path.display()
-            ));
-        }
-        let canonical = fs::canonicalize(path)
-            .map_err(|error| format!("canonicalize module source {}: {error}", path.display()))?;
-        if canonical != path {
-            return Err(format!(
-                "module source traverses a filesystem alias or noncanonical path: {}",
-                path.display()
-            ));
-        }
+        let canonical = source_path::resolve(self.workspace, path)?;
         let relative = canonical.strip_prefix(self.workspace).map_err(|_| {
             format!(
                 "module source is outside the bound source tree: {}",
