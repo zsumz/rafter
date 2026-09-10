@@ -4,11 +4,14 @@ use std::collections::BTreeMap;
 
 use rafter::{Input as RaftInput, LogIndex, NodeConfig, NodeId, Output as RaftOutput, Role};
 use rafter_runtime::DurableRaftNode;
-use rafter_storage::{
-    FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
+use rafter_storage::{FileRaftLogSegment, FileRaftSnapshotStore};
+
+use super::{
+    config::HardStateBackend,
+    stores::{self, HardState},
 };
 
-type BenchNode = DurableRaftNode<FileRaftHardStateStore, FileRaftLogSegment, FileRaftSnapshotStore>;
+type BenchNode = DurableRaftNode<HardState, FileRaftLogSegment, FileRaftSnapshotStore>;
 
 #[derive(Debug)]
 pub(super) struct Cluster {
@@ -22,11 +25,11 @@ pub(super) struct Cluster {
 impl Cluster {
     /// Three file-backed nodes under `directory`; node 1 is elected by
     /// scripted ticks and real vote traffic.
-    pub(super) fn elect(directory: &std::path::Path) -> Self {
+    pub(super) fn elect(directory: &std::path::Path, backend: HardStateBackend) -> Self {
         let ids = [NodeId(1), NodeId(2), NodeId(3)];
         let mut nodes = BTreeMap::new();
         for id in ids {
-            nodes.insert(id, open_node(directory, id, &ids));
+            nodes.insert(id, open_node(directory, id, &ids, backend));
         }
         let mut cluster = Self {
             nodes,
@@ -110,7 +113,12 @@ impl Cluster {
     }
 }
 
-fn open_node(root: &std::path::Path, id: NodeId, ids: &[NodeId; 3]) -> BenchNode {
+fn open_node(
+    root: &std::path::Path,
+    id: NodeId,
+    ids: &[NodeId; 3],
+    backend: HardStateBackend,
+) -> BenchNode {
     let dir = root.join(format!("node-{}", id.0));
     std::fs::create_dir_all(&dir).expect("node directory is creatable");
     let peers: Vec<NodeId> = ids.iter().copied().filter(|peer| *peer != id).collect();
@@ -121,9 +129,7 @@ fn open_node(root: &std::path::Path, id: NodeId, ids: &[NodeId; 3]) -> BenchNode
     // acknowledgements, so check-quorum's one-tick deadline is always met.
     let config = NodeConfig::new(id, peers, 1).expect("bench config is valid");
 
-    let (hard_state, log, snapshots) = FileRaftNodeStores::open(&dir)
-        .expect("file-backed node stores open")
-        .into_parts();
+    let (hard_state, log, snapshots) = stores::open(&dir, backend);
     DurableRaftNode::with_storage_and_snapshot_store(config, hard_state, log, snapshots)
         .expect("node hydrates")
 }

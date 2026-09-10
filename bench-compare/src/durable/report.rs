@@ -28,9 +28,9 @@ pub(super) struct SnapshotMetrics {
     pub(super) preparation: Duration,
 }
 
-pub(super) fn report_json(workloads: &[String]) -> String {
+pub(super) fn report_json(workloads: &[String], hard_state: &str) -> String {
     format!(
-        "{{\n  \"harness\": \"rafter-bench-cluster\",\n  \"workloads\": [\n{}\n  ]\n}}",
+        "{{\n  \"harness\": \"rafter-bench-cluster\",\n  \"hard_state\": \"{hard_state}\",\n  \"workloads\": [\n{}\n  ]\n}}",
         workloads.join(",\n")
     )
 }

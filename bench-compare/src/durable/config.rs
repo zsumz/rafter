@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 pub(super) const HELP: &str = "bench-rafter-durable [OPTIONS]
+  --hard-state replace|journal     Hard-state persistence (default: replace)
   --workload all|proposals|snapshot  Select measured workloads (default: all)
   --proposals N                    Fixed proposals per workload (default: 512)
   --batch-sizes N[,N...]            Proposal batch sizes (default: 1,32)
@@ -11,6 +12,21 @@ pub(super) const HELP: &str = "bench-rafter-durable [OPTIONS]
   --directory PATH                 Existing scratch parent (default: system temp)
   --help                           Print this help
 Use at least 1,000 batches for sustained evidence. Nodes share one filesystem.";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HardStateBackend {
+    Replace,
+    Journal,
+}
+
+impl HardStateBackend {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Replace => "replace",
+            Self::Journal => "journal",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Workload {
@@ -22,6 +38,7 @@ pub(super) enum Workload {
 #[derive(Debug)]
 pub(super) struct Config {
     pub(super) workload: Workload,
+    pub(super) hard_state: HardStateBackend,
     pub(super) proposals: usize,
     pub(super) batch_sizes: Vec<usize>,
     pub(super) payload_bytes: usize,
@@ -33,6 +50,7 @@ impl Config {
     pub(super) fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Self>, String> {
         let mut config = Self {
             workload: Workload::All,
+            hard_state: HardStateBackend::Replace,
             proposals: 512,
             batch_sizes: vec![1, 32],
             payload_bytes: 256,
@@ -48,6 +66,13 @@ impl Config {
                 .next()
                 .ok_or_else(|| format!("missing value for {flag}"))?;
             match flag.as_str() {
+                "--hard-state" => {
+                    config.hard_state = match value.as_str() {
+                        "replace" => HardStateBackend::Replace,
+                        "journal" => HardStateBackend::Journal,
+                        _ => return Err(format!("invalid hard-state backend: {value}")),
+                    };
+                }
                 "--workload" => {
                     config.workload = match value.as_str() {
                         "all" => Workload::All,

@@ -44,6 +44,14 @@ class DurableEvidenceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.validate(report)
 
+    def test_requires_the_explicitly_selected_backend(self):
+        for backend in [None, "replace"]:
+            self.report["hard_state"] = backend
+            with self.assertRaises(ValueError):
+                BENCH["validate"](self.report, "batch-32", 1000, 1024, "journal")
+        self.report["hard_state"] = "journal"
+        BENCH["validate"](self.report, "batch-32", 1000, 1024, "journal")
+
     def test_aggregates_run_percentiles_without_pooling_samples(self):
         values = []
         for rate, p99 in [(6000.0, 10.0), (9000.0, 2.0), (7000.0, 4.0)]:

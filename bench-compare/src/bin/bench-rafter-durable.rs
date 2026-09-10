@@ -11,6 +11,8 @@ mod cluster;
 mod config;
 #[path = "../durable/report.rs"]
 mod report;
+#[path = "../durable/stores.rs"]
+mod stores;
 #[path = "../durable/workloads.rs"]
 mod workloads;
 
@@ -41,11 +43,17 @@ fn main() -> std::process::ExitCode {
         }
     }
     if config.workload != Workload::Proposals {
-        let metrics =
-            workloads::snapshot_workload(&scratch.join("snapshot"), config.snapshot_bytes);
+        let metrics = workloads::snapshot_workload(
+            &scratch.join("snapshot"),
+            config.snapshot_bytes,
+            config.hard_state,
+        );
         reports.push(report::snapshot_json(&metrics));
     }
     std::fs::remove_dir_all(&scratch).expect("benchmark scratch directory is removable");
-    println!("{}", report::report_json(&reports));
+    println!(
+        "{}",
+        report::report_json(&reports, config.hard_state.label())
+    );
     std::process::ExitCode::SUCCESS
 }
