@@ -8,7 +8,7 @@ use rafter_storage::PersistedRaftSnapshot;
 
 use super::{
     cluster::Cluster,
-    config::Config,
+    config::{Config, HardStateBackend},
     report::{ProposalMetrics, SnapshotMetrics},
 };
 
@@ -21,7 +21,7 @@ pub(super) fn proposal_workload(
     batch_size: usize,
     config: &Config,
 ) -> ProposalMetrics {
-    let mut cluster = Cluster::elect(directory);
+    let mut cluster = Cluster::elect(directory, config.hard_state);
 
     let mut latencies: Vec<Duration> = Vec::with_capacity(config.proposals);
     let mut submitted_at: BTreeMap<LogIndex, Instant> = BTreeMap::new();
@@ -86,8 +86,9 @@ pub(super) fn proposal_workload(
 pub(super) fn snapshot_workload(
     directory: &std::path::Path,
     payload_bytes: usize,
+    backend: HardStateBackend,
 ) -> SnapshotMetrics {
-    let mut cluster = Cluster::elect(directory);
+    let mut cluster = Cluster::elect(directory, backend);
 
     // Commit one entry so the boundary exists — with every message to the
     // lagging follower dropped, so the quorum is the leader plus node 2 —

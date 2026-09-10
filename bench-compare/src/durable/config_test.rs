@@ -1,6 +1,6 @@
 //! Configuration rejection and workload-selection scenarios.
 
-use super::{Config, Workload};
+use super::{Config, HardStateBackend, Workload};
 
 fn parse(args: &[&str]) -> Result<Option<Config>, String> {
     Config::parse(args.iter().map(|arg| (*arg).to_owned()))
@@ -10,6 +10,7 @@ fn parse(args: &[&str]) -> Result<Option<Config>, String> {
 fn defaults_preserve_smoke_workloads() {
     let config = parse(&[]).unwrap().unwrap();
     assert_eq!(config.workload, Workload::All);
+    assert_eq!(config.hard_state, HardStateBackend::Replace);
     assert_eq!(config.proposals, 512);
     assert_eq!(config.batch_sizes, [1, 32]);
     assert_eq!(config.snapshot_bytes, 32 * 1024 * 1024);
@@ -54,4 +55,16 @@ fn rejects_unbounded_empty_duplicate_or_unknown_inputs() {
     ] {
         assert!(parse(&args).is_err(), "accepted {args:?}");
     }
+}
+
+#[test]
+fn hard_state_selection_is_explicit_and_bounded() {
+    assert_eq!(
+        parse(&["--hard-state", "journal"])
+            .unwrap()
+            .unwrap()
+            .hard_state,
+        HardStateBackend::Journal
+    );
+    assert!(parse(&["--hard-state", "auto"]).is_err());
 }

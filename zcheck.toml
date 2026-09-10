@@ -126,7 +126,7 @@ needs = [
 [tasks.durable-bench-tests]
 description = "Verify durable benchmark configuration and evidence validation."
 needs = ["durable-bench-config"]
-run = ["python3", "-m", "unittest", "scripts/tests/test_bench_durable.py"]
+run = ["python3", "-m", "unittest", "scripts/tests/test_bench_durable.py", "scripts/tests/test_hard_state_syscalls.py"]
 tools = ["python3"]
 
 [tasks.durable-bench-config]

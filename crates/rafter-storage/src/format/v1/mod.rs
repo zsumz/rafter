@@ -5,6 +5,7 @@
 //! that preserve the crate's flat public API.
 
 pub(crate) mod hard_state;
+pub(crate) mod hard_state_journal;
 pub(crate) mod log_compaction;
 pub(crate) mod log_entry;
 pub(crate) mod pending_transfer;

@@ -16,6 +16,9 @@ use std::{
 /// Named storage boundaries where a test may inject one synthetic I/O failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DurabilityPoint {
+    JournalOpenAfterSync,
+    JournalAfterAppend,
+    JournalAfterSync,
     HardStateAfterTempSync,
     HardStateAfterRename,
     HardStateAfterDirectorySync,

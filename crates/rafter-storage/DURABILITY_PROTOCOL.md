@@ -130,6 +130,25 @@ requiring reopen. `FileRaftHardStateStore::requires_reopen` exposes the state
 for diagnostics, and later writes fail with `StoreRequiresReopen` before they
 perform filesystem work.
 
+## Opt-in hard-state journal
+
+`JournalRaftNodeStores` acquires the same directory lock before opening the
+journal at `hard-state`. Each split store retains that ownership. The default
+`FileRaftNodeStores` and its replacement protocol remain unchanged.
+
+Open creates or validates the RFHJ header, replays every complete RFHS record,
+and truncates an incomplete final record. It syncs the recovered file and its
+parent directory before exposing state, including on retries after creation or
+repair failed. A partial header or complete corrupt record fails closed.
+
+Normal publication appends one RFHS envelope to the already-open file, calls
+`sync_data` once, then updates the cached state. It performs no rename or
+parent-directory sync. Any append or sync failure poisons the handle; later
+writes fail before I/O. A complete unacknowledged record may survive such an
+error and become current after reopen validates and resyncs it.
+
+The format is opt-in and grows without compaction; see `STORAGE_FORMAT_V1.md`.
+
 ## Log append
 
 Stable path: `log`

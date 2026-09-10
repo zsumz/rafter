@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Check the measured publication region in a Linux strace of bench-hard-state."""
+
+import argparse
+import json
+from pathlib import Path
+import re
+
+
+def check(trace, backend, writes):
+    lines = trace.splitlines()
+    starts = [i for i, line in enumerate(lines) if "BENCH_WRITES_BEGIN" in line]
+    ends = [i for i, line in enumerate(lines) if "BENCH_WRITES_END" in line]
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        raise ValueError("expected one ordered pair of write-region markers")
+    region = lines[starts[0] + 1:ends[0]]
+    if any("= -1" in line for line in region):
+        raise ValueError("a measured filesystem operation failed")
+    counts = {name: sum(bool(re.search(r"\b" + name + r"\(", line)) for line in region)
+              for name in ["fdatasync", "fsync", "rename", "renameat", "renameat2"]}
+    renames = sum(counts[name] for name in ["rename", "renameat", "renameat2"])
+    expected_metadata = writes if backend == "replace" else 0
+    if counts["fdatasync"] != writes or counts["fsync"] != expected_metadata or renames != expected_metadata:
+        raise ValueError(f"unexpected {backend} publication syscalls: {counts}")
+    return {"backend": backend, "writes": writes, **counts}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("backend", choices=["replace", "journal"])
+    parser.add_argument("writes", type=int)
+    parser.add_argument("trace", type=Path)
+    args = parser.parse_args()
+    if args.writes < 1:
+        parser.error("writes must be positive")
+    print(json.dumps(check(args.trace.read_text(), args.backend, args.writes), indent=2))
+
+
+if __name__ == "__main__":
+    main()

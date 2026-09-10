@@ -168,6 +168,24 @@ Trace synchronization calls separately from timed evidence, since syscall
 tracing changes execution time. A batch-size sweep is not a claim about a
 production batching policy or service-level tail latency.
 
+### Hard-state backend comparison
+
+The durable benchmark defaults to `--hard-state replace`. To compare RFHJ
+journaling with replacement in the same binary on fresh stores:
+
+```sh
+python3 scripts/bench-durable \
+  --binary bench-compare/target/release/bench-rafter-durable \
+  --baseline bench-compare/target/release/bench-rafter-durable \
+  --hard-state journal --baseline-hard-state replace \
+  --runs 3 --batches 1000 --directory /path/to/scratch
+```
+
+The Hard-state comparison workflow records paired runs and separate syscall
+traces. `bench-hard-state` isolates publication; `scripts/check-hard-state-syscalls`
+checks one data sync per write, with zero journal renames or directory syncs
+inside the measured region. The journal is opt-in and has no compaction yet.
+
 ## CI usage
 
 The `Benchmarks` workflow runs a one-run Rafter-only smoke check on pull

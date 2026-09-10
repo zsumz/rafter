@@ -21,7 +21,7 @@ pub(super) fn hard_state(term: u64, voted_for: Option<u64>) -> RaftHardState {
     }
 }
 
-pub(super) fn test_store_path(name: &str) -> PathBuf {
+pub(crate) fn test_store_path(name: &str) -> PathBuf {
     test_store_directory(name).with_extension("rafthard")
 }
 

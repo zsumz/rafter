@@ -36,6 +36,7 @@ same bytes: `encode(decode(bytes)) == bytes`.
 
 | Artifact | Magic | Version | Stable path or container |
 |---|---:|---:|---|
+| Hard-state journal (opt-in) | `RFHJ` | `1` | `hard-state` |
 | Hard-state envelope | `RFHS` | `1` | `hard-state` |
 | Log-entry envelope | `RFLE` | `1` | Inside one log frame |
 | Log frame | — | — | Repeated in `log` |
@@ -68,6 +69,23 @@ must be zero. Readers reject non-zero absent fields as noncanonical version-1
 bytes.
 
 Checksum coverage ends immediately before `crc32`.
+
+## Hard-state journal (opt-in)
+
+`JournalRaftHardStateStore` uses a distinct format at the same `hard-state`
+path. Its header is `RFHJ` (4 bytes), version `1` (1 byte), then the big-endian
+CRC-32/IEEE of those 5 bytes (4 bytes). The 9-byte header is followed by zero
+or more complete, fixed-width 51-byte RFHS v1 envelopes, in append order.
+The last complete envelope is current; a header alone represents default state.
+
+Recovery validates the header and every complete envelope, then truncates only
+an incomplete final envelope (1–50 bytes). A complete invalid envelope anywhere
+is an error, even when followed by an incomplete suffix. Unknown versions and
+partial headers are errors. Reads use constant memory and linear replay time.
+
+RFHS and RFHJ are mutually incompatible. No automatic migration or compaction
+is provided; select this backend only for new replica directories. Journal
+space grows by 51 bytes per acknowledged or complete unacknowledged append.
 
 ## Log-entry envelope (`RFLE`)
 
