@@ -205,6 +205,17 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         self.node.snapshot_committed_membership()
     }
 
+    /// Borrows the retained log suffix without copying its entries.
+    ///
+    /// Embeddings can take a bounded prefix when dispatching committed work
+    /// to an application worker. The caller must cap reads at `commit_index`;
+    /// the retained suffix also contains uncommitted entries. Like other runtime
+    /// accessors, this view is volatile and cannot be used after a fatal error.
+    #[must_use]
+    pub fn log_entries_slice_from(&self, first_index: LogIndex) -> &[LogEntry] {
+        self.node.log_entries_slice_from(first_index)
+    }
+
     /// Returns local log entries starting at `first_index`.
     #[must_use]
     pub fn log_entries_from(&self, first_index: LogIndex) -> Vec<LogEntry> {
