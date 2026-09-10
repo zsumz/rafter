@@ -3,6 +3,8 @@
 //! This module owns the open file, acknowledged cache, and poison boundary.
 //! The recovery module validates bytes before this handle can append again.
 
+use crate::telemetry::{measure, Stage};
+
 use super::{
     journal_error::OpenJournalRaftHardStateStoreError, journal_recovery, RaftHardStateStore,
     RaftHardStateStoreWriteError,
@@ -89,8 +91,8 @@ impl RaftHardStateStore for JournalRaftHardStateStore {
         if self.requires_reopen() {
             return Err(RaftHardStateStoreWriteError::StoreRequiresReopen);
         }
-        let encoded = encode_raft_hard_state(&state);
-        if let Err(error) = self.file.write_all(&encoded) {
+        let encoded = measure(Stage::HardStateEncode, || encode_raft_hard_state(&state));
+        if let Err(error) = measure(Stage::HardStateWrite, || self.file.write_all(&encoded)) {
             return Err(self.io_failure("append hard-state journal", error));
         }
         #[cfg(test)]
@@ -99,7 +101,7 @@ impl RaftHardStateStore for JournalRaftHardStateStore {
         ) {
             return Err(self.io_failure("append hard-state journal", error));
         }
-        if let Err(error) = self.file.sync_data() {
+        if let Err(error) = measure(Stage::HardStateSync, || self.file.sync_data()) {
             return Err(self.io_failure("sync hard-state journal", error));
         }
         #[cfg(test)]

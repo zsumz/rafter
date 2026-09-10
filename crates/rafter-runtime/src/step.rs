@@ -158,7 +158,10 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
 
         let persisted_before = self.hard_state_store.current();
         let commit_floor = self.node.commit_index();
-        let outputs = step(&mut self.node);
+        let outputs =
+            rafter_storage::telemetry::measure(rafter_storage::telemetry::Stage::Kernel, || {
+                step(&mut self.node)
+            });
         let current = hard_state_for_node(&self.node);
         let pre_log_hard_state =
             hard_state_for_node_capped_at(&self.node, durable_last_log_index(&self.log_segment));

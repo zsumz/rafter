@@ -16,6 +16,8 @@ use crate::{
     RaftHardState,
 };
 
+use crate::telemetry::{measure, Stage};
+
 use super::{
     contract::RaftHardStateStore,
     error::{OpenRaftHardStateStoreError, RaftHardStateStoreWriteError},
@@ -130,7 +132,7 @@ impl RaftHardStateStore for FileRaftHardStateStore {
     ) -> Result<(), RaftHardStateStoreWriteError> {
         self.ensure_writable()?;
 
-        let encoded = encode_raft_hard_state(&state);
+        let encoded = measure(Stage::HardStateEncode, || encode_raft_hard_state(&state));
         let temp_path = self.temp_path();
         let mut file = match OpenOptions::new()
             .create(true)
@@ -144,7 +146,9 @@ impl RaftHardStateStore for FileRaftHardStateStore {
             }
         };
 
-        if let Err(error) = file.write_all(&encoded).and_then(|()| file.sync_data()) {
+        if let Err(error) = measure(Stage::HardStateWrite, || file.write_all(&encoded))
+            .and_then(|()| measure(Stage::HardStateSync, || file.sync_data()))
+        {
             return Err(self.io_failure("write raft hard state temp file", &temp_path, error));
         }
         #[cfg(test)]
@@ -166,7 +170,9 @@ impl RaftHardStateStore for FileRaftHardStateStore {
             let path = self.path.clone();
             return Err(self.io_failure("replace raft hard state", &path, error));
         }
-        if let Err(error) = sync_parent_directory(&self.path) {
+        if let Err(error) = measure(Stage::HardStateDirectorySync, || {
+            sync_parent_directory(&self.path)
+        }) {
             let path = self.path.clone();
             return Err(self.io_failure("sync raft hard state directory", &path, error));
         }

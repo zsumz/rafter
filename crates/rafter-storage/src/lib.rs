@@ -61,7 +61,6 @@
 //! meanings.
 //!
 //! # Integrity Model
-//!
 //! Storage checksums are CRC32 corruption checks. They are useful for torn
 //! writes, partial files, stale manifests, and accidental media corruption in
 //! non-Byzantine deployments, but they are not tamper evidence against an
@@ -70,7 +69,6 @@
 //! snapshot format carry and verify a stronger digest.
 //!
 //! # Operational Errors
-//!
 //! Filesystem failures retain their original [`std::io::Error`] and expose it
 //! through [`std::error::Error::source`]. [`StorageIoError`] keeps that source
 //! cloneable for runtime poison state while preserving its kind and OS code.
@@ -96,6 +94,8 @@ mod raft_log_entry_codec;
 mod raft_log_segment;
 mod raft_snapshot_codec;
 mod raft_snapshot_store;
+/// Optional per-thread persistence diagnostics.
+pub mod telemetry;
 
 #[cfg(test)]
 mod raft_hard_state_codec_test;
