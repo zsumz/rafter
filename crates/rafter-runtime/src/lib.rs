@@ -85,11 +85,13 @@ mod hard_state;
 mod inspect;
 mod log_repair;
 mod node;
+mod peer_batch;
 mod runtime_api;
 mod step;
 
 pub use error::{RaftRuntimeError, RaftRuntimeFatalError};
 pub use node::{DurableRaftNode, DurableRaftNodeStorage, RecoveredDurableRaftNode};
+pub use peer_batch::PeerBatchGate;
 pub use rafter_runtime_api::PersistedRaftRuntime;
 
 #[cfg(test)]

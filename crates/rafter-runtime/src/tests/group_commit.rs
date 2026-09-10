@@ -10,6 +10,7 @@ use rafter_storage::{
 
 mod batch;
 mod failure;
+mod peer;
 
 const INJECTED_APPEND_OPERATION: &str = "append group-commit test entries";
 const INJECTED_APPEND_MESSAGE: &str = "injected group-commit append failure";
