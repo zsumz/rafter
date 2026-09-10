@@ -22,8 +22,8 @@ jobs:
           workspaces: bench-compare
       - name: Check storage, runtime, and evidence validation
         run: |
-          cargo test --locked -p rafter-storage -p rafter-runtime
-          cargo test --locked --manifest-path bench-compare/Cargo.toml --no-default-features --bin bench-rafter-durable
+          scripts/cargo-test-exact 340 - --locked -p rafter-storage -p rafter-runtime
+          scripts/cargo-test-exact 4 - --locked --manifest-path bench-compare/Cargo.toml --no-default-features --bin bench-rafter-durable
           python3 -m unittest scripts/tests/test_bench_durable.py scripts/tests/test_hard_state_syscalls.py
       - name: Build the paired benchmark
         run: cargo build --release --locked --manifest-path bench-compare/Cargo.toml --no-default-features --bin bench-rafter-durable --bin bench-hard-state
