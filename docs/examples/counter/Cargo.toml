@@ -1,0 +1,20 @@
+[package]
+name = "rafter-counter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+rust-version = "1.88"
+
+[workspace]
+
+[dependencies]
+rafter = { git = "https://github.com/zsumz/rafter", rev = "518aefd7" }
+rafter-app = { git = "https://github.com/zsumz/rafter", rev = "518aefd7" }
+rafter-storage = { git = "https://github.com/zsumz/rafter", rev = "518aefd7" }
+rafter-runtime = { git = "https://github.com/zsumz/rafter", rev = "518aefd7" }
+rafter-service = { git = "https://github.com/zsumz/rafter", rev = "518aefd7" }
+rafter-transport-tls = { git = "https://github.com/zsumz/rafter", rev = "518aefd7" }
+rafter-crc32 = { git = "https://github.com/zsumz/rafter", rev = "518aefd7" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
