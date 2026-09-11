@@ -13,6 +13,8 @@ use rafter_storage::{
     RaftLogSegmentTruncateError, RaftSnapshotStoreWriteError,
 };
 
+use rafter_storage::durable_batch::RaftPersistenceBatchError;
+
 use super::RaftRuntimeError;
 
 /// Fatal persistence errors that poison an in-memory runtime until restart.
@@ -38,6 +40,8 @@ use super::RaftRuntimeError;
 pub enum RaftRuntimeFatalError {
     /// Durable hard-state publication failed after the kernel advanced.
     HardStateWrite(RaftHardStateStoreWriteError),
+    /// Atomic log and hard-state publication failed after the kernel advanced.
+    PersistenceBatch(RaftPersistenceBatchError),
     /// Durable log append failed after the kernel advanced.
     LogAppend(RaftLogSegmentAppendError),
     /// Durable suffix truncation failed after the kernel advanced.
@@ -70,6 +74,9 @@ impl fmt::Display for RaftRuntimeFatalError {
         match self {
             Self::HardStateWrite(error) => {
                 write!(formatter, "Raft hard state could not be written: {error}")
+            }
+            Self::PersistenceBatch(error) => {
+                write!(formatter, "Raft persistence batch failed: {error}")
             }
             Self::LogAppend(error) => {
                 write!(formatter, "Raft log entries could not be appended: {error}")
@@ -106,6 +113,7 @@ impl Error for RaftRuntimeFatalError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::HardStateWrite(error) => Some(error),
+            Self::PersistenceBatch(error) => Some(error),
             Self::LogAppend(error) => Some(error),
             Self::LogTruncate(error) => Some(error),
             Self::LogCompact(error) => Some(error),
@@ -132,6 +140,9 @@ impl RaftRuntimeFatalError {
     pub(crate) fn from_runtime_error(error: &RaftRuntimeError) -> Option<Self> {
         match error {
             RaftRuntimeError::HardStateWrite(error) => Some(Self::HardStateWrite(error.clone())),
+            RaftRuntimeError::PersistenceBatch(error) => {
+                Some(Self::PersistenceBatch(error.clone()))
+            }
             RaftRuntimeError::LogAppend(error) => Some(Self::LogAppend(error.clone())),
             RaftRuntimeError::LogTruncate(error) => Some(Self::LogTruncate(error.clone())),
             RaftRuntimeError::LogCompact(error) => Some(Self::LogCompact(error.clone())),

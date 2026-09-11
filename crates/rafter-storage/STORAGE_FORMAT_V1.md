@@ -36,6 +36,7 @@ same bytes: `encode(decode(bytes)) == bytes`.
 
 | Artifact | Magic | Version | Stable path or container |
 |---|---:|---:|---|
+| Shared Raft WAL (opt-in) | `RFWB` | `1` | `hard-state` |
 | Hard-state journal (opt-in) | `RFHJ` | `1` | `hard-state` |
 | Hard-state envelope | `RFHS` | `1` | `hard-state` |
 | Log-entry envelope | `RFLE` | `1` | Inside one log frame |
@@ -280,3 +281,37 @@ For every versioned artifact:
    bytes are rejected.
 5. A migration must preserve the durable ordering and crash recovery contracts
    in `DURABILITY_PROTOCOL.md` in addition to translating bytes.
+
+## Shared Raft WAL (opt-in)
+
+`WalRaftNodeStores` uses an independent format, with no implicit migration from
+RFHS/RFHJ plus `log`. Its eight-byte header is `RFWB 00 00 00 01`. The `log`
+path must be absent. Existing snapshot envelopes and manifests are unchanged.
+
+Each atomic record contains:
+
+```text
+magic                 [4]   "BCH1"
+body_length           u32   29..67108864
+body_length_inverse   u32   bitwise complement of body_length
+header_crc32          u32   CRC32 of the preceding 12 bytes
+body                  [body_length]
+body_crc32            u32   CRC32 of body
+end_magic             [4]   "END1"
+```
+
+The body holds an operation number (`u64`, starting at 1 and increasing by 1),
+compaction and truncation indexes (two `u64`; maximum means absent), a hard-state
+presence byte (0 or 1), an optional complete 51-byte RFHS envelope, an entry count
+(`u32`), then that many `u32` lengths and complete RFLE envelopes. No trailing
+bytes are accepted. Truncation precedes append. Compaction is a separate record.
+Entries remain contiguous above the compacted floor; truncation cannot erase a
+durable committed entry, and hard-state term, vote promises, and commit cannot
+regress. Commit cannot exceed the resulting log or compacted boundary.
+
+An incomplete final record is discarded as a unit. A complete invalid header,
+body, checksum, operation sequence, or logical mutation fails recovery. The
+header checksum prevents a damaged length from silently hiding complete records.
+The initial header must be complete. This initial opt-in implementation records
+compaction markers but does not reclaim earlier WAL records; use bounded
+experiments until checkpoint reclamation is available.

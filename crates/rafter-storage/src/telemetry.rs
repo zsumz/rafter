@@ -28,9 +28,15 @@ pub enum Stage {
     HardStateSync,
     /// Replacement hard-state parent-directory sync.
     HardStateDirectorySync,
+    /// Shared WAL batch encoding.
+    BatchEncode,
+    /// Shared WAL batch write syscall loop.
+    BatchWrite,
+    /// Shared WAL batch data sync.
+    BatchSync,
 }
 
-const NAMES: [&str; 8] = [
+const NAMES: [&str; 11] = [
     "kernel",
     "log_encode",
     "log_write",
@@ -39,6 +45,9 @@ const NAMES: [&str; 8] = [
     "hard_state_write",
     "hard_state_sync",
     "hard_state_directory_sync",
+    "batch_encode",
+    "batch_write",
+    "batch_sync",
 ];
 
 /// Cumulative timings on the owning thread; no percentile subtraction is valid.
@@ -57,7 +66,7 @@ pub struct Metric {
 #[derive(Default)]
 struct State {
     enabled: bool,
-    metrics: [Metric; 8],
+    metrics: [Metric; 11],
 }
 std::thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());

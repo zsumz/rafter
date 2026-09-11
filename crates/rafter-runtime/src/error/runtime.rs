@@ -16,6 +16,8 @@ use rafter_storage::{
     RaftLogSegmentTruncateError, RaftSnapshotStoreWriteError,
 };
 
+use rafter_storage::durable_batch::RaftPersistenceBatchError;
+
 use super::RaftRuntimeFatalError;
 
 /// Errors returned by durable runtime construction, recovery, stepping, and
@@ -27,6 +29,8 @@ pub enum RaftRuntimeError {
     Bootstrap(BootstrapValidationError),
     /// Durable hard-state publication failed.
     HardStateWrite(RaftHardStateStoreWriteError),
+    /// Atomic log and hard-state publication failed after the kernel advanced.
+    PersistenceBatch(RaftPersistenceBatchError),
     /// Appending entries to the durable log failed.
     LogAppend(RaftLogSegmentAppendError),
     /// Removing a conflicting durable log suffix failed.
@@ -136,6 +140,7 @@ impl Error for RaftRuntimeError {
         match self {
             Self::Bootstrap(error) => Some(error),
             Self::HardStateWrite(error) => Some(error),
+            Self::PersistenceBatch(error) => Some(error),
             Self::LogAppend(error) => Some(error),
             Self::LogTruncate(error) => Some(error),
             Self::LogCompact(error) => Some(error),

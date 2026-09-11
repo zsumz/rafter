@@ -14,6 +14,7 @@ use rafter::{
 };
 use std::path::PathBuf;
 
+mod atomic_batch;
 mod conflict_repair;
 mod crash_window;
 mod file_backed_fixture;

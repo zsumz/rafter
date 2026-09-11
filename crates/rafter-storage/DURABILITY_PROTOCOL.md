@@ -1,387 +1,342 @@
-# Rafter storage durability protocol
+# Rafter storage format, version 1
 
-This document describes how the file-backed stores publish state, what each
-successful return guarantees, what residue an interrupted operation may leave,
-and how reopen interprets that residue.
+This document is the byte-level contract for the current Rafter durable-storage
+artifacts. It describes the canonical bytes emitted by version 1 writers in
+`rafter-storage`.
 
-It complements `STORAGE_FORMAT_V1.md`: the format document defines bytes; this
-document defines ordering and recovery.
+Version 1 is the first public storage format. Earlier internal draft layouts are
+not supported. A future incompatible meaning requires a new envelope version
+and an explicit migration or compatibility plan; existing version-1 fields and
+tags must not be reassigned.
 
-## Scope and ownership
+Golden examples live under `tests/vectors/v1` and are executable contracts in
+`tests/format_v1_vectors.rs`.
 
-`rafter-storage` owns durable protocol state only:
+## Common rules
 
-- hard state;
-- the retained Raft log suffix and compacted-prefix boundary;
-- current snapshot selection;
-- resumable inbound snapshot staging.
+Unless an artifact says otherwise:
 
-It does not persist application state or the application's applied index. It
-does not decide when a recovered process may serve traffic. The runtime and
-application layers must validate cross-store recovery and provide an applied
-floor before committed commands are replayed.
+- integers are unsigned and big-endian;
+- byte sequences are packed with no alignment or padding;
+- all trailing bytes are rejected;
+- a version byte other than `1` is rejected;
+- the final checksum is CRC-32/IEEE over every preceding byte in that artifact;
+- CRC-32 is an accidental-corruption check, not an authentication tag;
+- strings are UTF-8 and their length is measured in bytes;
+- node IDs, terms, configuration IDs, transfer IDs, and log indexes are stored
+  as their underlying `u64` values.
 
-## Filesystem assumptions
+Version-1 writers emit member IDs in the deterministic order provided by
+`MembershipSet`, and readers require each voter and learner list to be in
+strictly ascending node-id order. Duplicate IDs remain membership-validation
+errors. A successfully decoded version-1 artifact therefore re-encodes to the
+same bytes: `encode(decode(bytes)) == bytes`.
 
-The file-backed implementation assumes:
+## Artifact registry
 
-1. a file sync makes previously written file data durable according to the host
-   filesystem's contract;
-2. a same-directory rename atomically replaces the destination name;
-3. syncing the parent directory makes the rename, creation, or removal durable;
-4. only one live writer owns a store path or replica directory at a time.
+| Artifact | Magic | Version | Stable path or container |
+|---|---:|---:|---|
+| Shared Raft WAL (opt-in) | `RFWB` | `1` | `hard-state` |
+| Hard-state journal (opt-in) | `RFHJ` | `1` | `hard-state` |
+| Hard-state envelope | `RFHS` | `1` | `hard-state` |
+| Log-entry envelope | `RFLE` | `1` | Inside one log frame |
+| Log frame | — | — | Repeated in `log` |
+| Compaction marker | `RFLC` | `1` | `log.compact` |
+| Snapshot envelope | `RFSN` | `1` | `snapshot-*.rfsn` |
+| Current-snapshot manifest | `RFSM` | `1` | `snapshots/current.snapshot` |
+| Pending-transfer manifest | `RFPT` | `1` | `snapshots/pending.snapshot-transfer` |
+| Pending-transfer body | — | — | `snapshots/pending.snapshot-transfer.body` |
 
-The standard `FileRaftNodeStores` bundle acquires an operating-system lock for
-the replica directory before it opens or repairs any store. Direct single-store
-constructors do not acquire that bundle lock, so callers using custom layouts
-must enforce equivalent exclusive ownership. Opening multiple mutable handles
-over the same paths is unsupported because handles cache logical state and
-writers use predictable sibling temporary paths.
+## Hard-state envelope (`RFHS`)
 
-These guarantees are filesystem and platform dependent. Deployments should
-validate them for their selected storage stack.
-
-## General mutation rule
-
-A mutation follows three conceptual phases:
-
-1. **prepare** — encode and write a temporary or append-only representation;
-2. **publish** — make the new logical state durable at its authoritative path;
-3. **cleanup** — remove superseded or optional artifacts and reclaim space.
-
-`Ok` means the method's documented durable state is visible to a fresh opener.
-Encoding and validation errors occur before publication and leave logical state
-unchanged.
-
-An I/O error may occur after the filesystem has accepted some or all writes.
-The safe caller rule is therefore:
-
-> After any file-backed mutator returns an I/O error, discard that store handle
-> and reopen the store before issuing another mutation.
-
-`FileRaftHardStateStore`, `FileRaftLogSegment`, and
-`FileRaftSnapshotStore` enforce this rule in the handle itself. Their first
-mutating I/O error marks the handle as requiring reopen; every later mutator
-returns `StoreRequiresReopen` without touching storage. Snapshot publication
-additionally reports when its current-manifest commit point was crossed before
-a later cleanup failure.
-
-Reopen is the recovery oracle: it verifies checksums, selects manifests,
-filters compacted entries, and either reconstructs one valid state or returns a
-typed error. Code must not infer that `Err` means "no bytes changed."
-
-## Operational error sources
-
-Format and validation failures remain deterministic typed errors. Operational
-filesystem failures retain the original [`std::io::Error`] instead of reducing
-it to a string. Each storage I/O variant exposes that error as its immediate
-[`std::error::Error::source`], so callers can inspect [`std::io::ErrorKind`],
-raw operating-system codes, and any nested cause.
-
-The public `StorageIoError` wrapper keeps those errors cloneable and equatable
-for runtime poison state and deterministic tests. Clones share the same original
-I/O error allocation; equality compares its portable kind, raw OS code, and
-rendered diagnostic. Display text for the enclosing storage errors is unchanged.
-
-## Exclusive replica-directory ownership
-
-`FileRaftNodeStores` opens `<replica>/.rafter-storage.lock` and acquires a
-non-blocking exclusive operating-system file lock before opening hard state,
-replaying or repairing the log, or inspecting snapshots. Contention returns
-`OpenFileRaftNodeStoresError::AlreadyOpen`; a contended repair attempt therefore
-cannot mutate the retained log.
-
-The lock file is persistent coordination metadata, not Raft state. Its mere
-presence does not mean the directory is in use, and it must not be deleted while
-a store is open. The live lock is held through a shared guard attached to all
-three concrete stores, so `FileRaftNodeStores::into_parts` preserves ownership
-until every returned store is dropped.
-
-On Unix-family platforms the lock is advisory: every cooperating writer must
-open the directory through `FileRaftNodeStores` or enforce an equivalent lock.
-The backing filesystem must honor process file locks; deployments where it does
-not must supply equivalent exclusive ownership externally. On Windows the
-underlying lock is mandatory. Direct
-`FileRaftHardStateStore::open`, `FileRaftLogSegment::open`, and
-`FileRaftSnapshotStore::open` remain available for custom layouts, but they do
-not acquire the standard bundle lock and therefore require caller-enforced
-single-writer ownership.
-
-## Hard-state publication
-
-Stable path: `hard-state`
-
-Publication sequence:
-
-1. encode one complete `RFHS` envelope;
-2. create or truncate `hard-state.tmp`;
-3. write the envelope and sync the temp file;
-4. rename the temp file over `hard-state`;
-5. sync the parent directory;
-6. update the handle's cached current value.
-
-A crash before the rename leaves the previous `hard-state` authoritative and
-may leave an ignored temp file. A crash after the rename exposes either the old
-or new complete file according to the filesystem's rename and directory-sync
-semantics; reopen never reads the temp path.
-
-Any I/O failure during this sequence marks that concrete store handle as
-requiring reopen. `FileRaftHardStateStore::requires_reopen` exposes the state
-for diagnostics, and later writes fail with `StoreRequiresReopen` before they
-perform filesystem work.
-
-## Opt-in hard-state journal
-
-`JournalRaftNodeStores` acquires the same directory lock before opening the
-journal at `hard-state`. Each split store retains that ownership. The default
-`FileRaftNodeStores` and its replacement protocol remain unchanged.
-
-Open creates or validates the RFHJ header, replays every complete RFHS record,
-and truncates an incomplete final record. It syncs the recovered file and its
-parent directory before exposing state, including on retries after creation or
-repair failed. A partial header or complete corrupt record fails closed.
-
-Normal publication appends one RFHS envelope to the already-open file, calls
-`sync_data` once, then updates the cached state. It performs no rename or
-parent-directory sync. Any append or sync failure poisons the handle; later
-writes fail before I/O. A complete unacknowledged record may survive such an
-error and become current after reopen validates and resyncs it.
-
-The format is opt-in and grows without compaction; see `STORAGE_FORMAT_V1.md`.
-
-## Log append
-
-Stable path: `log`
-
-Each append batch is fully encoded into length-framed `RFLE` records before the
-file is mutated. The batch is appended in order and the log file is synced
-before the in-memory contiguous suffix is extended.
-
-A failed or interrupted append may leave a partial final frame. Strict open
-fails loudly at that frame. Explicit uncommitted-tail repair may truncate at
-that offset only when the durable hard-state commit index proves the valid
-contiguous prefix already covers all committed state.
-
-Repair never skips a bad frame and continues scanning: the first bad frame or
-index gap ends the trusted prefix. Any append I/O failure marks that concrete
-log handle as requiring reopen, and later append, truncate, and compact calls
-fail before performing filesystem work.
-
-## Log suffix truncation
-
-Suffix truncation is a replacement operation:
-
-1. encode retained entries before the requested index;
-2. write and sync a sibling rewrite temp file;
-3. rename it over `log`;
-4. sync the parent directory;
-5. reopen the append handle;
-6. update the in-memory suffix.
-
-An abandoned rewrite temp is ignored. The stable `log` path is authoritative.
-Truncation may not erase through the compacted-prefix boundary. Any rewrite I/O
-failure marks the handle as requiring reopen because the stable replacement or
-its directory entry may already have changed.
-
-## Log prefix compaction
-
-Compaction prepares the replacement log before publishing the logical boundary:
-
-1. encode the retained suffix without mutating storage;
-2. write and sync a temporary `RFLC` marker;
-3. rename it over `log.compact` and sync the parent directory;
-4. update the in-memory compacted boundary and suffix;
-5. rewrite `log` with the prepared bytes to reclaim obsolete frames.
-
-This order makes the marker the logical commit point while keeping encoding
-errors before publication. If a crash or rewrite failure occurs after marker
-publication, reopen filters old frames at or below the marker and reconstructs
-the correct suffix. The leftover frames waste space but cannot re-enter the
-logical log. A post-marker rewrite failure returns `CompactedButReclamationFailed`,
-including the committed boundary, and marks the handle as requiring reopen. An
-I/O failure before the marker is confirmed durable returns the ordinary
-compaction I/O error; reopen decides which state won.
-
-Compaction may advance beyond the local tail when a follower installs a leader
-snapshot that replaces missing local history.
-
-## Snapshot publication
-
-Stable directory: `snapshots/`
-
-A complete snapshot is immutable once published. Publication sequence:
-
-1. encode the snapshot metadata header;
-2. stream header and payload to a snapshot temp file while computing payload
-   and envelope CRCs;
-3. append both checksums and sync the temp file;
-4. rename the temp file to its unique `snapshot-*.rfsn` name;
-5. sync the snapshot directory;
-6. encode, write, and sync a temporary `RFSM` current manifest;
-7. rename it over `current.snapshot` and sync the directory;
-8. update the handle's cached current descriptor;
-9. clear any pending inbound transfer.
-
-The current manifest is the logical commit point. Before that rename, the old
-manifest continues to select the old snapshot and an unmanifested complete file
-is ignored. After that rename, the new immutable snapshot is current even if
-later staging cleanup fails. Such a failure returns
-`SnapshotCommittedButReopenRequired`, names the selected snapshot file, and
-marks the handle as requiring reopen. I/O failures before the manifest is
-confirmed durable return `Io`; reopen decides which manifest state won.
-
-Previous complete snapshots are retained. Their presence does not affect
-recovery because only `current.snapshot` selects current state.
-
-## Snapshot opening
-
-Open performs a streaming verification pass over the manifest-selected
-snapshot:
-
-1. decode and verify the current manifest;
-2. reject a missing selected file;
-3. parse a bounded metadata prefix;
-4. verify the exact file length;
-5. stream the payload through payload and envelope CRCs;
-6. retain only the descriptor, selected file name, and payload offset.
-
-Payload bytes are served later through positioned reads and are not kept
-resident by the file-backed store. A chunk request must match the selected
-snapshot's complete descriptor — metadata, transfer id, payload length, and
-payload checksum — before either implementation serves bytes.
-
-## Pending snapshot-transfer staging
-
-Stable paths:
+The envelope has a fixed size of 51 bytes.
 
 ```text
-pending.snapshot-transfer.body
-pending.snapshot-transfer
+magic                              [4]   "RFHS"
+version                            u8    1
+current_term                       u64
+voted_for_present                  u8    0 or 1
+voted_for_node                     u64
+commit_index                       u64
+committed_configuration_present    u8    0 or 1
+committed_configuration_index      u64
+committed_configuration_id         u64
+crc32                              u32
 ```
 
-Before storage is mutated, staging validates the complete public chunk shape:
-its checked end offset must not exceed the advertised payload, empty non-final
-chunks are rejected, `done` must mean exact completion, and the transfer id must
-be derived from the supplied metadata, payload length, and payload checksum. A
-continuation must additionally match the staged descriptor and begin exactly at
-the staged length.
+When `voted_for_present` is zero, `voted_for_node` must be zero. When
+`committed_configuration_present` is zero, both committed-configuration fields
+must be zero. Readers reject non-zero absent fields as noncanonical version-1
+bytes.
 
-The next `RFPT` manifest is then encoded before the body is mutated, so metadata
-encoding failures leave staging untouched. For an offset-zero chunk, the body
-is replaced through temp-file publication. For a continuation, bytes are
-appended to the current body and the body file is synced. The prepared manifest
-is finally written through temp-file replacement and parent-directory sync.
+Checksum coverage ends immediately before `crc32`.
 
-The manifest is the authoritative staged length. A crash after body update but
-before manifest publication may leave a longer body; continuation truncates the
-body back to the manifest length before appending new bytes. Recovery verifies
-the manifest-described prefix and ignores any longer suffix.
+## Hard-state journal (opt-in)
 
-A body shorter than the manifest length or with a mismatched body checksum is
-inconsistent optional progress, typically from an interrupted two-file update.
-Recovery durably discards both staging files and resumes with no pending
-transfer. Corruption of the manifest itself remains a hard open error.
+`JournalRaftHardStateStore` uses a distinct format at the same `hard-state`
+path. Its header is `RFHJ` (4 bytes), version `1` (1 byte), then the big-endian
+CRC-32/IEEE of those 5 bytes (4 bytes). The 9-byte header is followed by zero
+or more complete, fixed-width 51-byte RFHS v1 envelopes, in append order.
+The last complete envelope is current; a header alone represents default state.
 
-## Pending transfer promotion
+Recovery validates the header and every complete envelope, then truncates only
+an incomplete final envelope (1–50 bytes). A complete invalid envelope anywhere
+is an error, even when followed by an incomplete suffix. Unknown versions and
+partial headers are errors. Reads use constant memory and linear replay time.
 
-Promotion requires the staged transfer to be complete and to match the requested
-snapshot's full descriptor: transfer id, metadata, payload length, and payload
-checksum. The full comparison remains mandatory even though transfer ids are
-deterministic, because they are routing identities rather than cryptographic
-digests. Promotion then opens the staged body and streams exactly the staged
-prefix through the normal immutable snapshot publication sequence. The
-assembled payload checksum must match the snapshot descriptor before the
-snapshot file can become current.
+RFHS and RFHJ are mutually incompatible. No automatic migration or compaction
+is provided; select this backend only for new replica directories. Journal
+space grows by 51 bytes per acknowledged or complete unacknowledged append.
 
-Once the new current manifest is durable, staging is cleanup state. Failure to
-remove staging does not make the selected snapshot uncommitted; reopen and the
-runtime recovery path distinguish a current snapshot from stale or resumable
-staging.
+## Log-entry envelope (`RFLE`)
 
-## Clearing pending staging
+```text
+magic            [4]   "RFLE"
+version          u8    1
+index            u64
+term             u64
+entry_kind       u8
+entry_payload    ...
+crc32            u32
+```
 
-Clearing removes the pending manifest and body, then syncs the directory when
-at least one file was removed. Missing files are accepted, making cleanup
-idempotent.
+### Entry kinds
 
-Because a multi-file removal can fail between files, any clear I/O failure
-marks the file-backed snapshot handle as requiring reopen. Later snapshot
-mutations fail with `StoreRequiresReopen` before touching storage.
+| Tag | Meaning | Payload |
+|---:|---|---|
+| `0` | Application | `payload_len[u32]`, then `payload[payload_len]` |
+| `1` | Stable configuration | `configuration_id[u64]`, then one membership set |
+| `2` | Joint configuration | `configuration_id[u64]`, old set, then new set |
+| `3` | Leadership no-op | no payload |
 
-## Standard bundle open and repair
+### Membership set
 
-`FileRaftNodeStores::open` is strict. It opens hard state first, then log and
-snapshot stores, and rejects corrupt persisted state.
+```text
+voter_count      u32
+voters           voter_count * u64
+learner_count    u32
+learners         learner_count * u64
+```
 
-`FileRaftNodeStores::open_repairing_uncommitted_log_tail` uses the hard-state
-commit index as the repair floor. A corrupt, partial, or noncontiguous log tail
-may be truncated only when the valid contiguous prefix already covers that
-floor. Corruption that may contain committed state remains a hard error.
+The encoder rejects a payload or member count that cannot fit its `u32` length
+field. Voter and learner lists must each be stored in strictly ascending node-id
+order. The decoder also validates nonempty voters, uniqueness, and voter/learner
+disjointness through `MembershipSet`.
 
-Creation syncs for a fresh log file and snapshot directory are batched and
-flushed before the bundle is returned.
+## Log file framing
 
-## Cross-store recovery order
+The `log` file is a concatenation of frames:
 
-The supported durable direction for snapshot installation is:
+```text
+entry_envelope_len    u32
+entry_envelope        entry_envelope_len bytes, exactly one RFLE envelope
+```
 
-1. make the complete snapshot current;
-2. compact the log prefix through the snapshot boundary.
+The length excludes the four-byte frame header. No file header, footer, or
+whole-file checksum exists. Recovery scans frames in order and reports the byte
+offset of the first partial or corrupt frame.
 
-A crash between those operations leaves a current snapshot ahead of the log's
-compaction marker. Runtime recovery can safely finish compaction or filter the
-retained full log against the snapshot boundary.
+Strict open rejects any partial, corrupt, or noncontiguous frame. The explicit
+uncommitted-tail repair mode may truncate only at the first bad frame or gap
+strictly above the durable hard-state commit floor.
 
-The inverse state—a log compacted beyond the current snapshot boundary—means
-the durable node has discarded history not covered by a durable snapshot and
-must fail loudly.
+## Log-compaction marker (`RFLC`)
 
-Similarly, a complete staged transfer may be promoted during runtime recovery
-when no acknowledgement of installation escaped before the crash. These are
-cross-store protocol decisions and remain owned by `rafter-runtime`; the
-storage crate provides the verified artifacts and durable primitives needed to
-make them safely.
+The marker has a fixed size of 17 bytes.
 
-## Executable crash matrix
+```text
+magic                [4]   "RFLC"
+version              u8    1
+compacted_through    u64
+crc32                u32
+```
 
-Unit scenarios arm one thread-local, one-shot failpoint at named filesystem
-boundaries. The hooks compile only for crate tests; production builds contain
-no failpoint state or synchronization.
+`compacted_through` is the highest log index covered by a durable snapshot.
+During replay, entries at or below this boundary are ignored even if their old
+frames remain in the log file after an interrupted reclamation rewrite.
 
-Each scenario follows the same proof shape:
+## Snapshot envelope (`RFSN`)
 
-1. establish acknowledged durable state;
-2. stop immediately after one filesystem step;
-3. assert that the live handle requires reopen;
-4. discard the handle;
-5. reopen from stable artifacts;
-6. assert the documented logical state and any permitted cleanup residue.
+```text
+magic                                  [4]   "RFSN"
+version                                u8    1
+group_id_len                           u16
+group_id                               group_id_len bytes, UTF-8
+writer_node_id                         u64
+last_included_index                    u64
+last_included_term                     u64
+hard_state_term                        u64
+application_kind_len                   u16
+application_kind                       application_kind_len bytes, UTF-8
+application_version                    u16
+committed_configuration_present        u8    0 or 1
+committed_configuration                ...   when present
+application_payload_len                u64
+application_payload                    application_payload_len bytes
+application_payload_crc32              u32
+envelope_crc32                         u32
+```
 
-The matrix covers:
+When committed configuration is present:
 
-- hard-state temp sync, final-path rename, and parent-directory sync;
-- log append sync, replacement preparation and publication, and every
-  compaction-marker publication phase;
-- snapshot envelope preparation, immutable-file publication, and current
-  manifest publication;
-- pending-transfer manifest removal, body removal, and directory sync;
-- the post-marker log-reclamation and post-manifest snapshot-cleanup outcomes
-  where the logical operation is already committed.
+```text
+configuration_identity_present         u8    0 or 1
+configuration_index                    u64   when identity is present
+configuration_id                       u64   when identity is present
+membership_kind                        u8    0 stable, 1 joint
+membership                             one stable set or old+new joint sets
+```
 
-A new durable publication step should add a named failpoint scenario before it
-is considered covered by the recovery contract.
+Snapshot membership sets use `u16` voter and learner counts:
 
-## Review checklist for a new mutation
+```text
+voter_count      u16
+voters           voter_count * u64
+learner_count    u16
+learners         learner_count * u64
+```
 
-A storage change is incomplete until its review answers all of these:
+Voter and learner lists must each be stored in strictly ascending node-id
+order. Valid membership encoded in another order is rejected rather than
+normalized during decode.
 
-- What artifact is authoritative?
-- What is the logical commit point?
-- Which file and directory syncs precede `Ok`?
-- What can a crash leave before and after the commit point?
-- Does reopen ignore, resume, repair, or reject each residue shape?
-- Can cleanup failure be distinguished from failure to commit?
-- Is retry idempotent?
-- Must the live handle be discarded after an I/O error?
-- Is committed state ever inferred from an optional artifact?
-- Is there a directed crash-window test for every publication step?
+The payload checksum covers only `application_payload`. The envelope checksum
+covers every byte through and including `application_payload_crc32`, but not
+`envelope_crc32` itself.
+
+The file-backed store parses the metadata header and verifies both checksums in
+a streaming pass. The payload need not be materialized in memory.
+
+## Current-snapshot manifest (`RFSM`)
+
+```text
+magic            [4]   "RFSM"
+version          u8    1
+sequence         u64
+file_name_len    u16
+file_name        file_name_len bytes, UTF-8
+crc32            u32
+```
+
+The file name must be a nonempty plain file name: it may not be `.`, `..`, or
+contain `/` or `\`. The standard writer uses:
+
+```text
+snapshot-<sequence>-<last_included_index>-<last_included_term>-<writer_id>.rfsn
+```
+
+The manifest is the sole selector of the current snapshot. A complete snapshot
+file not named by this manifest is retained but ignored by open.
+
+## Pending-transfer manifest (`RFPT`)
+
+```text
+magic                         [4]   "RFPT"
+version                       u8    1
+leader_id                     u64
+transfer_id                   u64
+total_payload_len             u64
+application_payload_crc32     u32
+received_payload_len          u64
+staged_body_crc32             u32
+metadata_envelope_len         u64
+metadata_envelope             metadata_envelope_len bytes
+crc32                         u32
+```
+
+In version 1, `metadata_envelope` is a complete `RFSN` envelope with the staged
+snapshot metadata and an empty application payload. Its own payload and
+envelope checksums remain present. This nesting is part of the current v1 bytes
+and cannot be changed without a new `RFPT` version. Readers reject nested
+metadata envelopes larger than 4 MiB or carrying application payload bytes.
+
+`transfer_id` must equal the deterministic `RaftSnapshot::transfer_id()` derived
+from `metadata_envelope`, `total_payload_len`, and
+`application_payload_crc32`. `received_payload_len` must not exceed
+`total_payload_len`. Violations are corrupt manifest state and fail open rather
+than being treated as an interrupted optional body update.
+
+`staged_body_crc32` covers exactly the first `received_payload_len` bytes of the
+pending-transfer body. The outer checksum covers the entire manifest before
+its final checksum field.
+
+## Pending-transfer body
+
+The body file is raw snapshot payload bytes with no independent header or
+trailer. The pending-transfer manifest gives its logical length and checksum.
+A body may be longer than `received_payload_len` after a crash between body
+append and manifest replacement; only the manifest-described prefix is staged.
+A shorter or checksum-mismatched body is inconsistent optional progress and is
+discarded during recovery.
+
+## Compatibility rules
+
+For every versioned artifact:
+
+1. Existing magic values, tags, field widths, and field order are immutable.
+2. A reader must reject unknown versions rather than guessing an older meaning.
+3. A writer must emit canonical flags, ordering, and zero fillers described
+   above.
+4. Adding bytes to a closed envelope requires a new version because trailing
+   bytes are rejected.
+5. A migration must preserve the durable ordering and crash recovery contracts
+   in `DURABILITY_PROTOCOL.md` in addition to translating bytes.
+
+## Shared Raft WAL (opt-in)
+
+`WalRaftNodeStores` uses an independent format, with no implicit migration from
+RFHS/RFHJ plus `log`. Its eight-byte header is `RFWB 00 00 00 01`. The `log`
+path must be absent. Existing snapshot envelopes and manifests are unchanged.
+
+Each atomic record contains:
+
+```text
+magic                 [4]   "BCH1"
+body_length           u32   29..67108864
+body_length_inverse   u32   bitwise complement of body_length
+header_crc32          u32   CRC32 of the preceding 12 bytes
+body                  [body_length]
+body_crc32            u32   CRC32 of body
+end_magic             [4]   "END1"
+```
+
+The body holds an operation number (`u64`, starting at 1 and increasing by 1),
+compaction and truncation indexes (two `u64`; maximum means absent), a hard-state
+presence byte (0 or 1), an optional complete 51-byte RFHS envelope, an entry count
+(`u32`), then that many `u32` lengths and complete RFLE envelopes. No trailing
+bytes are accepted. Truncation precedes append. Compaction is a separate record.
+Entries remain contiguous above the compacted floor; truncation cannot erase a
+durable committed entry, and hard-state term, vote promises, and commit cannot
+regress. Commit cannot exceed the resulting log or compacted boundary.
+
+An incomplete final record is discarded as a unit. A complete invalid header,
+body, checksum, operation sequence, or logical mutation fails recovery. The
+header checksum prevents a damaged length from silently hiding complete records.
+The initial header must be complete. This initial opt-in implementation records
+compaction markers but does not reclaim earlier WAL records; use bounded
+experiments until checkpoint reclamation is available.
+
+## Atomic log and hard-state batches
+
+`WalRaftNodeStores` owns one file and one coordinator shared by its non-cloneable
+log and hard-state handles. Its domain identity changes on each open. A batch
+validates and encodes all mutations, writes one contiguous RFWB record, calls
+`sync_data`, then advances both acknowledged views and returns a domain-scoped
+operation receipt. Successful legacy trait methods retain synchronous durability.
+A backend returning `None` from `persist_batch` has attempted no mutation.
+
+Any write or sync error poisons the coordinator and leaves acknowledged views at
+the previous receipt. The uncertain complete record may nevertheless survive;
+reopen verifies and synchronizes it before exposing recovery state. A partial
+final record is truncated and synchronized. Open also syncs the parent directory,
+including retries after a previous creation failed. Every split handle keeps the
+exclusive directory lock alive. Snapshot data without its WAL is rejected.
+
+The runtime currently combines only append-only application entries and ordinary
+commit-index changes in an unchanged term, vote, and configuration. It checks the
+receipt against the domain and both resulting store views before releasing any
+output. Any failure or inconsistent receipt poisons the runtime. Term/vote
+changes, conflicting suffixes, configuration transitions, and snapshot effects
+retain the established explicit fences. Snapshot publication still precedes log
+compaction. A client success additionally requires the application's durable
+completion; a WAL receipt alone never acknowledges application durability.

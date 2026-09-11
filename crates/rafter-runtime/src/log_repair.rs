@@ -33,7 +33,7 @@ impl PersistedTail {
         }
     }
 
-    fn still_matches(self, node: &RaftNode) -> bool {
+    pub(crate) fn still_matches(self, node: &RaftNode) -> bool {
         node.term_at_index(self.index) == Some(self.term)
     }
 }
