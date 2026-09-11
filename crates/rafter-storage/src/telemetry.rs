@@ -59,7 +59,7 @@ struct State {
     enabled: bool,
     metrics: [Metric; 8],
 }
-thread_local! {
+std::thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
 }
 
