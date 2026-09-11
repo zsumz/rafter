@@ -113,6 +113,19 @@ fn tracked_multi_node_proposal_applies_with_local_id_after_quorum_ack() {
     );
     elect_runtime_leader_with_grant(&mut runtime, RaftNodeId(2));
 
+    runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(2),
+            message: Message::AppendEntriesResponse(rafter::AppendEntriesResponse {
+                term: runtime.current_term(),
+                follower_id: RaftNodeId(2),
+                success: true,
+                match_index: rafter::LogIndex(1),
+                sequence: 0,
+            }),
+        })
+        .expect("initial leadership probe is confirmed before proposing data");
+
     let proposal_id = LocalProposalId(8);
     let outputs = runtime
         .step(RaftInput::TrackedClientProposal {
