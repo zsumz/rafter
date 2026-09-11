@@ -125,17 +125,12 @@ impl Inflights {
         self.bytes = 0;
     }
 
-    /// Test observability: the window's recorded batch count. Only kernel
-    /// tests inspect the window directly, so the accessor is test-gated to
-    /// keep the library target free of dead code.
-    #[cfg(test)]
+    /// Window-observation support: recorded batch count.
     pub(in crate::node) fn batch_count(&self) -> usize {
         self.batches.len()
     }
 
-    /// Test observability: the window's recorded payload bytes (test-gated
-    /// like [`Inflights::batch_count`]).
-    #[cfg(test)]
+    /// Window-observation support: recorded encoded entry bytes.
     pub(in crate::node) fn byte_count(&self) -> usize {
         self.bytes
     }

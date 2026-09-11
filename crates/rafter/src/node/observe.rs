@@ -6,7 +6,7 @@
 
 use crate::{
     FollowerSnapshotTransferStatus, LeaderSnapshotTransferStatus, LogIndex, NodeId,
-    ReplicationProgress, ReplicationState, SnapshotTransferStatus, Term,
+    ReplicationProgress, ReplicationState, ReplicationWindowProgress, SnapshotTransferStatus, Term,
 };
 
 use super::state::ProgressMode;
@@ -114,6 +114,33 @@ impl Node {
                     next_index: progress.next_index,
                     state,
                 }
+            })
+            .collect()
+    }
+
+    /// Returns bounded in-flight replication-window usage for every effective
+    /// follower while this node is leader.
+    ///
+    /// The result is empty on non-leaders. Probe and snapshot streams report an
+    /// empty, non-full window because they do not use optimistic append batches.
+    #[must_use]
+    pub fn leader_replication_windows(&self) -> Vec<ReplicationWindowProgress> {
+        if self.role() != Role::Leader {
+            return Vec::new();
+        }
+        let max_batches = self.config.max_inflight_appends();
+        let max_bytes = self.config.max_inflight_bytes();
+        self.leader
+            .progress
+            .iter_followers()
+            .map(|(follower_id, progress)| ReplicationWindowProgress {
+                follower_id,
+                in_flight_batches: progress.inflights.batch_count(),
+                in_flight_bytes: progress.inflights.byte_count(),
+                max_in_flight_batches: max_batches,
+                max_in_flight_bytes: max_bytes,
+                full: matches!(progress.mode, ProgressMode::Replicate)
+                    && progress.inflights.is_full(max_batches, max_bytes),
             })
             .collect()
     }

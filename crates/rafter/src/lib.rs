@@ -137,8 +137,8 @@ pub use types::{
     JointMembership, LeaderSnapshotTransferStatus, LocalProposalId, LogEntryKind, LogIndex,
     MembershipConfig, MembershipSet, MembershipValidationError, NodeId, PendingSnapshotTransfer,
     PromotionBarrier, RaftSnapshot, RaftSnapshotMetadata, ReadId, ReplicationProgress,
-    ReplicationState, SharedPayload, SnapshotChunkRejectionCounters, SnapshotChunkRequest,
-    SnapshotChunkSend, SnapshotChunkSource, SnapshotCommittedConfiguration, SnapshotGroupId,
-    SnapshotIdError, SnapshotMetadataError, SnapshotTransferId, SnapshotTransferStatus,
-    StagedSnapshotChunk, Term,
+    ReplicationState, ReplicationWindowProgress, SharedPayload, SnapshotChunkRejectionCounters,
+    SnapshotChunkRequest, SnapshotChunkSend, SnapshotChunkSource, SnapshotCommittedConfiguration,
+    SnapshotGroupId, SnapshotIdError, SnapshotMetadataError, SnapshotTransferId,
+    SnapshotTransferStatus, StagedSnapshotChunk, Term,
 };
