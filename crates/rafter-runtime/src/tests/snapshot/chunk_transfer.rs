@@ -84,6 +84,20 @@ fn commit_with_follower_ack<S: RaftSnapshotStore + SnapshotChunkSource>(
     payload: &[u8],
     index: u64,
 ) {
+    if leader.commit_index() == LogIndex::ZERO {
+        leader
+            .step(RaftInput::Message {
+                from: RaftNodeId(3),
+                message: Message::AppendEntriesResponse(rafter::AppendEntriesResponse {
+                    term: leader.current_term(),
+                    follower_id: RaftNodeId(3),
+                    success: true,
+                    match_index: rafter::LogIndex(1),
+                    sequence: 0,
+                }),
+            })
+            .expect("initial leadership probe is confirmed before proposing data");
+    }
     let outputs = leader
         .step(RaftInput::ClientProposal {
             payload: payload.to_vec(),

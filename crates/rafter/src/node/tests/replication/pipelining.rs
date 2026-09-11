@@ -11,6 +11,7 @@ pub(super) use crate::node::state::{Inflights, Progress, ProgressMode};
 const PAYLOAD_BYTES: usize = 100;
 const ONE_ENTRY_BATCH_BUDGET: usize = 180;
 
+mod demand;
 mod observability;
 mod probe;
 mod sharing;
