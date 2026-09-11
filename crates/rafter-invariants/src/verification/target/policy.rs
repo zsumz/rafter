@@ -44,9 +44,6 @@ impl<'a> OracleSourcePolicy<'a> {
         item: &syn::ItemMacro,
         source_file: &Path,
     ) -> bool {
-        if self.crate_name != "rafter_invariant_test" {
-            return false;
-        }
         let Ok(source) = source_file.strip_prefix(self.workspace) else {
             return false;
         };
@@ -57,6 +54,15 @@ impl<'a> OracleSourcePolicy<'a> {
             .iter()
             .map(|segment| segment.ident.to_string())
             .collect::<Vec<_>>();
+        if self.crate_name == "rafter_storage" {
+            // Reviewed standard-library expansion: only the private per-thread
+            // metric state lives here; no oracle or test declarations are emitted.
+            return source == Path::new("crates/rafter-storage/src/telemetry.rs")
+                && path == ["std", "thread_local"];
+        }
+        if self.crate_name != "rafter_invariant_test" {
+            return false;
+        }
         match path.as_slice() {
             [name] if name == "impl_oracle_call" => source == Path::new(ORACLE_CALL_SOURCE),
             [krate, name] if krate == "std" && name == "thread_local" => {
