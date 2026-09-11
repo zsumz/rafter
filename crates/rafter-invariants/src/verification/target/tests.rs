@@ -43,3 +43,20 @@ fn exported_oracle_macros_are_canonical_only_in_the_wire_reviewed_module() {
         Path::new("/workspace/crates/rafter-invariant-test/src/lib.rs")
     ));
 }
+
+#[test]
+fn telemetry_standard_macro_is_bound_to_its_exact_storage_source() {
+    let workspace = Path::new("/workspace");
+    let policy = OracleSourcePolicy::new("rafter_storage", workspace, &[]);
+    let qualified = parse_quote!(std::thread_local! { static STATE: usize = 0; });
+    let unqualified = parse_quote!(thread_local! { static STATE: usize = 0; });
+    let telemetry = workspace.join("crates/rafter-storage/src/telemetry.rs");
+    assert!(policy.reviewed_support_item_macro(&qualified, &telemetry));
+    assert!(!policy.reviewed_support_item_macro(&unqualified, &telemetry));
+    assert!(!policy.reviewed_support_item_macro(
+        &qualified,
+        &workspace.join("crates/rafter-storage/src/lib.rs")
+    ));
+    assert!(!OracleSourcePolicy::new("rafter", workspace, &[])
+        .reviewed_support_item_macro(&qualified, &telemetry));
+}
