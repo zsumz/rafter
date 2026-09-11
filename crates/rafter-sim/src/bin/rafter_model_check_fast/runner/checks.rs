@@ -37,9 +37,9 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
     // These depths back the reviewed per-evidence state floors in
     // verification/raft-invariants.yaml. Both in-flight window regimes are
     // explored explicitly. Two proposals
-    // make the window bind: a window of one answers the second proposal
-    // with an empty append until the first batch is acknowledged, while a
-    // pipelined window streams the second batch immediately.
+    // make the window bind: a window of one withholds the second application
+    // append until the first batch is acknowledged, while a pipelined window
+    // streams the second batch immediately.
     run_raft_check("raft-commit", || {
         check_raft_commit_safety(
             three_node_configs_with_inflight_window(2, 3),
