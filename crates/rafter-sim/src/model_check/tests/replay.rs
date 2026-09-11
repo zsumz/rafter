@@ -222,11 +222,7 @@ fn replay_delivers_the_selected_envelope_when_routing_and_kind_collide() {
             .then_some(position)
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        colliding.len(),
-        2,
-        "successive contact appends must collide"
-    );
+    assert_eq!(colliding.len(), 2);
     let first = deliver_action(state.cluster(), colliding[0])
         .expect("enumerated envelope has a scheduler identity");
     let second = deliver_action(state.cluster(), colliding[1])
