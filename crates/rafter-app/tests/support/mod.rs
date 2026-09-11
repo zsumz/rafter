@@ -583,8 +583,7 @@ pub(crate) fn group(
     )
 }
 
-/// Drives a real kernel-backed group to leadership by scripting node 2's
-/// pre-vote and vote grants, and returns the term it won.
+/// Elects a leader, acknowledges its initial probe, and returns the winning term.
 pub(crate) fn elect_group_leader(
     group: &mut RaftGroup<u64, RecordingStateMachine, KernelRuntime>,
 ) -> Term {
@@ -619,7 +618,7 @@ pub(crate) fn elect_group_leader(
             _ => None,
         })
         .expect("request vote is emitted");
-    let _ = group
+    let report = group
         .step(GroupInput::PeerMessage {
             envelope: PeerEnvelope {
                 group_id: 7,
@@ -634,6 +633,7 @@ pub(crate) fn elect_group_leader(
         })
         .expect("vote grant elects the leader");
     assert_eq!(group.metrics().role, Role::Leader);
+    acknowledge_replication(group, vote_term, LogIndex(1), &report.peer_messages);
     vote_term
 }
 
