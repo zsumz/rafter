@@ -84,9 +84,13 @@ an incomplete final envelope (1–50 bytes). A complete invalid envelope anywher
 is an error, even when followed by an incomplete suffix. Unknown versions and
 partial headers are errors. Reads use constant memory and linear replay time.
 
-RFHS and RFHJ are mutually incompatible. No automatic migration or compaction
-is provided; select this backend only for new replica directories. Journal
-space grows by 51 bytes per acknowledged or complete unacknowledged append.
+RFHS and RFHJ are mutually incompatible; there is no automatic migration.
+After 4,096 complete records, the next publication replaces the journal with
+its existing header and one incoming state record through temp-file sync,
+rename, and parent-directory sync. The reserved `<path>.checkpoint.tmp` is
+never a recovery source. A successful journal therefore contains at most
+4,096 records (208,905 bytes); older oversized journals are validated in full
+and checkpointed on their next write. See `DURABILITY_PROTOCOL.md`.
 
 ## Log-entry envelope (`RFLE`)
 

@@ -16,7 +16,7 @@ use std::{
     path::Path,
 };
 
-pub(super) fn open(path: &Path) -> Result<(File, RaftHardState), OpenError> {
+pub(super) fn open(path: &Path) -> Result<(File, RaftHardState, u64), OpenError> {
     let (mut file, created) = match OpenOptions::new()
         .read(true)
         .append(true)
@@ -49,7 +49,13 @@ pub(super) fn open(path: &Path) -> Result<(File, RaftHardState), OpenError> {
     )
     .map_err(|error| io_error(path, "sync recovered journal", error))?;
     sync_parent_directory(path).map_err(|error| io_error(path, "sync journal directory", error))?;
-    Ok((file, current))
+    let records = (file
+        .metadata()
+        .map_err(|error| io_error(path, "inspect recovered journal", error))?
+        .len()
+        - HEADER_LEN as u64)
+        / RECORD_LEN as u64;
+    Ok((file, current, records))
 }
 
 fn recover(file: &mut File, path: &Path) -> Result<RaftHardState, OpenError> {

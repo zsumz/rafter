@@ -147,7 +147,18 @@ parent-directory sync. Any append or sync failure poisons the handle; later
 writes fail before I/O. A complete unacknowledged record may survive such an
 error and become current after reopen validates and resyncs it.
 
-The format is opt-in and grows without compaction; see `STORAGE_FORMAT_V1.md`.
+After 4,096 complete records, the next write checkpoints the incoming state.
+It writes the same RFHJ header and one RFHS record to the reserved sibling
+`hard-state.checkpoint.tmp`, syncs it, renames it over `hard-state`, and syncs
+the directory before changing the live file handle or acknowledged cache.
+Before rename, the old journal remains authoritative; after rename, reopen
+validates and resyncs the replacement. Unpublished temporary bytes are ignored.
+Any checkpoint failure poisons the handle, including failure after rename.
+
+The journal remains at most 208,905 bytes during successful steady-state use.
+An older oversized journal is fully validated on its first open, then rotated
+on its next write. This does not reclaim the separate Raft log or the atomic
+WAL. The format is unchanged; see `STORAGE_FORMAT_V1.md`.
 
 ## Log append
 
