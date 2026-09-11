@@ -16,3 +16,8 @@ Pair it with `rafter-storage` for file-backed or in-memory stores.
 On restart, feed runtime recovery outputs through the application layer only
 after matching them against the application's durable applied floor. Application
 state durability remains the caller's responsibility above this runtime.
+
+The opt-in `pipelined::PipelinedRaftNode` can release eligible leader append
+messages while one owned persistence job runs. Its generation/operation receipt
+must complete before another consensus input runs. Follower acknowledgments,
+term/vote changes, commits, and client application results retain their fences.

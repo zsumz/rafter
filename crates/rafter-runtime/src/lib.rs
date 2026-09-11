@@ -1,11 +1,10 @@
 //! Durable runtime wrapper for the deterministic Rafter core.
 //!
-//! This crate persists hard state, log entries, snapshot staging, promoted
-//! snapshots, and local compaction before returning Raft outputs to the
-//! embedding. It owns persist-before-output sequencing for one durable Raft
-//! node over the storage traits. It does not own application state,
-//! state-machine apply idempotence, transport delivery, authenticated peer
-//! identity, peer fencing, or application snapshot payload validation.
+//! [`DurableRaftNode`] persists hard state, logs, snapshots, and compaction
+//! before returning outputs. [`pipelined`] additionally permits eligible leader
+//! replication to overlap local persistence under an owned completion fence.
+//! The embedding owns application durability, transport, peer authentication,
+//! fencing, and validation of application snapshot payloads.
 //! Datastore users should read the production boundary in the repository
 //! README before treating the runtime as production glue.
 //!
@@ -86,6 +85,7 @@ mod inspect;
 mod log_repair;
 mod node;
 mod peer_batch;
+pub mod pipelined;
 mod runtime_api;
 mod snapshot_install;
 mod step;
