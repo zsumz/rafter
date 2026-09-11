@@ -189,7 +189,7 @@ fn final_stable_configuration_commits_with_new_majority_after_joint_commit() {
         joint_configuration(ConfigurationId(8)),
     )]);
     leader.volatile.commit_index = LogIndex(1);
-    leader.volatile.applied_index = LogIndex(1);
+    leader.volatile.dispatched_index = LogIndex(1);
     let leave_outputs = leader.step(Input::LeaveJoint);
 
     assert_eq!(leader.last_log_index(), LogIndex(3));

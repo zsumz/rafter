@@ -27,7 +27,7 @@ fn default_profile_stays_fast_for_ci() {
 fn local_profile_contracts_are_derived_from_executable_bounds() {
     assert_eq!(
         Profile::Fast.bounds_summary(),
-        "election=8, commit=9x2+prod7, membership=6x1+joint_restart_snapshot, seeded=1, noop_seeded=8, restart=10/12, prevote=9, semantic_witnesses=bounded, read=7, lease_read=6"
+        "election=8, commit=9x2+prod7, membership=6x2+joint_restart_snapshot, seeded=1, noop_seeded=8, restart=10/12, prevote=9, semantic_witnesses=bounded, read=7, lease_read=6"
     );
     assert_eq!(
         Profile::RaftDeep.bounds_summary(),
@@ -119,6 +119,7 @@ fn failure_timeline_lines_include_failure_and_trace_context() {
         lines,
         vec![
             "ERROR test model failure name=raft-commit failure_kind=invariant-violation invariant=commit_safety error_message=\"committed prefix diverged\"",
+            "INFO test trace provenance reduction=none replay=replay_raft_trace observations=ReplayReport::states",
             "DEBUG test trace step step=0 action=\"tick n1\"",
             "DEBUG test trace step step=1 action=\"deliver n1->n2\"",
         ]

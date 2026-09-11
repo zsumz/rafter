@@ -6,8 +6,8 @@
 # repository settings, not in this file. Branch protection on `main` must
 # list these required status checks:
 #
-#   lint, zrail, test, reference-source, reference-package, reference-package-msrv,
-#   fuzz-smoke, invariants-pr
+#   lint, zrail, zcheck, test, reference-source, reference-package, reference-package-msrv,
+#   fuzz-smoke, counter-reference-fast, invariants-pr
 #
 # `reference-process` is deliberately absent from that list: it only runs on
 # pushes to main, so it never reports on a pull request and a required check
@@ -107,8 +107,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/verify-action-pins
 
-  zrail:
-    name: zrail
+  zrail-analysis:
+    name: zrail-analysis
+    outputs:
+      review_required: ${{ steps.policy.outputs.review_required }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -135,6 +137,74 @@ jobs:
         # gate input (including this workflow) — fails here and is refreshed
         # with a reviewed `zrail update`.
         run: zrail check
+      - name: Compare architecture against the trusted PR base
+        id: policy
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # The default checkout is a synthetic merge commit, not PR authority.
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          mkdir -p artifacts/zrail-policy
+          printf '%s\n' "$BASE_SHA" > artifacts/zrail-policy/base-sha.txt
+          printf '%s\n' "$GITHUB_SHA" > artifacts/zrail-policy/proposal-sha.txt
+          status=0
+          zrail diff --base "$BASE_SHA" --deny-grants --format json \
+            > artifacts/zrail-policy/diff.json || status=$?
+          python3 - "$status" <<'PYCODE'
+          import json, os, sys
+          report = json.load(open("artifacts/zrail-policy/diff.json"))
+          summary = report["summary"]
+          needs_review = any(summary[key] for key in ("grants", "debt", "unknown"))
+          if int(sys.argv[1]) != int(needs_review):
+              raise SystemExit("zrail diff did not produce a valid policy verdict")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"review_required={str(needs_review).lower()}\n")
+          print(json.dumps(report, indent=2))
+          PYCODE
+      - name: Retain the exact base and proposal policy diff
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: zrail-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/zrail-policy/
+          if-no-files-found: error
+
+  zrail-policy-review:
+    name: zrail-policy-review
+    needs: zrail-analysis
+    if: needs.zrail-analysis.outputs.review_required == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Required reviewers live in repository settings. This job executes no
+    # proposed code and cannot run until the exact attempt's diff is approved.
+    environment: architecture-policy-review
+    steps:
+      - name: Read the proposed authority changes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: zrail-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: policy
+      - name: Record the explicitly reviewed policy decision
+        run: cat policy/base-sha.txt policy/proposal-sha.txt policy/diff.json
+
+  zrail:
+    name: zrail
+    needs: [zrail-analysis, zrail-policy-review]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require a valid contract and accepted base comparison
+        env:
+          ANALYSIS_RESULT: ${{ needs.zrail-analysis.result }}
+          REVIEW_REQUIRED: ${{ needs.zrail-analysis.outputs.review_required }}
+          REVIEW_RESULT: ${{ needs.zrail-policy-review.result }}
+        run: |
+          test "$ANALYSIS_RESULT" = success
+          if [ "$REVIEW_REQUIRED" = true ]; then
+            test "$REVIEW_RESULT" = success
+          fi
 
   zcheck:
     name: zcheck
@@ -155,6 +225,10 @@ jobs:
           cache-on-failure: true
       - name: install the pinned zcheck release
         run: cargo install zcheck --version 0.0.1 --locked
+      - name: Reconciliation and qualification preflight adversarial checks
+        run: python3 scripts/tests/review_policy_test.py
+      - name: Complete-profile budget fits the declared child layers
+        run: scripts/invariants-pr-preflight --budget-only
       - name: qualification manifest validity
         run: zcheck validate
       - name: qualification graphs plan against this checkout

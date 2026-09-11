@@ -185,7 +185,7 @@ fn derived_state_rejects_commit_beyond_log() {
 fn derived_state_rejects_apply_beyond_commit() {
     let mut node = node(1, &[2, 3]);
     node.append_log_entry(LogEntry::application(Term(1), b"entry".to_vec()));
-    node.volatile.applied_index = LogIndex(1);
+    node.volatile.dispatched_index = LogIndex(1);
 
     let error = oracle_expect_err!(
         detect_derived_state_violation(&node),

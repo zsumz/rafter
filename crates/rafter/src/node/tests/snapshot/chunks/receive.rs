@@ -97,7 +97,7 @@ fn chunked_install_snapshot_applies_only_after_final_chunk() {
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
     let mut follower = node(2, &[1, 3]);
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
 
@@ -186,7 +186,7 @@ fn duplicate_snapshot_chunk_is_acknowledged_without_advancing_twice() {
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
     let mut follower = node(2, &[1, 3]);
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
     let first_chunk = install_snapshot_chunk_from_output(
@@ -231,7 +231,7 @@ fn out_of_order_snapshot_chunk_requests_expected_offset() {
     let (mut leader, source) = leader_with_snapshot_payload(payload);
     let mut follower = node(2, &[1, 3]);
     let progress = leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower");
     progress.next_index = LogIndex(3);
     progress.mode = ProgressMode::Snapshot {
@@ -266,7 +266,7 @@ fn mixed_snapshot_transfer_id_is_rejected_deterministically() {
     let (mut leader, source) = leader_with_snapshot_payload(payload);
     let mut follower = node(2, &[1, 3]);
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
     let mut chunk = install_snapshot_chunk_from_output(
@@ -306,7 +306,7 @@ fn changed_snapshot_payload_checksum_is_rejected_mid_transfer() {
     let (mut leader, source) = leader_with_snapshot_payload(first_payload);
     let mut follower = node(2, &[1, 3]);
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
     let first_chunk = install_snapshot_chunk_from_output(

@@ -5,9 +5,7 @@
 //! [`ElectionState`](super::state::ElectionState) owns only the local timer and
 //! grants collected during active rounds.
 
-use crate::{
-    LogIndex, Message, NodeId, PreVote, PreVoteResponse, RequestVote, RequestVoteResponse, Term,
-};
+use crate::{Message, NodeId, PreVote, PreVoteResponse, RequestVote, RequestVoteResponse};
 
 use super::{Node, Output, Role};
 
@@ -56,10 +54,8 @@ impl Node {
             return Vec::new();
         };
 
-        // The round proposes current + 1 WITHOUT mutating persistent state:
-        // no term increment, no voted_for, nothing persisted. Timing out
-        // again re-broadcasts at the same proposed term, which is the point
-        // of the feature (thesis 9.6).
+        // Pre-vote changes no durable term or vote; another timeout polls
+        // the same proposed term (EL-08, thesis 9.6).
         self.volatile.role = Role::PreCandidate;
         self.volatile.leader_hint = None;
         let self_id = self.id();
@@ -96,10 +92,7 @@ impl Node {
             self.election.reset_timeout();
             return Vec::new();
         }
-        // Term exhaustion stops elections rather than restarting history. The
-        // increment is the first thing a campaign does, and at `Term::MAX`
-        // there is nothing to increment to: this node stays a follower, and
-        // says so by changing no state at all.
+        // Term exhaustion must not wrap around into an earlier history.
         let Some(campaign_term) = self.persistent.current_term.checked_next() else {
             self.election.reset_timeout();
             return Vec::new();
@@ -143,6 +136,8 @@ impl Node {
         candidate_id: NodeId,
         request: RequestVote,
     ) -> Vec<Output> {
+        // EL-01 / EL-03: learn newer authority even if its log cannot earn
+        // our vote. Rejection below must not undo this term and vote reset.
         let mut outputs = if request.term > self.current_term() {
             self.become_follower(request.term)
         } else {
@@ -151,7 +146,8 @@ impl Node {
 
         let vote_granted = request.term == self.current_term()
             && self.effective_membership().contains_voter(candidate_id)
-            && self.candidate_log_is_up_to_date(request.last_log_term, request.last_log_index)
+            && (request.last_log_term, request.last_log_index)
+                >= (self.last_log_term(), self.last_log_index())
             && self
                 .persistent
                 .voted_for
@@ -216,16 +212,12 @@ impl Node {
 
         let vote_granted = request.term > self.current_term()
             && self.effective_membership().contains_voter(candidate_id)
-            && self.candidate_log_is_up_to_date(request.last_log_term, request.last_log_index)
+            && (request.last_log_term, request.last_log_index)
+                >= (self.last_log_term(), self.last_log_index())
             && !leader_believed_current;
 
-        // Granting mutates nothing: term, voted_for, and the election timer all
-        // stay put, and nothing is persisted. Multiple pre-vote grants in one
-        // term are allowed by design; only a real RequestVote binds a vote.
-        //
-        // Grants echo the proposed term. Denials carry this node's own term
-        // so a candidate that has fallen behind learns about newer terms
-        // instead of polling at a stale proposal forever.
+        // Pre-vote grants bind no vote and reset no timer. Grants echo the
+        // proposed term; denials reveal our term to fence a stale poll.
         let response_term = if vote_granted {
             request.term
         } else {
@@ -246,9 +238,7 @@ impl Node {
         voter_id: NodeId,
         response: PreVoteResponse,
     ) -> Vec<Output> {
-        // At `Term::MAX` this node never polled, so nothing can confirm a
-        // proposal it did not make; a response carrying a newer term is
-        // impossible there, since no term is newer.
+        // At Term::MAX there is no successor term to poll or confirm.
         let Some(proposed_term) = self.current_term().checked_next() else {
             return Vec::new();
         };
@@ -304,9 +294,5 @@ impl Node {
             hash % (jitter + 1)
         };
         base.saturating_add(offset)
-    }
-
-    fn candidate_log_is_up_to_date(&self, last_log_term: Term, last_log_index: LogIndex) -> bool {
-        (last_log_term, last_log_index) >= (self.last_log_term(), self.last_log_index())
     }
 }

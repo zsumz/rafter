@@ -1,5 +1,8 @@
 # Architecture
 
+Start with the [production-core walkthroughs](../crates/rafter/PROTOCOL_WALKTHROUGHS.md)
+and [protocol reading paths](../crates/rafter/ARCHITECTURE.md#start-with-a-behavior).
+
 This is the embedder's tour: what each layer owes the one above it, where
 your code sits, and which rules are load-bearing. The README's
 [Crates](../README.md#crates) table lists the packages; this document explains
@@ -96,9 +99,11 @@ embedding otherwise reinvents: correlating proposals to their eventual
 fates, running read barriers, surfacing membership events losslessly, and
 poisoning the group on the failures that must not be stepped past. It is
 synchronous and runtime-agnostic (the `application-io-free` scope holds it
-to that): you call `step`, it returns a report, and the report is the
-complete account of what happened — applies to perform, events to route,
-metrics to record.
+to that): `step` drives the durable runtime, applies committed commands to
+your state machine, validates the apply results, and returns a report with
+outbound messages, completed application results, and lifecycle events. Route
+the messages and consume the results; `report.applied` describes work already
+done and must not be applied again.
 
 The group layer's obligations are stated where they live: proposal fate
 reporting in `group/proposal.rs`, read consistency in `group/read.rs`,

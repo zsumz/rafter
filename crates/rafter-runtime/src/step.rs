@@ -10,12 +10,11 @@ use rafter::{
     Output as RaftOutput, ReadId, SnapshotChunkSource,
 };
 use rafter_storage::{
-    BorrowedPersistedRaftLogEntry, RaftHardStateStore, RaftLogSegment, RaftSnapshotStore,
+    BorrowedPersistedRaftLogEntry, RaftHardState, RaftHardStateStore, RaftLogSegment,
+    RaftSnapshotStore,
 };
 
-use crate::hard_state::{
-    durable_last_log_index, hard_state_for_node, hard_state_for_node_capped_at,
-};
+use crate::hard_state::hard_state_for_node;
 use crate::log_repair::{self, repair_persisted_log_suffix};
 use crate::{DurableRaftNode, RaftRuntimeError, RaftRuntimeFatalError};
 
@@ -107,20 +106,15 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     }
 
     /// Drives several deterministic Raft inputs and persists their combined
-    /// effects with one durable flush per store — group commit.
+    /// effects before releasing outputs — group commit.
     ///
-    /// The persist-before-output contract holds for the batch as a whole:
-    /// outputs from EVERY batched input are withheld until the single flush
-    /// completes, so nothing observable ever precedes its own durability. A
-    /// crash or persistence failure anywhere in the batch releases no output
-    /// at all — peers and the application see either the whole batch's
-    /// effects after they are durable, or none of them. Hard state is
-    /// written once with the batch-final value, which is sound because hard
-    /// state obligations are monotone: persisting the final term forbids
-    /// every promise a lower term could have made, and a vote cannot change
-    /// within a term. Newly accepted log entries across the whole batch land
-    /// in one suffix append, which is the fsync amortization: a batch of
-    /// proposals costs one log flush instead of one per proposal. Staged
+    /// Outputs from every batched input are withheld until persistence
+    /// completes. A failed batch releases no outputs and poisons the runtime.
+    /// Term and vote changes are fenced first, retaining the previous durable
+    /// commit index and committed configuration. After snapshot and log work,
+    /// a final hard-state write publishes the batch's new commit metadata.
+    /// Newly accepted log entries across the whole batch land in one suffix
+    /// append: a batch of proposals costs one log flush per batch. Staged
     /// snapshot chunks and promotions persist in kernel output order, as in
     /// single-input steps.
     ///
@@ -169,12 +163,15 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             Ok(false) => {}
             Err(error) => return Err(self.poison(error)),
         }
-        let pre_log_hard_state =
-            hard_state_for_node_capped_at(&self.node, durable_last_log_index(&self.log_segment));
+        // A durable suffix may still contain entries this step replaces.
+        // Fence term/vote now, but preserve the previous committed prefix
+        // until every required snapshot and log mutation is durable.
+        let pre_log_hard_state = RaftHardState {
+            current_term: current.current_term,
+            voted_for: current.voted_for,
+            ..persisted_before
+        };
 
-        // The kernel steps in place: after a persistence failure the
-        // runtime is poisoned and releases nothing, so in-memory state past
-        // the durable state is unobservable — restart is the only exit.
         if pre_log_hard_state != persisted_before {
             if let Err(error) = self.hard_state_store.write_hard_state(pre_log_hard_state) {
                 return Err(self.poison(RaftRuntimeError::HardStateWrite(error)));

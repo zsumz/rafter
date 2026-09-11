@@ -127,11 +127,11 @@ pub enum Input {
         /// Voter requested as the next leader.
         target: NodeId,
     },
-    /// Requests a linearizable read barrier (thesis 6.4). A granted barrier
-    /// means: once the application has applied through the returned
-    /// `read_index`, a read observes every write acknowledged before this
-    /// request was made. The kernel guarantees the index; the caller waits
-    /// for its own apply progress to reach it.
+    /// Requests a linearizable read barrier (thesis 6.4). After a grant, the
+    /// caller must execute every application command through `read_index`
+    /// before reading, so the read observes writes acknowledged before this
+    /// request. No-ops and configurations have no application-command callback;
+    /// waiting for a callback at the exact barrier index may never finish.
     ReadIndex {
         /// Local-only correlation identity for the barrier.
         read_id: ReadId,

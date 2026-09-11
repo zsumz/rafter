@@ -47,7 +47,7 @@ pub(super) const ALL: [Observation; 77] = [
     Observation::CrossEpochExecutionWitnessPairs,
     Observation::SameIndexApplicationResultPairs,
     Observation::SameIndexConfigurationResultPairs,
-    Observation::StatesWithOneUncommittedConfiguration,
+    Observation::ConfigurationProposalPredecessorChecks,
     Observation::CommittedConfigurationAdvances,
     Observation::SameIndexCommittedConfigurationIdentityChecks,
     Observation::RegisteredReadGrants,
@@ -137,8 +137,8 @@ impl Observation {
             Self::CrossEpochExecutionWitnessPairs => "cross_epoch_execution_witness_pairs",
             Self::SameIndexApplicationResultPairs => "same_index_application_result_pairs",
             Self::SameIndexConfigurationResultPairs => "same_index_configuration_result_pairs",
-            Self::StatesWithOneUncommittedConfiguration => {
-                "states_with_one_uncommitted_configuration"
+            Self::ConfigurationProposalPredecessorChecks => {
+                "configuration_proposal_predecessor_checks"
             }
             Self::CommittedConfigurationAdvances => "committed_configuration_advances",
             Self::SameIndexCommittedConfigurationIdentityChecks => {

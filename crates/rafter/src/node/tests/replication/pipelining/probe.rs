@@ -8,7 +8,7 @@ fn probe_mode_sends_one_bounded_probe_then_empty_heartbeats_until_the_ack() {
     let mut leader = pipelining_leader(3, |config| config);
     // Follower 2 collapsed to probing from the log start.
     *leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower") = Progress::probing(LogIndex(1));
 
     let outputs = leader.step(Input::Tick);

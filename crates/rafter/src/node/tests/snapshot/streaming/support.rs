@@ -164,7 +164,7 @@ pub(super) fn pending_snapshot_transfer(
 
 pub(super) fn start_snapshot_stream(leader: &mut Node) -> Vec<Output> {
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
     leader.step(Input::Message {

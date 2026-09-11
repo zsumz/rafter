@@ -16,11 +16,15 @@ use super::logical_log::LogPrefixWitness;
 use super::ExplorationState;
 
 mod certificate;
+mod configuration;
 mod prefix;
+
+pub(crate) use configuration::ConfigurationProposalWitness;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CommitHistory {
     pub(crate) certificates: BTreeMap<(NodeId, Term, LogIndex), CommitCertificate>,
+    pub(crate) configuration_proposals: BTreeSet<ConfigurationProposalWitness>,
     pub(crate) committed_prefix: Option<LogPrefixWitness>,
     committed_prefix_owner: Option<NodeId>,
     pub(crate) committed_in_terms: Vec<Term>,
@@ -42,6 +46,7 @@ pub(in crate::model_check) struct ConfigurationAppend {
 impl Hash for CommitHistory {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.certificates.hash(state);
+        self.configuration_proposals.hash(state);
         self.committed_prefix.hash(state);
         self.committed_prefix_owner.hash(state);
         self.committed_in_terms.hash(state);

@@ -910,7 +910,7 @@ and `applied_index`
 ([`crates/rafter-app/src/metrics.rs:16-17`](../crates/rafter-app/src/metrics.rs)),
 but elections and membership changes commit `Noop` and `Configuration` entries
 the state machine never sees
-([`crates/rafter/src/node/commit/apply.rs:66-90`](../crates/rafter/src/node/commit/apply.rs)),
+([`crates/rafter/src/node/commit/emit.rs:66-90`](../crates/rafter/src/node/commit/emit.rs)),
 so `applied_index == commit_index` is not reachable in general and cannot be the
 gate.
 
@@ -1316,10 +1316,10 @@ and the kernel refuses read barriers until that entry commits
 The moment it commits, barriers are granted at
 `read_index = self.volatile.commit_index`
 ([`:71`](../crates/rafter/src/node/read_index.rs)) — which is the `Noop`. The
-state machine never sees that entry: `apply_committed_into` advances the
+state machine never sees that entry: `emit_committed_outputs` advances the
 kernel's applied index over every committed entry but emits `Output::Apply`
 only for `LogEntryKind::Application`
-([`crates/rafter/src/node/commit/apply.rs:66-90`](../crates/rafter/src/node/commit/apply.rs)).
+([`crates/rafter/src/node/commit/emit.rs:66-90`](../crates/rafter/src/node/commit/emit.rs)).
 `complete_ready_reads` then compares the barrier against the state machine's own
 cursor
 ([`crates/rafter-app/src/group/read.rs:293-302`](../crates/rafter-app/src/group/read.rs)):
@@ -1392,7 +1392,7 @@ and, unusually for this document, from a contradiction between two of them.
 
 The kernel defines what a state machine can ever observe: `Application` entries
 produce `Output::Apply`, `Configuration` and `Noop` produce none
-([`crates/rafter/src/node/commit/apply.rs:66-69`](../crates/rafter/src/node/commit/apply.rs)).
+([`crates/rafter/src/node/commit/emit.rs:66-69`](../crates/rafter/src/node/commit/emit.rs)).
 `ReplicatedStateMachine` has exactly two state-changing entry points,
 `apply_batch` and `install_snapshot`
 ([`crates/rafter-app/src/state_machine.rs:60-97`](../crates/rafter-app/src/state_machine.rs)),
@@ -1614,7 +1614,7 @@ linearizable state, and it rests on three facts already in the repository.
    change does not touch it.
 2. **Application state is a function of application entries alone.** The kernel
    dispatches `Output::Apply` only for `LogEntryKind::Application`
-   ([`crates/rafter/src/node/commit/apply.rs:66-90`](../crates/rafter/src/node/commit/apply.rs)),
+   ([`crates/rafter/src/node/commit/emit.rs:66-90`](../crates/rafter/src/node/commit/emit.rs)),
    and the only other input to a `ReplicatedStateMachine` is
    `install_snapshot`, which carries a boundary the snapshot already covers.
    A `Noop` or `Configuration` entry cannot change any state a query can
@@ -6623,8 +6623,8 @@ a checkpoint in name only.
 
 #### 1. One step can cross several committed configurations
 
-The kernel's commit-advance walk (`apply_committed_into` in
-[`crates/rafter/src/node/commit/apply.rs`](../crates/rafter/src/node/commit/apply.rs))
+The kernel's commit-advance walk (`emit_committed_outputs` in
+[`crates/rafter/src/node/commit/emit.rs`](../crates/rafter/src/node/commit/emit.rs))
 visited every newly committed entry and, for a configuration entry, evaluated
 leader step-down and emitted **nothing that named the configuration**. So the
 only way an embedder could learn what committed was to sample
@@ -6860,8 +6860,8 @@ own record.
 commit-advance walk at
 [`crates/rafter/src/node/lifecycle.rs`](../crates/rafter/src/node/lifecycle.rs);
 that file only *calls* it, from `become_leader`. The walk is
-`apply_committed_into` in
-[`crates/rafter/src/node/commit/apply.rs`](../crates/rafter/src/node/commit/apply.rs),
+`emit_committed_outputs` in
+[`crates/rafter/src/node/commit/emit.rs`](../crates/rafter/src/node/commit/emit.rs),
 reached from six sites. The finding itself was exactly as described.
 
 **The mark-restore inconsistency is three sites, not two.** `read_outcome`
@@ -6881,7 +6881,7 @@ above; no code changed for it.
 | File | Change |
 | --- | --- |
 | [`crates/rafter/src/node/event/output.rs`](../crates/rafter/src/node/event/output.rs) | `Output::ConfigurationCommitted` and its contract |
-| [`crates/rafter/src/node/commit/apply.rs`](../crates/rafter/src/node/commit/apply.rs) | emitted per crossed configuration entry, before the step-down it may cause |
+| [`crates/rafter/src/node/commit/emit.rs`](../crates/rafter/src/node/commit/emit.rs) | emitted per crossed configuration entry, before the step-down it may cause |
 | [`crates/rafter/src/node/log.rs`](../crates/rafter/src/node/log.rs), [`types/id.rs`](../crates/rafter/src/types/id.rs) | the snapshot-boundary answer at the install contract and the `NodeId` allocation contract |
 | [`crates/rafter-app/src/group/types.rs`](../crates/rafter-app/src/group/types.rs) | `CommittedConfigurationCrossing`; `MembershipReportMark` becomes public and gains the queue; `RaftGroupParts::membership_report_mark`; `RaftGroup::from_parts`; the report-contract text |
 | [`crates/rafter-app/src/group/membership.rs`](../crates/rafter-app/src/group/membership.rs) | the queue is drained between the effective event and the comparison; `record_committed_configuration`; the restore takes the discarded report |
@@ -8572,7 +8572,7 @@ than a cursor.
 | File | Change |
 | --- | --- |
 | [`crates/rafter/src/node/event/output.rs`](../crates/rafter/src/node/event/output.rs) | `ConfigurationCommitted` carries `previous`; the transition rationale |
-| [`crates/rafter/src/node/commit/apply.rs`](../crates/rafter/src/node/commit/apply.rs) | `membership_before`; the walk supplies the transition |
+| [`crates/rafter/src/node/commit/emit.rs`](../crates/rafter/src/node/commit/emit.rs) | `membership_before`; the walk supplies the transition |
 | [`crates/rafter-app/src/membership.rs`](../crates/rafter-app/src/membership.rs) | `MembershipEvent::Applied` carries `previous`; the two committed facts re-described as transition and observation |
 | [`crates/rafter-app/src/group/types.rs`](../crates/rafter-app/src/group/types.rs) | `CommittedConfigurationCrossing::previous` |
 | [`crates/rafter-app/src/group/membership.rs`](../crates/rafter-app/src/group/membership.rs) | the queue and the mark restore carry it through |
@@ -10992,10 +10992,10 @@ snapshot boundary, replaces it
 ([`crates/rafter/src/node/construction.rs:97`](../crates/rafter/src/node/construction.rs)):
 
 ```rust
-let floor = node.volatile.applied_index.max(applied_through);
+let floor = node.volatile.dispatched_index.max(applied_through);
 ```
 
-`node.volatile.applied_index` is the snapshot boundary at this point
+`node.volatile.dispatched_index` is the snapshot boundary at this point
 ([`:40-52`](../crates/rafter/src/node/construction.rs)). The method validates a
 floor that is too high — twice, with two typed errors — and silently raises one
 that is too low. The entries between the declared floor and the boundary are
@@ -11318,8 +11318,8 @@ adversarial hunt reproduced both.
 let a recovering replica through tests whether the batch contains an
 `Output::ApplySnapshot`. A recovery batch is
 `RecoveredDurableRaftNode::into_parts`' `recovery_outputs`, which comes from
-`drain_committed_outputs` → `apply_committed_into`
-([`crates/rafter/src/node/commit/apply.rs:58-92`](../crates/rafter/src/node/commit/apply.rs)),
+`drain_committed_outputs` → `emit_committed_outputs`
+([`crates/rafter/src/node/commit/emit.rs:58-92`](../crates/rafter/src/node/commit/emit.rs)),
 and that function pushes an `Output::Apply` per committed application entry and,
 if the committed configuration removed this leader, whatever stepping down
 emits. It never pushes an `Output::ApplySnapshot`: the kernel holds a snapshot
@@ -13251,7 +13251,7 @@ the gap stops being recoverable and becomes durable:
 - `Node::from_bootstrap_applied_through` raises a declared floor of 3 to a
   snapshot boundary of 5;
 - `DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through`
-  drains strictly above the raised floor, and `apply_committed_into` has no arm
+  drains strictly above the raised floor, and `emit_committed_outputs` has no arm
   that can emit `Output::ApplySnapshot`, so the batch can never carry the
   install that would make it safe;
 - the raw pump applied index 6 onto an application at 3.

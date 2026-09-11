@@ -343,8 +343,8 @@ fn arb_inert_configuration_entry() -> impl Strategy<Value = ConfigurationEntry> 
 
 /// Logs of 1..=20 application entries with payloads from empty to
 /// budget-dwarfing, plus at most one configuration entry spliced in at an
-/// arbitrary position — bootstrap validation admits at most one uncommitted
-/// configuration entry, and every bootstrapped entry starts uncommitted.
+/// arbitrary position. One configuration suffices to exercise mixed-kind
+/// batching; recovery permits historical configurations above its commit floor.
 fn arb_entry_specs() -> impl Strategy<Value = Vec<EntrySpec>> {
     (
         proptest::collection::vec(0..=2048usize, 1..=20),
@@ -773,8 +773,8 @@ fn materialized_entries(state: &BootstrapState) -> Vec<(u64, u64)> {
 /// membership otherwise; the log is contiguous from the snapshot boundary with
 /// nonzero terms no newer than the current term; boundary sentinel entries match the
 /// snapshot term; nothing sits below the boundary; the commit index never lies
-/// beyond the log; and at most one uncommitted configuration entry exists
-/// above the recovered commit index.
+/// beyond the log. Historical configuration entries may precede durable commit
+/// publication; serialization constrains new proposals, not recovered history.
 fn accepted_by_documented_rules(state: &BootstrapState) -> bool {
     if state.voted_for.is_some() && state.current_term.0 == 0 {
         return false;
@@ -809,7 +809,6 @@ fn accepted_by_documented_rules(state: &BootstrapState) -> bool {
     let Some(mut expected) = boundary.checked_add(1) else {
         return false;
     };
-    let mut configuration_entries = 0usize;
     let mut last_log_index = boundary;
     for entry in &state.log {
         if entry.index.0 < boundary {
@@ -832,12 +831,6 @@ fn accepted_by_documented_rules(state: &BootstrapState) -> bool {
         };
         expected = next_expected;
         last_log_index = entry.index.0;
-        if entry.kind.is_configuration() && entry.index.0 > commit_index {
-            configuration_entries += 1;
-            if configuration_entries > 1 {
-                return false; // more than one uncommitted configuration
-            }
-        }
     }
     commit_index <= last_log_index
 }

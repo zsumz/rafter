@@ -479,12 +479,12 @@ fn a_stored_control_plane_failure_refuses_the_requests_queued_behind_it() {
 /// its way to a nonzero exit answer `STATUS ready`, and a supervisor that polls
 /// readiness rather than watching exit codes saw nothing wrong at all.
 ///
-/// The terminal window is short — the loop answers at most one job per remaining
-/// pass and then ends — so a flood is the observer that can see it: it keeps a
-/// request in flight continuously, which is exactly what is needed to be
-/// answered *during* the window rather than before or after it. The flood starts
-/// only after readiness, so any `abandoned` answer it counts is the transition
-/// and not the opening state.
+/// A status request may be answered before failure, answered as abandoned,
+/// or disconnected by shutdown. No scheduler promises an answer in the terminal
+/// window. Admission tickets order every healthy answer before the query that
+/// trips the fault, and all flood readers are joined before their final count is
+/// checked. The direct handler regression in `terminal_readiness_test.rs` proves
+/// the abandoned response independently of this process scheduling window.
 #[test]
 #[ignore = "spawns real processes; run with --ignored (see the module docs)"]
 fn a_terminal_replica_stops_reporting_itself_ready() {
@@ -504,23 +504,29 @@ fn a_terminal_replica_stops_reporting_itself_ready() {
     let mut faulted = cluster.restart_with_control_plane_fault(victim, 1);
     let flood = process::StatusFlood::start(faulted.client_addr(), FLOOD_CONNECTIONS);
 
+    process::wait_until("the status flood observes the healthy replica", || {
+        (flood.answered() > 0).then_some(())
+    });
+    let breaking_answer = faulted
+        .ask("QUERY LOCK vault")
+        .expect("the replica answers the request that breaks it");
     assert!(
-        faulted
-            .ask("QUERY LOCK vault")
-            .expect("the replica answers the request that breaks it")
-            .starts_with("ABANDONED"),
-        "the operation that made the control plane undurable is refused"
+        breaking_answer.starts_with("ABANDONED"),
+        "the operation that made the control plane undurable is refused: {breaking_answer}"
     );
+    let breaking_ticket = harness_ticket(&breaking_answer);
 
     let refused = faulted.wait_refused();
-    let abandoned = flood.abandoned();
-    let answered = flood.stop();
+    let (answered, last_ready_ticket) = flood.stop_with_last_ready_ticket();
 
     assert!(
-        abandoned > 0,
-        "no STATUS reported the replica abandoned, so a supervisor polling \
-         readiness saw a healthy process all the way to its nonzero exit \
-         ({answered} answered)"
+        last_ready_ticket > 0,
+        "the flood observed readiness before the fault"
+    );
+    assert!(
+        last_ready_ticket < breaking_ticket,
+        "STATUS claimed readiness after the failing query: last ready ticket \
+         {last_ready_ticket}, breaking ticket {breaking_ticket} ({answered} answered)"
     );
     assert!(
         refused.status.code().is_some_and(|code| code != 0),

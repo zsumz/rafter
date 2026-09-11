@@ -8,7 +8,7 @@ fn snapshot_transfer_status_reports_follower_progress_and_rejections() {
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
     let mut follower = node(2, &[1, 3]);
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
 
@@ -69,7 +69,7 @@ fn snapshot_transfer_status_reports_leader_progress() {
     let payload = large_snapshot_payload();
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
     leader
-        .try_follower_progress_mut(NodeId(2))
+        .reconcile_follower_progress_mut(NodeId(2))
         .expect("active follower")
         .next_index = LogIndex(3);
 

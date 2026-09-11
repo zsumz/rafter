@@ -50,7 +50,7 @@ impl Node {
                     } else {
                         0
                     };
-                    let Some(progress) = self.try_follower_progress_mut(follower_id) else {
+                    let Some(progress) = self.reconcile_follower_progress_mut(follower_id) else {
                         return Vec::new();
                     };
                     // Acks may arrive out of order; the send offset for the
@@ -77,7 +77,7 @@ impl Node {
             let reported_snapshot_index =
                 std::cmp::min(response.last_included_index, self.last_log_index());
             if self
-                .try_follower_progress_mut(follower_id)
+                .reconcile_follower_progress_mut(follower_id)
                 .map(|progress| {
                     progress.match_index = progress.match_index.max(reported_snapshot_index);
                     let acknowledged = progress.match_index;
@@ -105,7 +105,7 @@ impl Node {
             }
         });
         let snapshot_index = self.snapshot_index();
-        let Some(progress) = self.try_follower_progress_mut(follower_id) else {
+        let Some(progress) = self.reconcile_follower_progress_mut(follower_id) else {
             return Vec::new();
         };
         if let Some(next_offset) = rewound_offset {

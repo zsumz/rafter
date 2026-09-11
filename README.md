@@ -107,10 +107,13 @@ the contracts and [work completion](./docs/work-completion.md) for the proof map
 ## Testing
 
 ```sh
-cargo install zcheck --locked
-cargo install zrail --version 0.0.3-rc.8 --locked
+rustup toolchain install 1.97.1 --profile minimal
+cargo +1.97.1 install zcheck --version 0.0.1 --locked
+cargo +1.97.1 install zrail --version 0.0.3-rc.8 --locked
 zcheck
 ```
+
+The install toolchain matches CI. Rafter itself is qualified on Rust 1.88.
 
 [zcheck](https://github.com/zsumz/zcheck) runs formatting, lints, documentation,
 architecture checks, and workspace tests, with logs and a receipt for each run.

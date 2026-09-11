@@ -5,41 +5,47 @@
 never opens files or sockets, spawns tasks, reads wall-clock time, or decides
 when durable effects have reached storage.
 
-## Reading path
+## Start with a behavior
 
-A reader can understand the kernel in this order:
+The [production-core walkthroughs](PROTOCOL_WALKTHROUGHS.md) run real inputs
+and verify their observations in the normal test suite. Start with the rule
+that raised your question; the domain map below is the reference index.
 
-1. [`src/node/event/`](src/node/event): roles, inputs, ordered outputs,
-   and rejection vocabulary.
-2. [`src/message/`](src/message): peer messages, log entries, and shared append
-   payloads.
-3. [`src/types/`](src/types): identities, membership, configuration, replication
-   observability, and snapshot vocabulary behind the flat public facade.
-4. [`src/node/mod.rs`](src/node/mod.rs): the `Node` ownership groups and module map.
-5. [`src/node/config/`](src/node/config): requested configuration and the
-   effective feature policy derived from safety dependencies.
-6. [`src/node/state/`](src/node/state): durable, volatile, election, leader, and
-   derived state representations.
-7. [`src/node/dispatch.rs`](src/node/dispatch.rs): the single public transition
-   boundary and message dispatch.
-8. [`src/node/lifecycle.rs`](src/node/lifecycle.rs): follower and leader state
-   resets.
-9. [`src/node/election.rs`](src/node/election.rs): pre-vote, voting, and leader
-   election.
-10. [`src/node/replication/`](src/node/replication): follower append reception,
-   leader acknowledgement handling, outbound replication, authority evidence,
-   and snapshot transfer.
-11. [`src/node/commit/`](src/node/commit): quorum-derived commit candidates and
-   ordered application of the committed prefix.
-12. [`src/node/membership/`](src/node/membership): static, effective, committed,
-   and snapshot membership views plus safe stable/joint transitions.
-13. [`src/node/read_index.rs`](src/node/read_index.rs): linearizable read
-    barriers and leases.
-14. [`src/node/log.rs`](src/node/log.rs) and
-    [`src/node/replication/snapshot/`](src/node/replication/snapshot): retained
-    logs, compaction, and snapshot transfer in both directions.
-15. [`src/node/bootstrap/`](src/node/bootstrap): durable-state vocabulary,
-    ordered validation, and restart hydration.
+| Question | Read together |
+| --- | --- |
+| Why did a rejected vote change the term? | `handle_request_vote` in [election.rs](src/node/election.rs), then the authority reset in [lifecycle.rs](src/node/lifecycle.rs). Term adoption precedes eligibility. |
+| Why did this follower accept an append? | [receive.rs](src/node/replication/receive.rs): authority, matching prefix, named splice rejection, mutation, confirmed commit floor, and response. |
+| Why did this acknowledgement commit a write? | [response.rs](src/node/replication/response.rs) separates contact from matching progress; [advance.rs](src/node/commit/advance.rs) places quorum replication beside current-term authorization; [emit.rs](src/node/commit/emit.rs) emits the effects. |
+| Which voters determine this quorum? | [Membership views](src/node/membership/view.rs) select the effective configuration; [advance.rs](src/node/commit/advance.rs) requires each constituent majority. |
+| What permits this read? | [read_index.rs](src/node/read_index.rs) qualifies acknowledgement sequences; the embedding waits for application execution. |
+
+The [rule and counterexample guide](../../docs/protocol-rules.md) links these
+conditions to existing invariant detectors. The [reader exercise](../../docs/protocol-reader-exercise.md)
+provides questions and a correctness rubric without claiming a completed study.
+
+## Cursors and the embedding boundary
+
+| Position | What it establishes |
+| --- | --- |
+| `commit_index` | Committed log prefix known to this core. |
+| `dispatched_index` | Committed prefix processed for output dispatch, including no-ops, configurations, and the effective recovery floor. |
+| Application-applied position | Commands actually executed by the external state machine. It need not name a no-op or configuration index. |
+| Durable application-applied position | Execution and state that survive an application restart; supplied by the embedding's durability contract. |
+
+`Node::applied_index()` and `DurableRaftNode::applied_index()` remain compatibility
+aliases for `dispatched_index()`, without deprecation warnings. Existing public
+error names and their `applied_index` fields also remain available and document
+that they refer to dispatch. Constructors named `*_applied_through` keep that
+name: the caller is declaring durable application progress, from which the core
+establishes its dispatch floor. Application APIs that report actual execution
+retain `applied` vocabulary.
+
+Returning `Output::Apply` prepares a command; it does not execute it. The raw
+core performs no persistence. `rafter-runtime` persists dependent state before
+releasing outputs; `rafter-app::RaftGroup::step` then executes application
+commands, so its `report.applied` describes completed work and must not be
+applied again. A read at a no-op waits for preceding application commands,
+not an application callback at the exact no-op index.
 
 ## Domain maps
 
@@ -111,19 +117,26 @@ A reader can understand the kernel in this order:
 - `membership/view.rs` derives static, effective, committed, and snapshot views.
 - `membership/change.rs` constructs safe stable and joint transitions.
 - `membership/validate.rs` owns transition preconditions and promotion barriers.
-- `commit/tracker.rs` derives the quorum-backed commit candidate.
-- `commit/apply.rs` enforces the current-term rule and emits committed effects.
+- `commit/advance.rs` derives quorum replication and authorizes current-term commitment together.
+- `commit/emit.rs` dispatches the newly committed prefix in log order.
 
 ## State ownership
 
 - `PersistentState` owns term, vote, committed configuration, snapshot, and
   log. Bootstrap, election, log, and follower replication mutate it.
-- `VolatileState` owns role, commit/apply cursors, local proposal correlation,
+- `VolatileState` owns role, commit/dispatch cursors, local proposal correlation,
   incoming snapshot progress, leader hints, and diagnostics.
 - `ElectionState` owns the local timeout and collected vote/pre-vote grants.
   Election, lifecycle, and accepted leader traffic mutate it.
-- `LeaderState` owns replication progress, heartbeat rounds, check-quorum,
-  leases, reads, and leadership transfer. It resets as one authority unit.
+- `LeaderState` owns observed replication progress, heartbeat rounds,
+  check-quorum, leases, reads, and leadership transfer. It resets as one
+  authority unit. Follower acknowledgements are protocol evidence and cannot
+  be recreated from the leader's log.
+- `ProgressSet::reconcile_membership` preserves that evidence while rebuilding
+  membership slots, initializes new replicas as probes, and updates local
+  progress. `reconcile_follower_progress_mut` names the maintenance it performs
+  before lookup. Reconciliation remains at send, response, and commit boundaries
+  because membership can change within a step or batch.
 - `DerivedState` owns indexes exactly recomputable from canonical state.
 - `ConfigurationIndex` locates configuration entries in the retained log. Log
   mutation updates it; membership code reads it only through domain queries.
@@ -203,7 +216,7 @@ Repository tests keep the presentation contract executable:
 - every production module begins with a concise `//!` ownership contract;
 - facade modules may declare vocabulary and re-exports, but no implementation
   functions or `impl` blocks;
-- load-bearing term, vote, role, commit, apply, election, and configuration-index
+- load-bearing term, vote, role, commit, dispatch, election, and configuration-index
   mutations stay in their documented owning modules;
 - one shared facade manifest drives both declarative-structure and size guards;
 - facade files use tighter size budgets than implementation or test files;
@@ -214,5 +227,8 @@ Repository tests keep the presentation contract executable:
   sibling `*_test.rs` modules and protocol stories live under `node/tests/`.
 - protocol scenario modules use a 400-line presentation target; independent
   stories move behind a declarative test facade before they become scroll-heavy.
+- new and substantially revised Rust modules stay within 300 lines. Existing
+  size debt remains a reviewed ratchet. If a cohesive protocol argument needs
+  an exception, review its reading cost and the exact policy delta first.
 - retired flat test modules are forbidden from silently returning beside the
   mirrored tree.

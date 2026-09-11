@@ -241,7 +241,7 @@ fn follower_rejects_append_that_would_truncate_committed_entry() {
     let mut follower = node(2, &[1, 3]);
     push_log_entry(&mut follower, Term(2), b"committed");
     follower.volatile.commit_index = LogIndex(1);
-    follower.volatile.applied_index = LogIndex(1);
+    follower.volatile.dispatched_index = LogIndex(1);
 
     let outputs = follower.step(Input::Message {
         from: NodeId(1),

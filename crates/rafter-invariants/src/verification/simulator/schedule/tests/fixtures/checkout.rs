@@ -54,6 +54,18 @@ pub(super) fn materialize_fixture_checkout(workspace: &Path, root: &Path, defect
         &workspace.join("crates/rafter/src"),
         &rafter_dir.join("src"),
     );
+    // The kernel unit-test target mounts this I/O adapter outside src/. Keep
+    // its module and include_str input in the authenticated fixture closure.
+    for relative in [
+        "tests/support/protocol_walkthrough_driver.rs",
+        "PROTOCOL_WALKTHROUGHS.md",
+    ] {
+        let destination = rafter_dir.join(relative);
+        fs::create_dir_all(destination.parent().expect("walkthrough input parent"))
+            .expect("create walkthrough input directory");
+        fs::copy(workspace.join("crates/rafter").join(relative), destination)
+            .expect("copy kernel walkthrough source input");
+    }
     let oracle_dir = root.join("crates/rafter-invariant-test");
     fs::create_dir_all(oracle_dir.join("src")).expect("create fixture oracle package");
     fs::write(

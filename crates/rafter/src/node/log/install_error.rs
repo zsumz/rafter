@@ -48,11 +48,11 @@ pub enum LocalSnapshotInstallError {
         /// Greatest locally committed index.
         commit_index: LogIndex,
     },
-    /// The boundary is committed, but this node has not applied through it.
+    /// The boundary is committed, but the core has not dispatched through it.
     ///
     /// Kept distinct from [`Self::BoundaryAheadOfCommit`] because it is a
     /// different mistake: the entries exist and are committed, but this node
-    /// has never handed them to a state machine, so raising the applied index
+    /// has never prepared their effects, so raising the dispatch cursor
     /// to the boundary would skip them silently and forever. Reachable on a
     /// node recovered below its committed prefix — see
     /// [`Node::from_bootstrap_applied_through`](crate::Node::from_bootstrap_applied_through)
@@ -60,7 +60,8 @@ pub enum LocalSnapshotInstallError {
     BoundaryAheadOfApplied {
         /// Boundary proposed by the caller.
         snapshot_index: LogIndex,
-        /// Greatest index already handed to the application.
+        /// Core dispatch cursor. The field name is retained for compatibility;
+        /// it does not establish external application execution.
         applied_index: LogIndex,
     },
     /// The descriptor's boundary term disagrees with the local log.

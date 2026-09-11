@@ -173,6 +173,8 @@ fn two_node_cluster() -> Cluster {
 }
 
 mod commit_basics;
+mod configuration_proposals;
+mod configuration_recovery;
 
 fn append_entries_transition_state(
     before_entries: &[(u64, Term, &[u8])],

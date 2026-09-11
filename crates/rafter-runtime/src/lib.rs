@@ -87,6 +87,7 @@ mod log_repair;
 mod node;
 mod peer_batch;
 mod runtime_api;
+mod snapshot_install;
 mod step;
 
 pub use error::{RaftRuntimeError, RaftRuntimeFatalError};

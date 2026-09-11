@@ -1,5 +1,6 @@
 //! Validation and materialization of a durable bootstrap image.
 
+mod configuration;
 mod log;
 
 use crate::{LogIndex, RaftSnapshotMetadata};
@@ -27,12 +28,19 @@ impl BootstrapState {
         let snapshot_index = self.snapshot.as_ref().map_or(LogIndex::ZERO, |snapshot| {
             snapshot.metadata.last_included_index
         });
+        let commit_index = self.commit_index.max(snapshot_index);
+        let committed_configuration = configuration::recover_configuration(
+            self.committed_configuration,
+            self.snapshot.as_ref().map(|snapshot| &snapshot.metadata),
+            &log,
+            commit_index,
+        )?;
 
         Ok(BootstrapParts {
             current_term: self.current_term,
             voted_for: self.voted_for,
-            commit_index: self.commit_index.max(snapshot_index),
-            committed_configuration: self.committed_configuration,
+            commit_index,
+            committed_configuration,
             snapshot: self.snapshot,
             log,
         })

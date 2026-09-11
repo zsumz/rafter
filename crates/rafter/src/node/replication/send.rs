@@ -62,7 +62,7 @@ impl Node {
         outputs: &mut Vec<Output>,
         batch_cache: &mut LogBatchCache,
     ) {
-        self.refresh_leader_progress_index();
+        self.reconcile_replication_progress();
         self.replicate_to_follower_with_cache_fresh(follower_id, demand, outputs, batch_cache);
     }
 

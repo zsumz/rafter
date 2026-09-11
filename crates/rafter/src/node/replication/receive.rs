@@ -7,6 +7,17 @@ use crate::{AppendEntries, AppendEntriesResponse, LogIndex, Message, NodeId, Sha
 
 use super::super::{LocalProposalDropReason, Node, Output, Role};
 
+/// Local rejection reasons; both preserve the existing wire rejection frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AppendRejection {
+    CommittedEntryConflict { index: LogIndex },
+    OverlappingConfigurationChanges,
+}
+
+#[cfg(test)]
+#[path = "receive_test.rs"]
+mod tests;
+
 impl Node {
     pub(in crate::node) fn handle_append_entries(
         &mut self,
@@ -35,7 +46,7 @@ impl Node {
         let match_index = request_match_index(request.prev_log_index, request.entries.len());
         let confirmed_commit_index = self.confirmed_commit_index(request, match_index);
 
-        let Some(splice_outputs) = self.splice_entries_after(
+        let Ok(splice_outputs) = self.splice_entries_after(
             request.prev_log_index,
             &request.entries,
             confirmed_commit_index,
@@ -47,7 +58,7 @@ impl Node {
 
         if request.leader_commit > self.volatile.commit_index {
             self.volatile.commit_index = confirmed_commit_index;
-            self.apply_committed_into(&mut outputs);
+            self.emit_committed_outputs(&mut outputs);
         }
 
         outputs.push(self.accept_append_entries(leader_id, match_index, sequence));
@@ -101,14 +112,16 @@ impl Node {
     /// The matching prefix is skipped, the first divergent index truncates the
     /// local suffix, and the remainder appends. Validation completes before
     /// mutation, so rejection needs no rollback. A divergence at or below the
-    /// commit index is rejected, as is a result containing more than one
-    /// uncommitted configuration after this frame's commit floor takes effect.
+    /// commit index is rejected. A new configuration cannot overlap another
+    /// configuration above this frame's confirmed commit floor. Prior-term
+    /// configurations are accepted history: a recovered leader may need to
+    /// replicate them and its no-op before relearning their commitment.
     fn splice_entries_after(
         &mut self,
         prev_log_index: LogIndex,
         entries: &SharedEntries,
         configuration_commit_floor: LogIndex,
-    ) -> Option<Vec<Output>> {
+    ) -> Result<Vec<Output>, AppendRejection> {
         // Indexes ascend, so a committed conflict appears before any
         // acceptable divergence.
         let mut divergence: Option<(usize, LogIndex)> = None;
@@ -116,7 +129,9 @@ impl Node {
             let index = LogIndex(prev_log_index.0 + 1 + offset as u64);
             match self.term_at(index) {
                 Some(existing_term) if existing_term == entry.term => {}
-                Some(_) if index <= self.volatile.commit_index => return None,
+                Some(_) if index <= self.volatile.commit_index => {
+                    return Err(AppendRejection::CommittedEntryConflict { index });
+                }
                 _ => {
                     divergence = Some((offset, index));
                     break;
@@ -125,9 +140,10 @@ impl Node {
         }
 
         let Some((first_offset, first_index)) = divergence else {
-            // The whole batch already matches. The log's existing
-            // single-uncommitted-configuration invariant remains sufficient.
-            return Some(Vec::new());
+            // The whole batch already matches, so no configuration is added.
+            // This also lets a recovered catch-up suffix learn commitment
+            // that crashed before its final hard-state publication.
+            return Ok(Vec::new());
         };
 
         // Count surviving configuration entries below the divergence and
@@ -138,16 +154,21 @@ impl Node {
             configuration_commit_floor,
             first_index,
         );
-        let incoming_configurations = entries.as_slice()[first_offset..]
+        let (incoming_configurations, introduces_current_term_configuration) = entries.as_slice()
+            [first_offset..]
             .iter()
             .enumerate()
             .filter(|(offset, entry)| {
                 let index = LogIndex(first_index.0 + *offset as u64);
                 index > configuration_commit_floor && entry.kind.is_configuration()
             })
-            .count();
-        if surviving_configurations + incoming_configurations > 1 {
-            return None;
+            .fold((0, false), |(count, current_term), (_, entry)| {
+                (count + 1, current_term || entry.term == self.current_term())
+            });
+        if introduces_current_term_configuration
+            && surviving_configurations + incoming_configurations > 1
+        {
+            return Err(AppendRejection::OverlappingConfigurationChanges);
         }
 
         let outputs = if first_index <= self.last_log_index() {
@@ -158,7 +179,7 @@ impl Node {
         for entry in entries.iter().skip(first_offset).cloned() {
             self.append_log_entry(entry);
         }
-        Some(outputs)
+        Ok(outputs)
     }
 }
 

@@ -154,7 +154,7 @@ fn learner_receives_log_replication_and_snapshot_catch_up() {
     oracle_assert!(!snapshot_leader.is_effective_voter(learner_id));
     oracle_assert!(snapshot_leader.is_effective_learner(learner_id));
     snapshot_leader
-        .try_follower_progress_mut(learner_id)
+        .reconcile_follower_progress_mut(learner_id)
         .expect("learner has replication progress")
         .next_index = LogIndex(2);
 
@@ -212,7 +212,7 @@ fn newly_added_learner_receives_retained_suffix_from_boundary() {
 fn learner_receives_snapshot_replication() {
     let (mut leader, source) = leader_with_snapshot_and_learner_suffix();
     leader
-        .try_follower_progress_mut(NodeId(4))
+        .reconcile_follower_progress_mut(NodeId(4))
         .expect("active follower")
         .next_index = LogIndex(2);
 

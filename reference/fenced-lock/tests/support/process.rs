@@ -581,7 +581,7 @@ fn next_recovery_mode(line: &str) -> String {
 pub struct StatusFlood {
     stop: Arc<AtomicBool>,
     answered: Arc<AtomicU64>,
-    abandoned: Arc<AtomicU64>,
+    last_ready_ticket: Arc<AtomicU64>,
     threads: Vec<thread::JoinHandle<()>>,
 }
 
@@ -591,12 +591,12 @@ impl StatusFlood {
     pub fn start(addr: SocketAddr, connections: usize) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let answered = Arc::new(AtomicU64::new(0));
-        let abandoned = Arc::new(AtomicU64::new(0));
+        let last_ready_ticket = Arc::new(AtomicU64::new(0));
         let mut threads = Vec::new();
         for _ in 0..connections {
             let stop = Arc::clone(&stop);
             let answered = Arc::clone(&answered);
-            let abandoned = Arc::clone(&abandoned);
+            let last_ready_ticket = Arc::clone(&last_ready_ticket);
             threads.push(thread::spawn(move || {
                 // A connection that cannot be opened, or that the replica drops
                 // as it stops, ends this thread rather than failing the test:
@@ -611,14 +611,15 @@ impl StatusFlood {
                         return;
                     };
                     answered.fetch_add(1, Ordering::Relaxed);
-                    // The terminal readiness word, counted rather than only
-                    // passed over. A flood is the only client that reliably has
-                    // a request in flight during the short window between a
-                    // replica entering its terminal state and the loop ending,
-                    // so it is the only observer that can say what `STATUS`
-                    // answered there.
-                    if response.starts_with("STATUS abandoned") {
-                        abandoned.fetch_add(1, Ordering::Relaxed);
+                    // Fault-injected replies carry the main-loop admission
+                    // ticket. A late socket read may still describe an earlier
+                    // healthy state; the ticket, not receive time, orders it.
+                    if response.starts_with("STATUS ready ") {
+                        if let Some((_, ticket)) = response.rsplit_once(" HARNESS_TICKET ") {
+                            let ticket =
+                                ticket.parse().expect("the admission ticket is an integer");
+                            last_ready_ticket.fetch_max(ticket, Ordering::Relaxed);
+                        }
                     }
                 }
             }));
@@ -626,7 +627,7 @@ impl StatusFlood {
         Self {
             stop,
             answered,
-            abandoned,
+            last_ready_ticket,
             threads,
         }
     }
@@ -636,9 +637,13 @@ impl StatusFlood {
         self.answered.load(Ordering::Relaxed)
     }
 
-    /// How many of those answers reported the replica abandoned.
-    pub fn abandoned(&self) -> u64 {
-        self.abandoned.load(Ordering::Relaxed)
+    /// Joins all readers before reporting the last admission that claimed readiness.
+    pub fn stop_with_last_ready_ticket(mut self) -> (u64, u64) {
+        self.halt();
+        (
+            self.answered(),
+            self.last_ready_ticket.load(Ordering::Relaxed),
+        )
     }
 
     /// Stops every connection and waits for its thread.
@@ -650,7 +655,7 @@ impl StatusFlood {
     fn halt(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         for thread in self.threads.drain(..) {
-            drop(thread.join());
+            thread.join().expect("the STATUS flood reader completed");
         }
     }
 }

@@ -8,9 +8,9 @@ and state ownership obvious before it tries to be concise.
 1. **Name the Raft concept.** Prefer `committed_membership`,
    `first_sendable_index`, and `follower_id` over context-dependent names such
    as `current`, `next`, or `peer`.
-2. **Keep transitions top to bottom.** A transition should read as: reject stale
-   authority, accept newer authority, validate the request, mutate state, then
-   emit ordered effects.
+2. **Keep transitions top to bottom.** Handle authority-changing information,
+   check whether the handler may continue, evaluate its rule, mutate state,
+   then emit ordered effects. A rejected request may still advance the term.
 3. **Preserve explanatory symmetry.** Similar Raft paths may remain visibly
    parallel when their differences are load-bearing, especially pre-vote versus
    vote and stable versus joint quorum handling.
@@ -53,6 +53,11 @@ and state ownership obvious before it tries to be concise.
   named disposition before it stages, installs, or replies.
 - A helper should make the caller read more like the protocol, not merely move
   lines elsewhere.
+- Use statements when the order of mutations matters. An explicit borrow
+  scope with `let Some(...) else` makes progress updates easier to inspect than
+  an `Option::map` containing several state changes.
+- Keep quorum replication beside commitment authorization. A quorum-derived
+  index is a candidate until the current-term condition accepts it.
 - `step_batch` uses one small ordering-preserving accumulator. Changing batch
   kind flushes the previous kind before any later effects are emitted.
 
@@ -64,6 +69,11 @@ Use these words consistently:
 - **volatile**: process-local protocol state;
 - **leader**: state meaningful only while leading;
 - **derived**: state recomputable from canonical state;
+- **observed evidence**: peer acknowledgements or election/read grants; these
+  cannot be reconstructed from the local log;
+- **dispatched**: committed entries processed for output emission, including
+  no-ops, configurations, and the recovery floor;
+- **application-applied**: commands executed by the external state machine;
 - **local-only**: correlation metadata outside Raft semantics.
 
 State mutations should have an obvious owning module. `ElectionState` owns the
@@ -105,7 +115,7 @@ must exercise the detector or transition being claimed, not only the final
 error-reporting path.
 
 Production modules never embed test bodies. Small unit tests live in named
-sibling files such as `tracker_test.rs`; protocol scenarios live under
+sibling files such as `quorum_test.rs`; protocol scenarios live under
 `node/tests/`. This keeps the production reading path uninterrupted while
 retaining access to private implementation vocabulary through the parent
 module.

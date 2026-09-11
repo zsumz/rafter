@@ -50,10 +50,25 @@ impl Node {
         self.volatile.commit_index
     }
 
-    /// Returns this node's applied index.
+    /// Returns the committed prefix processed by the core for output dispatch.
+    ///
+    /// Includes no-ops and configuration entries, even when no application
+    /// command is emitted, and starts at the effective recovery floor. This
+    /// cursor does not establish that an embedding has executed or durably
+    /// applied the outputs. The application must track that progress itself.
+    #[must_use]
+    pub fn dispatched_index(&self) -> LogIndex {
+        self.volatile.dispatched_index
+    }
+
+    /// Compatibility alias for [`Node::dispatched_index`].
+    ///
+    /// This is the core's dispatch cursor, not external application execution.
+    /// Kept without deprecation warnings so existing consumers remain source
+    /// compatible; new code should use [`Node::dispatched_index`].
     #[must_use]
     pub fn applied_index(&self) -> LogIndex {
-        self.volatile.applied_index
+        self.dispatched_index()
     }
 
     /// Returns this node's last local log index.

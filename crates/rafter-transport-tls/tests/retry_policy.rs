@@ -171,29 +171,62 @@ fn sparse_reprobe_recovers_remote_repair_without_a_local_discovery_event() {
 #[test]
 fn failed_bulk_write_is_preempted_by_later_control_on_the_next_live_socket() {
     let fixture = RuntimeFixture::new(RuntimeLimits::default());
-    let peer = FaultPeer::start(PeerBehavior::AcceptThenClose);
+    let peer = FaultPeer::start(PeerBehavior::AcceptThenCloseAndPause);
     let sender = fixture.start_a(fixture.endpoints_to_b(peer.local_addr()));
 
     assert!(
-        wait_until(Duration::from_secs(3), || peer.hello_count() == 1),
+        wait_until(Duration::from_secs(3), || {
+            peer.hello_count() == 1
+                && sender
+                    .peer_diagnostics(fixture.peer_b())
+                    .expect("peer diagnostics")
+                    .is_some_and(|state| state.connected)
+        }),
         "fault peer failed: {:?}",
         peer.last_error()
     );
-    sender
-        .sender()
-        .send(RuntimeFixture::replication_with_payload(vec![
-            0x5a;
-            400 * 1024
-        ]))
-        .expect("bulk work is admitted");
-    assert!(wait_until(Duration::from_secs(3), || {
-        peer.hello_count() >= 2 && sender.diagnostics().tls_failures >= 2
-    }));
-    peer.set_behavior(PeerBehavior::CaptureFrames);
+    // A completed local write can win the race with the remote close. Keep
+    // only one bulk frame outstanding until a write actually fails, then
+    // retain that exact queued frame while the peer pauses new handshakes.
+    let mut admitted = 0;
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            let diagnostics = sender.diagnostics();
+            if diagnostics.tls_failures > 0 {
+                return true;
+            }
+            if diagnostics.frames_sent == admitted {
+                sender
+                    .sender()
+                    .send(RuntimeFixture::replication_with_payload(vec![
+                        0x5a;
+                        400 * 1024
+                    ]))
+                    .expect("bulk work is admitted");
+                admitted += 1;
+            }
+            false
+        }),
+        "no failed write: {:?}; peer: {:?}",
+        sender.diagnostics(),
+        peer.last_error()
+    );
+    assert_eq!(peer.hello_count(), 1, "retry handshake remains paused");
+    assert_eq!(sender.diagnostics().frames_sent + 1, admitted);
+    assert_eq!(
+        sender
+            .peer_diagnostics(fixture.peer_b())
+            .expect("peer diagnostics")
+            .expect("configured peer")
+            .queued_frames,
+        1,
+        "the failed bulk frame is retained"
+    );
     sender
         .sender()
         .send(RuntimeFixture::vote())
         .expect("later control work is admitted");
+    peer.set_behavior(PeerBehavior::CaptureFrames);
 
     assert!(wait_until(Duration::from_secs(3), || {
         peer.captured_classes().len() >= 2

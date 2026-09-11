@@ -236,6 +236,9 @@ mod peer_link;
 mod protocol;
 mod replica;
 
+#[cfg(test)]
+mod terminal_readiness_test;
+
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Write},

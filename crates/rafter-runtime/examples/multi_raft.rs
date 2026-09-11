@@ -104,7 +104,7 @@ impl Host {
 #[derive(Clone, Copy, Default)]
 struct Stats {
     /// `step_batch` calls — each one allocates at least one `Vec<Output>`
-    /// and ends in at most one durable flush per changed store.
+    /// and persists its combined effects before releasing outputs.
     steps: u64,
     /// Messages routed between replicas.
     messages: u64,
@@ -172,8 +172,8 @@ impl Cluster {
         }
     }
 
-    /// Steps one replica with a batch of inputs (one durable flush per
-    /// changed store) and routes every output: sends into the router queue,
+    /// Steps one replica with a batch of inputs (one suffix append per
+    /// batch) and routes every output: sends into the router queue,
     /// applies into the host's per-group ledger.
     fn step_node(&mut self, host_index: usize, group: usize, inputs: Vec<Input>) {
         let from = node_id_for(host_index);

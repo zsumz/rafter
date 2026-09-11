@@ -76,8 +76,8 @@ impl Node {
     /// 1. The boundary lies **at or above** the installed snapshot boundary.
     /// 2. The boundary lies **at or below the commit index** — otherwise the
     ///    call would manufacture commitment out of a local decision.
-    /// 3. The boundary lies **at or below the applied index** — otherwise the
-    ///    call would raise the applied index over committed entries this node
+    /// 3. The boundary lies **at or below the dispatch cursor** — otherwise the
+    ///    call would raise the dispatch cursor over committed entries this node
     ///    has never emitted, and they would never be emitted afterwards.
     /// 4. The boundary **term matches the local log** at that index — or, at
     ///    the installed boundary, the installed descriptor's own term.
@@ -86,7 +86,7 @@ impl Node {
     /// 6. The descriptor's **author is a replica** — voter or learner — of the
     ///    membership at the boundary.
     ///
-    /// Rule 3 subsumes rule 2, because the applied index never exceeds the
+    /// Rule 3 subsumes rule 2, because the dispatch cursor never exceeds the
     /// commit index. They stay separate errors because they are separate
     /// mistakes, and a caller that hits the first has a safety problem while a
     /// caller that hits the second has a recovery-ordering one.
@@ -122,7 +122,7 @@ impl Node {
     /// composition that owns the snapshot store should fill the field in before
     /// calling — `rafter-runtime`'s compaction API does exactly that.
     ///
-    /// Within the contract the applied index and commit index are already at or
+    /// Within the contract the dispatch cursor and commit index are already at or
     /// above the boundary, so neither moves; the log suffix above the boundary
     /// always survives, because rule 4 has proven it belongs to this history.
     /// The returned outputs report local proposals the retained log no longer
@@ -188,11 +188,11 @@ impl Node {
                 commit_index,
             });
         }
-        let applied_index = self.volatile.applied_index;
-        if snapshot_index > applied_index {
+        let dispatched_index = self.volatile.dispatched_index;
+        if snapshot_index > dispatched_index {
             return Err(LocalSnapshotInstallError::BoundaryAheadOfApplied {
                 snapshot_index,
-                applied_index,
+                applied_index: dispatched_index,
             });
         }
         let snapshot_term = snapshot.metadata.last_included_term;
@@ -268,8 +268,8 @@ impl Node {
         if self.volatile.commit_index < boundary_index {
             self.volatile.commit_index = boundary_index;
         }
-        if self.volatile.applied_index < boundary_index {
-            self.volatile.applied_index = boundary_index;
+        if self.volatile.dispatched_index < boundary_index {
+            self.volatile.dispatched_index = boundary_index;
         }
         outputs
     }

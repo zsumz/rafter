@@ -32,9 +32,22 @@ pub enum ReplayExpectation<'a> {
 pub struct ReplayReport {
     pub(in crate::model_check::replay) state: StateSummary,
     pub(in crate::model_check::replay) failure: Option<Failure>,
+    pub(in crate::model_check::replay) states: Vec<StateSummary>,
 }
 
 impl ReplayReport {
+    /// Returns the initial summary followed by the summary after each action
+    /// actually replayed, including the action exposing an expected failure.
+    ///
+    /// Adjacent summaries show term, role, commitment, and log-boundary
+    /// changes. They are observations, not a full protocol-state capture.
+    /// Replay stops at the first failing action; it performs no trace
+    /// minimization and makes no claim that the retained prefix is minimal.
+    #[must_use]
+    pub fn states(&self) -> &[StateSummary] {
+        &self.states
+    }
+
     /// Returns the final or failed state summary produced by replay.
     #[must_use]
     pub const fn state(&self) -> &StateSummary {

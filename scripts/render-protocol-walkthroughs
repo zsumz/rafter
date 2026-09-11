@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Render observations produced by the actual core tests, outside the sans-I/O core."""
+
+from pathlib import Path
+import argparse
+import subprocess
+import sys
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        ["cargo", "test", "--locked", "-p", "rafter", "--lib",
+         "node::tests::walkthroughs::render_protocol_walkthroughs", "--",
+         "--ignored", "--exact", "--nocapture"],
+        cwd=root, text=True, capture_output=True, check=False,
+    )
+    if result.returncode:
+        sys.stderr.write(result.stdout + result.stderr)
+        return result.returncode
+    begin, end = "RAFTER_WALKTHROUGH_BEGIN\n", "RAFTER_WALKTHROUGH_END\n"
+    if result.stdout.count(begin) != 1 or result.stdout.count(end) != 1:
+        raise SystemExit("walkthrough test did not emit exactly one complete document")
+    document = result.stdout.split(begin, 1)[1].split(end, 1)[0]
+    path = root / "crates/rafter/PROTOCOL_WALKTHROUGHS.md"
+    if args.check:
+        if path.read_text() != document:
+            raise SystemExit("walkthrough observations differ; review before rendering")
+    else:
+        path.write_text(document)
+    print("production-core walkthroughs match" if args.check else "rendered production-core walkthroughs")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

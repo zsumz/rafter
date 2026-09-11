@@ -29,10 +29,12 @@ pub fn replay_raft_trace(
 ) -> Result<ReplayReport, ReplayError> {
     let mut state = ExplorationState::new(Cluster::new(configs));
     let mut replayed = Vec::new();
+    let mut states = vec![summarize(state.cluster())];
 
     for (action_index, action) in trace.iter().enumerate() {
         replay_action(&mut state, action_index, action, &replayed)?;
         replayed.push(action.clone());
+        states.push(summarize(state.cluster()));
         if let Err(failure) = run_replay_check(&state, check, &replayed) {
             return match expectation {
                 ReplayExpectation::FailureInvariant(expected)
@@ -41,6 +43,7 @@ pub fn replay_raft_trace(
                     Ok(ReplayReport {
                         state: summarize(state.cluster()),
                         failure: Some(failure),
+                        states,
                     })
                 }
                 ReplayExpectation::FailureInvariant(expected) => {
@@ -62,6 +65,7 @@ pub fn replay_raft_trace(
         ReplayExpectation::FinalState(expected) if expected == &actual => Ok(ReplayReport {
             state: actual,
             failure: None,
+            states,
         }),
         ReplayExpectation::FinalState(expected) => Err(ReplayError::FinalStateMismatch {
             expected: expected.clone(),

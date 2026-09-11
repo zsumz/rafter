@@ -89,7 +89,7 @@ fn acknowledgement_set_projects_retained_nodes_across_slot_changes() {
 }
 
 #[test]
-fn progress_set_rebuild_preserves_existing_replica_progress() {
+fn progress_set_reconciliation_preserves_existing_replica_progress() {
     let old = MembershipConfig::stable(membership(&[1, 2, 3], &[]));
     let new = MembershipConfig::joint(membership(&[1, 2, 3], &[]), membership(&[2, 3, 4], &[5]));
     let mut progress = ProgressSet::default();
@@ -99,7 +99,7 @@ fn progress_set_rebuild_preserves_existing_replica_progress() {
         .expect("old voter has progress")
         .match_index = LogIndex(6);
 
-    progress.rebuild(&new, NodeId(1), LogIndex(3), LogIndex(11));
+    progress.reconcile_membership(&new, NodeId(1), LogIndex(3), LogIndex(11));
 
     assert_eq!(
         progress.get(NodeId(2)).map(|p| p.match_index),
@@ -124,12 +124,12 @@ fn progress_set_rebuild_preserves_existing_replica_progress() {
 }
 
 #[test]
-fn progress_set_rebuild_refreshes_local_progress_when_membership_is_unchanged() {
+fn progress_set_reconciliation_refreshes_local_progress_when_membership_is_unchanged() {
     let membership = MembershipConfig::stable(membership(&[1, 2, 3], &[]));
     let mut progress = ProgressSet::default();
     progress.reset(&membership, NodeId(1), LogIndex(7), LogIndex(10));
 
-    progress.rebuild(&membership, NodeId(1), LogIndex(3), LogIndex(12));
+    progress.reconcile_membership(&membership, NodeId(1), LogIndex(3), LogIndex(12));
 
     assert_eq!(
         progress.get(NodeId(1)).map(|p| p.match_index),

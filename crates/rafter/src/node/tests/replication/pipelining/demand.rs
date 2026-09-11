@@ -59,7 +59,7 @@ fn useful_data_to_one_follower_does_not_postpone_contact_with_the_other() {
 #[test]
 fn awaiting_probe_is_silent_for_proposals_but_contact_and_rejection_still_recover() {
     let mut leader = full_windows();
-    *leader.try_follower_progress_mut(NodeId(2)).unwrap() = Progress::probing(LogIndex(1));
+    *leader.reconcile_follower_progress_mut(NodeId(2)).unwrap() = Progress::probing(LogIndex(1));
     let first = leader.step(Input::ClientProposal {
         payload: payload(10),
     });

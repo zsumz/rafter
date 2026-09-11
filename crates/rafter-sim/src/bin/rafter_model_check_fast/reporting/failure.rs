@@ -8,6 +8,7 @@
 use rafter_sim::model_check::{reviewed_invariant_id, Failure, FailureKind, SoakFailure};
 use serde_json::json;
 
+use super::rules::rule_guide;
 use super::EVENT_PREFIX;
 
 pub(crate) fn print_raft_failure(name: &str, failure: &Failure) {
@@ -115,6 +116,15 @@ pub(crate) fn failure_timeline_lines(
         field_value(invariant),
         field_value(message)
     )];
+    if let Some(guide) = rule_guide(invariant) {
+        lines.push(format!(
+            "INFO test rule reference source={} transition={} guide=docs/protocol-rules.md#{} rule={}",
+            guide.source, guide.transition, guide.guide_anchor, field_value(guide.explanation),
+        ));
+    }
+    // The supplied trace is preserved verbatim. No shortest-counterexample
+    // claim is justified by formatting or by replay stopping at first failure.
+    lines.push("INFO test trace provenance reduction=none replay=replay_raft_trace observations=ReplayReport::states".to_string());
     lines.extend(trace.into_iter().map(|(index, action)| {
         format!(
             "DEBUG test trace step step={index} action={}",

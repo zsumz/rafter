@@ -19,12 +19,22 @@ let mut node = Node::new(config);
 let outputs = node.step(Input::Tick);
 ```
 
+Returning `outputs` prepares effects; it does not persist Raft state or execute
+application commands. Preserve output order and persist dependent state before
+releasing effects. `dispatched_index()` counts the committed prefix processed
+by the core, including no-ops, configurations, and its recovery floor. The
+application tracks execution and durable execution separately. `applied_index()`
+remains a compatibility alias for the core dispatch cursor.
+
 Most production embeddings should pair this crate with `rafter-runtime` and
 `rafter-storage` so persistence happens before peer or application outputs are
 released.
 
 ## Reading the implementation
 
+- [`PROTOCOL_WALKTHROUGHS.md`](./PROTOCOL_WALKTHROUGHS.md) starts with real
+  elections, writes, append conflicts, joint quorums, and read barriers. Its
+  observations are checked by the production-core tests.
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) gives a guided reading path, state
   ownership map, and output-ordering model.
 - [`STYLE.md`](./STYLE.md) defines the protocol-core naming, module, spacing,

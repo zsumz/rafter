@@ -23,7 +23,7 @@ impl Node {
         if demand.requires_message() {
             self.begin_contact_round();
         }
-        self.refresh_leader_progress_index();
+        self.reconcile_replication_progress();
 
         let local_id = self.id();
         let replica_count = self.leader.progress.replica_count();

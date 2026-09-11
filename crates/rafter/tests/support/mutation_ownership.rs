@@ -18,18 +18,14 @@ pub(super) const MUTATION_RULES: &[MutationRule] = &[
         "volatile.commit_index=",
         &[
             "node/construction.rs",
-            "node/commit/apply.rs",
+            "node/commit/advance.rs",
             "node/log.rs",
             "node/replication/receive.rs",
         ],
     ),
     MutationRule::new(
-        "volatile.applied_index=",
-        &[
-            "node/construction.rs",
-            "node/commit/apply.rs",
-            "node/log.rs",
-        ],
+        "volatile.dispatched_index=",
+        &["node/construction.rs", "node/commit/emit.rs", "node/log.rs"],
     ),
     MutationRule::new("self.leader=LeaderState::default()", &["node/lifecycle.rs"]),
     MutationRule::new("self.derived.configuration.clear(", &["node/log.rs"]),

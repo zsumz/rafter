@@ -107,6 +107,11 @@ description = "Run the TLA+ continuation sampler's adversarial checks against st
 run = ["scripts/tests/tla_continuation_telemetry_test.sh"]
 tools = ["awk", "perl"]
 
+[tasks.policy-tools]
+description = "Exercise fail-closed macro reconciliation and complete-profile budget/tool checks."
+run = ["python3", "scripts/tests/review_policy_test.py"]
+tools = ["python3"]
+
 [tasks.lint]
 description = "Validate formatting, lints, documentation, and proof references."
 needs = [
@@ -121,6 +126,7 @@ needs = [
   "work-completion",
   "tla-telemetry",
   "durable-bench-tests",
+  "policy-tools",
 ]
 
 [tasks.durable-bench-tests]
@@ -168,12 +174,20 @@ needs = ["lint", "architecture", "test"]
 
 # --- deeper evidence lanes (not in the default graph) ----------------------
 
+[tasks.invariants-pr-preflight]
+description = "Check the complete PR budget, Java 21, and pinned TLC before running evidence layers."
+platforms = ["linux"]
+run = ["scripts/invariants-pr-preflight"]
+timeout = "1m"
+tools = ["python3", "java"]
+
 [tasks.invariants-pr]
 description = "Run the deterministic 44-invariant PR aggregate; Linux descriptor-bound launch, fail-closed elsewhere."
 platforms = ["linux"]
 run = ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run-all", "--profile", "pr"]
-timeout = "45m"
-tools = ["cargo"]
+timeout = "8h"
+tools = ["cargo", "java", "python3"]
+needs = ["invariants-pr-preflight"]
 resources = ["cargo-target"]
 inputs = [
   "verification/raft-invariants.yaml",

@@ -15,8 +15,7 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
 {
     /// Persists snapshot effects in kernel output order: each staged chunk
     /// lands durably in the store's staging area, and each applied snapshot
-    /// promotes the completed staging to the current snapshot before the
-    /// durable log is compacted through its boundary.
+    /// reconciles the durable boundary before promotion and prefix compaction.
     ///
     /// Deliberately without a wildcard arm. Everything else this step emits is
     /// released behind the ordinary persistence fence — hard state, log suffix,
@@ -36,17 +35,16 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
                     .stage_snapshot_chunk(chunk)
                     .map_err(RaftRuntimeError::SnapshotWrite)?,
                 RaftOutput::ApplySnapshot { snapshot } => {
-                    self.snapshot_store
-                        .promote_staged_snapshot(snapshot)
-                        .map_err(RaftRuntimeError::SnapshotWrite)?;
-                    self.log_segment
-                        .compact_prefix_through(snapshot.metadata.last_included_index)
-                        .map_err(RaftRuntimeError::LogCompact)?;
+                    crate::snapshot_install::install_staged_snapshot(
+                        &mut self.log_segment,
+                        &mut self.snapshot_store,
+                        snapshot,
+                        self.hard_state_store.current().commit_index,
+                    )?;
                 }
-                // A committed configuration is durable in the log entry that
-                // carries it and in the hard state that names the commit index,
-                // both of which this step's fence has already written. There is
-                // no second copy for this runtime to keep.
+                // The remaining log and final hard-state writes make a
+                // committed configuration durable before outputs escape.
+                // This snapshot phase does not persist another copy.
                 RaftOutput::ConfigurationCommitted { .. }
                 | RaftOutput::SendSnapshotChunk { .. }
                 | RaftOutput::LocalProposalAppended { .. }

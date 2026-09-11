@@ -37,7 +37,7 @@ impl Node {
         bootstrap: BootstrapState,
     ) -> Result<Self, BootstrapValidationError> {
         let parts = bootstrap.into_parts(&config)?;
-        let applied_index = parts.snapshot.as_ref().map_or(LogIndex::ZERO, |snapshot| {
+        let dispatched_index = parts.snapshot.as_ref().map_or(LogIndex::ZERO, |snapshot| {
             snapshot.metadata.last_included_index
         });
         let persistent = PersistentState {
@@ -49,7 +49,7 @@ impl Node {
         };
 
         let derived = DerivedState::from_log(&persistent.log);
-        let mut volatile = VolatileState::at_applied_index(applied_index);
+        let mut volatile = VolatileState::at_dispatched_index(dispatched_index);
         volatile.commit_index = parts.commit_index;
         Ok(Self {
             config,
@@ -96,7 +96,7 @@ impl Node {
     /// from the snapshot the boundary names. The entries between a lower
     /// declaration and the boundary are never emitted, in any form, and
     /// nothing later reports that they were skipped. Compare
-    /// [`Node::applied_index`] against [`Node::snapshot_index`] after
+    /// [`Node::dispatched_index`] against [`Node::snapshot_index`] after
     /// construction to see whether a declaration was raised.
     ///
     /// A composition that owns both halves should enforce this rather than
@@ -137,10 +137,10 @@ impl Node {
                 commit_index: node.commit_index(),
             });
         }
-        // `from_bootstrap` starts the applied index at the snapshot boundary,
+        // `from_bootstrap` starts the dispatch cursor at the snapshot boundary,
         // which is the lowest floor the retained log can serve.
-        let floor = node.volatile.applied_index.max(applied_through);
-        node.volatile.applied_index = floor;
+        let floor = node.volatile.dispatched_index.max(applied_through);
+        node.volatile.dispatched_index = floor;
         Ok(node)
     }
 }
