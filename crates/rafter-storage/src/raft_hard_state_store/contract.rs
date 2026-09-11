@@ -13,6 +13,12 @@ use super::error::RaftHardStateStoreWriteError;
 /// must report the latest successfully acknowledged state through
 /// [`RaftHardStateStore::current`].
 pub trait RaftHardStateStore {
+    /// Shared persistence coordinator identity, if this handle supports atomic batches.
+    /// The default retains the independent synchronous-store contract.
+    fn persistence_domain(&self) -> Option<crate::durable_batch::PersistenceDomain> {
+        None
+    }
+
     /// Writes the latest Raft hard state.
     ///
     /// # Errors

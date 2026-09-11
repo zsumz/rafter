@@ -19,6 +19,7 @@ use crate::hard_state::{
 use crate::log_repair::{self, repair_persisted_log_suffix};
 use crate::{DurableRaftNode, RaftRuntimeError, RaftRuntimeFatalError};
 
+mod atomic_batch;
 mod snapshot;
 
 impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotChunkSource>
@@ -163,6 +164,11 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
                 step(&mut self.node)
             });
         let current = hard_state_for_node(&self.node);
+        match self.try_atomic_append_batch(persisted_before, current, &outputs) {
+            Ok(true) => return Ok(self.resolve_snapshot_chunk_sends(outputs)),
+            Ok(false) => {}
+            Err(error) => return Err(self.poison(error)),
+        }
         let pre_log_hard_state =
             hard_state_for_node_capped_at(&self.node, durable_last_log_index(&self.log_segment));
 

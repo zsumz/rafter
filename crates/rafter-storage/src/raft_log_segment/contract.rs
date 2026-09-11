@@ -40,6 +40,26 @@ use super::{RaftLogSegmentAppendError, RaftLogSegmentCompactError, RaftLogSegmen
 /// mechanically holds a *third* implementation to the rule; it is stated here so
 /// an implementer is told, and reviewed like any other trait requirement.
 pub trait RaftLogSegment {
+    /// Atomically publishes compatible log and hard-state mutations, if supported.
+    ///
+    /// `None` means unsupported and guarantees that no mutation was attempted.
+    /// A successful receipt must already be recoverable and visible through both
+    /// handles sharing `domain`; the caller must never treat submission as durability.
+    ///
+    /// # Errors
+    /// Returns a domain, validation, or publication error. An ambiguous I/O
+    /// failure requires reopening the coordinator before any later mutation.
+    fn persist_batch(
+        &mut self,
+        _domain: &crate::durable_batch::PersistenceDomain,
+        _batch: crate::durable_batch::RaftPersistenceBatch<'_>,
+    ) -> Result<
+        Option<crate::durable_batch::DurableReceipt>,
+        crate::durable_batch::RaftPersistenceBatchError,
+    > {
+        Ok(None)
+    }
+
     /// Appends persisted Raft log entries to the segment.
     ///
     /// # Errors

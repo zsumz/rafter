@@ -18,6 +18,9 @@ impl fmt::Display for RaftRuntimeError {
             Self::HardStateWrite(error) => {
                 write!(formatter, "Raft hard state could not be written: {error}")
             }
+            Self::PersistenceBatch(error) => {
+                write!(formatter, "Raft persistence batch failed: {error}")
+            }
             Self::LogAppend(error) => {
                 write!(formatter, "Raft log entries could not be appended: {error}")
             }
