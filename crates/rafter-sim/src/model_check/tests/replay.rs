@@ -203,6 +203,12 @@ fn replay_delivers_the_selected_envelope_when_routing_and_kind_collide() {
             stale_leader: false,
         },
     );
+    apply_and_record(
+        &mut state,
+        &mut trace,
+        Action::Tick(NodeId(1)),
+        Operation::Tick(NodeId(1)),
+    );
 
     let colliding = state
         .cluster()
@@ -216,11 +222,7 @@ fn replay_delivers_the_selected_envelope_when_routing_and_kind_collide() {
             .then_some(position)
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        colliding.len(),
-        2,
-        "heartbeat and proposal append must collide"
-    );
+    assert_eq!(colliding.len(), 2);
     let first = deliver_action(state.cluster(), colliding[0])
         .expect("enumerated envelope has a scheduler identity");
     let second = deliver_action(state.cluster(), colliding[1])

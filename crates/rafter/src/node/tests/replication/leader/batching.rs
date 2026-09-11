@@ -8,15 +8,14 @@ fn leader_batches_lagging_follower_suffix_by_replication_byte_budget() {
     let mut leader = node_with_max_append_entries_bytes(1, &[2, 3], 180);
     let _ = elect_leader(&mut leader);
 
-    // While the leadership probe is unanswered, proposals reach follower 2
-    // as empty heartbeats only: the suffix accumulates on the leader.
+    // While the leadership probe is unanswered, proposals remain silent:
+    // the suffix accumulates until the probe is confirmed.
     for byte in *b"abc" {
         let outputs = leader.step(Input::ClientProposal {
             payload: vec![byte; 100],
         });
-        let request = append_entries_to(&outputs, NodeId(2));
         assert!(
-            request.entries.is_empty(),
+            append_entries_batches_to(&outputs, NodeId(2)).is_empty(),
             "an unanswered probe defers the suffix to the confirming acknowledgement"
         );
     }

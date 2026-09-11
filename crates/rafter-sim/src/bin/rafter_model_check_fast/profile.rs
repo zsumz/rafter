@@ -59,7 +59,9 @@ pub(crate) struct LocalModelBounds {
 
 const FAST_MODEL_BOUNDS: LocalModelBounds = LocalModelBounds {
     election_depth: 8,
-    commit_depth: 9,
+    // Demand-driven replication removes redundant contact-only branches, so
+    // depth ten preserves the commit floors while exploring deeper semantics.
+    commit_depth: 10,
     commit_proposals: 2,
     commit_production_depth: 7,
     membership_depth: 6,

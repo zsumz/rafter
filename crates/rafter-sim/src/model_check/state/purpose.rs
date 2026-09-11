@@ -3,7 +3,9 @@
 //! A production-config commit, a proposal blocked by a one-batch window, a
 //! lease fast-path grant, and a joint configuration surviving restart or
 //! install are each recognized from a before/after pair, so a purpose-bound
-//! check can refuse to pass on an exploration that never got there.
+//! check can refuse to pass on an exploration that never got there. A blocked
+//! window is witnessed from replication state, not from redundant contact
+//! traffic that an optimized proposal path may correctly omit.
 
 use rafter::{
     CommittedConfiguration, LogEntryKind, MembershipConfig, Message, NodeId, ReplicationState,
@@ -163,7 +165,7 @@ fn window_one_blocked_application_proposal(
             progress.state == ReplicationState::Replicating
                 && progress.next_index > progress.match_index.next()
                 && queued_application_append(before, *to, progress.follower_id)
-                && emitted_empty_append(emitted, *to, progress.follower_id)
+                && !emitted_application_append(emitted, *to, progress.follower_id)
         })
 }
 
@@ -181,20 +183,16 @@ fn queued_application_append(cluster: &Cluster, from: NodeId, to: NodeId) -> boo
     })
 }
 
-fn emitted_empty_append(emitted: &[Envelope], from: NodeId, to: NodeId) -> bool {
+fn emitted_application_append(emitted: &[Envelope], from: NodeId, to: NodeId) -> bool {
     emitted.iter().any(|envelope| {
         envelope.from == from
             && envelope.to == to
             && matches!(
                 &envelope.message,
-                Message::AppendEntries(request) if request.entries.is_empty()
-            )
-    }) && !emitted.iter().any(|envelope| {
-        envelope.from == from
-            && envelope.to == to
-            && matches!(
-                &envelope.message,
-                Message::AppendEntries(request) if !request.entries.is_empty()
+                Message::AppendEntries(request)
+                    if request.entries.iter().any(|entry| {
+                        matches!(entry.kind, LogEntryKind::Application(_))
+                    })
             )
     })
 }

@@ -4,6 +4,7 @@ use crate::{ClientProposalInput, LogEntry};
 
 use super::super::state::LocalProposal;
 use super::super::{Node, Output, ProposalRejection, Role};
+use super::ReplicationDemand;
 
 impl Node {
     /// Appends one deterministic client proposal without constructing the
@@ -50,7 +51,7 @@ impl Node {
         self.record_local_progress();
         self.advance_commit_index_into(&mut outputs);
         if self.role() == Role::Leader {
-            self.broadcast_append_entries_into(&mut outputs);
+            self.broadcast_replication_into(ReplicationDemand::ProgressOnly, &mut outputs);
         }
         outputs
     }
@@ -122,7 +123,7 @@ impl Node {
         self.record_local_progress();
         self.advance_commit_index_into(&mut outputs);
         if self.role() == Role::Leader {
-            self.broadcast_append_entries_into(&mut outputs);
+            self.broadcast_replication_into(ReplicationDemand::ProgressOnly, &mut outputs);
         }
         outputs
     }

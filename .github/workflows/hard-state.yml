@@ -1,0 +1,55 @@
+name: Hard-state comparison
+
+on:
+  push:
+    branches: [perf/raft-performance]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          workspaces: bench-compare
+      - name: Check storage, runtime, and evidence validation
+        run: |
+          scripts/cargo-test-exact 389 - --locked -p rafter-storage -p rafter-runtime
+          scripts/cargo-test-exact 4 - --locked --manifest-path bench-compare/Cargo.toml --no-default-features --bin bench-rafter-durable
+          python3 -m unittest scripts/tests/test_bench_durable.py scripts/tests/test_hard_state_syscalls.py
+      - name: Build the paired benchmark
+        run: cargo build --release --locked --manifest-path bench-compare/Cargo.toml --no-default-features --bin bench-rafter-durable --bin bench-hard-state
+      - name: Measure both backends on identical workloads
+        run: |
+          python3 scripts/bench-durable \
+            --binary bench-compare/target/release/bench-rafter-durable \
+            --baseline bench-compare/target/release/bench-rafter-durable \
+            --hard-state journal --baseline-hard-state replace \
+            --runs 3 --batches 1000 --snapshot-bytes 1048576 \
+            --directory "$RUNNER_TEMP" --output results/hard-state
+      - name: Verify publication syscall counts separately from timing
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y strace
+          for backend in replace journal; do
+            strace -f -yy -e trace=write,fdatasync,fsync,rename,renameat,renameat2 \
+              -o "results/hard-state/$backend.strace" \
+              bench-compare/target/release/bench-hard-state "$backend" 64 "$RUNNER_TEMP" \
+              > "results/hard-state/$backend-probe.json"
+            python3 scripts/check-hard-state-syscalls "$backend" 64 \
+              "results/hard-state/$backend.strace" > "results/hard-state/$backend-syscalls.json"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hard-state-${{ github.sha }}
+          path: results/hard-state
+          if-no-files-found: error

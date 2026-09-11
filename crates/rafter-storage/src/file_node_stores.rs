@@ -217,7 +217,9 @@ enum LogOpenMode {
     RepairUncommittedTail,
 }
 
-fn ownership_error(error: AcquireFileStoreOwnershipError) -> OpenFileRaftNodeStoresError {
+pub(crate) fn ownership_error(
+    error: AcquireFileStoreOwnershipError,
+) -> OpenFileRaftNodeStoresError {
     match error {
         AcquireFileStoreOwnershipError::AlreadyHeld { directory } => {
             OpenFileRaftNodeStoresError::AlreadyOpen { directory }
@@ -234,7 +236,11 @@ fn ownership_error(error: AcquireFileStoreOwnershipError) -> OpenFileRaftNodeSto
     }
 }
 
-fn io_error(operation: &'static str, path: &Path, error: io::Error) -> OpenFileRaftNodeStoresError {
+pub(crate) fn io_error(
+    operation: &'static str,
+    path: &Path,
+    error: io::Error,
+) -> OpenFileRaftNodeStoresError {
     OpenFileRaftNodeStoresError::Io {
         operation,
         path: path.to_path_buf(),

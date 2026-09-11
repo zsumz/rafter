@@ -130,6 +130,36 @@ requiring reopen. `FileRaftHardStateStore::requires_reopen` exposes the state
 for diagnostics, and later writes fail with `StoreRequiresReopen` before they
 perform filesystem work.
 
+## Opt-in hard-state journal
+
+`JournalRaftNodeStores` acquires the same directory lock before opening the
+journal at `hard-state`. Each split store retains that ownership. The default
+`FileRaftNodeStores` and its replacement protocol remain unchanged.
+
+Open creates or validates the RFHJ header, replays every complete RFHS record,
+and truncates an incomplete final record. It syncs the recovered file and its
+parent directory before exposing state, including on retries after creation or
+repair failed. A partial header or complete corrupt record fails closed.
+
+Normal publication appends one RFHS envelope to the already-open file, calls
+`sync_data` once, then updates the cached state. It performs no rename or
+parent-directory sync. Any append or sync failure poisons the handle; later
+writes fail before I/O. A complete unacknowledged record may survive such an
+error and become current after reopen validates and resyncs it.
+
+After 4,096 complete records, the next write checkpoints the incoming state.
+It writes the same RFHJ header and one RFHS record to the reserved sibling
+`hard-state.checkpoint.tmp`, syncs it, renames it over `hard-state`, and syncs
+the directory before changing the live file handle or acknowledged cache.
+Before rename, the old journal remains authoritative; after rename, reopen
+validates and resyncs the replacement. Unpublished temporary bytes are ignored.
+Any checkpoint failure poisons the handle, including failure after rename.
+
+The journal remains at most 208,905 bytes during successful steady-state use.
+An older oversized journal is fully validated on its first open, then rotated
+on its next write. This does not reclaim the separate Raft log or the atomic
+WAL. The format is unchanged; see `STORAGE_FORMAT_V1.md`.
+
 ## Log append
 
 Stable path: `log`
@@ -401,3 +431,28 @@ A storage change is incomplete until its review answers all of these:
 - Must the live handle be discarded after an I/O error?
 - Is committed state ever inferred from an optional artifact?
 - Is there a directed crash-window test for every publication step?
+
+## Atomic log and hard-state batches
+
+`WalRaftNodeStores` owns one file and one coordinator shared by its non-cloneable
+log and hard-state handles. Its domain identity changes on each open. A batch
+validates and encodes all mutations, writes one contiguous RFWB record, calls
+`sync_data`, then advances both acknowledged views and returns a domain-scoped
+operation receipt. Successful legacy trait methods retain synchronous durability.
+A backend returning `None` from `persist_batch` has attempted no mutation.
+
+Any write or sync error poisons the coordinator and leaves acknowledged views at
+the previous receipt. The uncertain complete record may nevertheless survive;
+reopen verifies and synchronizes it before exposing recovery state. A partial
+final record is truncated and synchronized. Open also syncs the parent directory,
+including retries after a previous creation failed. Every split handle keeps the
+exclusive directory lock alive. Snapshot data without its WAL is rejected.
+
+The runtime currently combines only append-only application entries and ordinary
+commit-index changes in an unchanged term, vote, and configuration. It checks the
+receipt against the domain and both resulting store views before releasing any
+output. Any failure or inconsistent receipt poisons the runtime. Term/vote
+changes, conflicting suffixes, configuration transitions, and snapshot effects
+retain the established explicit fences. Snapshot publication still precedes log
+compaction. A client success additionally requires the application's durable
+completion; a WAL receipt alone never acknowledges application durability.

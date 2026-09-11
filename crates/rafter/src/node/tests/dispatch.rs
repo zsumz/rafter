@@ -118,7 +118,8 @@ fn step_batch_flushes_proposals_before_and_after_a_read_barrier() {
         vec![b"after-read".as_slice()]
     );
     assert!(batches[0].sequence < batches[1].sequence);
-    assert!(batches[1].sequence < batches[2].sequence);
+    assert_eq!(batches[1].sequence, batches[2].sequence,
+        "later useful data can confirm the existing read round without starting another contact round");
 }
 
 #[test]

@@ -35,7 +35,7 @@ fn scenarios() -> Vec<Scenario> {
 }
 
 #[test]
-fn production_transitions_match_pre_refactor_observations() {
+fn production_transitions_match_reviewed_observations() {
     let (observations, _) = observation::replay(scenarios());
     let expected = include_str!("../../src/node/tests/walkthroughs/observations.txt");
     // Report the first changed field without dumping a whole transcript.

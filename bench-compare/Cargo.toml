@@ -66,6 +66,10 @@ name = "bench-rafter-profile"
 path = "src/bin/bench-rafter-profile.rs"
 
 [[bin]]
+name = "bench-rafter-durable"
+path = "src/bin/bench-rafter-durable.rs"
+
+[[bin]]
 name = "check-transport-receive-memory"
 path = "src/bin/check-transport-receive-memory.rs"
 

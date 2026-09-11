@@ -12,6 +12,7 @@ enum RuntimeStoreOperation {
     PreLogHardStateWrite,
     LogSuffixAppend,
     BatchedLogSuffixAppend,
+    AtomicLogAndHardStateBatch,
     FinalHardStateWrite,
     SnapshotChunkStage,
     SnapshotPromote,
@@ -29,6 +30,7 @@ const EXPECTED_PS02_FAILURE_OPERATIONS: &[RuntimeStoreOperation] = &[
     RuntimeStoreOperation::PreLogHardStateWrite,
     RuntimeStoreOperation::LogSuffixAppend,
     RuntimeStoreOperation::BatchedLogSuffixAppend,
+    RuntimeStoreOperation::AtomicLogAndHardStateBatch,
     RuntimeStoreOperation::FinalHardStateWrite,
     RuntimeStoreOperation::SnapshotChunkStage,
     RuntimeStoreOperation::SnapshotPromote,
@@ -36,6 +38,12 @@ const EXPECTED_PS02_FAILURE_OPERATIONS: &[RuntimeStoreOperation] = &[
 ];
 
 const PS02_FAILURE_COVERAGE: &[FailureCoverage] = &[
+    FailureCoverage {
+        operation: RuntimeStoreOperation::AtomicLogAndHardStateBatch,
+        path: "crates/rafter-runtime/src/tests/atomic_batch.rs",
+        source: include_str!("atomic_batch.rs"),
+        symbol: "failed_atomic_publication_suppresses_outputs_and_poisons_runtime",
+    },
     FailureCoverage {
         operation: RuntimeStoreOperation::PreLogHardStateWrite,
         path: "crates/rafter-runtime/src/tests/hard_state/voting.rs",

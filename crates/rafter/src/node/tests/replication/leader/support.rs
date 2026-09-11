@@ -31,13 +31,6 @@ pub(super) fn node_with_max_append_entries_bytes(id: u64, peers: &[u64], max_byt
     )
 }
 
-pub(super) fn append_entries_to(outputs: &[Output], to: NodeId) -> &AppendEntries {
-    append_entries_batches_to(outputs, to)
-        .first()
-        .copied()
-        .expect("expected append entries for peer")
-}
-
 pub(super) fn append_entries_batches_to(outputs: &[Output], to: NodeId) -> Vec<&AppendEntries> {
     outputs
         .iter()

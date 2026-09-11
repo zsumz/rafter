@@ -50,7 +50,8 @@ fn correlated_write_responses_match_real_follower() {
                         panic!("expected append response")
                     };
                     assert_eq!(response.match_index, LogIndex(4));
-                    assert_eq!(response.sequence, if batch { 2 } else { 3 });
+                    // Payload-only replication reuses the current contact round.
+                    assert_eq!(response.sequence, 1);
                 }
             }
             for output in step.outputs {
@@ -83,7 +84,7 @@ fn correlated_write_responses_match_real_follower() {
 
 #[test]
 #[should_panic(expected = "no emitted append matches this walkthrough reply")]
-fn write_cannot_echo_the_noop_sequence_for_a_later_index() {
+fn write_cannot_echo_a_contact_round_that_was_never_sent() {
     let story = observation::run(
         &election_write::election_and_write(),
         false,
@@ -93,7 +94,7 @@ fn write_cannot_echo_the_noop_sequence_for_a_later_index() {
     Stimulus::Reply(AppendReply {
         follower: NodeId(2),
         through: LogIndex(4),
-        sequence: Some(1),
+        sequence: Some(2),
         outcome: ReplyOutcome::Accepted,
     })
     .resolve(&sent);

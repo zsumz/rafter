@@ -7,6 +7,10 @@
 mod contract;
 mod error;
 mod file;
+mod journal;
+mod journal_checkpoint;
+mod journal_error;
+mod journal_recovery;
 mod memory;
 
 pub use contract::RaftHardStateStore;
@@ -19,4 +23,12 @@ mod file_test;
 #[cfg(test)]
 mod memory_test;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
+
+pub use journal::JournalRaftHardStateStore;
+pub use journal_error::OpenJournalRaftHardStateStoreError;
+
+#[cfg(test)]
+mod journal_checkpoint_test;
+#[cfg(test)]
+mod journal_test;

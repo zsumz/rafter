@@ -1,8 +1,8 @@
 //! The persist-before-output fence around one kernel step or batch.
 //!
-//! Every public way to drive the kernel funnels through one sequence here:
-//! step the kernel, persist what changed, and only then release outputs. A
-//! write that fails poisons the runtime instead of returning, because past
+//! Synchronous steps and prepared persistence work share the sequence here:
+//! persist what changed before releasing dependent outputs. A write that
+//! fails poisons the runtime and releases no dependent outputs, because past
 //! that point in-memory state describes a log the medium does not hold.
 
 use rafter::{
@@ -18,6 +18,7 @@ use crate::hard_state::hard_state_for_node;
 use crate::log_repair::{self, repair_persisted_log_suffix};
 use crate::{DurableRaftNode, RaftRuntimeError, RaftRuntimeFatalError};
 
+mod atomic_batch;
 mod snapshot;
 
 impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotChunkSource>
@@ -152,8 +153,25 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
 
         let persisted_before = self.hard_state_store.current();
         let commit_floor = self.node.commit_index();
-        let outputs = step(&mut self.node);
+        let outputs =
+            rafter_storage::telemetry::measure(rafter_storage::telemetry::Stage::Kernel, || {
+                step(&mut self.node)
+            });
+        self.persist_stepped(persisted_before, commit_floor, outputs)
+    }
+
+    pub(crate) fn persist_stepped(
+        &mut self,
+        persisted_before: RaftHardState,
+        commit_floor: LogIndex,
+        outputs: Vec<RaftOutput>,
+    ) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
         let current = hard_state_for_node(&self.node);
+        match self.try_atomic_append_batch(persisted_before, current, &outputs) {
+            Ok(true) => return Ok(self.resolve_snapshot_chunk_sends(outputs)),
+            Ok(false) => {}
+            Err(error) => return Err(self.poison(error)),
+        }
         // A durable suffix may still contain entries this step replaces.
         // Fence term/vote now, but preserve the previous committed prefix
         // until every required snapshot and log mutation is durable.

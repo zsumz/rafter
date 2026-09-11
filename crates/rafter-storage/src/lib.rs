@@ -1,11 +1,7 @@
 //! Durable storage for the Rafter consensus runtime.
 //!
-//! This crate owns the persistence contract of a durable Raft node: the
-//! hard-state store, the append-only log segment, and the snapshot store,
-//! each defined as a trait with file-backed and in-memory implementations.
-//! It does not run Raft, apply committed entries, own application state, choose
-//! transport behavior, or decide when a datastore may serve traffic after
-//! recovery; those obligations sit in the runtime and application layers.
+//! This crate owns hard-state, log, and snapshot persistence contracts and their
+//! implementations. Raft execution and application recovery live in other layers.
 //! Every on-disk format is a versioned, checksummed envelope. This pre-release
 //! crate supports the current first-public storage formats only; unsupported
 //! versions fail loudly, and new bytes require new envelope versions plus an
@@ -55,7 +51,6 @@
 //! assert_eq!(log_segment.next_index(), LogIndex(2));
 //! assert_eq!(log_segment.replay_entries().len(), 1);
 //! ```
-//!
 //! # Format Compatibility
 //!
 //! Current writers emit version 1 hard-state, log-entry, snapshot, and pending
@@ -63,9 +58,7 @@
 //! intentionally unsupported before the first public compatibility promise.
 //! Unknown versions return typed errors rather than being interpreted as older
 //! meanings.
-//!
 //! # Integrity Model
-//!
 //! Storage checksums are CRC32 corruption checks. They are useful for torn
 //! writes, partial files, stale manifests, and accidental media corruption in
 //! non-Byzantine deployments, but they are not tamper evidence against an
@@ -74,24 +67,26 @@
 //! snapshot format carry and verify a stronger digest.
 //!
 //! # Operational Errors
-//!
 //! Filesystem failures retain their original [`std::io::Error`] and expose it
 //! through [`std::error::Error::source`]. [`StorageIoError`] keeps that source
 //! cloneable for runtime poison state while preserving its kind and OS code.
 //!
 //! # File-backed Ownership
 //!
-//! [`FileRaftNodeStores`] acquires exclusive cooperating-process ownership of a
-//! replica directory before opening or repairing its stores. Direct file-store
+//! [`FileRaftNodeStores`] and [`JournalRaftNodeStores`] exclusively own a replica
+//! directory before opening or repairing stores. Direct file-store
 //! constructors support custom layouts but require caller-enforced exclusivity.
 
 mod checksum;
+/// Atomic log/hard-state persistence contracts and the opt-in shared WAL.
+pub mod durable_batch;
 mod durable_fs;
 mod file_node_stores;
 mod file_store_health;
 mod file_store_ownership;
 mod format;
 mod io_error;
+mod journal_node_stores;
 mod raft_hard_state_codec;
 mod raft_hard_state_store;
 mod raft_log_compaction;
@@ -99,6 +94,8 @@ mod raft_log_entry_codec;
 mod raft_log_segment;
 mod raft_snapshot_codec;
 mod raft_snapshot_store;
+/// Optional per-thread persistence diagnostics.
+pub mod telemetry;
 
 #[cfg(test)]
 mod raft_hard_state_codec_test;
@@ -108,13 +105,15 @@ mod storage_failpoint_test;
 pub use checksum::crc32;
 pub use file_node_stores::{FileRaftNodeStores, OpenFileRaftNodeStoresError};
 pub use io_error::StorageIoError;
+pub use journal_node_stores::{JournalRaftNodeStores, OpenJournalRaftNodeStoresError};
 pub use raft_hard_state_codec::{
     decode_raft_hard_state, encode_raft_hard_state, DecodeRaftHardStateError, RaftHardState,
     RAFT_HARD_STATE_MAGIC, RAFT_HARD_STATE_VERSION,
 };
 pub use raft_hard_state_store::{
-    FileRaftHardStateStore, InMemoryRaftHardStateStore, OpenRaftHardStateStoreError,
-    RaftHardStateStore, RaftHardStateStoreWriteError,
+    FileRaftHardStateStore, InMemoryRaftHardStateStore, JournalRaftHardStateStore,
+    OpenJournalRaftHardStateStoreError, OpenRaftHardStateStoreError, RaftHardStateStore,
+    RaftHardStateStoreWriteError,
 };
 pub use raft_log_entry_codec::{
     decode_raft_log_entry, encode_borrowed_raft_log_entry, encode_raft_log_entry,

@@ -4,6 +4,7 @@
 //! truncation and prefix compaction. Concrete state lives in `state`; streamed
 //! replacement preparation and marker publication are delegated to `rewrite`.
 
+use crate::telemetry::{measure, Stage, Timer};
 use std::io::Write;
 
 use rafter::LogIndex;
@@ -36,6 +37,7 @@ impl RaftLogSegment for FileRaftLogSegment {
             return Err(RaftLogSegmentAppendError::StoreRequiresReopen);
         }
 
+        let encode_timer = Timer::start(Stage::LogEncode);
         let mut bytes = Vec::new();
         let mut owned_entries = Vec::new();
         let mut expected_index = self.next_index();
@@ -56,14 +58,13 @@ impl RaftLogSegment for FileRaftLogSegment {
             owned_entries.push(PersistedRaftLogEntry::from(entry));
             expected_index = expected_index.next();
         }
+        drop(encode_timer);
         if owned_entries.is_empty() {
             return Ok(());
         }
 
-        if let Err(error) = self
-            .file
-            .write_all(&bytes)
-            .and_then(|()| self.file.sync_data())
+        if let Err(error) = measure(Stage::LogWrite, || self.file.write_all(&bytes))
+            .and_then(|()| measure(Stage::LogSync, || self.file.sync_data()))
         {
             let failure = self.record_io_failure("append raft log entries", error);
             return Err(RaftLogSegmentAppendError::Io {

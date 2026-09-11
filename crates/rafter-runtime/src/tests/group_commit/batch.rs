@@ -10,6 +10,18 @@ use super::*;
 fn a_batched_step_appends_the_whole_suffix_in_one_durable_flush() {
     let (segment, appends, truncates) = CountingLogSegment::new();
     let mut runtime = elected_leader_with_log_segment(segment);
+    runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(3),
+            message: Message::AppendEntriesResponse(rafter::AppendEntriesResponse {
+                term: runtime.current_term(),
+                follower_id: RaftNodeId(3),
+                success: true,
+                match_index: rafter::LogIndex(1),
+                sequence: 0,
+            }),
+        })
+        .expect("initial leadership probe is confirmed before proposing data");
     let appends_after_election = appends.get();
 
     let outputs = runtime

@@ -137,11 +137,9 @@ Membership: voters 1, 2, 3.
 **Ordered outputs**
 
 1. Assign proposal 41 to index 3 / term 2.
-2. Send to node 2: append #2; term 2; previous 2 / term 2; entry 3 (term 2); leader commit 2.
-3. Send to node 3: append #2; term 2; previous 1 / term 1; no entries; leader commit 2.
-4. Assign proposal 42 to index 4 / term 2.
-5. Send to node 2: append #3; term 2; previous 3 / term 2; entry 4 (term 2); leader commit 2.
-6. Send to node 3: append #3; term 2; previous 1 / term 1; no entries; leader commit 2.
+2. Send to node 2: append #1; term 2; previous 2 / term 2; entry 3 (term 2); leader commit 2.
+3. Assign proposal 42 to index 4 / term 2.
+4. Send to node 2: append #1; term 2; previous 3 / term 2; entry 4 (term 2); leader commit 2.
 
 **Why:** Appending a local proposal only assigns its index. A later quorum acknowledgement permits commitment and command dispatch.
 
@@ -151,7 +149,7 @@ Membership: voters 1, 2, 3.
 
 **Input**
 
-1. From node 2: append #3 accepted; term 2; matching prefix through 4.
+1. From node 2: append #1 accepted; term 2; matching prefix through 4.
 
 **Changes**
 
@@ -164,7 +162,7 @@ Membership: voters 1, 2, 3.
 1. Dispatch command “first” at index 3.
 2. Dispatch command “second” at index 4.
 
-**Why:** The reply echoes the emitted frame that actually ends at index 4. Its sequence is selected from the traffic, so single steps and batching may echo different rounds.
+**Why:** The reply echoes the emitted frame that actually ends at index 4. Its sequence is selected from the traffic. Payload-only replication reuses the existing contact round.
 
 ### Injected stale response cannot regress progress
 
@@ -192,28 +190,15 @@ once per input. The full artifact keeps both sets of boundaries.
 **Single-call ordered outputs**
 
 1. Assign proposal 41 to index 3 / term 2.
-2. Send to node 2: append #2; term 2; previous 2 / term 2; entry 3 (term 2); leader commit 2.
-3. Send to node 3: append #2; term 2; previous 1 / term 1; no entries; leader commit 2.
-4. Assign proposal 42 to index 4 / term 2.
-5. Send to node 2: append #3; term 2; previous 3 / term 2; entry 4 (term 2); leader commit 2.
-6. Send to node 3: append #3; term 2; previous 1 / term 1; no entries; leader commit 2.
+2. Send to node 2: append #1; term 2; previous 2 / term 2; entry 3 (term 2); leader commit 2.
+3. Assign proposal 42 to index 4 / term 2.
+4. Send to node 2: append #1; term 2; previous 3 / term 2; entry 4 (term 2); leader commit 2.
 
 **Batch ordered outputs**
 
 1. Assign proposal 41 to index 3 / term 2.
 2. Assign proposal 42 to index 4 / term 2.
-3. Send to node 2: append #2; term 2; previous 2 / term 2; entries 3–4 (term 2); leader commit 2.
-4. Send to node 3: append #2; term 2; previous 1 / term 1; no entries; leader commit 2.
-
-**New matching prefix advances commitment**
-
-**Single-input exchange**
-
-1. From node 2: append #3 accepted; term 2; matching prefix through 4.
-
-**Batched exchange**
-
-1. From node 2: append #2 accepted; term 2; matching prefix through 4.
+3. Send to node 2: append #1; term 2; previous 2 / term 2; entries 3–4 (term 2); leader commit 2.
 
 ## A rejected vote still changes authority
 

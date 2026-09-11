@@ -36,7 +36,7 @@ pub(super) fn election_and_write() -> Scenario {
         ),
         Step::replies(
             "New matching prefix advances commitment",
-            "The reply echoes the emitted frame that actually ends at index 4. Its sequence is selected from the traffic, so single steps and batching may echo different rounds.",
+            "The reply echoes the emitted frame that actually ends at index 4. Its sequence is selected from the traffic. Payload-only replication reuses the existing contact round.",
             vec![AppendReply::accepted(NodeId(2), LogIndex(4))],
         ),
         Step::inputs(

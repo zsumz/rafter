@@ -5,6 +5,7 @@
 
 use crate::{AppendEntries, LogIndex, Message, NodeId, SharedEntries};
 
+mod broadcast;
 mod cache;
 
 use super::super::state::ProgressMode;
@@ -34,37 +35,9 @@ struct WindowBudget {
 }
 
 impl Node {
-    pub(in crate::node) fn broadcast_append_entries(&mut self) -> Vec<Output> {
-        let mut outputs = Vec::new();
-        self.broadcast_append_entries_into(&mut outputs);
-        outputs
-    }
-
-    pub(in crate::node) fn broadcast_append_entries_into(&mut self, outputs: &mut Vec<Output>) {
+    fn begin_contact_round(&mut self) {
         self.leader.heartbeat_sequence += 1;
         self.leader.heartbeat_elapsed = 0;
-        self.reconcile_replication_progress();
-
-        let local_id = self.id();
-        let replica_count = self.leader.progress.replica_count();
-        outputs.reserve(replica_count.saturating_sub(1));
-
-        let mut batch_cache = LogBatchCache::default();
-        for slot in 0..replica_count {
-            let Some(follower_id) = self.leader.progress.replica_id_at(slot) else {
-                continue;
-            };
-            if follower_id == local_id {
-                continue;
-            }
-
-            self.replicate_to_follower_with_cache_fresh(
-                follower_id,
-                ReplicationDemand::EnsureContact,
-                outputs,
-                &mut batch_cache,
-            );
-        }
     }
 
     /// Sends whatever the follower's progress mode admits.
