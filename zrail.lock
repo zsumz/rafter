@@ -1246,7 +1246,7 @@ inputs_sha256 = "d33a14fc45f06272ebe9cdfc49dc6efa4010f66a1dac5154097a64454cb9295
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "b3e9dd2700721b5bb92ba219bd3a06ed196cedf19f8ae580a24330cc476a9231"
+inputs_sha256 = "845b28b2dbc70c360ff71a968ac28da2403c6a5a4594d78838818e6d8195d1c1"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
