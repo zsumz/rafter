@@ -75,9 +75,10 @@ the deterministic invariant verdict.
 - C1 streaming snapshots are outside this completed initial scope. A future
   public streaming interface remains additive; the existing bounded
   descriptor/chunk path and its current contracts are unchanged.
-- C2 replication pipelining is outside this completed initial scope. A future
-  pipelined replication interface remains additive; no compatibility promise
-  is inferred here.
+- C2 replication pipelining is now an opt-in additive runtime interface. Its
+  bounded persistence worker removes the benchmark's private executor, while a
+  complete managed durable-service composition remains future additive work;
+  no compatibility promise is inferred for that composition.
 - `rafter-sim` no longer depends on a hidden core-crate feature. The kernel
   self-check it needed is the documented public `Node::validate_derived_state`,
   and `internal-test-hooks` is deleted from `rafter`. The crate stays
