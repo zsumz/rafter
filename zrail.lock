@@ -16,8 +16,8 @@ targets = 148
 physical_rust_files = 1986
 base_source_contexts = 3396
 derived_source_contexts = 0
-source_facts = 732856
-projection_queries = 2887896
+source_facts = 732863
+projection_queries = 2887874
 projected_facts = 2511
 unresolved_bindings = 0
 analyzer_semantics = 6
@@ -1246,7 +1246,7 @@ inputs_sha256 = "d33a14fc45f06272ebe9cdfc49dc6efa4010f66a1dac5154097a64454cb9295
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "baacdff871db5b66fbb01faba9439b904319c1dd60c06e81d0a1f4130ae282a9"
+inputs_sha256 = "1ab5436b88ade3557eccadd4afdd825265bd934ec932fff246ad83f4663f2ba8"
 
 [[macro_implementation]]
 package = "rafter-multiraft"

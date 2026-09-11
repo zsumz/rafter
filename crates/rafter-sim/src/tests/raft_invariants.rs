@@ -170,7 +170,7 @@ fn committed_prefix_is_stable_across_failover() {
     cluster.tick(NodeId(2));
     assert_eq!(
         cluster.drop_matching(deliver_append_entries(NodeId(2), NodeId(1))),
-        2
+        1
     );
     assert_eq!(
         cluster.deliver_matching(deliver_append_entries(NodeId(2), NodeId(3))),
