@@ -434,8 +434,8 @@ A storage change is incomplete until its review answers all of these:
 
 ## Atomic log and hard-state batches
 
-`WalRaftNodeStores` owns one file and one coordinator shared by its non-cloneable
-log and hard-state handles. Its domain identity changes on each open. A batch
+`WalRaftNodeStores` owns one active WAL file and one coordinator shared by its
+non-cloneable log and hard-state handles. Its domain identity changes on each open. A batch
 validates and encodes all mutations, writes one contiguous RFWB record, calls
 `sync_data`, then advances both acknowledged views and returns a domain-scoped
 operation receipt. Successful legacy trait methods retain synchronous durability.
@@ -447,6 +447,26 @@ reopen verifies and synchronizes it before exposing recovery state. A partial
 final record is truncated and synchronized. Open also syncs the parent directory,
 including retries after a previous creation failed. Every split handle keeps the
 exclusive directory lock alive. Snapshot data without its WAL is rejected.
+
+After a compaction record is synchronized, the shared WAL checkpoints the exact
+acknowledged hard state, compacted boundary, covering snapshot identity, retained
+suffix (including uncommitted entries), and operation number. It synchronizes
+the immutable checkpoint and a fresh generation segment, synchronizes their
+directory entries, then replaces and directory-synchronizes the manifest that
+selects them. That manifest is the reclamation authority. Only after it is
+durable may the prior segment/checkpoint or legacy `hard-state` file be deleted.
+Deletion is cleanup and is directory-synchronized.
+
+A snapshot-binding or preparation failure occurs after logical compaction has
+committed but before physical history is reclaimed, so callers receive
+`CompactedButReclamationFailed` and must reopen. Failure after manifest rename is
+also ambiguous to the live writer and requires reopen; either the old WAL (whose
+compaction record is durable) or the new generation is recoverable after a real
+crash. Failure after the manifest directory fence leaves the new generation
+authoritative. Recovery validates the manifest-selected checkpoint and segment
+before removing bounded obsolete residue and never falls back from selected
+corruption. Publication numbers continue across generations, while the live
+persistence domain remains new on every open.
 
 The runtime currently combines only append-only application entries and ordinary
 commit-index changes in an unchanged term, vote, and configuration. It checks the

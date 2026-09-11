@@ -1,6 +1,7 @@
 //! One coordinator owns the durable file, acknowledged views, and poison state.
 use super::{
     codec::{self, Record},
+    reclamation::{self, Authority},
     DurableReceipt, PersistenceDomain, RaftPersistenceBatchError as Error,
 };
 use crate::telemetry::{measure, Stage};
@@ -18,6 +19,8 @@ pub(super) type Shared = Arc<Mutex<State>>;
 pub(super) struct State {
     pub file: File,
     pub path: PathBuf,
+    pub authority: Authority,
+    pub snapshot_directory: PathBuf,
     pub domain: PersistenceDomain,
     pub hard: RaftHardState,
     pub entries: Vec<PersistedRaftLogEntry>,
@@ -151,5 +154,32 @@ impl State {
         self.apply(record);
         self.poisoned = false;
         Ok(self.receipt())
+    }
+
+    pub(super) fn reclaim(&mut self) -> Result<(), reclamation::Failure> {
+        self.poisoned = true;
+        let snapshot = reclamation::snapshot_reference(&self.snapshot_directory, self.compacted)
+            .map_err(|source| reclamation::Failure {
+                operation: "bind WAL checkpoint to current snapshot",
+                source,
+            })?;
+        let prepared = reclamation::prepare(self, snapshot)?;
+        reclamation::publish_manifest(&self.path, &prepared.manifest)?;
+        // Checkpoint, fresh segment header, and manifest temp are three
+        // additional successful data-sync calls beyond the compaction record.
+        self.syncs += 3;
+
+        let old_file = std::mem::replace(&mut self.file, prepared.segment);
+        drop(old_file);
+        self.path = prepared.segment_path;
+        self.authority = Authority::Generation(prepared.manifest.generation);
+
+        let directory = self.path.parent().ok_or_else(|| reclamation::Failure {
+            operation: "resolve WAL cleanup directory",
+            source: codec::invalid("opened WAL path has no parent"),
+        })?;
+        reclamation::cleanup(directory, &self.authority, true)?;
+        self.poisoned = false;
+        Ok(())
     }
 }

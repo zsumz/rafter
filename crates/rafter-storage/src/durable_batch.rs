@@ -7,6 +7,7 @@ mod contract;
 mod error;
 mod handles;
 mod open;
+mod reclamation;
 mod state;
 mod stores;
 

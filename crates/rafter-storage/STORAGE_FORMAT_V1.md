@@ -37,6 +37,9 @@ same bytes: `encode(decode(bytes)) == bytes`.
 | Artifact | Magic | Version | Stable path or container |
 |---|---:|---:|---|
 | Shared Raft WAL (opt-in) | `RFWB` | `1` | `hard-state` |
+| Shared WAL checkpoint | `RFWC` | `1` | `raft-wal-checkpoint-*.rfwc` |
+| Shared WAL generation segment | `RFWS` | `1` | `raft-wal-segment-*.rfwb` |
+| Shared WAL current manifest | `RFWM` | `1` | `raft-wal-current` |
 | Hard-state journal (opt-in) | `RFHJ` | `1` | `hard-state` |
 | Hard-state envelope | `RFHS` | `1` | `hard-state` |
 | Log-entry envelope | `RFLE` | `1` | Inside one log frame |
@@ -316,6 +319,76 @@ regress. Commit cannot exceed the resulting log or compacted boundary.
 An incomplete final record is discarded as a unit. A complete invalid header,
 body, checksum, operation sequence, or logical mutation fails recovery. The
 header checksum prevents a damaged length from silently hiding complete records.
-The initial header must be complete. This initial opt-in implementation records
-compaction markers but does not reclaim earlier WAL records; use bounded
-experiments until checkpoint reclamation is available.
+The initial header must be complete. Before the first prefix compaction, records
+are appended to `hard-state` exactly as in the original RFWB v1 layout.
+
+Prefix compaction first appends and synchronizes its ordinary RFWB record. It
+then materializes the resulting live state into a new generation:
+
+```text
+raft-wal-checkpoint-{generation:020}.rfwc
+raft-wal-segment-{generation:020}.rfwb
+raft-wal-current
+```
+
+The checksummed `RFWC 00 00 00 01` checkpoint records the generation, last
+operation number, compacted boundary, complete RFHS envelope, current snapshot
+boundary/term/transfer identity, and every retained RFLE envelope. Retained
+entries must be contiguous immediately above the compacted boundary. The
+checkpoint is immutable and must be complete; truncation or corruption of a
+manifest-selected checkpoint fails recovery.
+
+```text
+magic                    [8]   "RFWC 00 00 00 01"
+generation               u64   starts at 1
+operation                u64   latest included publication
+compacted_through        u64
+hard_state               [51]  complete RFHS envelope
+snapshot_present         u8    canonical value 1
+snapshot_index           u64
+snapshot_term            u64
+snapshot_transfer_id     u64
+retained_entry_count     u64
+retained_entries         repeated { envelope_length u32, RFLE envelope }
+checkpoint_crc32         u32   CRC32 of every preceding checkpoint byte
+end_magic                [4]   "ENDC"
+```
+
+The fresh segment begins with a checksummed `RFWS 00 00 00 01` header binding
+its generation and preceding operation number, followed by ordinary RFWB
+records. Operation numbering therefore continues across checkpoints. Only an
+incomplete final record of the selected segment may be discarded.
+
+```text
+magic                    [8]   "RFWS 00 00 00 01"
+generation               u64
+preceding_operation      u64
+header_crc32             u32   CRC32 of the preceding 24 bytes
+records                   repeated RFWB records
+```
+
+The fixed-size, checksummed `RFWM 00 00 00 01` manifest names the selected
+generation, operation, and compacted boundary. A selected checkpoint and segment
+must agree with all three fields. Recovery never falls back from a corrupt or
+missing manifest-selected file to an older generation or to `hard-state`.
+
+```text
+magic                    [8]   "RFWM 00 00 00 01"
+generation               u64
+operation                u64
+compacted_through        u64
+manifest_crc32           u32   CRC32 of the preceding 32 bytes
+```
+
+Checkpoint and segment files are synchronized before the manifest is replaced
+and its parent directory synchronized. Only then are `hard-state`, the previous
+generation, and abandoned preparation files removed. Cleanup is directory-
+synchronized. A crash can therefore leave bounded obsolete residue, but reopen
+selects exactly one published generation and removes the residue only after
+validating that authority. Each later compaction repeats this protocol, so Raft
+WAL bytes and replay work are proportional to the retained suffix plus writes
+since the latest compaction, rather than the replica's lifetime write count.
+
+The snapshot reference binds reclamation to a durably published snapshot that
+covers the compacted prefix. Snapshot files and application-state durability
+remain separate artifacts with their own retention and reclamation policies.

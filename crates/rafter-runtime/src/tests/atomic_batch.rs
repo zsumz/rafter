@@ -74,6 +74,52 @@ fn follower_append_and_commit_share_one_sync_then_recover_applied_entry() {
     )));
 }
 
+#[test]
+fn wal_checkpointed_runtime_recovers_snapshot_boundary() {
+    let dir = TestDirectory::new("atomic-checkpoint");
+    let (mut hard, log, snapshots) = WalRaftNodeStores::open(dir.path()).unwrap().into_parts();
+    hard.write_hard_state(RaftHardState {
+        current_term: Term(2),
+        ..RaftHardState::default()
+    })
+    .unwrap();
+    let mut node = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(2, &[1, 3]),
+        hard,
+        log,
+        snapshots,
+    )
+    .unwrap();
+    node.step(committed_append()).unwrap();
+    node.compact_log_with_snapshot(snapshot::raft_snapshot_for_writer(
+        1,
+        2,
+        2,
+        2,
+        b"application state",
+    ))
+    .unwrap();
+    assert_eq!(node.snapshot_index(), LogIndex(1));
+    assert!(node.log_segment.replay_entries().is_empty());
+    drop(node);
+    assert!(dir.path().join("raft-wal-current").exists());
+    assert!(!dir.path().join("hard-state").exists());
+
+    let (hard, log, snapshots) = WalRaftNodeStores::open(dir.path()).unwrap().into_parts();
+    let (recovered, outputs) = DurableRaftNode::recover_with_storage_and_snapshot_store(
+        raft_config(2, &[1, 3]),
+        hard,
+        log,
+        snapshots,
+    )
+    .unwrap()
+    .into_parts();
+    assert_eq!(recovered.snapshot_index(), LogIndex(1));
+    assert_eq!(recovered.commit_index(), LogIndex(1));
+    assert!(recovered.log_segment.replay_entries().is_empty());
+    assert!(outputs.is_empty());
+}
+
 #[derive(Debug)]
 struct RefusingBatchLog {
     inner: WalRaftLogSegment,

@@ -16,8 +16,10 @@ use rafter::{
     SnapshotGroupId, StagedSnapshotChunk, Term,
 };
 use rafter_storage::{
-    decode_raft_hard_state, decode_raft_log_entry, decode_raft_snapshot, encode_raft_hard_state,
-    encode_raft_log_entry, encode_raft_snapshot, FileRaftHardStateStore, FileRaftLogSegment,
+    decode_raft_hard_state, decode_raft_log_entry, decode_raft_snapshot,
+    durable_batch::{RaftPersistenceBatch, WalRaftNodeStores},
+    encode_raft_hard_state, encode_raft_log_entry, encode_raft_snapshot,
+    BorrowedPersistedRaftLogEntry, FileRaftHardStateStore, FileRaftLogSegment,
     FileRaftSnapshotStore, PersistedRaftLogEntry, PersistedRaftSnapshot, RaftHardState,
     RaftHardStateStore, RaftLogSegment, RaftSnapshotStore,
 };
@@ -30,6 +32,9 @@ const SNAPSHOT: &str = include_str!("vectors/v1/snapshot-empty.hex");
 const SNAPSHOT_MANIFEST: &str = include_str!("vectors/v1/snapshot-manifest.hex");
 const PENDING_TRANSFER: &str = include_str!("vectors/v1/pending-transfer.hex");
 const PENDING_TRANSFER_BODY: &str = include_str!("vectors/v1/pending-transfer-body.hex");
+const WAL_CHECKPOINT: &str = include_str!("vectors/v1/wal-checkpoint.hex");
+const WAL_MANIFEST: &str = include_str!("vectors/v1/wal-manifest.hex");
+const WAL_SEGMENT: &str = include_str!("vectors/v1/wal-segment.hex");
 
 static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -187,6 +192,61 @@ fn pending_transfer_manifest_and_body_match_the_v1_vectors() {
             .expect("pending transfer body reads"),
         PENDING_TRANSFER_BODY,
     );
+}
+
+#[test]
+fn shared_wal_generation_matches_the_v1_vectors() {
+    let directory = TestDirectory::new("shared-wal-generation-vectors");
+    let (hard_store, mut log, mut snapshots) = WalRaftNodeStores::open(directory.path())
+        .expect("shared WAL opens")
+        .into_parts();
+    let entries = [
+        PersistedRaftLogEntry::application(LogIndex(1), Term(7), b"one".to_vec()),
+        PersistedRaftLogEntry::application(LogIndex(2), Term(7), b"two".to_vec()),
+    ];
+    let borrowed: Vec<_> = entries
+        .iter()
+        .map(BorrowedPersistedRaftLogEntry::from)
+        .collect();
+    let hard = RaftHardState {
+        current_term: Term(7),
+        voted_for: Some(NodeId(3)),
+        commit_index: LogIndex(1),
+        committed_configuration: None,
+    };
+    log.persist_batch(
+        &hard_store.persistence_domain().expect("shared domain"),
+        RaftPersistenceBatch {
+            truncate_from: None,
+            entries: &borrowed,
+            hard_state: Some(hard),
+        },
+    )
+    .expect("batch persists")
+    .expect("WAL supports batches");
+    snapshots
+        .write_snapshot(PersistedRaftSnapshot {
+            metadata: snapshot_metadata(NodeId(2), LogIndex(1), Term(7), Term(7)),
+            application_payload: Vec::new(),
+        })
+        .expect("snapshot publishes");
+    log.compact_prefix_through(LogIndex(1))
+        .expect("WAL compacts");
+
+    for (name, vector) in [
+        ("raft-wal-current", WAL_MANIFEST),
+        (
+            "raft-wal-checkpoint-00000000000000000001.rfwc",
+            WAL_CHECKPOINT,
+        ),
+        ("raft-wal-segment-00000000000000000001.rfwb", WAL_SEGMENT),
+    ] {
+        assert_vector(
+            name,
+            &fs::read(directory.path().join(name)).unwrap(),
+            vector,
+        );
+    }
 }
 
 fn snapshot_metadata(

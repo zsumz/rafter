@@ -1,8 +1,8 @@
 //! Exclusive replica ownership for the opt-in shared log/hard-state WAL.
-use super::{codec, open, WalRaftHardStateStore, WalRaftLogSegment};
+use super::{codec, open, reclamation, WalRaftHardStateStore, WalRaftLogSegment};
 use crate::{
     file_node_stores::ownership_error, file_store_ownership::acquire_file_store_ownership,
-    FileRaftSnapshotStore,
+    FileRaftSnapshotStore, RaftSnapshotStore,
 };
 use std::{
     io,
@@ -10,11 +10,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Opt-in RFWB v1 WAL with shared hard-state/log views and the existing snapshot store.
+/// Opt-in RFWB WAL with shared hard-state/log views and the existing snapshot store.
 ///
-/// No existing directory is migrated. The WAL occupies `hard-state`, so legacy
-/// backends reject its distinct header. Physical WAL reclamation is not yet
-/// provided; snapshot/compaction operations retain their explicit durability order.
+/// No existing directory is migrated. The initial WAL generation occupies
+/// `hard-state`, so legacy backends reject its distinct header. Prefix compaction
+/// checkpoints the live state into manifest-selected generation files before
+/// reclaiming obsolete WAL history.
 #[derive(Debug)]
 pub struct WalRaftNodeStores {
     hard: WalRaftHardStateStore,
@@ -35,7 +36,9 @@ impl WalRaftNodeStores {
                 "legacy log exists; WAL conversion is not implicit",
             ));
         }
-        if !directory.join("hard-state").exists()
+        let wal_exists =
+            directory.join("hard-state").exists() || reclamation::manifest_path(directory).exists();
+        if !wal_exists
             && directory.join("snapshots").exists()
             && std::fs::read_dir(directory.join("snapshots"))?
                 .next()
@@ -43,12 +46,14 @@ impl WalRaftNodeStores {
         {
             return Err(codec::invalid("snapshot data exists without its WAL"));
         }
+        let mut snapshots =
+            FileRaftSnapshotStore::open(directory.join("snapshots")).map_err(io::Error::other)?;
+        let current_snapshot = snapshots.current_snapshot();
         let shared = Arc::new(Mutex::new(open::open(
             &directory.join("hard-state"),
             ownership.clone(),
+            current_snapshot.as_ref(),
         )?));
-        let mut snapshots =
-            FileRaftSnapshotStore::open(directory.join("snapshots")).map_err(io::Error::other)?;
         snapshots.attach_ownership(ownership);
         Ok(Self {
             hard: WalRaftHardStateStore(shared.clone()),
