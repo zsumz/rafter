@@ -48,7 +48,7 @@ fn three_node_proposal_appends_then_completes_after_quorum_ack() {
         })
         .expect("request vote is emitted");
 
-    let _ = group
+    let report = group
         .step(GroupInput::PeerMessage {
             envelope: PeerEnvelope {
                 group_id: 7,
@@ -62,6 +62,30 @@ fn three_node_proposal_appends_then_completes_after_quorum_ack() {
             },
         })
         .expect("vote grant elects leader");
+    let probe_sequence = report
+        .peer_messages
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            Message::AppendEntries(request) if envelope.to == NodeId(2) => Some(request.sequence),
+            _ => None,
+        })
+        .expect("new leader probes follower two");
+    group
+        .step(GroupInput::PeerMessage {
+            envelope: PeerEnvelope {
+                group_id: 7,
+                from: NodeId(2),
+                to: NodeId(1),
+                message: Message::AppendEntriesResponse(AppendEntriesResponse {
+                    term: vote_term,
+                    follower_id: NodeId(2),
+                    success: true,
+                    match_index: LogIndex(1),
+                    sequence: probe_sequence,
+                }),
+            },
+        })
+        .expect("follower acknowledges the initial leadership probe");
     let leader_metrics = group.metrics();
     assert_eq!(leader_metrics.role, Role::Leader);
     assert_eq!(leader_metrics.replication.len(), 2);
