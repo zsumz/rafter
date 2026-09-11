@@ -1251,7 +1251,7 @@ inputs_sha256 = "6f81f874fc6b985a6e94e0c01eaadfb0726fcbb6176319cde3c318462d08152
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "24d22d51d8779fa8a1500365f5dab867960cc249c1bb762037018da7b9f11865"
+inputs_sha256 = "f77507645fe308c28e32fc7aa5c73baf13c0f6b3c0b886b4fbf1d2ff09a1a539"
 
 [[macro_source]]
 allowance = "clap::Parser"

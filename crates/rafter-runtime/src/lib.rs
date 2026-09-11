@@ -85,6 +85,7 @@ mod inspect;
 mod log_repair;
 mod node;
 mod peer_batch;
+/// Eligible replication overlapped with one explicitly fenced persistence operation.
 pub mod pipelined;
 mod runtime_api;
 mod snapshot_install;
