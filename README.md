@@ -134,24 +134,26 @@ The current qualified service comparison measures client requests over TCP,
 three-node replication, durable consensus storage, durable application updates,
 and responses sent only after application durability.
 
-| Added loopback egress | Rafter pipeline | OpenRaft | Ratio | Rafter p99 at 1,000/s | OpenRaft p99 at 1,000/s |
+| Added loopback egress | Rafter pipeline + completion priority | OpenRaft | Ratio | Rafter p99 at 1,000/s | OpenRaft p99 at 1,000/s |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 0 ms | **10,314 writes/s** | 3,744 writes/s | **2.75x** | **2.687 ms** | 18.874 ms |
-| 2 ms | **5,532 writes/s** | 2,484 writes/s | **2.23x** | **11.141 ms** | 18.874 ms |
+| 0 ms | **9,005 writes/s** | 2,559 writes/s | **3.52x** | **6.291 ms** | 9.175 ms |
+| 2 ms | **4,810 writes/s** | 1,884 writes/s | **2.55x** | **14.942 ms** | 22.544 ms |
 
 Conditions: 3 nodes on one host, 64 clients, 512-byte writes, and medians of
 3 repetitions. Added delay affects both client and peer egress. The OpenRaft
-arm is the tested synchronous-storage integration. At no-delay saturation,
-Rafter processed 2.75x as many writes but had a higher p99 (23.069 ms versus
-19.923 ms) and p99.9 (29.884 ms versus 21.758 ms). Fixed-load and saturation
-latency are therefore reported separately.
+arm is the tested synchronous-storage integration. The selected Rafter arm had
+zero errors, unknown outcomes, or unsent requests and beat the synchronous and
+asynchronous OpenRaft controls in all 24 displayed p99 and p99.9 comparisons.
+Against same-code FIFO Rafter, completion priority improved saturated throughput
+17.5% at 0 ms and 2.7% at 2 ms; its no-delay fixed-load p99.9 results were mixed
+and remain visible in the report.
 
-The [immutable report and source cases](https://github.com/zraftz/benchmarks/tree/main/reports/qualified-34628543562)
+The [immutable report and source cases](https://github.com/zraftz/benchmarks/tree/perf/raft-performance/reports/qualified-34678152454)
 contain the methodology, individual runs, accounting, and known limitations.
 These are implementation and integration results, not a claim about a faster
-Raft algorithm or every workload. A completion-aligned seven-repeat in-memory
-comparison and a stronger asynchronous OpenRaft storage control are being
-qualified separately.
+Raft algorithm or every workload. The report also retains a completion-aligned
+seven-repeat in-memory comparison and the separately named asynchronous
+OpenRaft storage control.
 
 Reproduce the in-memory comparison or measure Rafter's durable runtime with:
 
