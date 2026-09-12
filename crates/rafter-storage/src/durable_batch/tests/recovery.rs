@@ -69,8 +69,9 @@ fn legacy_files_and_duplicate_ownership_are_rejected() {
 #[test]
 fn compaction_replays_before_the_next_contiguous_append() {
     let dir = Directory::new();
-    let (h, mut l, s) = dir.open();
+    let (h, mut l, mut s) = dir.open();
     publish(&h, &mut l, &[entry(1, b"one"), entry(2, b"two")], 2, None).unwrap();
+    s.write_snapshot(snapshot(1)).unwrap();
     l.compact_prefix_through(LogIndex(1)).unwrap();
     assert_eq!(l.compacted_through(), LogIndex(1));
     drop((h, l, s));

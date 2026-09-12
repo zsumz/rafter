@@ -106,7 +106,9 @@ Application state must maintain its own durable applied floor. Supply that
 floor during runtime recovery so committed commands already reflected in the
 application database are not emitted a second time.
 
-The file-backed stores are a deliberately clear reference implementation, not
-a segmented high-throughput WAL or a database engine. A production datastore
-may implement the storage traits on top of its own transactional engine while
-preserving the same success, ordering, and recovery contracts.
+The file-backed stores are deliberately clear reference implementations, not a
+general database engine. The opt-in shared WAL uses checkpoint-selected
+generation segments so prefix compaction bounds its physical history and replay
+work; snapshot and application-state retention remain separate. A production
+datastore may implement the storage traits on top of its own transactional
+engine while preserving the same success, ordering, and recovery contracts.

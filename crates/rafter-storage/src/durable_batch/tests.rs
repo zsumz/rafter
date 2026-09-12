@@ -1,15 +1,19 @@
 //! Real-file durability, recovery, and domain-identity tests.
 use super::*;
 use crate::{
-    BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry, RaftHardState, RaftHardStateStore,
-    RaftLogSegment,
+    BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry, PersistedRaftSnapshot, RaftHardState,
+    RaftHardStateStore, RaftLogSegment, RaftSnapshotStore,
 };
-use rafter::{LogIndex, Term};
+use rafter::{
+    ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, LogIndex,
+    NodeId, RaftSnapshotMetadata, SnapshotGroupId, Term,
+};
 use std::{
     fs,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
+mod reclamation;
 mod recovery;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -47,6 +51,23 @@ fn hard(commit: u64) -> RaftHardState {
         current_term: Term(1),
         commit_index: LogIndex(commit),
         ..RaftHardState::default()
+    }
+}
+fn snapshot(index: u64) -> PersistedRaftSnapshot {
+    PersistedRaftSnapshot {
+        metadata: RaftSnapshotMetadata::new(
+            SnapshotGroupId::new("durable-batch-test").unwrap(),
+            NodeId(1),
+            LogIndex(index),
+            Term(1),
+            Term(1),
+            ApplicationSnapshotMetadata::new(
+                ApplicationSnapshotKind::new("test-state").unwrap(),
+                ApplicationSnapshotVersion::new(1).unwrap(),
+            ),
+        )
+        .unwrap(),
+        application_payload: format!("state-through-{index}").into_bytes(),
     }
 }
 fn publish(

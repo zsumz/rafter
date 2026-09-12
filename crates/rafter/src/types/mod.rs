@@ -26,7 +26,7 @@ pub use configuration::{
 pub use id::{LocalProposalId, LogIndex, NodeId, ReadId, Term};
 pub use membership::{JointMembership, MembershipConfig, MembershipSet, MembershipValidationError};
 pub use payload::SharedPayload;
-pub use replication::{ReplicationProgress, ReplicationState};
+pub use replication::{ReplicationProgress, ReplicationState, ReplicationWindowProgress};
 pub(crate) use snapshot::snapshot_transfer_id_from_parts;
 pub use snapshot::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,

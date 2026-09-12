@@ -13691,3 +13691,15 @@ any one of the three lands alone.
     comments, all of which assert the feature exists. The simulator layer's
     source-contract label is deliberately left for the evidence programme; see
     the entry's deferred section.
+28. **The bounded pipeline persistence worker.**
+    `rafter-runtime::pipelined::PersistenceWorker` promotes the one-credit I/O
+    executor first exercised by the durable-service benchmark. Its credit spans
+    queued, executing, and completed-but-unconsumed work; nonblocking refusal
+    returns the exact owned `PersistenceWork`; and explicit shutdown refuses
+    while an operation remains outstanding. The worker may return opt-in
+    storage telemetry, but it chooses no proposal threshold, transport policy,
+    application batch, or client-ack boundary. `PipelinedRaftNode` still owns
+    generation and operation validation and still accepts no consensus input
+    until the matching completion returns. This step is additive and is the
+    first reusable mechanism in the fast durable-service composition; ordered
+    application and transport remain separate embedding responsibilities.

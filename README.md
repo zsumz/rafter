@@ -130,30 +130,49 @@ platform requirements, and the Rafter-specific guards that remain alongside zrai
 
 ## Benchmarks
 
-Recorded five-run medians: three-node in-memory protocol benchmark, 512-byte
-payloads, aarch64 Linux.
-Lower latency is better; higher throughput is better.
+The current qualified service comparison measures client requests over TCP,
+three-node replication, durable consensus storage, durable application updates,
+and responses sent only after application durability.
 
-| Library | Serial props/s | Serial p99 us | Pipelined props/s | Pipelined p99 us |
-| --- | ---: | ---: | ---: | ---: |
-| `rafter` | 777,013 | 3.9 | 1,988,986 | 142.3 |
-| `raft-rs` | 379,723 | 7.4 | 653,298 | 234.3 |
-| `openraft` | 111,254 | 19.2 | 540,752 | 172.3 |
+| Added loopback egress | Rafter pipeline + completion priority | OpenRaft | Ratio | Rafter p99 at 1,000/s | OpenRaft p99 at 1,000/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0 ms | **9,005 writes/s** | 2,559 writes/s | **3.52x** | **6.291 ms** | 9.175 ms |
+| 2 ms | **4,810 writes/s** | 1,884 writes/s | **2.55x** | **14.942 ms** | 22.544 ms |
 
-Results and per-run measurements are in
-[`bench-compare/results/latest.json`](./bench-compare/results/latest.json).
-These are hardware-sensitive protocol measurements; commit-latency boundaries
-differ across implementations. Reproduce the comparison or measure Rafter's
-durable runtime with:
+Conditions: 3 nodes on one host, 64 clients, 512-byte writes, and medians of
+3 repetitions. Added delay affects both client and peer egress. The OpenRaft
+arm is the tested synchronous-storage integration. The selected Rafter arm had
+zero errors, unknown outcomes, or unsent requests and beat the synchronous and
+asynchronous OpenRaft controls in all 24 displayed p99 and p99.9 comparisons.
+Against same-code FIFO Rafter, completion priority improved saturated throughput
+17.5% at 0 ms and 2.7% at 2 ms; its no-delay fixed-load p99.9 results were mixed
+and remain visible in the report.
+
+The [immutable report and source cases](https://github.com/zraftz/benchmarks/tree/perf/raft-performance/reports/qualified-34678152454)
+contain the methodology, individual runs, accounting, and known limitations.
+These are implementation and integration results, not a claim about a faster
+Raft algorithm or every workload. The report also retains a completion-aligned
+seven-repeat in-memory comparison and the separately named asynchronous
+OpenRaft storage control.
+
+Reproduce the in-memory comparison or measure Rafter's durable runtime with:
 
 ```sh
 scripts/bench-compare.sh
 cargo run --release -p rafter-runtime --bin rafter-bench-cluster
 ```
 
-The comparison harness measures the in-memory protocol path. The
+The comparison harness measures the in-memory implementation path. The
 `rafter-bench-cluster` binary measures Rafter's durable runtime path, including
-file-backed storage and group commit.
+file-backed storage and group commit. The optional pipelined runtime overlaps
+eligible leader replication with local persistence while retaining the durable
+output boundary. [`PersistenceWorker`](./crates/rafter-runtime/README.md) offers
+bounded persistence execution; application durability and applied-index recovery
+remain the embedding's responsibility.
+
+The opt-in shared WAL uses checkpoint-selected generation segments to reclaim
+compacted physical history and bound Raft replay work. That bound does not cover
+application-state or snapshot retention, which remain separate policies.
 
 ## Boundaries
 

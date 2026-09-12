@@ -21,3 +21,11 @@ The opt-in `pipelined::PipelinedRaftNode` can release eligible leader append
 messages while one owned persistence job runs. Its generation/operation receipt
 must complete before another consensus input runs. Follower acknowledgments,
 term/vote changes, commits, and client application results retain their fences.
+
+`pipelined::PersistenceWorker` is the optional standard-thread executor for
+that owned job. Its single credit covers queued, executing, and unconsumed
+completion state. A refused submission returns the exact work, and explicit
+shutdown refuses while the worker still owns an operation. Embeddings still
+choose proposal batching, route the eligible messages, return the completion to
+the originating node, and durably apply committed application entries before
+acknowledging clients.
