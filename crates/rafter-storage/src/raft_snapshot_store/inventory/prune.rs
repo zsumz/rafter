@@ -2,7 +2,10 @@
 
 use std::{fs, path::PathBuf};
 
-use crate::durable_fs::sync_parent_directory;
+use crate::{
+    durable_fs::sync_parent_directory,
+    telemetry::{Stage, Timer},
+};
 
 use super::super::FileRaftSnapshotStore;
 use super::model::{
@@ -33,6 +36,7 @@ impl FileRaftSnapshotStore {
         &mut self,
         retention: SnapshotRetention,
     ) -> Result<SnapshotPruneReport, SnapshotPruneError> {
+        let _prune = Timer::start(Stage::SnapshotPrune);
         if retention == SnapshotRetention::KeepAll {
             self.ensure_maintenance_ready()?;
             return Ok(SnapshotPruneReport::default());

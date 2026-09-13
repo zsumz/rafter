@@ -13,8 +13,10 @@ use std::{
 use rafter::RaftSnapshot;
 
 use crate::{
-    checksum::RunningCrc32, durable_fs::sync_parent_directory,
+    checksum::RunningCrc32,
+    durable_fs::sync_parent_directory,
     raft_snapshot_codec::encode_raft_snapshot_header,
+    telemetry::{measure, Stage, Timer},
 };
 
 use super::{
@@ -31,6 +33,7 @@ impl FileRaftSnapshotStore {
         expected_payload_crc: Option<u32>,
         mut read_chunk: impl FnMut(u64, u32) -> Result<Vec<u8>, RaftSnapshotStoreWriteError>,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
+        let _publication = Timer::start(Stage::SnapshotPublication);
         self.ensure_writable()?;
 
         let payload_len = descriptor.application_payload_len;
@@ -81,40 +84,50 @@ impl FileRaftSnapshotStore {
                 return Err(self.io_failure("open raft snapshot temp file", temp_path, error));
             }
         };
-        let mut envelope_crc = RunningCrc32::new();
-        let mut payload_crc = RunningCrc32::new();
-        self.write_snapshot_temp_bytes(&mut file, temp_path, header)?;
-        envelope_crc.update(header);
+        measure(
+            Stage::SnapshotDataWrite,
+            || -> Result<(), RaftSnapshotStoreWriteError> {
+                let mut envelope_crc = RunningCrc32::new();
+                let mut payload_crc = RunningCrc32::new();
+                self.write_snapshot_temp_bytes(&mut file, temp_path, header)?;
+                envelope_crc.update(header);
 
-        let mut offset = 0u64;
-        while offset < payload_len {
-            let len = stream_chunk_len(payload_len - offset, SNAPSHOT_STREAM_CHUNK_BYTES);
-            let bytes = match read_chunk(offset, len) {
-                Ok(bytes) => bytes,
-                Err(error) => return Err(self.poison_if_io(error)),
-            };
-            self.write_snapshot_temp_bytes(&mut file, temp_path, &bytes)?;
-            payload_crc.update(&bytes);
-            envelope_crc.update(&bytes);
-            offset += u64::from(len);
-        }
+                let mut offset = 0u64;
+                while offset < payload_len {
+                    let len = stream_chunk_len(payload_len - offset, SNAPSHOT_STREAM_CHUNK_BYTES);
+                    let bytes = match read_chunk(offset, len) {
+                        Ok(bytes) => bytes,
+                        Err(error) => return Err(self.poison_if_io(error)),
+                    };
+                    self.write_snapshot_temp_bytes(&mut file, temp_path, &bytes)?;
+                    payload_crc.update(&bytes);
+                    envelope_crc.update(&bytes);
+                    offset += u64::from(len);
+                }
 
-        if let Some(expected) = expected_payload_crc {
-            if payload_crc.value() != expected {
-                return Err(
-                    RaftSnapshotStoreWriteError::SnapshotPayloadChecksumMismatch {
-                        expected,
-                        actual: payload_crc.value(),
-                    },
-                );
-            }
-        }
+                if let Some(expected) = expected_payload_crc {
+                    if payload_crc.value() != expected {
+                        return Err(
+                            RaftSnapshotStoreWriteError::SnapshotPayloadChecksumMismatch {
+                                expected,
+                                actual: payload_crc.value(),
+                            },
+                        );
+                    }
+                }
 
-        let payload_crc_bytes = payload_crc.value().to_be_bytes();
-        self.write_snapshot_temp_bytes(&mut file, temp_path, &payload_crc_bytes)?;
-        envelope_crc.update(&payload_crc_bytes);
-        self.write_snapshot_temp_bytes(&mut file, temp_path, &envelope_crc.value().to_be_bytes())?;
-        file.sync_data()
+                let payload_crc_bytes = payload_crc.value().to_be_bytes();
+                self.write_snapshot_temp_bytes(&mut file, temp_path, &payload_crc_bytes)?;
+                envelope_crc.update(&payload_crc_bytes);
+                self.write_snapshot_temp_bytes(
+                    &mut file,
+                    temp_path,
+                    &envelope_crc.value().to_be_bytes(),
+                )?;
+                Ok(())
+            },
+        )?;
+        measure(Stage::SnapshotDataSync, || file.sync_data())
             .map_err(|error| self.io_failure("write raft snapshot temp file", temp_path, error))?;
         #[cfg(test)]
         crate::storage_failpoint_test::check(
@@ -139,6 +152,7 @@ impl FileRaftSnapshotStore {
         temp_path: &Path,
         snapshot_path: &Path,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
+        let _publication = Timer::start(Stage::SnapshotFilePublish);
         fs::rename(temp_path, snapshot_path)
             .map_err(|error| self.io_failure("replace raft snapshot", snapshot_path, error))?;
         #[cfg(test)]
@@ -162,6 +176,7 @@ impl FileRaftSnapshotStore {
         sequence: u64,
         file_name: &str,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
+        let _publication = Timer::start(Stage::SnapshotManifestPublish);
         let manifest = SnapshotManifest {
             sequence,
             file_name: file_name.to_string(),
