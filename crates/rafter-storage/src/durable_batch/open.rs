@@ -44,6 +44,8 @@ pub(super) fn open(
             _ownership: ownership,
             #[cfg(test)]
             fail_after_write: false,
+            #[cfg(test)]
+            reclaim_gate: None,
         }
     } else {
         State {
@@ -61,6 +63,8 @@ pub(super) fn open(
             _ownership: ownership,
             #[cfg(test)]
             fail_after_write: false,
+            #[cfg(test)]
+            reclaim_gate: None,
         }
     };
     let start = match state.authority {

@@ -7,12 +7,40 @@ use super::{
 use crate::telemetry::{measure, Stage, Timer};
 use crate::{file_store_ownership::SharedFileStoreOwnership, PersistedRaftLogEntry, RaftHardState};
 use rafter::LogIndex;
+#[cfg(test)]
+use std::sync::Barrier;
 use std::{
     fs::File,
     io::Write,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct ReclamationGate {
+    entered: Barrier,
+    release: Barrier,
+}
+#[cfg(test)]
+impl ReclamationGate {
+    pub(super) fn new() -> Self {
+        Self {
+            entered: Barrier::new(2),
+            release: Barrier::new(2),
+        }
+    }
+    pub(super) fn wait_until_entered(&self) {
+        self.entered.wait();
+    }
+    pub(super) fn release(&self) {
+        self.release.wait();
+    }
+    fn hold(&self) {
+        self.entered.wait();
+        self.release.wait();
+    }
+}
 
 pub(super) type Shared = Arc<Mutex<State>>;
 #[derive(Debug)]
@@ -31,6 +59,8 @@ pub(super) struct State {
     pub _ownership: SharedFileStoreOwnership,
     #[cfg(test)]
     pub fail_after_write: bool,
+    #[cfg(test)]
+    pub reclaim_gate: Option<Arc<ReclamationGate>>,
 }
 impl State {
     pub(super) fn next_index(&self) -> LogIndex {
@@ -159,6 +189,10 @@ impl State {
     pub(super) fn reclaim(&mut self) -> Result<(), reclamation::Failure> {
         let _reclamation = Timer::start(Stage::WalReclamation);
         self.poisoned = true;
+        #[cfg(test)]
+        if let Some(gate) = self.reclaim_gate.take() {
+            gate.hold();
+        }
         let snapshot = reclamation::snapshot_reference(&self.snapshot_directory, self.compacted)
             .map_err(|source| reclamation::Failure {
                 operation: "bind WAL checkpoint to current snapshot",
