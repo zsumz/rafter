@@ -11,6 +11,7 @@
 pub(crate) mod codec;
 mod discipline;
 mod durable;
+mod worker;
 
 use std::{error::Error, fmt};
 
@@ -26,6 +27,7 @@ use crate::{
 
 pub use codec::{LedgerCodecError, NonZeroField};
 pub use durable::{DurableLedgerError, DurableLedgerStateMachine};
+pub use worker::LedgerApplicationEntry;
 
 /// Failure of an adapter operation, as distinct from a ledger result.
 ///

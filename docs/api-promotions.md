@@ -13703,3 +13703,14 @@ any one of the three lands alone.
     until the matching completion returns. This step is additive and is the
     first reusable mechanism in the fast durable-service composition; ordered
     application and transport remain separate embedding responsibilities.
+29. **The bounded ordered application worker.**
+    `rafter-runtime::application::ApplicationWorker` promotes the second
+    durable fence from the service benchmark: one ordered application thread,
+    nonblocking entry and retained-byte admission, ready-only batching, owned
+    refusals and failures, and completion verification against the
+    application's durable applied floor. It owns no client, snapshot,
+    transport, or recovery policy. The runtime example composes it with the
+    pipelined node and persistence worker; the independent ledger consumer
+    implements both public traits over its own transactional store, and the
+    exact-package lane proves bounded completion and reopen without any
+    benchmark dependency or checkout-only hook. This step is additive.

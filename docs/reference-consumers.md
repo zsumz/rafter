@@ -2,11 +2,13 @@
 
 Status: the initial three-consumer engineering program is complete. The ledger
 has deterministic acceptance, an independent linearizability checker, source
-and exact-package modes, durable integration-process composition, and
-exact-package process execution. The fenced lock adds independent
-linearizability and guarded-resource checkers, durable integration-process
-composition, a bounded authenticated production-composition fixture, and
-exact-package process execution. The sharded counter uses the public managed
+and exact-package modes, durable integration-process composition,
+exact-package process execution, and an exact-package proof of the public
+bounded application worker over its own transactional store. The fenced lock
+adds independent linearizability and guarded-resource checkers, durable
+integration-process composition, a bounded authenticated
+production-composition fixture, and exact-package process execution. The
+sharded counter uses the public managed
 scheduler beside an independent model/oracle/fairness audit, deterministic
 64/1,024/4,096-group profiles, durable process composition, source and exact
 package/process modes, and nightly/weekly profiles. The consumers share only a
