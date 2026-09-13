@@ -1,6 +1,7 @@
 //! Raft output routing into bounded peer and durable application work.
 
 use rafter::{LogIndex, NodeId, Output};
+use rafter_storage::SnapshotRetention;
 
 use super::super::{
     application::AppliedCommand, codec::decode_snapshot, storage::read_snapshot_payload,
@@ -56,6 +57,13 @@ impl Cluster {
                         decode_snapshot(&payload),
                         snapshot.metadata.last_included_index,
                     );
+                    self.replicas
+                        .get_mut(&node_id)
+                        .expect("replica exists")
+                        .node
+                        .ready_mut()
+                        .prune_snapshot_files(SnapshotRetention::CurrentOnly)
+                        .expect("prune superseded inbound snapshot envelopes");
                 }
                 Output::RejectProposal { reason, .. } => panic!("proposal rejected: {reason}"),
                 Output::LocalProposalDropped { reason, .. } => {

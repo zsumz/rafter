@@ -211,6 +211,7 @@ pub(super) fn run(root: &Path, keep_dir: bool) -> ServiceReport {
     let restarted_applied_floor = cluster.restart(NodeId(2));
     assert!(restarted_applied_floor > LogIndex::ZERO);
 
+    let _ = cluster.compact(NodeId(3));
     cluster.paused.insert(NodeId(3));
     cluster.propose(initial_leader, "gamma", "3");
     let snapshot_index = cluster.compact(initial_leader);
@@ -221,6 +222,14 @@ pub(super) fn run(root: &Path, keep_dir: bool) -> ServiceReport {
             .get("gamma"),
         Some(&"3".to_owned())
     );
+    assert!(cluster.replicas[&NodeId(3)]
+        .node
+        .ready()
+        .snapshot_store()
+        .snapshot_inventory()
+        .expect("caught-up follower snapshot inventory is authoritative")
+        .retained
+        .is_empty());
 
     cluster.propose(initial_leader, "delta", "4");
     let final_values = application::snapshot(&cluster.replicas[&initial_leader].state).kv;
