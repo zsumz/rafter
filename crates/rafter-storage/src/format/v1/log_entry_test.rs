@@ -121,6 +121,16 @@ fn internal_batch_encoder_reuses_capacity_without_changing_envelopes() {
         assert_eq!(encoded.as_ptr(), allocation);
         assert_eq!(encoded.capacity(), capacity);
     }
+
+    let mut appended = b"existing-prefix".to_vec();
+    let start = appended.len();
+    let expected = encode_raft_log_entry(&large).unwrap();
+    let written =
+        crate::format::v1::log_entry::encode_raft_log_entry_appending(&large, &mut appended)
+            .expect("entry appends directly to an existing batch");
+    assert_eq!(written, expected.len());
+    assert_eq!(&appended[..start], b"existing-prefix");
+    assert_eq!(&appended[start..], expected);
 }
 
 #[test]

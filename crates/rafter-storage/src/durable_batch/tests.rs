@@ -123,7 +123,6 @@ fn wal_batch_encoder_reuses_only_bounded_scratch() {
     publish(&h, &mut l, &[entry(3, b"three")], 3, None).unwrap();
     let state = l.0.lock().unwrap();
     assert!(state.batch_encode_buffer.is_empty());
-    assert!(state.entry_encode_buffer.is_empty());
     assert!(state.batch_encode_buffer.capacity() >= first_capacity);
     assert!(state.batch_encode_buffer.capacity() <= codec::MAX_RETAINED_ENCODE_BUFFER);
     drop(state);

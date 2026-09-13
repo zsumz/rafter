@@ -57,7 +57,6 @@ pub(super) struct State {
     pub poisoned: bool,
     pub syncs: u64,
     pub batch_encode_buffer: Vec<u8>,
-    pub entry_encode_buffer: Vec<u8>,
     pub _ownership: SharedFileStoreOwnership,
     #[cfg(test)]
     pub fail_after_write: bool,
@@ -162,13 +161,8 @@ impl State {
             .checked_add(1)
             .ok_or(Error::InvalidBatch("publication number exhausted"))?;
         let encode_result = measure(Stage::BatchEncode, || {
-            codec::encode_reusing(
-                &record,
-                &mut self.batch_encode_buffer,
-                &mut self.entry_encode_buffer,
-            )
+            codec::encode_reusing(&record, &mut self.batch_encode_buffer)
         });
-        codec::clear_encode_buffer(&mut self.entry_encode_buffer);
         if let Err(source) = encode_result {
             codec::clear_encode_buffer(&mut self.batch_encode_buffer);
             return Err(Error::Io {

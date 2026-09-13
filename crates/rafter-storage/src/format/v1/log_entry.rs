@@ -12,11 +12,11 @@ use crate::format::{ChecksumError, CursorError};
 mod codec;
 mod entry;
 
-pub(crate) use codec::encode_raft_log_entry_reusing;
 pub use codec::{
     decode_raft_log_entry, encode_borrowed_raft_log_entry, encode_raft_log_entry,
     RAFT_LOG_ENTRY_MAGIC, RAFT_LOG_ENTRY_VERSION,
 };
+pub(crate) use codec::{encode_raft_log_entry_appending, encode_raft_log_entry_reusing};
 pub use entry::{BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry};
 
 /// Error returned when a Raft log entry cannot be encoded into the persisted

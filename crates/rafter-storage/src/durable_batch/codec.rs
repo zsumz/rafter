@@ -1,7 +1,7 @@
 //! Checksummed atomic records containing existing RFLE/RFHS envelopes.
 use crate::{
     crc32, decode_raft_hard_state, decode_raft_log_entry, encode_raft_hard_state,
-    format::v1::log_entry::encode_raft_log_entry_reusing, PersistedRaftLogEntry, RaftHardState,
+    format::v1::log_entry::encode_raft_log_entry_appending, PersistedRaftLogEntry, RaftHardState,
 };
 use rafter::LogIndex;
 use std::io;
@@ -23,11 +23,7 @@ pub(super) struct Record {
 pub(super) fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
-pub(super) fn encode_reusing(
-    record: &Record,
-    frame: &mut Vec<u8>,
-    entry_buffer: &mut Vec<u8>,
-) -> io::Result<()> {
+pub(super) fn encode_reusing(record: &Record, frame: &mut Vec<u8>) -> io::Result<()> {
     frame.clear();
     frame.resize(HEADER, 0);
     frame.extend_from_slice(&record.operation.to_be_bytes());
@@ -43,14 +39,12 @@ pub(super) fn encode_reusing(
             .to_be_bytes(),
     );
     for entry in &record.entries {
-        encode_raft_log_entry_reusing(entry, entry_buffer)
+        let size_offset = frame.len();
+        frame.extend_from_slice(&[0; 4]);
+        let size = encode_raft_log_entry_appending(entry, frame)
             .map_err(|error| invalid(error.to_string()))?;
-        frame.extend_from_slice(
-            &u32::try_from(entry_buffer.len())
-                .map_err(|_| invalid("WAL entry too large"))?
-                .to_be_bytes(),
-        );
-        frame.extend_from_slice(entry_buffer);
+        let size = u32::try_from(size).map_err(|_| invalid("WAL entry too large"))?;
+        frame[size_offset..size_offset + 4].copy_from_slice(&size.to_be_bytes());
         if frame.len() - HEADER > MAX_BODY {
             return Err(invalid("WAL batch exceeds 64 MiB"));
         }

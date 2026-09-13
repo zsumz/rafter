@@ -90,8 +90,7 @@ impl Writer {
         Self { bytes: Vec::new() }
     }
 
-    pub(crate) fn reusing(mut bytes: Vec<u8>) -> Self {
-        bytes.clear();
+    pub(crate) const fn appending(bytes: Vec<u8>) -> Self {
         Self { bytes }
     }
 
