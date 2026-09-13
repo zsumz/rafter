@@ -49,8 +49,9 @@ The `pipelined_durable_service` example is the tested reference composition for
 that fast path. It uses the shared WAL, one-credit persistence worker, bounded
 ordered application worker, bounded peer queue, durable application records
 carrying their applied floor, snapshot compaction, current-only file retention,
-lagging-follower catch-up, restart recovery, and explicit worker shutdown. It
-uses only public Rafter APIs and no benchmark crate:
+startup cleanup of recognized interrupted-publication files, lagging-follower
+catch-up, restart recovery, and explicit worker shutdown. It uses only public
+Rafter APIs and no benchmark crate:
 
 ```text
 cargo run -p rafter-runtime --example pipelined_durable_service

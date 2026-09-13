@@ -47,7 +47,9 @@ pub(crate) fn open_node(
         applied_through,
     )
     .expect("recover durable node");
-    let (node, outputs) = recovered.into_parts();
+    let (mut node, outputs) = recovered.into_parts();
+    node.cleanup_abandoned_snapshot_temporary_files()
+        .expect("clean abandoned snapshot publication files after recovery");
     (PipelinedNode::start(node), outputs)
 }
 

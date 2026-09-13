@@ -92,6 +92,17 @@ fn runtime_prunes_only_noncurrent_snapshot_history_and_reopens_from_current() {
     oracle_assert_eq!(report.removed_snapshots.len(), 1);
     oracle_assert!(report.removed_temporary_files.is_empty());
 
+    let abandoned = directory
+        .path()
+        .join(format!("snapshots/.snapshot-{}.tmp", std::process::id()));
+    fs::write(&abandoned, b"interrupted publication").expect("abandoned temp writes");
+    let cleanup = runtime
+        .cleanup_abandoned_snapshot_temporary_files()
+        .expect("abandoned snapshot temp cleans durably");
+    oracle_assert!(cleanup.removed_snapshots.is_empty());
+    oracle_assert_eq!(cleanup.removed_temporary_files.len(), 1);
+    oracle_assert!(!abandoned.exists());
+
     let current = runtime
         .snapshot()
         .expect("current descriptor remains")
@@ -117,6 +128,7 @@ fn runtime_prunes_only_noncurrent_snapshot_history_and_reopens_from_current() {
         .expect("post-prune inventory succeeds");
     oracle_assert!(after.retained.is_empty());
     oracle_assert!(after.unreferenced.is_empty());
+    oracle_assert!(after.temporary.is_empty());
     oracle_assert_eq!(after.unrecognized, vec!["operator-note.txt".to_string()]);
 
     drop(runtime);

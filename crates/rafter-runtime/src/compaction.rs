@@ -235,4 +235,27 @@ impl<H, L> DurableRaftNode<H, L, FileRaftSnapshotStore> {
     ) -> Result<SnapshotPruneReport, SnapshotPruneError> {
         self.snapshot_store.prune_snapshots(retention)
     }
+
+    /// Removes recognized temporary snapshot files left by an interrupted writer.
+    ///
+    /// This is storage maintenance, not a Raft state transition. Selected and
+    /// noncurrent snapshots, stable inbound-transfer staging, and unknown files
+    /// are never removed. The operation is intended for startup after recovery,
+    /// or another point where the embedding exclusively owns the node and no
+    /// snapshot-store write is in progress.
+    ///
+    /// A maintenance failure does not poison the runtime. The operation is safe
+    /// to retry idempotently, including after another restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotPruneError`] when the snapshot store requires reopen,
+    /// inventory cannot establish the selected snapshot, or durable deletion
+    /// cannot complete. Any reported deletion prefix may already be absent.
+    pub fn cleanup_abandoned_snapshot_temporary_files(
+        &mut self,
+    ) -> Result<SnapshotPruneReport, SnapshotPruneError> {
+        self.snapshot_store
+            .cleanup_abandoned_snapshot_temporary_files()
+    }
 }

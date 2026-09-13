@@ -175,7 +175,9 @@ compacted physical history and bound Raft replay work. That bound does not cover
 application-state or snapshot retention, which remain separate policies. A
 file-backed runtime can apply an explicit `SnapshotRetention` policy through
 `DurableRaftNode::prune_snapshot_files`; the reference durable service keeps
-only its manifest-selected snapshot after successful compaction.
+only its manifest-selected snapshot after successful compaction and uses
+`cleanup_abandoned_snapshot_temporary_files` after recovery to remove only
+recognized interrupted-publication residue.
 The runtime's opt-in `application::ApplicationWorker` makes the measured
 ordered application pattern reusable: bounded entry and byte credits include
 queued, executing, and unconsumed results, and durable completions are verified
