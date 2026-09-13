@@ -8,7 +8,7 @@ use crate::{
 use rafter::{LogIndex, Term};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -20,6 +20,7 @@ const CHECKPOINT_TRAILER: &[u8; 4] = b"ENDC";
 const SEGMENT_MAGIC: &[u8; 8] = b"RFWS\0\0\0\x01";
 pub(crate) const SEGMENT_HEADER: usize = 28;
 const HARD_STATE_BYTES: usize = 51;
+const CHECKPOINT_BUFFER_BYTES: usize = 256 * 1024;
 
 pub(crate) fn manifest_path(directory: &Path) -> PathBuf {
     directory.join(MANIFEST_NAME)
@@ -61,7 +62,8 @@ pub(crate) fn read_manifest(directory: &Path) -> io::Result<Option<Manifest>> {
 }
 
 pub(crate) fn read_checkpoint(directory: &Path, manifest: Manifest) -> io::Result<Checkpoint> {
-    let mut file = File::open(checkpoint_path(directory, manifest.generation))?;
+    let file = File::open(checkpoint_path(directory, manifest.generation))?;
+    let mut file = BufReader::with_capacity(CHECKPOINT_BUFFER_BYTES, file);
     let mut crc = RunningCrc32::new();
     if &read_tracked::<8>(&mut file, &mut crc)? != CHECKPOINT_MAGIC {
         return Err(super::invalid("unsupported WAL checkpoint format"));
@@ -122,7 +124,7 @@ pub(crate) fn read_checkpoint(directory: &Path, manifest: Manifest) -> io::Resul
     })
 }
 
-fn validate_checkpoint_trailer(file: &mut File, crc: RunningCrc32) -> io::Result<()> {
+fn validate_checkpoint_trailer(file: &mut impl Read, crc: RunningCrc32) -> io::Result<()> {
     let mut trailer = [0; 8];
     file.read_exact(&mut trailer)?;
     if u32::from_be_bytes(
@@ -169,7 +171,8 @@ pub(crate) fn write_checkpoint(
     state: &super::State,
     snapshot: SnapshotReference,
 ) -> io::Result<()> {
-    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    let file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    let mut file = BufWriter::with_capacity(CHECKPOINT_BUFFER_BYTES, file);
     let mut crc = RunningCrc32::new();
     for bytes in [
         CHECKPOINT_MAGIC.as_slice(),
@@ -197,11 +200,12 @@ pub(crate) fn write_checkpoint(
     }
     file.write_all(&crc.value().to_be_bytes())?;
     file.write_all(CHECKPOINT_TRAILER)?;
+    file.flush()?;
     #[cfg(test)]
     crate::storage_failpoint_test::check(
         crate::storage_failpoint_test::DurabilityPoint::WalCheckpointAfterWrite,
     )?;
-    file.sync_data()?;
+    file.get_ref().sync_data()?;
     #[cfg(test)]
     crate::storage_failpoint_test::check(
         crate::storage_failpoint_test::DurabilityPoint::WalCheckpointAfterSync,
@@ -235,20 +239,27 @@ pub(crate) fn encode_manifest(manifest: &Manifest) -> Vec<u8> {
     bytes
 }
 
-fn write_tracked(file: &mut File, crc: &mut RunningCrc32, bytes: &[u8]) -> io::Result<()> {
+fn write_tracked(file: &mut impl Write, crc: &mut RunningCrc32, bytes: &[u8]) -> io::Result<()> {
     file.write_all(bytes)?;
     crc.update(bytes);
     Ok(())
 }
 
-fn read_tracked<const N: usize>(file: &mut File, crc: &mut RunningCrc32) -> io::Result<[u8; N]> {
+fn read_tracked<const N: usize>(
+    file: &mut impl Read,
+    crc: &mut RunningCrc32,
+) -> io::Result<[u8; N]> {
     let mut bytes = [0; N];
     file.read_exact(&mut bytes)?;
     crc.update(&bytes);
     Ok(bytes)
 }
 
-fn read_tracked_vec(file: &mut File, crc: &mut RunningCrc32, size: usize) -> io::Result<Vec<u8>> {
+fn read_tracked_vec(
+    file: &mut impl Read,
+    crc: &mut RunningCrc32,
+    size: usize,
+) -> io::Result<Vec<u8>> {
     let mut bytes = vec![0; size];
     file.read_exact(&mut bytes)?;
     crc.update(&bytes);

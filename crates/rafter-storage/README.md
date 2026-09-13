@@ -114,6 +114,9 @@ manifest, and cleanup phases separately. Reclamation still synchronously rewrite
 the retained suffix while holding the shared coordinator; embeddings should
 measure and schedule that pause deliberately until a qualified incremental
 reclaimer exists. Snapshot and application-state retention remain separate. A
+bounded 256 KiB buffer coalesces typical checkpoint entry reads and writes
+without changing the checkpoint bytes or durability order. The writer flushes
+every byte before the existing write-complete failpoint and data sync. A
 production datastore may implement the storage traits on top of its own
 transactional engine while preserving the same success, ordering, and recovery
 contracts.
