@@ -76,6 +76,7 @@ use rafter_storage::{
     RaftLogSegmentCompactError, RaftLogSegmentTruncateError, RaftSnapshotStore,
     RaftSnapshotStoreWriteError,
 };
+/// Bounded ordered execution for an embedding's durable application state.
 pub mod application;
 mod compaction;
 mod construction;

@@ -49,7 +49,7 @@ where
     S: DurableApplication<T>,
     F: Fn(),
 {
-    pub fn run(mut self) {
+    pub(super) fn run(mut self) {
         let _admission = AdmissionGuard {
             shared: Arc::clone(&self.shared),
         };
