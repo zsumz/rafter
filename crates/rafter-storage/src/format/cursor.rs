@@ -90,6 +90,11 @@ impl Writer {
         Self { bytes: Vec::new() }
     }
 
+    pub(crate) fn reusing(mut bytes: Vec<u8>) -> Self {
+        bytes.clear();
+        Self { bytes }
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes
     }

@@ -99,6 +99,31 @@ fn larger_payload_log_entry_round_trips_through_envelope() {
 }
 
 #[test]
+fn internal_batch_encoder_reuses_capacity_without_changing_envelopes() {
+    let large = entry(&vec![0xa5; 4096]);
+    let mut encoded = Vec::new();
+    crate::format::v1::log_entry::encode_raft_log_entry_reusing(&large, &mut encoded)
+        .expect("large entry encodes");
+    assert_eq!(encoded, encode_raft_log_entry(&large).unwrap());
+    let allocation = encoded.as_ptr();
+    let capacity = encoded.capacity();
+
+    for entry in [
+        entry(b"small"),
+        stable_configuration_entry(),
+        joint_configuration_entry(),
+        PersistedRaftLogEntry::noop(LogIndex(42), Term(7)),
+    ] {
+        let expected = encode_raft_log_entry(&entry).unwrap();
+        crate::format::v1::log_entry::encode_raft_log_entry_reusing(&entry, &mut encoded)
+            .expect("entry encodes into retained allocation");
+        assert_eq!(encoded, expected);
+        assert_eq!(encoded.as_ptr(), allocation);
+        assert_eq!(encoded.capacity(), capacity);
+    }
+}
+
+#[test]
 fn decode_rejects_corrupt_log_entry_checksum() {
     let mut encoded = encode_raft_log_entry(&entry(b"command")).expect("entry encodes");
     let last_payload_byte = encoded.len() - 5;

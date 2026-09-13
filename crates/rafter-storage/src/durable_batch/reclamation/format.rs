@@ -3,7 +3,7 @@
 use super::{Checkpoint, Manifest, SnapshotReference};
 use crate::{
     checksum::RunningCrc32, crc32, decode_raft_hard_state, decode_raft_log_entry,
-    encode_raft_hard_state, encode_raft_log_entry,
+    encode_raft_hard_state, format::v1::log_entry::encode_raft_log_entry_reusing,
 };
 use rafter::{LogIndex, Term};
 use std::{
@@ -92,13 +92,15 @@ pub(crate) fn read_checkpoint(directory: &Path, manifest: Manifest) -> io::Resul
     };
     let count = read_u64(&read_tracked::<8>(&mut file, &mut crc)?)?;
     let mut entries = Vec::new();
+    let mut encoded_entry = Vec::new();
     let mut expected = compacted.next();
     for _ in 0..count {
         let size = u32::from_be_bytes(read_tracked::<4>(&mut file, &mut crc)?) as usize;
         if size == 0 || size > super::MAX_RECORD_BODY {
             return Err(super::invalid("invalid WAL checkpoint entry size"));
         }
-        let entry = decode_raft_log_entry(&read_tracked_vec(&mut file, &mut crc, size)?)
+        read_tracked_into(&mut file, &mut crc, size, &mut encoded_entry)?;
+        let entry = decode_raft_log_entry(&encoded_entry)
             .map_err(|error| super::invalid(error.to_string()))?;
         if entry.index != expected || entry.index.0 == u64::MAX {
             return Err(super::invalid("WAL checkpoint entries are not contiguous"));
@@ -190,9 +192,10 @@ pub(crate) fn write_checkpoint(
     ] {
         write_tracked(&mut file, &mut crc, bytes)?;
     }
+    let mut bytes = Vec::new();
     for entry in &state.entries {
-        let bytes =
-            encode_raft_log_entry(entry).map_err(|error| super::invalid(error.to_string()))?;
+        encode_raft_log_entry_reusing(entry, &mut bytes)
+            .map_err(|error| super::invalid(error.to_string()))?;
         let size = u32::try_from(bytes.len())
             .map_err(|_| super::invalid("WAL checkpoint entry too large"))?;
         write_tracked(&mut file, &mut crc, &size.to_be_bytes())?;
@@ -255,15 +258,16 @@ fn read_tracked<const N: usize>(
     Ok(bytes)
 }
 
-fn read_tracked_vec(
+fn read_tracked_into(
     file: &mut impl Read,
     crc: &mut RunningCrc32,
     size: usize,
-) -> io::Result<Vec<u8>> {
-    let mut bytes = vec![0; size];
-    file.read_exact(&mut bytes)?;
-    crc.update(&bytes);
-    Ok(bytes)
+    bytes: &mut Vec<u8>,
+) -> io::Result<()> {
+    bytes.resize(size, 0);
+    file.read_exact(bytes)?;
+    crc.update(bytes);
+    Ok(())
 }
 
 fn read_u64(bytes: &[u8]) -> io::Result<u64> {

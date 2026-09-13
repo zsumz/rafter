@@ -59,17 +59,36 @@ pub fn encode_raft_log_entry(
 pub fn encode_borrowed_raft_log_entry(
     entry: BorrowedPersistedRaftLogEntry<'_>,
 ) -> Result<Vec<u8>, EncodeRaftLogEntryError> {
+    let mut encoded = Vec::new();
+    encode_borrowed_raft_log_entry_reusing(entry, &mut encoded)?;
+    Ok(encoded)
+}
+
+/// Encodes one owned entry while retaining `encoded`'s allocation for the
+/// next entry in an internal batch or checkpoint loop.
+pub(crate) fn encode_raft_log_entry_reusing(
+    entry: &PersistedRaftLogEntry,
+    encoded: &mut Vec<u8>,
+) -> Result<(), EncodeRaftLogEntryError> {
+    encode_borrowed_raft_log_entry_reusing(BorrowedPersistedRaftLogEntry::from(entry), encoded)
+}
+
+fn encode_borrowed_raft_log_entry_reusing(
+    entry: BorrowedPersistedRaftLogEntry<'_>,
+    encoded: &mut Vec<u8>,
+) -> Result<(), EncodeRaftLogEntryError> {
     if advanceable_log_index(entry.index.0).is_none() {
         return Err(EncodeRaftLogEntryError::IndexAtMaximum);
     }
-    let mut writer = Writer::new();
+    let mut writer = Writer::reusing(std::mem::take(encoded));
     writer.bytes(&RAFT_LOG_ENTRY_MAGIC);
     writer.u8(RAFT_LOG_ENTRY_VERSION);
     writer.u64(entry.index.0);
     writer.u64(entry.term.0);
     write_log_entry_kind(&mut writer, entry.kind)?;
 
-    Ok(finish_checksummed(writer))
+    *encoded = finish_checksummed(writer);
+    Ok(())
 }
 
 /// Decodes and verifies one persisted Raft log-entry envelope.

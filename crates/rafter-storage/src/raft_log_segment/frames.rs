@@ -6,9 +6,11 @@
 
 use std::io::{self, Read, Write};
 
+#[cfg(test)]
+use crate::encode_raft_log_entry;
 use crate::{
-    decode_raft_log_entry, encode_borrowed_raft_log_entry, encode_raft_log_entry,
-    BorrowedPersistedRaftLogEntry, EncodeRaftLogEntryError, PersistedRaftLogEntry,
+    decode_raft_log_entry, encode_borrowed_raft_log_entry, BorrowedPersistedRaftLogEntry,
+    EncodeRaftLogEntryError, PersistedRaftLogEntry,
 };
 
 use super::RaftLogReplayError;
@@ -220,8 +222,10 @@ pub(super) fn write_raft_log_frames(
     output: &mut impl Write,
     entries: &[PersistedRaftLogEntry],
 ) -> Result<(), WriteRaftLogFramesError> {
+    let mut encoded = Vec::new();
     for entry in entries {
-        let encoded = encode_raft_log_entry(entry).map_err(WriteRaftLogFramesError::Encode)?;
+        crate::format::v1::log_entry::encode_raft_log_entry_reusing(entry, &mut encoded)
+            .map_err(WriteRaftLogFramesError::Encode)?;
         let len = encoded_frame_len(&encoded).map_err(WriteRaftLogFramesError::Encode)?;
         output
             .write_all(&len.to_be_bytes())

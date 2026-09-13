@@ -1,7 +1,7 @@
 //! Checksummed atomic records containing existing RFLE/RFHS envelopes.
 use crate::{
     crc32, decode_raft_hard_state, decode_raft_log_entry, encode_raft_hard_state,
-    encode_raft_log_entry, PersistedRaftLogEntry, RaftHardState,
+    format::v1::log_entry::encode_raft_log_entry_reusing, PersistedRaftLogEntry, RaftHardState,
 };
 use rafter::LogIndex;
 use std::io;
@@ -36,8 +36,9 @@ pub(super) fn encode(record: &Record) -> io::Result<Vec<u8>> {
             .map_err(|_| invalid("too many WAL entries"))?
             .to_be_bytes(),
     );
+    let mut bytes = Vec::new();
     for entry in &record.entries {
-        let bytes = encode_raft_log_entry(entry).map_err(|e| invalid(e.to_string()))?;
+        encode_raft_log_entry_reusing(entry, &mut bytes).map_err(|e| invalid(e.to_string()))?;
         body.extend_from_slice(
             &u32::try_from(bytes.len())
                 .map_err(|_| invalid("WAL entry too large"))?
