@@ -4,7 +4,10 @@ Status: the initial three-consumer engineering program is complete. The ledger
 has deterministic acceptance, an independent linearizability checker, source
 and exact-package modes, durable integration-process composition,
 exact-package process execution, and an exact-package proof of the public
-bounded application worker over its own transactional store. The fenced lock
+bounded application worker over its own transactional store. The packaged
+runtime's complete three-voter WAL, persistence-pipeline, bounded-transport,
+durable-application, snapshot, and recovery reference is also executed from
+its exact archive under the normal package and Rust 1.88 lanes. The fenced lock
 adds independent linearizability and guarded-resource checkers, durable
 integration-process composition, a bounded authenticated
 production-composition fixture, and exact-package process execution. The
@@ -142,10 +145,11 @@ The acceptance job:
    directories in the checkout;
 4. generates a fresh lockfile;
 5. builds and runs the reference tests;
-6. rejects path dependencies except the exact copied-workspace harness edge;
-7. rejects checkout paths, internal test hooks, and unpublished private product
+6. executes the packaged runtime's three-voter fast durable-service test;
+7. rejects path dependencies except the exact copied-workspace harness edge;
+8. rejects checkout paths, internal test hooks, and unpublished private product
    crates; and
-8. verifies required package contents, including README and format documents.
+9. verifies required package contents, including README and format documents.
 
 `scripts/reference-package-check` runs that deterministic job and reports every
 boundary it finds violated. `scripts/reference-package-process-check` uses the

@@ -15,6 +15,7 @@ release, a version change, a tag, a publication, or a mixed-version guarantee.
 | Replicated ledger | Deterministic application/recovery acceptance and an independent bounded linearizability checker | `scripts/reference-source-check`; CI `reference-source` |
 | Replicated ledger | Durable per-replica process composition, including fail-closed journal repair escalation | `scripts/reference-process-check`; CI/main and Nightly `reference-process` |
 | Replicated ledger | Exact archive deterministic and process execution | `scripts/reference-package-check`; `scripts/reference-package-process-check`; CI `reference-package` and `reference-package-process` |
+| Fast durable service | Exact-archive execution of the three-voter WAL, persistence-pipeline, bounded-transport, durable-application, snapshot, and recovery composition | `scripts/reference-package-check`; CI `reference-package` and `reference-package-msrv` |
 | Fenced lock | Deterministic lock histories, an independent linearizability checker, and an independent guarded-resource checker | `scripts/reference-source-check`; CI `reference-source` |
 | Fenced lock | Insecure integration process composition and the authenticated bounded production-composition fixture | `scripts/reference-process-check`; CI/main and Nightly `reference-process` |
 | Fenced lock | Exact archive deterministic and process execution | `scripts/reference-package-check`; `scripts/reference-package-process-check`; CI `reference-package` and `reference-package-process` |
@@ -51,10 +52,11 @@ multiplexed peer connection.
 - `managed_policy_boundary` rejects scheduler dependencies on consumer
   schemas, lifecycle-retention policy, authentication/certificate policy,
   unpublished simulation hooks, and test-only observation surfaces.
-- Exact-package lanes compile every public example and target against the
-  archives a consumer receives. `rafter` now declares no features at all, so
-  that shape is also what every workspace command builds; the lanes' rejection
-  of hidden test features remains as a standing boundary against reintroduction.
+- Exact-package lanes compile every public crate used by the consumers from the
+  archives they receive. They also execute the packaged fast durable-service
+  reference. `rafter` now declares no features at all, so that shape is also
+  what every workspace command builds; the lanes' rejection of hidden test
+  features remains as a standing boundary against reintroduction.
 
 ## Verification lanes
 
@@ -76,9 +78,12 @@ the deterministic invariant verdict.
   public streaming interface remains additive; the existing bounded
   descriptor/chunk path and its current contracts are unchanged.
 - C2 replication pipelining is now an opt-in additive runtime interface. Its
-  bounded persistence worker removes the benchmark's private executor, while a
-  complete managed durable-service composition remains future additive work;
-  no compatibility promise is inferred for that composition.
+  bounded persistence worker removes the benchmark's private executor, and a
+  complete public-API reference composition now exercises WAL storage, bounded
+  transport, durable application, snapshots, and recovery from an exact
+  package archive. A general managed service remains future additive work; no
+  compatibility promise is inferred for the example's application or transport
+  policy.
 - `rafter-sim` no longer depends on a hidden core-crate feature. The kernel
   self-check it needed is the documented public `Node::validate_derived_state`,
   and `internal-test-hooks` is deleted from `rafter`. The crate stays

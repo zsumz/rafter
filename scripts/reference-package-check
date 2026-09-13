@@ -12,10 +12,11 @@
 # consumer sources. This script is package-consumer mode: it packages every
 # publishable Rafter crate, unpacks the exact archives, patches a copy of the
 # reference workspace to those unpacked archives, generates a fresh lockfile,
-# builds and runs the consumer tests, and then rejects any graph that reaches
-# back into the checkout, pulls an unpublished crate, or turns on an internal
-# test hook. It tests the artifact users receive, not the source tree that
-# produced it. Fast source mode is a separate lane and lives in
+# builds and runs the consumer tests, executes the packaged runtime's complete
+# durable-service reference, and then rejects either graph if it reaches back
+# into the checkout, pulls an unpublished crate, or turns on an internal test
+# hook. It tests the artifact users receive, not the source tree that produced
+# it. Fast source mode is a separate lane and lives in
 # scripts/reference-source-check; this script never builds a consumer against
 # `crates/`.
 #
@@ -438,6 +439,7 @@ unpack_root="$workdir/unpacked"
 consumer_root="$workdir/consumer"
 consumer_workspace="$consumer_root/reference"
 consumer_target="$workdir/consumer-target"
+fast_service_target="$workdir/fast-service-target"
 
 # ---------------------------------------------------------------------------
 # Phase 1: package every publishable crate.
@@ -501,6 +503,15 @@ done
 if [[ -n "$artifact_dir" ]]; then
     cp "$hashes_file" "$artifact_dir/package-sha256.txt"
     cp "$versions_file" "$artifact_dir/crate-versions.txt"
+fi
+
+fast_service_runtime_version="$(
+    awk '$1 == "rafter-runtime" { print $2; exit }' "$versions_file"
+)"
+fast_service_runtime_root="$unpack_root/rafter-runtime-$fast_service_runtime_version"
+fast_service_runtime_manifest="$fast_service_runtime_root/Cargo.toml"
+if [[ -z "$fast_service_runtime_version" || ! -f "$fast_service_runtime_manifest" ]]; then
+    fail "the exact rafter-runtime archive is unavailable for the fast-service proof"
 fi
 
 end_phase
@@ -694,6 +705,23 @@ run_reviewed_process_suites() {
     done
 }
 
+run_fast_service_archive_test() {
+    local previous_target="$CARGO_TARGET_DIR"
+    local log_file="$process_log_root/rafter-runtime-pipelined-durable-service.log"
+
+    export CARGO_TARGET_DIR="$fast_service_target"
+    cargo_run generate-lockfile --manifest-path "$fast_service_runtime_manifest"
+    if [[ -n "$artifact_dir" ]]; then
+        cp "$fast_service_runtime_root/Cargo.lock" "$artifact_dir/Cargo.fast-service.lock"
+    fi
+    log "exact-package fast service: rafter-runtime --test pipelined_durable_service"
+    cargo_run test \
+        --manifest-path "$fast_service_runtime_manifest" \
+        --locked --test pipelined_durable_service \
+        2>&1 | tee "$log_file"
+    export CARGO_TARGET_DIR="$previous_target"
+}
+
 run_msrv_shape() {
     local previous_target="$CARGO_TARGET_DIR"
     local smoke_inventory="$tools_root/inventories/$smoke_inventory_name"
@@ -725,6 +753,7 @@ run_msrv_shape() {
         "${exact_cargo_args[@]}" -p rafter-reference-ledger \
         --test process_cluster -- --ignored --test-threads=1 \
         2>&1 | tee "$process_log_root/msrv-process-smoke.log"
+    run_fast_service_archive_test
     export CARGO_TARGET_DIR="$previous_target"
 }
 
@@ -735,6 +764,7 @@ case "$mode" in
         cargo_run run --locked -p rafter-reference-sharded-counter --bin counter-profile -- \
             --profile counter-fast \
             --artifacts "$workdir/counter-fast-package-artifacts"
+        run_fast_service_archive_test
         ;;
     process)
         run_reviewed_process_suites
@@ -756,6 +786,7 @@ case "$mode" in
             "${exact_cargo_args[@]}" -p rafter-reference-ledger \
             --test process_cluster -- --ignored --test-threads=1 \
             2>&1 | tee "$process_log_root/msrv-process-smoke.log"
+        run_fast_service_archive_test
         ;;
     process-msrv)
         run_reviewed_process_suites
@@ -785,6 +816,41 @@ if ! "$tools_root/reference-package-boundary-check" \
     --never-publish-file "$tools_root/never-publish-crates.txt"; then
     fail "the consumer graph violates the package-consumer boundary"
 fi
+
+case "$mode" in
+    deterministic | msrv | process-msrv)
+        fast_service_metadata_file="$workdir/fast-service-metadata.json"
+        cargo_run metadata \
+            --manifest-path "$fast_service_runtime_manifest" \
+            --format-version 1 --locked > "$fast_service_metadata_file"
+        if ! "$tools_root/reference-package-boundary-check" \
+            --metadata "$fast_service_metadata_file" \
+            --checkout-root "$repo_root" \
+            --unpack-root "$unpack_root" \
+            --consumer-workspace "$fast_service_runtime_root" \
+            --harness-path "$fast_service_runtime_root/no-harness" \
+            --never-publish-file "$tools_root/never-publish-crates.txt"; then
+            fail "the exact-package fast-service graph violates the package boundary"
+        fi
+        if [[ -n "$artifact_dir" ]]; then
+            cp "$fast_service_metadata_file" "$artifact_dir/fast-service-metadata.json"
+            fast_service_archive="rafter-runtime-$fast_service_runtime_version.crate"
+            fast_service_digest="$(
+                awk -v archive="$fast_service_archive" \
+                    '$2 == archive { print $1; exit }' "$hashes_file"
+            )"
+            if [[ -z "$fast_service_digest" ]]; then
+                fail "the fast-service archive digest is missing from the package receipt"
+            fi
+            printf 'exact-runtime-package=%s\n' "$fast_service_archive" \
+                > "$artifact_dir/fast-service-boundary.txt"
+            printf 'exact-runtime-sha256=%s\n' "$fast_service_digest" \
+                >> "$artifact_dir/fast-service-boundary.txt"
+            printf 'service-test=pass\ncheckout-paths=none\nprivate-crates=none\ninternal-test-hooks=none\n' \
+                >> "$artifact_dir/fast-service-boundary.txt"
+        fi
+        ;;
+esac
 if [[ -n "$artifact_dir" ]]; then
     {
         printf 'checkout-paths=none\n'
