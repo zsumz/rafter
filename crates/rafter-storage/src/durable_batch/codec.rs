@@ -10,6 +10,7 @@ pub(super) const MAGIC: &[u8; 8] = b"RFWB\0\0\0\x01";
 pub(super) const HEADER: usize = 16;
 pub(super) const TRAILER: usize = 8;
 pub(super) const MAX_BODY: usize = 64 * 1024 * 1024;
+pub(super) const MAX_RETAINED_ENCODE_BUFFER: usize = 4 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(super) struct Record {
@@ -22,43 +23,56 @@ pub(super) struct Record {
 pub(super) fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
-pub(super) fn encode(record: &Record) -> io::Result<Vec<u8>> {
-    let mut body = Vec::new();
-    body.extend_from_slice(&record.operation.to_be_bytes());
-    body.extend_from_slice(&record.compact.map_or(u64::MAX, |i| i.0).to_be_bytes());
-    body.extend_from_slice(&record.truncate.map_or(u64::MAX, |i| i.0).to_be_bytes());
-    body.push(u8::from(record.hard.is_some()));
+pub(super) fn encode_reusing(
+    record: &Record,
+    frame: &mut Vec<u8>,
+    entry_buffer: &mut Vec<u8>,
+) -> io::Result<()> {
+    frame.clear();
+    frame.resize(HEADER, 0);
+    frame.extend_from_slice(&record.operation.to_be_bytes());
+    frame.extend_from_slice(&record.compact.map_or(u64::MAX, |i| i.0).to_be_bytes());
+    frame.extend_from_slice(&record.truncate.map_or(u64::MAX, |i| i.0).to_be_bytes());
+    frame.push(u8::from(record.hard.is_some()));
     if let Some(hard) = record.hard {
-        body.extend_from_slice(&encode_raft_hard_state(&hard));
+        frame.extend_from_slice(&encode_raft_hard_state(&hard));
     }
-    body.extend_from_slice(
+    frame.extend_from_slice(
         &u32::try_from(record.entries.len())
             .map_err(|_| invalid("too many WAL entries"))?
             .to_be_bytes(),
     );
-    let mut bytes = Vec::new();
     for entry in &record.entries {
-        encode_raft_log_entry_reusing(entry, &mut bytes).map_err(|e| invalid(e.to_string()))?;
-        body.extend_from_slice(
-            &u32::try_from(bytes.len())
+        encode_raft_log_entry_reusing(entry, entry_buffer)
+            .map_err(|error| invalid(error.to_string()))?;
+        frame.extend_from_slice(
+            &u32::try_from(entry_buffer.len())
                 .map_err(|_| invalid("WAL entry too large"))?
                 .to_be_bytes(),
         );
-        body.extend_from_slice(&bytes);
-        if body.len() > MAX_BODY {
+        frame.extend_from_slice(entry_buffer);
+        if frame.len() - HEADER > MAX_BODY {
             return Err(invalid("WAL batch exceeds 64 MiB"));
         }
     }
-    let size = u32::try_from(body.len()).map_err(|_| invalid("WAL batch too large"))?;
-    let mut frame = Vec::with_capacity(HEADER + body.len() + TRAILER);
-    frame.extend_from_slice(b"BCH1");
-    frame.extend_from_slice(&size.to_be_bytes());
-    frame.extend_from_slice(&(!size).to_be_bytes());
-    frame.extend_from_slice(&crc32(&frame).to_be_bytes());
-    frame.extend_from_slice(&body);
-    frame.extend_from_slice(&crc32(&body).to_be_bytes());
+    let size = u32::try_from(frame.len() - HEADER).map_err(|_| invalid("WAL batch too large"))?;
+    frame[..4].copy_from_slice(b"BCH1");
+    frame[4..8].copy_from_slice(&size.to_be_bytes());
+    frame[8..12].copy_from_slice(&(!size).to_be_bytes());
+    let header_checksum = crc32(&frame[..12]);
+    frame[12..16].copy_from_slice(&header_checksum.to_be_bytes());
+    let body_checksum = crc32(&frame[HEADER..]);
+    frame.extend_from_slice(&body_checksum.to_be_bytes());
     frame.extend_from_slice(b"END1");
-    Ok(frame)
+    Ok(())
+}
+
+pub(super) fn clear_encode_buffer(buffer: &mut Vec<u8>) {
+    if buffer.capacity() > MAX_RETAINED_ENCODE_BUFFER {
+        *buffer = Vec::new();
+    } else {
+        buffer.clear();
+    }
 }
 pub(super) fn body_size(header: &[u8; HEADER]) -> io::Result<usize> {
     let size = u32::from_be_bytes(

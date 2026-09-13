@@ -41,6 +41,8 @@ pub(super) fn open(
             operation: checkpoint.operation,
             poisoned: false,
             syncs: 0,
+            batch_encode_buffer: Vec::new(),
+            entry_encode_buffer: Vec::new(),
             _ownership: ownership,
             #[cfg(test)]
             fail_after_write: false,
@@ -60,6 +62,8 @@ pub(super) fn open(
             operation: 0,
             poisoned: false,
             syncs: 0,
+            batch_encode_buffer: Vec::new(),
+            entry_encode_buffer: Vec::new(),
             _ownership: ownership,
             #[cfg(test)]
             fail_after_write: false,

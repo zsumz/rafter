@@ -56,6 +56,8 @@ pub(super) struct State {
     pub operation: u64,
     pub poisoned: bool,
     pub syncs: u64,
+    pub batch_encode_buffer: Vec<u8>,
+    pub entry_encode_buffer: Vec<u8>,
     pub _ownership: SharedFileStoreOwnership,
     #[cfg(test)]
     pub fail_after_write: bool,
@@ -159,13 +161,27 @@ impl State {
             .operation
             .checked_add(1)
             .ok_or(Error::InvalidBatch("publication number exhausted"))?;
-        let bytes =
-            measure(Stage::BatchEncode, || codec::encode(&record)).map_err(|source| Error::Io {
+        let encode_result = measure(Stage::BatchEncode, || {
+            codec::encode_reusing(
+                &record,
+                &mut self.batch_encode_buffer,
+                &mut self.entry_encode_buffer,
+            )
+        });
+        codec::clear_encode_buffer(&mut self.entry_encode_buffer);
+        if let Err(source) = encode_result {
+            codec::clear_encode_buffer(&mut self.batch_encode_buffer);
+            return Err(Error::Io {
                 operation: "encode Raft WAL batch",
                 source: source.into(),
-            })?;
+            });
+        }
         self.poisoned = true;
-        measure(Stage::BatchWrite, || self.file.write_all(&bytes)).map_err(|source| Error::Io {
+        let write_result = measure(Stage::BatchWrite, || {
+            self.file.write_all(&self.batch_encode_buffer)
+        });
+        codec::clear_encode_buffer(&mut self.batch_encode_buffer);
+        write_result.map_err(|source| Error::Io {
             operation: "append Raft WAL batch",
             source: source.into(),
         })?;

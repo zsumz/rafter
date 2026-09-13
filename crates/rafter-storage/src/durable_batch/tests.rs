@@ -109,6 +109,37 @@ fn combined_append_and_commit_has_one_sync_and_survives_reopen() {
     assert_eq!(l.replay_entries(), vec![entry(1, b"one"), entry(2, b"two")]);
     assert_ne!(domain, h.persistence_domain().unwrap());
 }
+
+#[test]
+fn wal_batch_encoder_reuses_only_bounded_scratch() {
+    let dir = Directory::new();
+    let (h, mut l, s) = dir.open();
+    publish(&h, &mut l, &[entry(1, b"one"), entry(2, b"two")], 2, None).unwrap();
+    let first = fs::read(dir.0.join("hard-state")).unwrap();
+    let first_capacity = l.0.lock().unwrap().batch_encode_buffer.capacity();
+    assert!(first_capacity > 0);
+    assert!(first_capacity <= codec::MAX_RETAINED_ENCODE_BUFFER);
+
+    publish(&h, &mut l, &[entry(3, b"three")], 3, None).unwrap();
+    let state = l.0.lock().unwrap();
+    assert!(state.batch_encode_buffer.is_empty());
+    assert!(state.entry_encode_buffer.is_empty());
+    assert!(state.batch_encode_buffer.capacity() >= first_capacity);
+    assert!(state.batch_encode_buffer.capacity() <= codec::MAX_RETAINED_ENCODE_BUFFER);
+    drop(state);
+
+    let mut oversized = Vec::with_capacity(codec::MAX_RETAINED_ENCODE_BUFFER + 1);
+    codec::clear_encode_buffer(&mut oversized);
+    assert_eq!(oversized.capacity(), 0);
+
+    drop((h, l, s));
+    let (_h, l, _s) = dir.open();
+    assert_eq!(
+        l.replay_entries(),
+        vec![entry(1, b"one"), entry(2, b"two"), entry(3, b"three")]
+    );
+    assert_eq!(&first[..codec::MAGIC.len()], codec::MAGIC);
+}
 #[test]
 fn suffix_replacement_is_atomic_and_cannot_erase_committed_entries() {
     let dir = Directory::new();
