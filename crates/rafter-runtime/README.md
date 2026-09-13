@@ -22,13 +22,16 @@ messages while one owned persistence job runs. Its generation/operation receipt
 must complete before another consensus input runs. Follower acknowledgments,
 term/vote changes, commits, and client application results retain their fences.
 
-`pipelined::PersistenceWorker` is the optional standard-thread executor for
-that owned job. Its single credit covers queued, executing, and unconsumed
-completion state. A refused submission returns the exact work, and explicit
-shutdown refuses while the worker still owns an operation. Embeddings still
-choose proposal batching, route the eligible messages, return the completion to
-the originating node, and durably apply committed application entries before
-acknowledging clients.
+`pipelined::ThreadedPipelinedRaftNode` is the supported bounded composition of
+that node and its standard-thread executor. Its single credit covers queued,
+executing, and unconsumed completion state. It refuses consensus input while
+persistence owns the node, accepts only the originating completion, and runs
+returned work through the same synchronous fence if worker submission is
+unavailable. Thread-start failure returns the unchanged durable node. The
+lower-level `PipelinedRaftNode`, `PersistenceWork`, and `PersistenceWorker`
+remain public for embeddings with another executor. Embeddings still choose
+proposal batching, route eligible messages, and durably apply committed
+application entries before acknowledging clients.
 
 `application::ApplicationWorker` supplies that application-side durability
 fence without importing benchmark code. It applies contiguous committed items
@@ -46,7 +49,7 @@ ownership without a side channel; a prior application failure still requires
 application-defined recovery before the store is reused.
 
 The `pipelined_durable_service` example is the tested reference composition for
-that fast path. It uses the shared WAL, one-credit persistence worker, bounded
+that fast path. It uses the shared WAL, `ThreadedPipelinedRaftNode`, bounded
 ordered application worker, bounded peer queue, durable application records
 carrying their applied floor, snapshot compaction, current-only file retention,
 startup cleanup of recognized interrupted-publication files, lagging-follower

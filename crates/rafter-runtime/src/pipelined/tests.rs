@@ -16,7 +16,7 @@ use std::time::Duration;
 #[derive(Debug, Default)]
 pub(super) struct ControlledLog {
     inner: InMemoryRaftLogSegment,
-    delay: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
+    pub(super) delay: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
     fail: bool,
 }
 impl RaftLogSegment for ControlledLog {

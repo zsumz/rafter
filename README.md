@@ -166,9 +166,10 @@ The comparison harness measures the in-memory implementation path. The
 `rafter-bench-cluster` binary measures Rafter's durable runtime path, including
 file-backed storage and group commit. The optional pipelined runtime overlaps
 eligible leader replication with local persistence while retaining the durable
-output boundary. [`PersistenceWorker`](./crates/rafter-runtime/README.md) offers
-bounded persistence execution; application durability and applied-index recovery
-remain the embedding's responsibility.
+output boundary.
+[`ThreadedPipelinedRaftNode`](./crates/rafter-runtime/README.md) provides the
+tested one-credit node/worker composition; application durability and
+applied-index recovery remain the embedding's responsibility.
 
 The opt-in shared WAL uses checkpoint-selected generation segments to reclaim
 compacted physical history and bound Raft replay work. That bound does not cover
