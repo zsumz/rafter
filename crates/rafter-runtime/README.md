@@ -40,7 +40,10 @@ one outcome per item and reports the matching durable applied floor. Refusals
 and failures preserve owned work; a failure or worker panic closes admission
 and requires recovery before the service continues.
 Snapshot creation and installation remain application policy and must be
-coordinated at a consumed durable floor.
+coordinated at a consumed durable floor. `shutdown_into_store` returns the
+application store after an idle join, so maintenance can take exclusive
+ownership without a side channel; a prior application failure still requires
+application-defined recovery before the store is reused.
 
 The `pipelined_durable_service` example is the tested reference composition for
 that fast path. It uses the shared WAL, one-credit persistence worker, bounded

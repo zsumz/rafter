@@ -9,7 +9,7 @@ use super::{
     application::{self, SharedState, Worker},
     codec::encode_set,
     driver::PipelinedNode,
-    storage::{compact_snapshot, election_timeout_ticks, node_dir, node_ids, open_node},
+    storage::{compact_snapshot, election_timeout_ticks, node_ids, open_node},
     ServiceReport,
 };
 use rafter::{Input, LocalProposalId, LogIndex, Message, NodeId, Role};
@@ -34,7 +34,6 @@ struct Replica {
     application: Option<Worker>,
     state: SharedState,
     dispatched: LogIndex,
-    directory: PathBuf,
 }
 
 #[derive(Debug)]
@@ -81,7 +80,6 @@ impl Cluster {
                 application: Some(application),
                 state,
                 dispatched: applied,
-                directory: node_dir(&self.root, node_id),
             },
         );
         self.handle_outputs(node_id, recovery);

@@ -49,7 +49,7 @@ where
     S: DurableApplication<T>,
     F: Fn(),
 {
-    pub(super) fn run(mut self) {
+    pub(super) fn run(mut self) -> S {
         let _admission = AdmissionGuard {
             shared: Arc::clone(&self.shared),
         };
@@ -99,13 +99,14 @@ where
             self.applying_through.store(0, Ordering::Release);
             let failed = matches!(event, ApplicationEvent::Failed(_));
             if self.send.send(event).is_err() {
-                return;
+                break;
             }
             (self.wake)();
             if failed {
-                return;
+                break;
             }
         }
+        self.store
     }
 
     fn drain_ready(&self, work: &mut Work<T>, deferred: &mut VecDeque<Work<T>>) {

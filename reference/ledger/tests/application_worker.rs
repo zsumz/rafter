@@ -103,7 +103,11 @@ fn bounded_worker_returns_only_durable_results_and_reopens_at_the_consumed_floor
     assert_eq!(second_completion.entries()[0].log_index(), LogIndex(2));
     assert_eq!(second_completion.outcomes()[0].index, LogIndex(2));
     assert_eq!(worker.durable_through(), LogIndex(2));
-    worker.shutdown().expect("the idle worker shuts down");
+    let application = worker
+        .shutdown_into_store()
+        .expect("the idle worker returns the external application's store");
+    assert_eq!(application.store().applied_index(), LogIndex(2));
+    drop(application);
 
     let reopened =
         LedgerStore::open(scratch.path(), config(1, 2)).expect("durable application reopens");

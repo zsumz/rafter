@@ -82,25 +82,40 @@ impl DurableApplication<AppliedCommand> for Store {
     }
 }
 
+impl Store {
+    fn install_snapshot(
+        &mut self,
+        kv: std::collections::BTreeMap<String, String>,
+        applied: LogIndex,
+    ) {
+        try_persist_app_state(&self.directory, &kv, applied)
+            .expect("persist installed application snapshot");
+        *lock(&self.state) = AppState { kv, applied };
+    }
+}
+
 pub(crate) fn open(root: &Path, node_id: NodeId) -> (SharedState, Worker) {
     let state = Arc::new(Mutex::new(load_app_state(root, node_id)));
     let store = Store {
         directory: node_dir(root, node_id),
         state: Arc::clone(&state),
     };
-    let worker = ApplicationWorker::start(store, ApplicationWorkerOptions::new(), || {})
-        .expect("start bounded application worker");
+    let worker = start(store);
     (state, worker)
 }
 
 pub(crate) fn install_snapshot(
-    directory: &Path,
-    state: &SharedState,
+    worker: &mut Worker,
     kv: std::collections::BTreeMap<String, String>,
     applied: LogIndex,
-) {
-    try_persist_app_state(directory, &kv, applied).expect("persist installed application snapshot");
-    *lock(state) = AppState { kv, applied };
+) -> SharedState {
+    let mut store = worker
+        .shutdown_into_store()
+        .expect("idle application worker returns its store");
+    store.install_snapshot(kv, applied);
+    let state = Arc::clone(&store.state);
+    *worker = start(store);
+    state
 }
 
 pub(crate) fn snapshot(state: &SharedState) -> AppState {
@@ -109,4 +124,9 @@ pub(crate) fn snapshot(state: &SharedState) -> AppState {
 
 fn lock(state: &SharedState) -> std::sync::MutexGuard<'_, AppState> {
     state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn start(store: Store) -> Worker {
+    ApplicationWorker::start(store, ApplicationWorkerOptions::new(), || {})
+        .expect("start bounded application worker")
 }

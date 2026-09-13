@@ -75,15 +75,11 @@ impl Cluster {
         applied: LogIndex,
     ) {
         let replica = self.replicas.get_mut(&node_id).expect("replica exists");
-        let mut worker = replica
+        let worker = replica
             .application
-            .take()
+            .as_mut()
             .expect("application worker is running");
-        worker.shutdown().expect("idle application worker stops");
-        application::install_snapshot(&replica.directory, &replica.state, kv, applied);
-        let (state, worker) = application::open(&self.root, node_id);
-        replica.state = state;
-        replica.application = Some(worker);
+        replica.state = application::install_snapshot(worker, kv, applied);
         replica.dispatched = applied;
     }
 }

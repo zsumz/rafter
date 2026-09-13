@@ -56,6 +56,8 @@ pub enum ApplicationWorkerShutdownError {
     Busy,
     /// The application thread panicked.
     Panicked,
+    /// The worker was already shut down and no longer owns its store.
+    StoreUnavailable,
 }
 
 impl fmt::Display for ApplicationWorkerShutdownError {
@@ -63,6 +65,9 @@ impl fmt::Display for ApplicationWorkerShutdownError {
         match self {
             Self::Busy => formatter.write_str("application worker still owns entries"),
             Self::Panicked => formatter.write_str("application worker thread panicked"),
+            Self::StoreUnavailable => {
+                formatter.write_str("application worker no longer owns its store")
+            }
         }
     }
 }
@@ -93,7 +98,7 @@ where
     durable_through: Arc<AtomicU64>,
     applying_through: Arc<AtomicU64>,
     options: ApplicationWorkerOptions,
-    thread: Option<JoinHandle<()>>,
+    thread: Option<JoinHandle<S>>,
 }
 
 impl<T, S> fmt::Debug for ApplicationWorker<T, S>
@@ -182,14 +187,39 @@ where
             return Err(ApplicationWorkerShutdownError::Busy);
         }
         self.requests.take();
-        if self
-            .thread
-            .take()
-            .is_some_and(|thread| thread.join().is_err())
-        {
-            return Err(ApplicationWorkerShutdownError::Panicked);
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| ApplicationWorkerShutdownError::Panicked)?;
         }
         Ok(())
+    }
+
+    /// Joins an idle worker and returns ownership of its durable store.
+    ///
+    /// This is the lifecycle boundary for application-owned maintenance such
+    /// as installing a snapshot or closing a database. It does not make a
+    /// failed application operation safe to retry: after a failed event, the
+    /// caller must still recover the returned store according to the
+    /// application's durability contract before restarting live service.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationWorkerShutdownError::Busy`] while accepted work
+    /// owns credits, [`ApplicationWorkerShutdownError::Panicked`] if the
+    /// application thread panicked, or
+    /// [`ApplicationWorkerShutdownError::StoreUnavailable`] after a previous
+    /// shutdown already consumed or discarded the store.
+    pub fn shutdown_into_store(&mut self) -> Result<S, ApplicationWorkerShutdownError> {
+        if self.is_busy() {
+            return Err(ApplicationWorkerShutdownError::Busy);
+        }
+        self.requests.take();
+        self.thread
+            .take()
+            .ok_or(ApplicationWorkerShutdownError::StoreUnavailable)?
+            .join()
+            .map_err(|_| ApplicationWorkerShutdownError::Panicked)
     }
 
     pub(super) fn lock_shared(&self) -> MutexGuard<'_, Shared> {
