@@ -16,6 +16,7 @@ mod chunk_helpers;
 mod chunk_transfer;
 mod failing_stores;
 mod install;
+mod maintenance;
 mod streamed_compaction;
 
 pub(super) use builders::{

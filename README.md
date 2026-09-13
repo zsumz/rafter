@@ -172,7 +172,10 @@ remain the embedding's responsibility.
 
 The opt-in shared WAL uses checkpoint-selected generation segments to reclaim
 compacted physical history and bound Raft replay work. That bound does not cover
-application-state or snapshot retention, which remain separate policies.
+application-state or snapshot retention, which remain separate policies. A
+file-backed runtime can apply an explicit `SnapshotRetention` policy through
+`DurableRaftNode::prune_snapshot_files`; the reference durable service keeps
+only its manifest-selected snapshot after successful compaction.
 The runtime's opt-in `application::ApplicationWorker` makes the measured
 ordered application pattern reusable: bounded entry and byte credits include
 queued, executing, and unconsumed results, and durable completions are verified

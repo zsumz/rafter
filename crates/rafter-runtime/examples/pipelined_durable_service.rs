@@ -2,11 +2,11 @@
 //!
 //! The example keeps peer and ordered-application admission bounded, persists
 //! application state and its applied floor before acknowledging a proposal,
-//! recovers that floor, compacts through a real application snapshot, catches
-//! up a lagging follower, and shuts every worker down explicitly. The in-process
-//! transport is deliberately unauthenticated demo plumbing; a production
-//! embedding must supply authenticated peer identities and its own
-//! queue-overload policy.
+//! recovers that floor, compacts through a real application snapshot, prunes
+//! superseded snapshot envelopes, catches up a lagging follower, and shuts every
+//! worker down explicitly. The in-process transport is deliberately
+//! unauthenticated demo plumbing; a production embedding must supply
+//! authenticated peer identities and its own queue-overload policy.
 //!
 //! Run with:
 //!

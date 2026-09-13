@@ -11,7 +11,7 @@ use rafter::{
     SnapshotChunkSource, SnapshotGroupId,
 };
 use rafter_storage::durable_batch::WalRaftNodeStores;
-use rafter_storage::PersistedRaftSnapshot;
+use rafter_storage::{PersistedRaftSnapshot, SnapshotRetention};
 
 use super::{
     codec::encode_snapshot,
@@ -78,6 +78,8 @@ pub(crate) fn compact_snapshot(
         application_payload: encode_snapshot(kv),
     })
     .expect("compact WAL through durable application state");
+    node.prune_snapshot_files(SnapshotRetention::CurrentOnly)
+        .expect("prune superseded snapshot envelopes");
     applied
 }
 
