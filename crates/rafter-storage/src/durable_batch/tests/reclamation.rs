@@ -338,7 +338,7 @@ fn managed_names(dir: &Directory) -> Vec<String> {
     names
 }
 
-fn managed_generation_files(dir: &Directory) -> usize {
+pub(super) fn managed_generation_files(dir: &Directory) -> usize {
     managed_names(dir).len()
 }
 

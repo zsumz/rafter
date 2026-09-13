@@ -109,6 +109,11 @@ application database are not emitted a second time.
 The file-backed stores are deliberately clear reference implementations, not a
 general database engine. The opt-in shared WAL uses checkpoint-selected
 generation segments so prefix compaction bounds its physical history and replay
-work; snapshot and application-state retention remain separate. A production
-datastore may implement the storage traits on top of its own transactional
-engine while preserving the same success, ordering, and recovery contracts.
+work. Optional storage telemetry reports total WAL reclamation and its checkpoint,
+manifest, and cleanup phases separately. Reclamation still synchronously rewrites
+the retained suffix while holding the shared coordinator; embeddings should
+measure and schedule that pause deliberately until a qualified incremental
+reclaimer exists. Snapshot and application-state retention remain separate. A
+production datastore may implement the storage traits on top of its own
+transactional engine while preserving the same success, ordering, and recovery
+contracts.

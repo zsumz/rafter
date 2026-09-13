@@ -2,7 +2,8 @@
 //!
 //! Disabled by default. Enable on the thread that owns the runtime, and read
 //! snapshots there. Counters cover attempted instrumented operations, including
-//! failures; they exclude recovery, snapshot publication, and log rewrites.
+//! failures; they exclude recovery and snapshot publication. WAL reclamation
+//! and its checkpoint, manifest, and cleanup phases are named separately.
 //! Timing runs should disable diagnostics and use a separate diagnostic run.
 
 use std::{cell::RefCell, time::Instant};
@@ -34,9 +35,17 @@ pub enum Stage {
     BatchWrite,
     /// Shared WAL batch data sync.
     BatchSync,
+    /// Full physical WAL reclamation after the logical compaction marker.
+    WalReclamation,
+    /// Immutable checkpoint, fresh segment, and their directory fence.
+    WalCheckpointPrepare,
+    /// Manifest replacement and directory fence selecting the new generation.
+    WalManifestPublish,
+    /// Obsolete generation deletion and its directory fence.
+    WalCleanup,
 }
 
-const NAMES: [&str; 11] = [
+const NAMES: [&str; 15] = [
     "kernel",
     "log_encode",
     "log_write",
@@ -48,6 +57,10 @@ const NAMES: [&str; 11] = [
     "batch_encode",
     "batch_write",
     "batch_sync",
+    "wal_reclamation",
+    "wal_checkpoint_prepare",
+    "wal_manifest_publish",
+    "wal_cleanup",
 ];
 
 /// Cumulative timings on the owning thread; no percentile subtraction is valid.
@@ -66,7 +79,7 @@ pub struct Metric {
 #[derive(Default)]
 struct State {
     enabled: bool,
-    metrics: [Metric; 11],
+    metrics: [Metric; 15],
 }
 std::thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());

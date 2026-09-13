@@ -4,7 +4,7 @@ use super::{
     reclamation::{self, Authority},
     DurableReceipt, PersistenceDomain, RaftPersistenceBatchError as Error,
 };
-use crate::telemetry::{measure, Stage};
+use crate::telemetry::{measure, Stage, Timer};
 use crate::{file_store_ownership::SharedFileStoreOwnership, PersistedRaftLogEntry, RaftHardState};
 use rafter::LogIndex;
 use std::{
@@ -157,14 +157,19 @@ impl State {
     }
 
     pub(super) fn reclaim(&mut self) -> Result<(), reclamation::Failure> {
+        let _reclamation = Timer::start(Stage::WalReclamation);
         self.poisoned = true;
         let snapshot = reclamation::snapshot_reference(&self.snapshot_directory, self.compacted)
             .map_err(|source| reclamation::Failure {
                 operation: "bind WAL checkpoint to current snapshot",
                 source,
             })?;
-        let prepared = reclamation::prepare(self, snapshot)?;
-        reclamation::publish_manifest(&self.path, &prepared.manifest)?;
+        let prepared = measure(Stage::WalCheckpointPrepare, || {
+            reclamation::prepare(self, snapshot)
+        })?;
+        measure(Stage::WalManifestPublish, || {
+            reclamation::publish_manifest(&self.path, &prepared.manifest)
+        })?;
         // Checkpoint, fresh segment header, and manifest temp are three
         // additional successful data-sync calls beyond the compaction record.
         self.syncs += 3;
@@ -178,7 +183,9 @@ impl State {
             operation: "resolve WAL cleanup directory",
             source: codec::invalid("opened WAL path has no parent"),
         })?;
-        reclamation::cleanup(directory, &self.authority, true)?;
+        measure(Stage::WalCleanup, || {
+            reclamation::cleanup(directory, &self.authority, true)
+        })?;
         self.poisoned = false;
         Ok(())
     }
