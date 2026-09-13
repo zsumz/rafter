@@ -1,11 +1,12 @@
 //! Reference durable service over the public WAL and one-credit pipeline APIs.
 //!
-//! The example keeps peer admission bounded, persists application state and its
-//! applied floor before acknowledging a proposal, recovers that floor, compacts
-//! through a real application snapshot, catches up a lagging follower, and
-//! shuts every persistence worker down explicitly. The in-process transport is
-//! deliberately unauthenticated demo plumbing; a production embedding must
-//! supply authenticated peer identities and its own queue-overload policy.
+//! The example keeps peer and ordered-application admission bounded, persists
+//! application state and its applied floor before acknowledging a proposal,
+//! recovers that floor, compacts through a real application snapshot, catches
+//! up a lagging follower, and shuts every worker down explicitly. The in-process
+//! transport is deliberately unauthenticated demo plumbing; a production
+//! embedding must supply authenticated peer identities and its own
+//! queue-overload policy.
 //!
 //! Run with:
 //!
@@ -13,8 +14,14 @@
 //! cargo run -p rafter-runtime --example pipelined_durable_service
 //! ```
 
+#[allow(
+    dead_code,
+    reason = "the shared application module also serves the process example"
+)]
 #[path = "replicated_kv/app_state.rs"]
 mod app_state;
+#[path = "pipelined_durable_service/application.rs"]
+mod application;
 #[path = "pipelined_durable_service/cluster.rs"]
 mod cluster;
 #[allow(

@@ -76,7 +76,7 @@ use rafter_storage::{
     RaftLogSegmentCompactError, RaftLogSegmentTruncateError, RaftSnapshotStore,
     RaftSnapshotStoreWriteError,
 };
-
+pub mod application;
 mod compaction;
 mod construction;
 mod error;

@@ -173,6 +173,11 @@ remain the embedding's responsibility.
 The opt-in shared WAL uses checkpoint-selected generation segments to reclaim
 compacted physical history and bound Raft replay work. That bound does not cover
 application-state or snapshot retention, which remain separate policies.
+The runtime's opt-in `application::ApplicationWorker` makes the measured
+ordered application pattern reusable: bounded entry and byte credits include
+queued, executing, and unconsumed results, and durable completions are verified
+against the application's own applied floor so the embedding can answer clients
+only after consuming that completion.
 
 ## Boundaries
 

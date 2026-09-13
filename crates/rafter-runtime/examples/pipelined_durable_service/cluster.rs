@@ -5,18 +5,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rafter::{Input, LocalProposalId, LogIndex, Message, NodeId, Output, Role};
-
 use super::{
-    app_state::{load_app_state, persist_app_state},
-    codec::{apply_set, decode_snapshot, encode_set},
+    application::{self, SharedState, Worker},
+    codec::encode_set,
     driver::PipelinedNode,
-    storage::{
-        compact_snapshot, election_timeout_ticks, node_dir, node_ids, open_node,
-        read_snapshot_payload,
-    },
+    storage::{compact_snapshot, election_timeout_ticks, node_dir, node_ids, open_node},
     ServiceReport,
 };
+use rafter::{Input, LocalProposalId, LogIndex, Message, NodeId, Role};
+
+#[path = "cluster/apply.rs"]
+mod apply;
+#[path = "cluster/outputs.rs"]
+mod outputs;
 
 const PEER_QUEUE_CAPACITY: usize = 1_024;
 
@@ -30,8 +31,9 @@ struct Envelope {
 #[derive(Debug)]
 struct Replica {
     node: PipelinedNode,
-    kv: BTreeMap<String, String>,
-    applied: LogIndex,
+    application: Option<Worker>,
+    state: SharedState,
+    dispatched: LogIndex,
     directory: PathBuf,
 }
 
@@ -69,14 +71,16 @@ impl Cluster {
     }
 
     fn open_replica(&mut self, node_id: NodeId) {
-        let app = load_app_state(&self.root, node_id);
-        let (node, recovery) = open_node(&self.root, node_id, app.applied);
+        let (state, application) = application::open(&self.root, node_id);
+        let applied = application::snapshot(&state).applied;
+        let (node, recovery) = open_node(&self.root, node_id, applied);
         self.replicas.insert(
             node_id,
             Replica {
                 node,
-                kv: app.kv,
-                applied: app.applied,
+                application: Some(application),
+                state,
+                dispatched: applied,
                 directory: node_dir(&self.root, node_id),
             },
         );
@@ -93,79 +97,9 @@ impl Cluster {
         self.handle_outputs(node_id, outputs);
     }
 
-    fn handle_outputs(&mut self, node_id: NodeId, outputs: Vec<Output>) {
-        for output in outputs {
-            match output {
-                Output::Send { to, message } => {
-                    if self.paused.contains(&to) {
-                        continue;
-                    }
-                    assert!(
-                        self.peer_queue.len() < PEER_QUEUE_CAPACITY,
-                        "bounded peer queue refused a message"
-                    );
-                    self.peer_queue.push_back(Envelope {
-                        from: node_id,
-                        to,
-                        message,
-                    });
-                    self.max_peer_queue_depth =
-                        self.max_peer_queue_depth.max(self.peer_queue.len());
-                }
-                Output::Apply {
-                    index,
-                    payload,
-                    local_proposal_id,
-                    ..
-                } => {
-                    let replica = self.replicas.get_mut(&node_id).expect("replica exists");
-                    let command = std::str::from_utf8(payload.as_slice())
-                        .expect("reference commands are UTF-8");
-                    apply_set(command, &mut replica.kv);
-                    replica.applied = index;
-                    persist_app_state(&replica.directory, &replica.kv, replica.applied);
-                    if let Some(proposal_id) = local_proposal_id {
-                        // This is the client ACK boundary: application bytes and
-                        // applied floor are durable before completion is visible.
-                        self.completed.insert(proposal_id);
-                    }
-                }
-                Output::ApplySnapshot { snapshot } => {
-                    let payload = read_snapshot_payload(
-                        &self.replicas.get(&node_id).expect("replica exists").node,
-                        &snapshot,
-                    );
-                    let replica = self.replicas.get_mut(&node_id).expect("replica exists");
-                    replica.kv = decode_snapshot(&payload);
-                    replica.applied = snapshot.metadata.last_included_index;
-                    persist_app_state(&replica.directory, &replica.kv, replica.applied);
-                }
-                Output::RejectProposal { reason, .. } => panic!("proposal rejected: {reason}"),
-                Output::LocalProposalDropped { reason, .. } => {
-                    panic!("local proposal outcome became unknown: {reason:?}")
-                }
-                Output::ReadIndexRejected { reason, .. } => {
-                    panic!("unexpected read rejection: {reason}")
-                }
-                Output::ReadIndexCanceled { reason, .. } => {
-                    panic!("unexpected read cancellation: {reason:?}")
-                }
-                Output::LeadershipTransferRejected { target, reason } => {
-                    panic!("leadership transfer to {target} rejected: {reason}")
-                }
-                Output::ConfigurationCommitted { .. }
-                | Output::LocalProposalAppended { .. }
-                | Output::ReadIndexGranted { .. }
-                | Output::StageSnapshotChunk { .. } => {}
-                Output::SendSnapshotChunk { .. } => {
-                    panic!("runtime must resolve snapshot chunk sends")
-                }
-            }
-        }
-    }
-
     fn pump(&mut self) {
         for _ in 0..256 {
+            self.poll_applications();
             if self.peer_queue.is_empty() {
                 return;
             }
@@ -180,6 +114,7 @@ impl Cluster {
                     },
                 );
             }
+            self.poll_applications();
         }
         panic!("peer queue did not quiesce");
     }
@@ -205,6 +140,7 @@ impl Cluster {
         );
         for _ in 0..32 {
             self.pump();
+            self.drain_application(leader);
             if self.completed.remove(&proposal_id) {
                 return;
             }
@@ -216,7 +152,7 @@ impl Cluster {
     fn restart(&mut self, node_id: NodeId) -> LogIndex {
         self.finish_replica(node_id);
         self.open_replica(node_id);
-        self.replicas[&node_id].applied
+        application::snapshot(&self.replicas[&node_id].state).applied
     }
 
     fn finish_replica(&mut self, node_id: NodeId) {
@@ -227,7 +163,14 @@ impl Cluster {
             .node
             .complete_pending();
         self.handle_outputs(node_id, outputs);
-        let replica = self.replicas.remove(&node_id).expect("replica exists");
+        self.drain_application(node_id);
+        let mut replica = self.replicas.remove(&node_id).expect("replica exists");
+        replica
+            .application
+            .take()
+            .expect("application worker is running")
+            .shutdown()
+            .expect("idle application worker stops");
         let (submitted, fallbacks, outputs) = replica.node.finish();
         assert!(outputs.is_empty());
         self.pipelined_operations += submitted;
@@ -235,8 +178,10 @@ impl Cluster {
     }
 
     fn compact(&mut self, leader: NodeId) -> LogIndex {
+        self.drain_application(leader);
         let replica = self.replicas.get_mut(&leader).expect("leader exists");
-        compact_snapshot(leader, &mut replica.node, &replica.kv, replica.applied)
+        let state = application::snapshot(&replica.state);
+        compact_snapshot(leader, &mut replica.node, &state.kv, state.applied)
     }
 
     fn catch_up(&mut self, leader: NodeId, follower: NodeId, through: LogIndex) {
@@ -244,7 +189,7 @@ impl Cluster {
         for _ in 0..32 {
             self.step(leader, Input::Tick);
             self.pump();
-            if self.replicas[&follower].applied >= through {
+            if application::snapshot(&self.replicas[&follower].state).applied >= through {
                 return;
             }
         }
@@ -273,12 +218,14 @@ pub(super) fn run(root: &Path, keep_dir: bool) -> ServiceReport {
     let snapshot_index = cluster.compact(initial_leader);
     cluster.catch_up(initial_leader, NodeId(3), snapshot_index);
     assert_eq!(
-        cluster.replicas[&NodeId(3)].kv.get("gamma"),
+        application::snapshot(&cluster.replicas[&NodeId(3)].state)
+            .kv
+            .get("gamma"),
         Some(&"3".to_owned())
     );
 
     cluster.propose(initial_leader, "delta", "4");
-    let final_values = cluster.replicas[&initial_leader].kv.clone();
+    let final_values = application::snapshot(&cluster.replicas[&initial_leader].state).kv;
     let max_peer_queue_depth = cluster.max_peer_queue_depth;
     let (pipelined_operations, synchronous_fallbacks) = cluster.shutdown();
 
