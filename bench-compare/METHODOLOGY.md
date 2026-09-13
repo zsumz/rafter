@@ -127,7 +127,7 @@ and an explicit scratch parent. It stays in this standalone package so the
 performance harness has its own locked build and qualification lane.
 
 ```sh
-RUSTUP_TOOLCHAIN=1.96.1 zcheck run bench-durable
+RUSTUP_TOOLCHAIN=1.88 zcheck run bench-durable
 ```
 
 This opt-in task builds the binary and runs `scripts/bench-durable`. By default,
@@ -184,7 +184,32 @@ python3 scripts/bench-durable \
 The Hard-state comparison workflow records paired runs and separate syscall
 traces. `bench-hard-state` isolates publication; `scripts/check-hard-state-syscalls`
 checks one data sync per write, with zero journal renames or directory syncs
-inside the measured region. The journal is opt-in and has no compaction yet.
+inside the measured region. The journal is opt-in and checkpoints its bounded
+record history; this comparison remains separate from the shared WAL.
+
+### WAL reclamation qualification
+
+`bench-wal-reclamation` measures Rafter's shared-WAL cleanup as a component,
+not as an OpenRaft comparison or complete-service result. It writes fixed-size
+durable batches, publishes an application snapshot, synchronously compacts back
+to the same retained suffix, and records the exact interval in which the WAL
+coordinator cannot accept another mutation. Snapshot publication is reported
+separately from that interval.
+
+Every cycle must exercise the overall reclamation timer and the checkpoint,
+manifest, and cleanup phase timers exactly once. It must leave exactly one
+authoritative manifest, checkpoint, and fresh segment with a stable physical
+byte count. The final reopen verifies the acknowledged hard state, compaction
+boundary, next index, and every retained log index. `scripts/check-wal-reclamation`
+independently replays the receipt accounting and rejects identity, phase,
+physical-bound, or recovery drift.
+
+The dedicated workflow exercises 10,000- and 100,000-entry live suffixes. Its
+hosted-runner timings are diagnostic artifacts, not portable latency claims and
+not pass/fail thresholds. A fixed, prequalified machine is required before
+using those timings as performance evidence. The deterministic storage test
+separately proves that an append waiting behind reclamation resumes durably and
+reopens in order.
 
 ## CI usage
 
