@@ -5,8 +5,7 @@
 //! replication to overlap local persistence under an owned completion fence.
 //! The embedding owns application durability, transport, peer authentication,
 //! fencing, and validation of application snapshot payloads.
-//! Datastore users should read the production boundary in the repository
-//! README before treating the runtime as production glue.
+//! Read the repository production boundary before treating this runtime as production glue.
 //!
 //! Prefer the `recover_with_storage_and_snapshot_store*` constructors on
 //! restart paths so committed-but-unapplied recovery outputs are explicit and
