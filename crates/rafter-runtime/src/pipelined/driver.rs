@@ -55,6 +55,16 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     pub fn ready_node(&self) -> Option<&DurableRaftNode<H, L, S>> {
         self.node.as_ref()
     }
+    /// Returns mutable access only while no persistence operation owns the node.
+    ///
+    /// This is the maintenance path for synchronous operations such as local
+    /// snapshot compaction. It has the same ownership fence as
+    /// [`PipelinedRaftNode::ready_node`]: while persistence is pending, the
+    /// durable node is physically absent and cannot be stepped or mutated.
+    #[must_use]
+    pub fn ready_node_mut(&mut self) -> Option<&mut DurableRaftNode<H, L, S>> {
+        self.node.as_mut()
+    }
     /// Exact pending generation/operation, if persistence currently owns the node.
     #[must_use]
     pub fn pending_operation(&self) -> Option<&PersistenceOperation> {

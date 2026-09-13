@@ -29,3 +29,17 @@ shutdown refuses while the worker still owns an operation. Embeddings still
 choose proposal batching, route the eligible messages, return the completion to
 the originating node, and durably apply committed application entries before
 acknowledging clients.
+
+The `pipelined_durable_service` example is the tested reference composition for
+that fast path. It uses the shared WAL, one-credit worker, a bounded peer queue,
+durable application records carrying their applied floor, snapshot compaction,
+lagging-follower catch-up, restart recovery, and explicit worker shutdown. It
+uses only public Rafter APIs and no benchmark crate:
+
+```text
+cargo run -p rafter-runtime --example pipelined_durable_service
+```
+
+Its in-process message queue is intentionally not an authenticated production
+transport. Real services must supply peer authentication and choose an explicit
+overload policy for their bounded client and peer queues.

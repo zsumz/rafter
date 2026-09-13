@@ -216,6 +216,7 @@ fn follower_persistence_overlaps_local_write_but_quorum_waits_for_its_receipt() 
         Err(PipelineError::PersistencePending)
     );
     assert!(pipeline.ready_node().is_none());
+    assert!(pipeline.ready_node_mut().is_none());
     assert!(!handle.is_finished());
     release_tx.send(()).unwrap();
     assert!(pipeline
@@ -224,6 +225,7 @@ fn follower_persistence_overlaps_local_write_but_quorum_waits_for_its_receipt() 
         .iter()
         .all(|o| !matches!(o, Output::Apply { .. })));
     assert_eq!(pipeline.progress().durable, LogIndex(2));
+    assert!(pipeline.ready_node_mut().is_some());
     let outputs = pipeline.step_batch(vec![ack]).unwrap();
     assert_eq!(
         outputs
