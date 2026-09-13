@@ -16,14 +16,16 @@ use std::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Entry {
     index: LogIndex,
-    bytes: usize,
+    retained_bytes: usize,
+    batch_bytes: usize,
 }
 
 impl Entry {
     const fn new(index: u64) -> Self {
         Self {
             index: LogIndex(index),
-            bytes: 1,
+            retained_bytes: 1,
+            batch_bytes: 1,
         }
     }
 }
@@ -34,7 +36,11 @@ impl ApplicationEntry for Entry {
     }
 
     fn retained_bytes(&self) -> usize {
-        self.bytes
+        self.retained_bytes
+    }
+
+    fn batch_bytes(&self) -> usize {
+        self.batch_bytes
     }
 }
 
@@ -289,11 +295,13 @@ fn oversized_batch_is_refused_with_ownership_intact() {
     let entries = vec![
         Entry {
             index: LogIndex(1),
-            bytes: 3,
+            retained_bytes: 1,
+            batch_bytes: 3,
         },
         Entry {
             index: LogIndex(2),
-            bytes: 3,
+            retained_bytes: 1,
+            batch_bytes: 3,
         },
     ];
     let error = worker.try_submit(entries.clone()).unwrap_err();
@@ -307,6 +315,35 @@ fn oversized_batch_is_refused_with_ownership_intact() {
         }
     ));
     assert_eq!(error.into_entries(), entries);
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn batch_work_bytes_are_independent_of_retained_queue_bytes() {
+    let limits = ApplicationWorkerOptions::new().with_limits(2, 2, 2, 20);
+    let (mut worker, _, batches) = worker(0, Mode::Normal, limits, false);
+    worker
+        .try_submit(vec![
+            Entry {
+                index: LogIndex(1),
+                retained_bytes: 1,
+                batch_bytes: 10,
+            },
+            Entry {
+                index: LogIndex(2),
+                retained_bytes: 1,
+                batch_bytes: 10,
+            },
+        ])
+        .unwrap();
+    assert!(matches!(
+        worker.complete().unwrap(),
+        ApplicationEvent::Applied(_)
+    ));
+    assert_eq!(
+        *batches.lock().unwrap(),
+        vec![vec![LogIndex(1), LogIndex(2)]]
+    );
     worker.shutdown().unwrap();
 }
 

@@ -8,8 +8,9 @@ release mechanics and exact publish lists live in [RELEASE.md](./RELEASE.md).
 
 - `rafter-runtime` now provides an opt-in bounded ordered application worker.
   It drains only ready work, retains entry and byte credits through completion
-  consumption, rejects applied-index gaps, verifies successful durable floors
-  and outcome counts, and closes admission with owned-work evidence on failure.
+  consumption, independently bounds application batch work, rejects
+  applied-index gaps, verifies successful durable floors and outcome counts,
+  and closes admission with owned-work evidence on failure.
 - The repository's architecture is now executable policy: a zrail contract
   (`zrail.toml`, lock-bound) declares the layer graph, sans-IO source scopes,
   capability owners, qualification gates, and per-file shrink-only size

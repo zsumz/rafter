@@ -60,6 +60,11 @@ impl ApplicationEntry for LedgerApplicationEntry {
             .saturating_add(codec::encode_command(&self.entry.command).len())
             .saturating_add(mem::size_of::<ApplyResult<ApplyOutcome>>())
     }
+
+    fn batch_bytes(&self) -> usize {
+        mem::size_of::<ApplyEntry<Command>>()
+            .saturating_add(codec::encode_command(&self.entry.command).len())
+    }
 }
 
 impl DurableApplication<LedgerApplicationEntry> for DurableLedgerStateMachine {

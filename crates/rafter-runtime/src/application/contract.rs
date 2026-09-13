@@ -17,6 +17,17 @@ pub trait ApplicationEntry: Send + 'static {
     /// cannot discover allocations hidden behind an arbitrary entry type.
     /// This value must remain stable for the item's lifetime.
     fn retained_bytes(&self) -> usize;
+
+    /// Returns the application's work-size estimate for batch construction.
+    ///
+    /// This can be smaller than [`Self::retained_bytes`] when an outcome or
+    /// other owner metadata remains live through completion but does not add
+    /// bytes to one storage operation. The default preserves the simpler
+    /// single-estimate contract. This value must remain stable for the item's
+    /// lifetime.
+    fn batch_bytes(&self) -> usize {
+        self.retained_bytes()
+    }
 }
 
 /// Durable application state owned by an [`super::ApplicationWorker`].
@@ -47,7 +58,7 @@ where
     fn apply(&mut self, entries: &[T]) -> Result<Vec<Self::Outcome>, Self::Error>;
 }
 
-/// Entry, byte, and batch limits for one application worker.
+/// Entry, retained-byte, and application-batch limits for one worker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ApplicationWorkerOptions {
@@ -70,6 +81,11 @@ impl ApplicationWorkerOptions {
     }
 
     /// Replaces all queue and per-apply batch limits.
+    ///
+    /// `inflight_bytes` bounds memory retained through event consumption;
+    /// `batch_bytes` bounds the application work represented by one call to
+    /// [`DurableApplication::apply`]. Each uses its matching estimate from
+    /// [`ApplicationEntry`].
     #[must_use]
     pub const fn with_limits(
         mut self,
@@ -96,10 +112,10 @@ impl ApplicationWorkerOptions {
                 "application worker limits must be nonzero",
             ));
         }
-        if self.batch_entries > self.inflight_entries || self.batch_bytes > self.inflight_bytes {
+        if self.batch_entries > self.inflight_entries {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "application batch limits exceed inflight limits",
+                "application batch entry limit exceeds inflight entry limit",
             ));
         }
         Ok(self)

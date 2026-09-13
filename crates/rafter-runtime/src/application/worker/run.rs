@@ -114,18 +114,19 @@ where
                 return;
             };
             let combined_entries = work.entries.len().saturating_add(next.entries.len());
-            let Some(combined_bytes) = work.retained_bytes.checked_add(next.retained_bytes) else {
+            let Some(combined_batch_bytes) = work.batch_bytes.checked_add(next.batch_bytes) else {
                 deferred.push_back(next);
                 return;
             };
             if combined_entries > self.options.batch_entries
-                || combined_bytes > self.options.batch_bytes
+                || combined_batch_bytes > self.options.batch_bytes
             {
                 deferred.push_back(next);
                 return;
             }
             work.entries.extend(next.entries);
-            work.retained_bytes = combined_bytes;
+            work.retained_bytes = work.retained_bytes.saturating_add(next.retained_bytes);
+            work.batch_bytes = combined_batch_bytes;
             work.last_index = next.last_index;
         }
     }

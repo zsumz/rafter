@@ -11,6 +11,8 @@ struct PreparedSubmission {
     first_index: LogIndex,
     last_index: LogIndex,
     retained_bytes: usize,
+    retained_bytes_overflowed: bool,
+    batch_bytes: usize,
 }
 
 impl<T, S> ApplicationWorker<T, S>
@@ -66,7 +68,10 @@ where
             .options
             .inflight_bytes
             .saturating_sub(shared.inflight_bytes);
-        if entries.len() > available_entries || prepared.retained_bytes > available_bytes {
+        if entries.len() > available_entries
+            || prepared.retained_bytes_overflowed
+            || prepared.retained_bytes > available_bytes
+        {
             return Err(reject(
                 entries,
                 ApplicationSubmitRejection::Full {
@@ -83,6 +88,7 @@ where
         let work = Work {
             entries,
             retained_bytes: prepared.retained_bytes,
+            batch_bytes: prepared.batch_bytes,
             last_index: prepared.last_index,
         };
         let Some(requests) = &self.requests else {
@@ -107,7 +113,9 @@ where
         let first_index = first.log_index();
         let mut last_index = first_index;
         let mut retained_bytes = first.retained_bytes();
-        let mut bytes_overflowed = false;
+        let mut retained_bytes_overflowed = false;
+        let mut batch_bytes = first.batch_bytes();
+        let mut batch_bytes_overflowed = false;
         for entry in entries.iter().skip(1) {
             let actual = entry.log_index();
             let Some(expected) = checked_next(last_index) else {
@@ -117,20 +125,26 @@ where
                 return Err(ApplicationSubmitRejection::NonContiguous { expected, actual });
             }
             last_index = actual;
-            let Some(combined) = retained_bytes.checked_add(entry.retained_bytes()) else {
+            if let Some(combined) = retained_bytes.checked_add(entry.retained_bytes()) {
+                retained_bytes = combined;
+            } else {
                 retained_bytes = usize::MAX;
-                bytes_overflowed = true;
+                retained_bytes_overflowed = true;
+            }
+            let Some(combined) = batch_bytes.checked_add(entry.batch_bytes()) else {
+                batch_bytes = usize::MAX;
+                batch_bytes_overflowed = true;
                 continue;
             };
-            retained_bytes = combined;
+            batch_bytes = combined;
         }
-        if bytes_overflowed
+        if batch_bytes_overflowed
             || entries.len() > self.options.batch_entries
-            || retained_bytes > self.options.batch_bytes
+            || batch_bytes > self.options.batch_bytes
         {
             return Err(ApplicationSubmitRejection::BatchTooLarge {
                 entries: entries.len(),
-                bytes: retained_bytes,
+                bytes: batch_bytes,
                 max_entries: self.options.batch_entries,
                 max_bytes: self.options.batch_bytes,
             });
@@ -139,6 +153,8 @@ where
             first_index,
             last_index,
             retained_bytes,
+            retained_bytes_overflowed,
+            batch_bytes,
         })
     }
 }

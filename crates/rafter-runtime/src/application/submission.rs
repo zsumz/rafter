@@ -25,7 +25,7 @@ pub enum ApplicationSubmitRejection {
     BatchTooLarge {
         /// Submitted entry count.
         entries: usize,
-        /// Submitted retained-byte estimate.
+        /// Submitted application-batch byte estimate.
         bytes: usize,
         /// Configured per-apply entry limit.
         max_entries: usize,

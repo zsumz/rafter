@@ -36,6 +36,10 @@ impl ApplicationEntry for AppliedCommand {
                 .map_or(0, |payload| payload.len().saturating_mul(2)),
         )
     }
+
+    fn batch_bytes(&self) -> usize {
+        64_usize.saturating_add(self.payload.as_ref().map_or(0, Vec::len))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

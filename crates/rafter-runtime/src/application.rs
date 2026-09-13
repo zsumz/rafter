@@ -7,10 +7,10 @@
 //! supplies the reusable one-owner worker for that second fence.
 //!
 //! [`crate::application::ApplicationWorker`] accepts only contiguous log indexes, accounts for
-//! entries and retained bytes until completions are consumed, drains only work
-//! that is already ready, and verifies the application's durable floor after
-//! every successful batch. It owns no admission, reply, snapshot, or recovery
-//! policy. An embedding must poison its live service on
+//! entries and retained bytes until completions are consumed, constructs
+//! ready-only batches under a separate application-work byte limit, and
+//! verifies the application's durable floor after every successful batch. It
+//! owns no admission, reply, snapshot, or recovery policy. An embedding must poison its live service on
 //! [`crate::application::ApplicationEvent::Failed`] and reopen both Raft and
 //! application state from their durable floors.
 

@@ -33,10 +33,12 @@ acknowledging clients.
 `application::ApplicationWorker` supplies that application-side durability
 fence without importing benchmark code. It applies contiguous committed items
 on one ordered thread, combines only work already waiting, and bounds retained
-entries and bytes until each completion is consumed. Store success is accepted
-only when it returns one outcome per item and reports the matching durable
-applied floor. Refusals and failures preserve owned work; a failure or worker
-panic closes admission and requires recovery before the service continues.
+entries and bytes until each completion is consumed. A separate per-entry work
+estimate bounds one application call without conflating storage batch geometry
+with completion-retained memory. Store success is accepted only when it returns
+one outcome per item and reports the matching durable applied floor. Refusals
+and failures preserve owned work; a failure or worker panic closes admission
+and requires recovery before the service continues.
 Snapshot creation and installation remain application policy and must be
 coordinated at a consumed durable floor.
 

@@ -24,6 +24,7 @@ pub(super) type WorkerEvent<T, S> =
 pub(super) struct Work<T> {
     pub entries: Vec<T>,
     pub retained_bytes: usize,
+    pub batch_bytes: usize,
     pub last_index: LogIndex,
 }
 
