@@ -32,17 +32,15 @@ where
     /// exhausted-index, oversized, over-capacity, or stopped submissions.
     pub fn try_submit(&self, entries: Vec<T>) -> Result<(), ApplicationSubmitError<T>> {
         let reject = |entries, rejection| ApplicationSubmitError { entries, rejection };
-        if !self.lock_shared().accepting {
-            return Err(reject(entries, ApplicationSubmitRejection::Stopped));
-        }
-        let prepared = match self.prepare_submission(&entries) {
-            Ok(prepared) => prepared,
-            Err(rejection) => return Err(reject(entries, rejection)),
-        };
+        let prepared = self.prepare_submission(&entries);
         let mut shared = self.lock_shared();
         if !shared.accepting {
             return Err(reject(entries, ApplicationSubmitRejection::Stopped));
         }
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(rejection) => return Err(reject(entries, rejection)),
+        };
         let Some(expected) = checked_next(shared.accepted_through) else {
             return Err(reject(
                 entries,

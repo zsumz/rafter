@@ -235,6 +235,8 @@ fn store_failure_stops_admission_and_returns_all_owned_work() {
     assert!(!worker.is_accepting());
     let error = worker.try_submit(vec![Entry::new(3)]).unwrap_err();
     assert_eq!(error.rejection(), ApplicationSubmitRejection::Stopped);
+    let error = worker.try_submit(Vec::new()).unwrap_err();
+    assert_eq!(error.rejection(), ApplicationSubmitRejection::Stopped);
     worker.shutdown().unwrap();
 }
 
