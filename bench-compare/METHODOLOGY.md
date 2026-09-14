@@ -204,12 +204,16 @@ boundary, next index, and every retained log index. `scripts/check-wal-reclamati
 independently replays the receipt accounting and rejects identity, phase,
 physical-bound, or recovery drift.
 
-The dedicated workflow exercises 10,000- and 100,000-entry live suffixes. Its
-hosted-runner timings are diagnostic artifacts, not portable latency claims and
-not pass/fail thresholds. A fixed, prequalified machine is required before
-using those timings as performance evidence. The deterministic storage test
-separately proves that an append waiting behind reclamation resumes durably and
-reopens in order.
+The dedicated workflow exercises two independent workload shapes. The
+live-state cases retain 10,000 and 100,000 entries while retiring 512 entries
+per round. The retirement case retains 512 entries while retiring 102,400
+entries per round. Together they expose checkpoint work proportional to the
+live suffix and retirement work proportional to the compacted prefix without
+combining the two costs into one opaque result. Hosted-runner timings are
+diagnostic artifacts, not portable latency claims and not pass/fail thresholds.
+A fixed, prequalified machine is required before using those timings as
+performance evidence. The deterministic storage test separately proves that
+an append waiting behind reclamation resumes durably and reopens in order.
 
 ## CI usage
 
