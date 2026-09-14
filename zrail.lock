@@ -16,8 +16,8 @@ targets = 150
 physical_rust_files = 2019
 base_source_contexts = 3466
 derived_source_contexts = 0
-source_facts = 748269
-projection_queries = 2929044
+source_facts = 748282
+projection_queries = 2929171
 projected_facts = 2512
 unresolved_bindings = 0
 analyzer_semantics = 6
@@ -1246,12 +1246,12 @@ inputs_sha256 = "d33a14fc45f06272ebe9cdfc49dc6efa4010f66a1dac5154097a64454cb9295
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "6b108b2585b5afd68b5d57a6432ef098388db07d8417bb3cdab6aafc5d8a069e"
+inputs_sha256 = "eb543f7c8c60cd97bced04d506b6bceefc4bb9221ed183d50dd31d8dbb6f6a32"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "dc09cbd740be0093108b1dba7b950999c96e4235d171180f75f97e290390569d"
+inputs_sha256 = "c2684a2f1e4e1eca9cee94b0a8a25a6b6296619984c4c58082f428d97dd05f57"
 
 [[macro_source]]
 allowance = "clap::Parser"

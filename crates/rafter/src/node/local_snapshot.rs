@@ -19,6 +19,7 @@ pub struct PreparedLocalSnapshotInstall<'a> {
     node: &'a mut Node,
     snapshot: RaftSnapshot,
     committed_configuration: Option<CommittedConfiguration>,
+    retired_len: usize,
 }
 
 impl PreparedLocalSnapshotInstall<'_> {
@@ -32,6 +33,7 @@ impl PreparedLocalSnapshotInstall<'_> {
             .install_local_snapshot_state_with_committed_configuration(
                 self.snapshot,
                 self.committed_configuration,
+                self.retired_len,
             )
     }
 }
@@ -56,10 +58,19 @@ impl Node {
         snapshot: RaftSnapshot,
     ) -> Result<PreparedLocalSnapshotInstall<'_>, LocalSnapshotInstallError> {
         let committed_configuration = self.check_local_snapshot(&snapshot)?;
+        let boundary_index = snapshot.metadata.last_included_index;
+        let installed_index = self.snapshot_index();
+        let Some(retired_delta) = boundary_index.0.checked_sub(installed_index.0) else {
+            return Err(LocalSnapshotInstallError::BoundaryBelowInstalledSnapshot {
+                snapshot_index: boundary_index,
+                installed_index,
+            });
+        };
         Ok(PreparedLocalSnapshotInstall {
             node: self,
             snapshot,
             committed_configuration,
+            retired_len: retained_log_offset(retired_delta),
         })
     }
 
@@ -69,16 +80,8 @@ impl Node {
         &mut self,
         snapshot: RaftSnapshot,
         committed_configuration: Option<CommittedConfiguration>,
+        retired_len: usize,
     ) -> Vec<Output> {
-        let previous_boundary = self.snapshot_index();
-        let boundary_index = snapshot.metadata.last_included_index;
-        let retired_len = retained_log_offset(
-            boundary_index
-                .0
-                .checked_sub(previous_boundary.0)
-                .expect("a prepared local snapshot cannot move backward"),
-        );
-
         drop(self.persistent.log.drain(..retired_len));
         self.derived.configuration.compact_prefix(retired_len);
         self.persistent.snapshot = Some(snapshot);
