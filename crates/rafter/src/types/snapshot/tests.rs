@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn snapshot_checksum_matches_ieee_crc32() {
     assert_eq!(application_payload_crc32(b"123456789"), 0xCBF4_3926);
-    let bytes = (0..1025).map(|value| value as u8).collect::<Vec<_>>();
+    let bytes = (0u8..=u8::MAX).cycle().take(1025).collect::<Vec<_>>();
     for length in [0, 1, 7, 8, 9, 255, 256, 1024, 1025] {
         assert_eq!(
             application_payload_crc32(&bytes[..length]),
