@@ -222,3 +222,108 @@ fn runtime_clears_stale_pending_snapshot_transfer_on_restart() {
         None
     );
 }
+
+#[test]
+fn local_snapshot_publication_restarts_an_inbound_transfer_from_zero() {
+    let mut runtime = elected_leader_with_snapshot_store(InMemoryRaftSnapshotStore::new());
+    let proposal_term = runtime.current_term();
+    commit_with_follower_ack(&mut runtime, b"committed", 2);
+
+    let transfer_term = Term(proposal_term.0 + 1);
+    let payload = b"future snapshot payload".to_vec();
+    let metadata = snapshot_metadata(3, proposal_term.0, transfer_term.0);
+    let descriptor = RaftSnapshot::from_payload(metadata.clone(), &payload);
+    let first_len = 4;
+    let first = rafter::InstallSnapshotChunk {
+        term: transfer_term,
+        leader_id: RaftNodeId(3),
+        transfer_id: descriptor.transfer_id(),
+        metadata: metadata.clone(),
+        total_payload_len: payload.len() as u64,
+        application_payload_crc32: descriptor.application_payload_crc32,
+        offset: 0,
+        chunk: payload[..first_len].to_vec(),
+        done: false,
+    };
+    runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(3),
+            message: Message::InstallSnapshotChunk(first),
+        })
+        .expect("first inbound chunk stages");
+    assert_eq!(
+        runtime
+            .snapshot_store
+            .current_pending_snapshot_transfer()
+            .expect("store retains the staged prefix")
+            .received_len,
+        first_len as u64
+    );
+
+    runtime
+        .compact_log_with_snapshot(raft_snapshot_for_writer(
+            2,
+            proposal_term.0,
+            transfer_term.0,
+            2,
+            b"local state through two",
+        ))
+        .expect("local snapshot publication supersedes the staged transfer");
+    assert_eq!(runtime.node.pending_snapshot_transfer(), None);
+    assert_eq!(
+        runtime.snapshot_store.current_pending_snapshot_transfer(),
+        None
+    );
+
+    let continuation = rafter::InstallSnapshotChunk {
+        term: transfer_term,
+        leader_id: RaftNodeId(3),
+        transfer_id: descriptor.transfer_id(),
+        metadata: metadata.clone(),
+        total_payload_len: payload.len() as u64,
+        application_payload_crc32: descriptor.application_payload_crc32,
+        offset: first_len as u64,
+        chunk: payload[first_len..].to_vec(),
+        done: true,
+    };
+    let rejected = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(3),
+            message: Message::InstallSnapshotChunk(continuation),
+        })
+        .expect("missing staged prefix is a protocol rejection, not a storage failure");
+    assert!(rejected.iter().all(|output| !matches!(
+        output,
+        RaftOutput::StageSnapshotChunk { .. } | RaftOutput::ApplySnapshot { .. }
+    )));
+    assert!(rejected.iter().any(|output| matches!(
+        output,
+        RaftOutput::Send {
+            message: Message::InstallSnapshotResponse(response),
+            ..
+        } if !response.success && response.next_offset == 0
+    )));
+
+    let retry = rafter::InstallSnapshotChunk {
+        term: transfer_term,
+        leader_id: RaftNodeId(3),
+        transfer_id: descriptor.transfer_id(),
+        metadata,
+        total_payload_len: payload.len() as u64,
+        application_payload_crc32: descriptor.application_payload_crc32,
+        offset: 0,
+        chunk: payload,
+        done: true,
+    };
+    let installed = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(3),
+            message: Message::InstallSnapshotChunk(retry),
+        })
+        .expect("retry from zero installs the snapshot");
+    assert!(installed.iter().any(|output| matches!(
+        output,
+        RaftOutput::ApplySnapshot { snapshot } if snapshot.metadata == descriptor.metadata
+    )));
+    assert_eq!(runtime.snapshot_index(), LogIndex(3));
+}

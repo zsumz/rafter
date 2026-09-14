@@ -50,3 +50,28 @@ fn prepared_local_snapshot_can_return_retired_entries_for_deferred_drop() {
         .commit_with_retired_entries();
     assert!(rerecorded.is_empty());
 }
+
+#[test]
+fn committed_local_snapshot_abandons_pending_inbound_transfer() {
+    let mut node = applied_node(10, 1);
+    let incoming = test_snapshot(11, 1, 1, b"future snapshot");
+    node.resume_pending_snapshot_transfer(PendingSnapshotTransfer {
+        leader_id: NodeId(1),
+        transfer_id: incoming.transfer_id(),
+        metadata: incoming.metadata.clone(),
+        total_payload_len: incoming.application_payload_len,
+        application_payload_crc32: incoming.application_payload_crc32,
+        received_len: 4,
+    })
+    .expect("partial inbound transfer resumes");
+    assert!(node.pending_snapshot_transfer().is_some());
+
+    let _ = node
+        .prepare_local_snapshot_install(test_snapshot(8, 1, 1, b"local snapshot"))
+        .expect("local snapshot prepares")
+        .commit();
+
+    assert_eq!(node.pending_snapshot_transfer(), None);
+    node.validate_derived_state()
+        .expect("abandoning the inbound transfer leaves valid state");
+}

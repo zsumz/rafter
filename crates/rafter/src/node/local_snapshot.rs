@@ -173,6 +173,12 @@ impl Node {
         committed_configuration: Option<CommittedConfiguration>,
         retired_len: usize,
     ) -> Vec<Output> {
+        // Durable snapshot stores publish one authoritative snapshot and clear
+        // any staged inbound transfer as part of that publication. Commit the
+        // matching volatile transition here, after the durable composition has
+        // completed its write, so a later continuation cannot retain an offset
+        // for staging bytes that no longer exist.
+        self.volatile.incoming_snapshot = None;
         self.derived.configuration.compact_prefix(retired_len);
         self.persistent.snapshot = Some(snapshot);
         self.persistent.committed_configuration = committed_configuration;
