@@ -5,7 +5,6 @@
 
 use crate::{CommittedConfiguration, LogIndex};
 
-use super::state::LocalProposalTracker;
 use super::{LocalProposalDropReason, Node, Output};
 
 mod batch;
@@ -15,7 +14,7 @@ mod read;
 pub use install_error::LocalSnapshotInstallError;
 
 pub(in crate::node) use batch::LogBatch;
-use read::retained_log_offset;
+pub(in crate::node) use read::retained_log_offset;
 
 impl Node {
     pub(super) fn truncate_from(
@@ -289,21 +288,6 @@ impl Node {
     pub(super) fn replace_log(&mut self, log: Vec<crate::LogEntry>) -> Vec<Output> {
         self.derived = super::state::DerivedState::from_log(&log);
         self.persistent.log = log;
-        let mut retained = LocalProposalTracker::default();
-        let mut outputs = Vec::new();
-        for (index, proposal) in std::mem::take(&mut self.volatile.local_proposals) {
-            if self.term_at(index) == Some(proposal.term) {
-                retained.insert(index, proposal);
-            } else {
-                outputs.push(Output::LocalProposalDropped {
-                    proposal_id: proposal.id,
-                    index,
-                    term: proposal.term,
-                    reason: LocalProposalDropReason::LogOverwritten,
-                });
-            }
-        }
-        self.volatile.local_proposals = retained;
-        outputs
+        self.reconcile_local_proposals()
     }
 }

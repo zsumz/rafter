@@ -2,7 +2,7 @@
 
 use crate::{CommittedConfiguration, Output, RaftSnapshot};
 
-use super::log::LocalSnapshotInstallError;
+use super::log::{retained_log_offset, LocalSnapshotInstallError};
 use super::Node;
 
 /// An exclusively borrowed local-snapshot transition whose boundary checks
@@ -29,7 +29,7 @@ impl PreparedLocalSnapshotInstall<'_> {
     #[must_use]
     pub fn commit(self) -> Vec<Output> {
         self.node
-            .install_snapshot_state_with_committed_configuration(
+            .install_local_snapshot_state_with_committed_configuration(
                 self.snapshot,
                 self.committed_configuration,
             )
@@ -61,5 +61,28 @@ impl Node {
             snapshot,
             committed_configuration,
         })
+    }
+
+    /// Commits an already-validated local snapshot without cloning its retained
+    /// log suffix or rebuilding derived configuration state from every entry.
+    pub(in crate::node) fn install_local_snapshot_state_with_committed_configuration(
+        &mut self,
+        snapshot: RaftSnapshot,
+        committed_configuration: Option<CommittedConfiguration>,
+    ) -> Vec<Output> {
+        let previous_boundary = self.snapshot_index();
+        let boundary_index = snapshot.metadata.last_included_index;
+        let retired_len = retained_log_offset(
+            boundary_index
+                .0
+                .checked_sub(previous_boundary.0)
+                .expect("a prepared local snapshot cannot move backward"),
+        );
+
+        drop(self.persistent.log.drain(..retired_len));
+        self.derived.configuration.compact_prefix(retired_len);
+        self.persistent.snapshot = Some(snapshot);
+        self.persistent.committed_configuration = committed_configuration;
+        self.reconcile_local_proposals()
     }
 }

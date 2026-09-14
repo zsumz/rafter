@@ -92,7 +92,7 @@ impl Node {
     }
 }
 
-pub(super) fn retained_log_offset(value: u64) -> usize {
+pub(in crate::node) fn retained_log_offset(value: u64) -> usize {
     match usize::try_from(value) {
         Ok(offset) => offset,
         Err(_) => usize::MAX,

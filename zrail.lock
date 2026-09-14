@@ -2,7 +2,7 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "cbd07a3908f628c40b09b8555372a2d8d285df2adfe2a8ca1ba07e4fc251c419"
+contract_sha256 = "20e920843c8289957159973f9a2cbe3448f7f71e977f24ed24c8a6241589ca4a"
 
 [analysis]
 inventory_sha256 = "a35b042f5c3aa35e9a0adb591e5cbb7575f4b3ca11447a2ff4add6688c98c3cd"
@@ -16,15 +16,15 @@ targets = 150
 physical_rust_files = 2019
 base_source_contexts = 3466
 derived_source_contexts = 0
-source_facts = 748113
-projection_queries = 2928822
+source_facts = 748269
+projection_queries = 2929044
 projected_facts = 2512
 unresolved_bindings = 0
 analyzer_semantics = 6
 
 [[analysis.contract_source]]
 path = "zrail-baseline.toml"
-sha256 = "1902d69e5cda7ba822bcd4f15bfbf053a26b3f42efcedd3ca22098090ae69ca0"
+sha256 = "06cd7dc6a8024ec417c78bccd806795ee496698e7c3e4d3868f1a8fcc91c25c8"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
@@ -1246,12 +1246,12 @@ inputs_sha256 = "d33a14fc45f06272ebe9cdfc49dc6efa4010f66a1dac5154097a64454cb9295
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "493767f9fe94e58f6492aaebaa7f800841ffefaa550516b13b0813d976d92921"
+inputs_sha256 = "6b108b2585b5afd68b5d57a6432ef098388db07d8417bb3cdab6aafc5d8a069e"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "d1569f1a9cc885bc641fa4e807678ab30a7256365da4c2782a95dbc5ee04f581"
+inputs_sha256 = "dc09cbd740be0093108b1dba7b950999c96e4235d171180f75f97e290390569d"
 
 [[macro_source]]
 allowance = "clap::Parser"
@@ -1695,11 +1695,6 @@ value = 407
 rule = "rust.file-size"
 target = "crates/rafter/src/lib.rs"
 value = 144
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter/src/node/log.rs"
-value = 309
 
 [[ratchet]]
 rule = "rust.file-size"

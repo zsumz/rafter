@@ -7,6 +7,8 @@ use std::collections::{vec_deque, VecDeque};
 
 use crate::{LocalProposalId, LogIndex, Term};
 
+use super::super::{LocalProposalDropReason, Node, Output};
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(in crate::node) struct LocalProposal {
     pub term: Term,
@@ -102,5 +104,26 @@ impl IntoIterator for LocalProposalTracker {
 
     fn into_iter(self) -> Self::IntoIter {
         self.proposals.into_iter()
+    }
+}
+
+impl Node {
+    pub(in crate::node) fn reconcile_local_proposals(&mut self) -> Vec<Output> {
+        let mut retained = LocalProposalTracker::default();
+        let mut outputs = Vec::new();
+        for (index, proposal) in std::mem::take(&mut self.volatile.local_proposals) {
+            if self.term_at(index) == Some(proposal.term) {
+                retained.insert(index, proposal);
+            } else {
+                outputs.push(Output::LocalProposalDropped {
+                    proposal_id: proposal.id,
+                    index,
+                    term: proposal.term,
+                    reason: LocalProposalDropReason::LogOverwritten,
+                });
+            }
+        }
+        self.volatile.local_proposals = retained;
+        outputs
     }
 }

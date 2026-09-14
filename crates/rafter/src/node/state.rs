@@ -28,5 +28,5 @@ pub(super) use membership::{AcknowledgementSet, MembershipIndex, ProgressSet, Sl
 #[cfg(test)]
 pub(super) use progress::Inflights;
 pub(super) use progress::{Progress, ProgressMode};
-pub(super) use proposal::{LocalProposal, LocalProposalTracker};
+pub(super) use proposal::LocalProposal;
 pub(super) use snapshot::IncomingSnapshotTransfer;
