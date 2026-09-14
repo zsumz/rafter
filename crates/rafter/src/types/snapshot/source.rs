@@ -50,7 +50,13 @@ pub struct SnapshotChunkRequest<'a> {
 /// are small enough that streaming from memory is streaming enough.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct InMemorySnapshotChunkSource {
-    payloads: BTreeMap<SnapshotTransferId, Vec<u8>>,
+    payloads: BTreeMap<SnapshotTransferId, InMemoryPayload>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct InMemoryPayload {
+    bytes: Vec<u8>,
+    crc32: u32,
 }
 
 impl InMemorySnapshotChunkSource {
@@ -77,34 +83,45 @@ impl InMemorySnapshotChunkSource {
                 actual: payload.len() as u64,
             });
         }
-        self.payloads.insert(snapshot.transfer_id(), payload);
+        let crc32 = super::application_payload_crc32(&payload);
+        self.payloads.insert(
+            snapshot.transfer_id(),
+            InMemoryPayload {
+                bytes: payload,
+                crc32,
+            },
+        );
         Ok(())
     }
 
     /// Removes and returns the payload registered for `transfer_id`.
     pub fn remove(&mut self, transfer_id: SnapshotTransferId) -> Option<Vec<u8>> {
-        self.payloads.remove(&transfer_id)
+        self.payloads
+            .remove(&transfer_id)
+            .map(|payload| payload.bytes)
     }
 
     /// Returns the payload registered for `transfer_id`.
     #[must_use]
     pub fn payload(&self, transfer_id: SnapshotTransferId) -> Option<&[u8]> {
-        self.payloads.get(&transfer_id).map(Vec::as_slice)
+        self.payloads
+            .get(&transfer_id)
+            .map(|payload| payload.bytes.as_slice())
     }
 }
 
 impl SnapshotChunkSource for InMemorySnapshotChunkSource {
     fn snapshot_chunk(&self, request: SnapshotChunkRequest<'_>) -> Option<Vec<u8>> {
         let payload = self.payloads.get(&request.transfer_id)?;
-        if payload.len() as u64 != request.total_payload_len {
+        if payload.bytes.len() as u64 != request.total_payload_len {
             return None;
         }
-        if super::application_payload_crc32(payload) != request.application_payload_crc32 {
+        if payload.crc32 != request.application_payload_crc32 {
             return None;
         }
         let start = usize::try_from(request.offset).ok()?;
         let end = start.checked_add(request.len as usize)?;
-        payload.get(start..end).map(Vec::from)
+        payload.bytes.get(start..end).map(Vec::from)
     }
 }
 
