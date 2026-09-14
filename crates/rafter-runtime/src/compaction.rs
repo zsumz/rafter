@@ -112,8 +112,11 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         }
 
         self.fill_local_snapshot_membership(&mut snapshot.metadata);
-        let descriptor =
-            RaftSnapshot::from_payload(snapshot.metadata.clone(), &snapshot.application_payload);
+        let descriptor = RaftSnapshot::new(
+            snapshot.metadata.clone(),
+            snapshot.application_payload.len() as u64,
+            rafter_storage::crc32(&snapshot.application_payload),
+        );
         // The prepared transition owns an exclusive borrow of the kernel, so
         // validation happens before storage and no kernel input can invalidate
         // it while persistence runs. Commit is infallible and happens only
