@@ -10,6 +10,7 @@ use rafter::{
     NodeConfig, NodeId, Output, RaftSnapshot, RaftSnapshotMetadata, SnapshotChunkRequest,
     SnapshotChunkSource, SnapshotGroupId,
 };
+use rafter_runtime::LogRetirementWorker;
 use rafter_storage::durable_batch::WalRaftNodeStores;
 use rafter_storage::{PersistedRaftSnapshot, SnapshotRetention};
 
@@ -56,9 +57,10 @@ pub(crate) fn open_node(
 pub(crate) fn compact_snapshot(
     node_id: NodeId,
     node: &mut PipelinedNode,
+    retirement: &LogRetirementWorker,
     kv: &BTreeMap<String, String>,
     applied: LogIndex,
-) -> LogIndex {
+) -> (LogIndex, bool) {
     let node = node.ready_mut();
     let term = node
         .term_at_index(applied)
@@ -75,14 +77,22 @@ pub(crate) fn compact_snapshot(
         ),
     )
     .expect("snapshot metadata is valid");
-    node.compact_log_with_snapshot(PersistedRaftSnapshot {
-        metadata,
-        application_payload: encode_snapshot(kv),
-    })
-    .expect("compact WAL through durable application state");
+    let retired = node
+        .compact_log_with_snapshot_deferred_drop(PersistedRaftSnapshot {
+            metadata,
+            application_payload: encode_snapshot(kv),
+        })
+        .expect("compact WAL through durable application state");
+    let deferred = match retirement.try_submit(retired) {
+        Ok(()) => true,
+        Err(error) => {
+            drop(error.into_retired_entries());
+            false
+        }
+    };
     node.prune_snapshot_files(SnapshotRetention::CurrentOnly)
         .expect("prune superseded snapshot envelopes");
-    applied
+    (applied, deferred)
 }
 
 pub(crate) fn read_snapshot_payload(node: &PipelinedNode, snapshot: &RaftSnapshot) -> Vec<u8> {

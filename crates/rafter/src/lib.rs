@@ -128,7 +128,7 @@ pub use node::{
     ConfigurationProposalRejection, Input, LeadershipTransferRejection, LocalProposalDropReason,
     LocalSnapshotInstallError, Node, NodeConfig, NodeConfigError, Output,
     PendingSnapshotTransferResumeError, PreparedLocalSnapshotInstall, ProposalRejection,
-    ReadIndexCancelReason, ReadIndexRejection, Role, StateValidationError,
+    ReadIndexCancelReason, ReadIndexRejection, RetiredLogEntries, Role, StateValidationError,
 };
 pub use types::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,

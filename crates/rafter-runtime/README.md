@@ -48,13 +48,20 @@ application store after an idle join, so maintenance can take exclusive
 ownership without a side channel; a prior application failure still requires
 application-defined recovery before the store is reused.
 
+`LogRetirementWorker` optionally releases entries retired by a successfully
+published local snapshot away from the consensus-owner thread. Entry and
+payload-byte credits include queued and currently dropping work. Submission
+never waits, and refusal returns the complete retired prefix for safe inline
+destruction. Snapshot publication, durable WAL compaction, and the kernel
+transition remain synchronous; explicit shutdown drains accepted work.
+
 The `pipelined_durable_service` example is the tested reference composition for
 that fast path. It uses the shared WAL, `ThreadedPipelinedRaftNode`, bounded
 ordered application worker, bounded peer queue, durable application records
-carrying their applied floor, snapshot compaction, current-only file retention,
-startup cleanup of recognized interrupted-publication files, lagging-follower
-catch-up, restart recovery, and explicit worker shutdown. It uses only public
-Rafter APIs and no benchmark crate:
+carrying their applied floor, snapshot compaction, bounded retired-log release,
+current-only file retention, startup cleanup of recognized
+interrupted-publication files, lagging-follower catch-up, restart recovery, and
+explicit worker shutdown. It uses only public Rafter APIs and no benchmark crate:
 
 ```text
 cargo run -p rafter-runtime --example pipelined_durable_service

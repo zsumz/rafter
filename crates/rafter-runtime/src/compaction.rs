@@ -8,18 +8,19 @@
 //! this module's business — those persist on the step path.
 
 use rafter::{
-    RaftSnapshot, RaftSnapshotMetadata, SnapshotChunkSource, SnapshotCommittedConfiguration,
+    RaftSnapshot, RaftSnapshotMetadata, RetiredLogEntries, SnapshotChunkSource,
+    SnapshotCommittedConfiguration,
 };
 use rafter_storage::{
     telemetry::{Stage, Timer},
-    FileRaftSnapshotStore, PersistedRaftSnapshot, RaftHardStateStore, RaftLogSegment,
-    RaftSnapshotStore, SnapshotPruneError, SnapshotPruneReport, SnapshotRetention,
+    PersistedRaftSnapshot, RaftHardStateStore, RaftLogSegment, RaftSnapshotStore,
 };
 
 use crate::{DurableRaftNode, RaftRuntimeError};
 
 mod chunk_source;
 mod install_error;
+mod maintenance;
 
 use chunk_source::OriginalSnapshotChunkSource;
 use install_error::local_snapshot_install_error;
@@ -103,8 +104,25 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// cannot be written.
     pub fn compact_log_with_snapshot(
         &mut self,
-        mut snapshot: PersistedRaftSnapshot,
+        snapshot: PersistedRaftSnapshot,
     ) -> Result<(), RaftRuntimeError> {
+        drop(self.compact_log_with_snapshot_deferred_drop(snapshot)?);
+        Ok(())
+    }
+
+    /// Performs durable snapshot compaction and returns the retired log prefix.
+    ///
+    /// The returned entries are no longer consensus state and may be submitted
+    /// to a bounded [`crate::LogRetirementWorker`] so their payload references
+    /// are released away from the consensus-owner thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::compact_log_with_snapshot`].
+    pub fn compact_log_with_snapshot_deferred_drop(
+        &mut self,
+        mut snapshot: PersistedRaftSnapshot,
+    ) -> Result<RetiredLogEntries, RaftRuntimeError> {
         if let Some(cause) = &self.fatal_error {
             return Err(RaftRuntimeError::Poisoned {
                 cause: cause.clone(),
@@ -136,11 +154,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             drop(prepared);
             return Err(self.poison(error));
         }
-        {
+        let retired = {
             let _commit = Timer::start(Stage::SnapshotKernelCommit);
-            let _ = prepared.commit();
-        }
-        Ok(())
+            let (_, retired) = prepared.commit_with_retired_entries();
+            retired
+        };
+        Ok(retired)
     }
 
     /// As [`Self::compact_log_with_snapshot`], but the payload is pulled
@@ -153,9 +172,26 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// when the source cannot serve the snapshot it describes.
     pub fn compact_log_with_streamed_snapshot(
         &mut self,
-        mut snapshot: RaftSnapshot,
+        snapshot: RaftSnapshot,
         source: &dyn SnapshotChunkSource,
     ) -> Result<(), RaftRuntimeError> {
+        drop(self.compact_log_with_streamed_snapshot_deferred_drop(snapshot, source)?);
+        Ok(())
+    }
+
+    /// Performs streamed durable snapshot compaction and returns the retired prefix.
+    ///
+    /// This is the bounded-memory snapshot-source form of
+    /// [`Self::compact_log_with_snapshot_deferred_drop`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::compact_log_with_streamed_snapshot`].
+    pub fn compact_log_with_streamed_snapshot_deferred_drop(
+        &mut self,
+        mut snapshot: RaftSnapshot,
+        source: &dyn SnapshotChunkSource,
+    ) -> Result<RetiredLogEntries, RaftRuntimeError> {
         if let Some(cause) = &self.fatal_error {
             return Err(RaftRuntimeError::Poisoned {
                 cause: cause.clone(),
@@ -189,11 +225,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             drop(prepared);
             return Err(self.poison(error));
         }
-        {
+        let retired = {
             let _commit = Timer::start(Stage::SnapshotKernelCommit);
-            let _ = prepared.commit();
-        }
-        Ok(())
+            let (_, retired) = prepared.commit_with_retired_entries();
+            retired
+        };
+        Ok(retired)
     }
 
     /// Records the boundary's committed configuration in a descriptor that
@@ -230,55 +267,4 @@ fn write_snapshot_and_compact_log<L: RaftLogSegment, S: RaftSnapshotStore>(
     log_segment
         .compact_prefix_through(boundary_index)
         .map_err(RaftRuntimeError::LogCompact)
-}
-
-impl<H, L> DurableRaftNode<H, L, FileRaftSnapshotStore> {
-    /// Prunes noncurrent file-backed snapshot envelopes according to `retention`.
-    ///
-    /// This is storage maintenance, not a Raft state transition. The selected
-    /// snapshot and its manifest are never removed, the installed kernel
-    /// descriptor is unchanged, and a maintenance failure does not poison the
-    /// runtime. The operation is safe to retry idempotently, including after a
-    /// restart.
-    ///
-    /// Call this after a successful [`Self::compact_log_with_snapshot`] or
-    /// [`Self::compact_log_with_streamed_snapshot`] to bound retained snapshot
-    /// history. `CurrentOnly` is the smallest supported retention envelope.
-    /// Unknown files and stable inbound-transfer staging are never removed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SnapshotPruneError`] when the snapshot store requires reopen,
-    /// inventory cannot establish the selected snapshot, or durable deletion
-    /// cannot complete. Any reported deletion prefix may already be absent;
-    /// callers may safely retry the same policy.
-    pub fn prune_snapshot_files(
-        &mut self,
-        retention: SnapshotRetention,
-    ) -> Result<SnapshotPruneReport, SnapshotPruneError> {
-        self.snapshot_store.prune_snapshots(retention)
-    }
-
-    /// Removes recognized temporary snapshot files left by an interrupted writer.
-    ///
-    /// This is storage maintenance, not a Raft state transition. Selected and
-    /// noncurrent snapshots, stable inbound-transfer staging, and unknown files
-    /// are never removed. The operation is intended for startup after recovery,
-    /// or another point where the embedding exclusively owns the node and no
-    /// snapshot-store write is in progress.
-    ///
-    /// A maintenance failure does not poison the runtime. The operation is safe
-    /// to retry idempotently, including after another restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SnapshotPruneError`] when the snapshot store requires reopen,
-    /// inventory cannot establish the selected snapshot, or durable deletion
-    /// cannot complete. Any reported deletion prefix may already be absent.
-    pub fn cleanup_abandoned_snapshot_temporary_files(
-        &mut self,
-    ) -> Result<SnapshotPruneReport, SnapshotPruneError> {
-        self.snapshot_store
-            .cleanup_abandoned_snapshot_temporary_files()
-    }
 }

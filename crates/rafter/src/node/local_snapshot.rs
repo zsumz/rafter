@@ -1,6 +1,8 @@
 //! A prepared local-snapshot transition for durable compositions.
 
-use crate::{CommittedConfiguration, Output, RaftSnapshot};
+use std::fmt;
+
+use crate::{CommittedConfiguration, LogEntry, Output, RaftSnapshot};
 
 use super::log::{retained_log_offset, LocalSnapshotInstallError};
 use super::Node;
@@ -22,6 +24,53 @@ pub struct PreparedLocalSnapshotInstall<'a> {
     retired_len: usize,
 }
 
+/// Log entries retired by a committed local snapshot.
+///
+/// These entries are no longer part of the Raft state machine. Dropping this
+/// value releases their shared application payloads, which an embedding may do
+/// away from a latency-sensitive consensus owner after the snapshot commit.
+#[must_use = "retired log entries continue to retain their payload allocations"]
+#[derive(Default)]
+pub struct RetiredLogEntries {
+    entries: Vec<LogEntry>,
+}
+
+impl RetiredLogEntries {
+    /// Returns the number of retired entries still owned by this value.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether no entries were retired by the commit.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Returns a conservative payload-byte count for bounded deferred drop.
+    #[must_use]
+    pub fn payload_bytes(&self) -> usize {
+        self.entries.iter().fold(0, |total, entry| {
+            total.saturating_add(
+                entry
+                    .application_payload()
+                    .map_or(0, |payload| payload.len()),
+            )
+        })
+    }
+}
+
+impl fmt::Debug for RetiredLogEntries {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RetiredLogEntries")
+            .field("entries", &self.len())
+            .field("payload_bytes", &self.payload_bytes())
+            .finish()
+    }
+}
+
 impl PreparedLocalSnapshotInstall<'_> {
     /// Commits the already-validated kernel transition.
     ///
@@ -31,6 +80,21 @@ impl PreparedLocalSnapshotInstall<'_> {
     pub fn commit(self) -> Vec<Output> {
         self.node
             .install_local_snapshot_state_with_committed_configuration(
+                self.snapshot,
+                self.committed_configuration,
+                self.retired_len,
+            )
+    }
+
+    /// Commits the validated transition and returns ownership of retired entries.
+    ///
+    /// The returned entries are no longer consensus state. A bounded runtime
+    /// worker may drop them away from its consensus-owner thread. Dropping them
+    /// inline is equivalent to [`Self::commit`].
+    #[must_use]
+    pub fn commit_with_retired_entries(self) -> (Vec<Output>, RetiredLogEntries) {
+        self.node
+            .install_local_snapshot_state_with_committed_configuration_deferred_drop(
                 self.snapshot,
                 self.committed_configuration,
                 self.retired_len,
@@ -83,6 +147,33 @@ impl Node {
         retired_len: usize,
     ) -> Vec<Output> {
         drop(self.persistent.log.drain(..retired_len));
+        self.finish_local_snapshot_install(snapshot, committed_configuration, retired_len)
+    }
+
+    fn install_local_snapshot_state_with_committed_configuration_deferred_drop(
+        &mut self,
+        snapshot: RaftSnapshot,
+        committed_configuration: Option<CommittedConfiguration>,
+        retired_len: usize,
+    ) -> (Vec<Output>, RetiredLogEntries) {
+        let retired = if retired_len == 0 {
+            RetiredLogEntries::default()
+        } else {
+            let retained = self.persistent.log.split_off(retired_len);
+            let retired = std::mem::replace(&mut self.persistent.log, retained);
+            RetiredLogEntries { entries: retired }
+        };
+        let outputs =
+            self.finish_local_snapshot_install(snapshot, committed_configuration, retired_len);
+        (outputs, retired)
+    }
+
+    fn finish_local_snapshot_install(
+        &mut self,
+        snapshot: RaftSnapshot,
+        committed_configuration: Option<CommittedConfiguration>,
+        retired_len: usize,
+    ) -> Vec<Output> {
         self.derived.configuration.compact_prefix(retired_len);
         self.persistent.snapshot = Some(snapshot);
         self.persistent.committed_configuration = committed_configuration;

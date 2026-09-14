@@ -4,12 +4,10 @@
 //! before returning outputs. [`pipelined`] additionally permits eligible leader
 //! replication to overlap local persistence under an owned completion fence.
 //! The embedding owns application durability, transport, peer authentication,
-//! fencing, and validation of application snapshot payloads.
-//! Read the repository production boundary before treating this runtime as production glue.
+//! fencing, snapshot validation, and the repository production boundary.
 //!
-//! Prefer the `recover_with_storage_and_snapshot_store*` constructors on
-//! restart paths so committed-but-unapplied recovery outputs are explicit and
-//! can be applied before serving reads or accepting new writes.
+//! Prefer the `recover_with_storage_and_snapshot_store*` constructors on restart
+//! so committed-but-unapplied outputs are applied before serving reads or writes.
 //!
 //! # Persist before output, made concrete
 //!
@@ -83,6 +81,7 @@ mod error;
 mod hard_state;
 mod inspect;
 mod log_repair;
+mod log_retirement;
 mod node;
 mod peer_batch;
 /// Eligible replication overlapped with one explicitly fenced persistence operation.
@@ -92,9 +91,10 @@ mod snapshot_install;
 mod step;
 
 pub use error::{RaftRuntimeError, RaftRuntimeFatalError};
+pub use log_retirement::{LogRetirementSubmitError, LogRetirementWorker};
+pub use log_retirement::{LogRetirementWorkerOptions, LogRetirementWorkerPanicked};
 pub use node::{DurableRaftNode, DurableRaftNodeStorage, RecoveredDurableRaftNode};
 pub use peer_batch::PeerBatchGate;
 pub use rafter_runtime_api::PersistedRaftRuntime;
-
 #[cfg(test)]
 mod tests;

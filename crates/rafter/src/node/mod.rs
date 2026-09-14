@@ -33,7 +33,7 @@ pub use event::{
     LocalProposalDropReason, Output, ProposalRejection, ReadIndexCancelReason, ReadIndexRejection,
     Role,
 };
-pub use local_snapshot::PreparedLocalSnapshotInstall;
+pub use local_snapshot::{PreparedLocalSnapshotInstall, RetiredLogEntries};
 pub use log::LocalSnapshotInstallError;
 pub use replication::PendingSnapshotTransferResumeError;
 use state::{DerivedState, ElectionState, LeaderState, PersistentState, VolatileState};

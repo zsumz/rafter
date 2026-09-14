@@ -3,8 +3,9 @@
 //! The example keeps peer and ordered-application admission bounded, persists
 //! application state and its applied floor before acknowledging a proposal,
 //! recovers that floor, compacts through a real application snapshot, prunes
-//! superseded snapshot envelopes, cleans interrupted-publication residue during
-//! startup, catches up a lagging follower, and shuts every worker down explicitly.
+//! superseded snapshot envelopes, releases retired log payloads through a bounded
+//! off-owner worker with inline fallback, cleans interrupted-publication residue
+//! during startup, catches up a lagging follower, and shuts every worker down explicitly.
 //! The in-process transport is deliberately
 //! unauthenticated demo plumbing; a production embedding must supply
 //! authenticated peer identities and its own queue-overload policy.
@@ -49,6 +50,10 @@ pub struct ServiceReport {
     pub pipelined_operations: u64,
     /// Number of worker submission failures recovered by synchronous persistence.
     pub synchronous_fallbacks: u64,
+    /// Number of retired log prefixes accepted by bounded off-owner workers.
+    pub retirement_submissions: u64,
+    /// Number of retired prefixes safely released inline after bounded refusal.
+    pub retirement_fallbacks: u64,
     /// Largest number of peer messages retained by the bounded queue.
     pub max_peer_queue_depth: usize,
     /// Configured peer-message queue capacity.

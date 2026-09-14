@@ -179,6 +179,9 @@ file-backed runtime can apply an explicit `SnapshotRetention` policy through
 only its manifest-selected snapshot after successful compaction and uses
 `cleanup_abandoned_snapshot_temporary_files` after recovery to remove only
 recognized interrupted-publication residue.
+After durable compaction, the opt-in bounded `LogRetirementWorker` can release
+the already-retired in-memory log prefix away from the consensus owner; full or
+stopped workers return ownership for immediate inline release.
 The runtime's opt-in `application::ApplicationWorker` makes the measured
 ordered application pattern reusable: bounded entry and byte credits include
 queued, executing, and unconsumed results, and durable completions are verified

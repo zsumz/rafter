@@ -41,6 +41,73 @@ fn commit(runtime: &mut FileNode, payload: &[u8], index: u64) {
 }
 
 #[test]
+fn retired_snapshot_prefix_obeys_worker_credits_and_shutdown() {
+    let directory = TestDirectory::new("snapshot-retirement-worker");
+    let mut runtime = open_node(&directory);
+    oracle_assert!(runtime
+        .step(RaftInput::Tick)
+        .expect("single voter elects")
+        .is_empty());
+    commit(&mut runtime, b"first", 2);
+    commit(&mut runtime, b"second", 3);
+
+    let retired = runtime
+        .compact_log_with_snapshot_deferred_drop(raft_snapshot_for_writer(
+            2,
+            1,
+            1,
+            1,
+            b"application through two",
+        ))
+        .expect("the first snapshot publishes and returns its retired prefix");
+    oracle_assert_eq!(retired.len(), 2);
+    oracle_assert_eq!(retired.payload_bytes(), b"first".len());
+    oracle_assert_eq!(runtime.snapshot_index(), LogIndex(2));
+    oracle_assert_eq!(runtime.last_log_index(), LogIndex(3));
+
+    let mut undersized = LogRetirementWorker::start(LogRetirementWorkerOptions::new(1, 1024))
+        .expect("the undersized worker starts");
+    let retired = undersized
+        .try_submit(retired)
+        .expect_err("entry credits refuse the whole prefix")
+        .into_retired_entries();
+    oracle_assert_eq!(retired.len(), 2);
+    undersized.shutdown().expect("the idle worker joins");
+
+    let mut worker = LogRetirementWorker::start(LogRetirementWorkerOptions::new(2, 1024))
+        .expect("the adequately sized worker starts");
+    worker
+        .try_submit(retired)
+        .expect("the whole prefix transfers without waiting");
+    worker.shutdown().expect("shutdown drains accepted work");
+    oracle_assert_eq!(worker.inflight_entries(), 0);
+    oracle_assert_eq!(worker.inflight_payload_bytes(), 0);
+
+    let retired = runtime
+        .compact_log_with_snapshot_deferred_drop(raft_snapshot_for_writer(
+            3,
+            1,
+            1,
+            1,
+            b"application through three",
+        ))
+        .expect("the second snapshot publishes and returns its retired prefix");
+    oracle_assert_eq!(retired.len(), 1);
+    let retired = worker
+        .try_submit(retired)
+        .expect_err("a stopped worker returns ownership")
+        .into_retired_entries();
+    oracle_assert_eq!(retired.len(), 1);
+    drop(retired);
+
+    drop(runtime);
+    let reopened = open_node(&directory);
+    oracle_assert_eq!(reopened.snapshot_index(), LogIndex(3));
+    oracle_assert_eq!(reopened.commit_index(), LogIndex(3));
+    oracle_assert_eq!(reopened.last_log_index(), LogIndex(3));
+}
+
+#[test]
 fn runtime_prunes_only_noncurrent_snapshot_history_and_reopens_from_current() {
     let directory = TestDirectory::new("snapshot-maintenance");
     let unknown = directory.path().join("snapshots/operator-note.txt");

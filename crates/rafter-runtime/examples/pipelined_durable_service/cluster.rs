@@ -13,6 +13,7 @@ use super::{
     ServiceReport,
 };
 use rafter::{Input, LocalProposalId, LogIndex, Message, NodeId, Role};
+use rafter_runtime::{LogRetirementWorker, LogRetirementWorkerOptions};
 
 #[path = "cluster/apply.rs"]
 mod apply;
@@ -20,6 +21,8 @@ mod apply;
 mod outputs;
 
 const PEER_QUEUE_CAPACITY: usize = 1_024;
+const RETIREMENT_ENTRY_CAPACITY: usize = 1_024;
+const RETIREMENT_PAYLOAD_CAPACITY: usize = 1024 * 1024;
 
 #[derive(Clone, Debug)]
 struct Envelope {
@@ -31,6 +34,7 @@ struct Envelope {
 #[derive(Debug)]
 struct Replica {
     node: PipelinedNode,
+    retirement: LogRetirementWorker,
     application: Option<Worker>,
     state: SharedState,
     dispatched: LogIndex,
@@ -47,6 +51,8 @@ struct Cluster {
     max_peer_queue_depth: usize,
     pipelined_operations: u64,
     synchronous_fallbacks: u64,
+    retirement_submissions: u64,
+    retirement_fallbacks: u64,
 }
 
 impl Cluster {
@@ -62,6 +68,8 @@ impl Cluster {
             max_peer_queue_depth: 0,
             pipelined_operations: 0,
             synchronous_fallbacks: 0,
+            retirement_submissions: 0,
+            retirement_fallbacks: 0,
         };
         for node_id in node_ids() {
             cluster.open_replica(node_id);
@@ -77,6 +85,11 @@ impl Cluster {
             node_id,
             Replica {
                 node,
+                retirement: LogRetirementWorker::start(LogRetirementWorkerOptions::new(
+                    RETIREMENT_ENTRY_CAPACITY,
+                    RETIREMENT_PAYLOAD_CAPACITY,
+                ))
+                .expect("start bounded retired-log worker"),
                 application: Some(application),
                 state,
                 dispatched: applied,
@@ -169,6 +182,10 @@ impl Cluster {
             .expect("application worker is running")
             .shutdown()
             .expect("idle application worker stops");
+        replica
+            .retirement
+            .shutdown()
+            .expect("retired-log worker drains and stops");
         let (submitted, fallbacks, outputs) = replica.node.finish();
         assert!(outputs.is_empty());
         self.pipelined_operations += submitted;
@@ -179,7 +196,19 @@ impl Cluster {
         self.drain_application(leader);
         let replica = self.replicas.get_mut(&leader).expect("leader exists");
         let state = application::snapshot(&replica.state);
-        compact_snapshot(leader, &mut replica.node, &state.kv, state.applied)
+        let (boundary, deferred) = compact_snapshot(
+            leader,
+            &mut replica.node,
+            &replica.retirement,
+            &state.kv,
+            state.applied,
+        );
+        if deferred {
+            self.retirement_submissions += 1;
+        } else {
+            self.retirement_fallbacks += 1;
+        }
+        boundary
     }
 
     fn catch_up(&mut self, leader: NodeId, follower: NodeId, through: LogIndex) {
@@ -194,11 +223,16 @@ impl Cluster {
         panic!("lagging follower did not install the compacted snapshot");
     }
 
-    fn shutdown(mut self) -> (u64, u64) {
+    fn shutdown(mut self) -> (u64, u64, u64, u64) {
         for node_id in node_ids() {
             self.finish_replica(node_id);
         }
-        (self.pipelined_operations, self.synchronous_fallbacks)
+        (
+            self.pipelined_operations,
+            self.synchronous_fallbacks,
+            self.retirement_submissions,
+            self.retirement_fallbacks,
+        )
     }
 }
 
@@ -234,7 +268,8 @@ pub(super) fn run(root: &Path, keep_dir: bool) -> ServiceReport {
     cluster.propose(initial_leader, "delta", "4");
     let final_values = application::snapshot(&cluster.replicas[&initial_leader].state).kv;
     let max_peer_queue_depth = cluster.max_peer_queue_depth;
-    let (pipelined_operations, synchronous_fallbacks) = cluster.shutdown();
+    let (pipelined_operations, synchronous_fallbacks, retirement_submissions, retirement_fallbacks) =
+        cluster.shutdown();
 
     if !keep_dir {
         std::fs::remove_dir_all(root).expect("remove closed reference service directory");
@@ -243,6 +278,8 @@ pub(super) fn run(root: &Path, keep_dir: bool) -> ServiceReport {
         final_values,
         pipelined_operations,
         synchronous_fallbacks,
+        retirement_submissions,
+        retirement_fallbacks,
         max_peer_queue_depth,
         peer_queue_capacity: PEER_QUEUE_CAPACITY,
         snapshot_index,

@@ -9,6 +9,8 @@
 
 use super::*;
 
+mod prepared;
+
 /// Everything a local install can move, captured for an unchanged-assertion.
 #[derive(Debug, Eq, PartialEq)]
 struct NodeSnapshotState {
@@ -170,30 +172,6 @@ fn local_snapshot_at_the_exact_installed_boundary_re_records_and_moves_nothing()
     assert_eq!(node.applied_index(), LogIndex(10));
     node.validate_derived_state()
         .expect("a re-record leaves derived state valid");
-}
-
-#[test]
-fn prepared_local_snapshot_is_inert_until_committed() {
-    let mut node = applied_node(10, 1);
-    let snapshot = test_snapshot(8, 1, 1, b"prepared");
-    let before = NodeSnapshotState::of(&node);
-
-    let prepared = node
-        .prepare_local_snapshot_install(snapshot.clone())
-        .expect("the valid transition prepares");
-    drop(prepared);
-
-    assert_eq!(NodeSnapshotState::of(&node), before);
-    let outputs = node
-        .prepare_local_snapshot_install(snapshot.clone())
-        .expect("the unchanged node prepares again")
-        .commit();
-    assert!(outputs.is_empty());
-    assert_eq!(node.snapshot(), Some(&snapshot));
-    assert_eq!(node.snapshot_index(), LogIndex(8));
-    assert_eq!(node.last_log_index(), LogIndex(10));
-    node.validate_derived_state()
-        .expect("the prepared transition commits valid derived state");
 }
 
 /// The installed boundary is a re-record, not a rewrite: rules 4 and 5 still

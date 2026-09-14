@@ -21,6 +21,8 @@ fn pipelined_durable_service_covers_fast_public_composition() {
     assert_eq!(report.final_values.get("delta"), Some(&"4".to_owned()));
     assert!(report.pipelined_operations > 0);
     assert_eq!(report.synchronous_fallbacks, 0);
+    assert!(report.retirement_submissions > 0);
+    assert_eq!(report.retirement_fallbacks, 0);
     assert!(report.max_peer_queue_depth <= report.peer_queue_capacity);
     assert!(report.snapshot_index >= report.restarted_applied_floor);
 }
