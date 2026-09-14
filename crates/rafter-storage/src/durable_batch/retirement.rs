@@ -59,15 +59,15 @@ struct Worker<T: Send + 'static> {
 impl<T: Send + 'static> Worker<T> {
     fn spawn(entries: Vec<T>) -> Result<Self, Vec<T>> {
         let (sender, receiver) = mpsc::sync_channel::<Vec<T>>(0);
-        let handle = match thread::Builder::new()
+        let Ok(handle) = thread::Builder::new()
             .name("rafter-wal-entry-drop".to_owned())
             .spawn(move || {
                 while let Ok(entries) = receiver.recv() {
                     drop(entries);
                 }
-            }) {
-            Ok(handle) => handle,
-            Err(_) => return Err(entries),
+            })
+        else {
+            return Err(entries);
         };
         if let Err(error) = sender.send(entries) {
             let _ = handle.join();
