@@ -4,7 +4,7 @@
 //! state. It delegates validation, immutable publication, health transitions,
 //! payload sourcing, and pending-transfer filesystem mechanics to their owners.
 
-use std::io::Read;
+use std::{borrow::Cow, io::Read};
 
 use rafter::{PendingSnapshotTransfer, RaftSnapshot, SnapshotChunkSource, StagedSnapshotChunk};
 
@@ -64,7 +64,7 @@ impl RaftSnapshotStore for FileRaftSnapshotStore {
                         offset,
                     }
                 })?;
-                Ok(payload[start..start + len as usize].to_vec())
+                Ok(Cow::Borrowed(&payload[start..start + len as usize]))
             },
         )
     }
@@ -79,7 +79,9 @@ impl RaftSnapshotStore for FileRaftSnapshotStore {
         self.write_snapshot_streamed(
             snapshot,
             Some(snapshot.application_payload_crc32),
-            move |offset, len| source_chunk(source, &descriptor, transfer_id, offset, len),
+            move |offset, len| {
+                source_chunk(source, &descriptor, transfer_id, offset, len).map(Cow::Owned)
+            },
         )
     }
 
@@ -157,7 +159,7 @@ impl RaftSnapshotStore for FileRaftSnapshotStore {
                     path: body_path.clone(),
                     source: error.into(),
                 })?;
-            Ok(bytes)
+            Ok(Cow::Owned(bytes))
         })
     }
 

@@ -5,6 +5,7 @@
 //! new snapshot has become authoritative.
 
 use std::{
+    borrow::Cow,
     fs::{self, File, OpenOptions},
     io::Write,
     path::Path,
@@ -27,11 +28,11 @@ use super::{
 impl FileRaftSnapshotStore {
     /// Streams an immutable snapshot envelope, publishes its current manifest,
     /// then clears obsolete inbound staging.
-    pub(super) fn write_snapshot_streamed(
+    pub(super) fn write_snapshot_streamed<'a>(
         &mut self,
         descriptor: &RaftSnapshot,
         expected_payload_crc: Option<u32>,
-        mut read_chunk: impl FnMut(u64, u32) -> Result<Vec<u8>, RaftSnapshotStoreWriteError>,
+        mut read_chunk: impl FnMut(u64, u32) -> Result<Cow<'a, [u8]>, RaftSnapshotStoreWriteError>,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
         let _publication = Timer::start(Stage::SnapshotPublication);
         self.ensure_writable()?;
@@ -65,13 +66,13 @@ impl FileRaftSnapshotStore {
         }
     }
 
-    fn write_snapshot_temp(
+    fn write_snapshot_temp<'a>(
         &mut self,
         temp_path: &Path,
         header: &[u8],
         payload_len: u64,
         expected_payload_crc: Option<u32>,
-        read_chunk: &mut impl FnMut(u64, u32) -> Result<Vec<u8>, RaftSnapshotStoreWriteError>,
+        read_chunk: &mut impl FnMut(u64, u32) -> Result<Cow<'a, [u8]>, RaftSnapshotStoreWriteError>,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
         let mut file = match OpenOptions::new()
             .create(true)
@@ -99,9 +100,9 @@ impl FileRaftSnapshotStore {
                         Ok(bytes) => bytes,
                         Err(error) => return Err(self.poison_if_io(error)),
                     };
-                    self.write_snapshot_temp_bytes(&mut file, temp_path, &bytes)?;
-                    payload_crc.update(&bytes);
-                    envelope_crc.update(&bytes);
+                    self.write_snapshot_temp_bytes(&mut file, temp_path, bytes.as_ref())?;
+                    payload_crc.update(bytes.as_ref());
+                    envelope_crc.update(bytes.as_ref());
                     offset += u64::from(len);
                 }
 
