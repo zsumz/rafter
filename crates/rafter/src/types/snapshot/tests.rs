@@ -4,6 +4,33 @@ use super::super::{LogIndex, MembershipConfig, MembershipSet, NodeId, Term};
 use super::*;
 
 #[test]
+fn snapshot_checksum_matches_ieee_crc32() {
+    assert_eq!(application_payload_crc32(b"123456789"), 0xCBF4_3926);
+    let bytes = (0..1025).map(|value| value as u8).collect::<Vec<_>>();
+    for length in [0, 1, 7, 8, 9, 255, 256, 1024, 1025] {
+        assert_eq!(
+            application_payload_crc32(&bytes[..length]),
+            reference_crc32(&bytes[..length])
+        );
+    }
+}
+
+fn reference_crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+#[test]
 fn snapshot_ids_have_stable_display_and_validation() {
     let group_id = SnapshotGroupId::new("metadata:primary").expect("valid group id");
     let kind = ApplicationSnapshotKind::new("metadata_catalog.v1").expect("valid kind");

@@ -4,6 +4,7 @@
 //! validation errors remain separate internally while callers use the flat
 //! `rafter::{...}` API.
 
+mod checksum;
 mod error;
 mod identity;
 mod metadata;
@@ -32,5 +33,5 @@ pub use transfer::{
     PendingSnapshotTransfer, SnapshotChunkSend, SnapshotTransferId, StagedSnapshotChunk,
 };
 
-pub(crate) use metadata::application_payload_crc32;
+pub(crate) use checksum::crc32 as application_payload_crc32;
 pub(crate) use transfer_id::snapshot_transfer_id_from_parts;
