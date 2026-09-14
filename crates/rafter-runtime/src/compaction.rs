@@ -11,6 +11,7 @@ use rafter::{
     RaftSnapshot, RaftSnapshotMetadata, SnapshotChunkSource, SnapshotCommittedConfiguration,
 };
 use rafter_storage::{
+    telemetry::{Stage, Timer},
     FileRaftSnapshotStore, PersistedRaftSnapshot, RaftHardStateStore, RaftLogSegment,
     RaftSnapshotStore, SnapshotPruneError, SnapshotPruneReport, SnapshotRetention,
 };
@@ -117,10 +118,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         // validation happens before storage and no kernel input can invalidate
         // it while persistence runs. Commit is infallible and happens only
         // after both the snapshot and log compaction are durable.
-        let prepared = self
-            .node
-            .prepare_local_snapshot_install(descriptor)
-            .map_err(local_snapshot_install_error)?;
+        let prepared = {
+            let _prepare = Timer::start(Stage::SnapshotKernelPrepare);
+            self.node
+                .prepare_local_snapshot_install(descriptor)
+                .map_err(local_snapshot_install_error)?
+        };
         let written = write_snapshot_and_compact_log(
             &mut self.snapshot_store,
             &mut self.log_segment,
@@ -130,7 +133,10 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             drop(prepared);
             return Err(self.poison(error));
         }
-        let _ = prepared.commit();
+        {
+            let _commit = Timer::start(Stage::SnapshotKernelCommit);
+            let _ = prepared.commit();
+        }
         Ok(())
     }
 
@@ -159,10 +165,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             snapshot: &source_snapshot,
         };
 
-        let prepared = self
-            .node
-            .prepare_local_snapshot_install(snapshot.clone())
-            .map_err(local_snapshot_install_error)?;
+        let prepared = {
+            let _prepare = Timer::start(Stage::SnapshotKernelPrepare);
+            self.node
+                .prepare_local_snapshot_install(snapshot.clone())
+                .map_err(local_snapshot_install_error)?
+        };
 
         let boundary_index = snapshot.metadata.last_included_index;
         let written = self
@@ -178,7 +186,10 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             drop(prepared);
             return Err(self.poison(error));
         }
-        let _ = prepared.commit();
+        {
+            let _commit = Timer::start(Stage::SnapshotKernelCommit);
+            let _ = prepared.commit();
+        }
         Ok(())
     }
 

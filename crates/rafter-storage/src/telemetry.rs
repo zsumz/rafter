@@ -55,9 +55,13 @@ pub enum Stage {
     SnapshotManifestPublish,
     /// Snapshot inventory, obsolete-file deletion, and directory fence.
     SnapshotPrune,
+    /// Kernel validation and retained-state preparation before snapshot persistence.
+    SnapshotKernelPrepare,
+    /// Kernel installation of an already-durable local snapshot boundary.
+    SnapshotKernelCommit,
 }
 
-const NAMES: [&str; 21] = [
+const NAMES: [&str; 23] = [
     "kernel",
     "log_encode",
     "log_write",
@@ -79,6 +83,8 @@ const NAMES: [&str; 21] = [
     "snapshot_file_publish",
     "snapshot_manifest_publish",
     "snapshot_prune",
+    "snapshot_kernel_prepare",
+    "snapshot_kernel_commit",
 ];
 
 /// Cumulative timings on the owning thread; no percentile subtraction is valid.
@@ -97,7 +103,7 @@ pub struct Metric {
 #[derive(Default)]
 struct State {
     enabled: bool,
-    metrics: [Metric; 21],
+    metrics: [Metric; 23],
 }
 std::thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
