@@ -1246,12 +1246,12 @@ inputs_sha256 = "d33a14fc45f06272ebe9cdfc49dc6efa4010f66a1dac5154097a64454cb9295
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "3e53c56bd2a89ccfc7caa58a76eccfabc07c280ce0750ec96eae2c9ec872bee8"
+inputs_sha256 = "86519a0a29a6e86723669bbcf0bfec3a98acaffdc8059814bec38f585b0e76fb"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "f059807580442bcc556fcafd4b4071c1e41c2817d6c4ff1afd4759cac37fe412"
+inputs_sha256 = "b4d9b2760aaae57115bea26a1e27d99b776a45592f4a51d7f1eb514006ef8cdb"
 
 [[macro_source]]
 allowance = "clap::Parser"

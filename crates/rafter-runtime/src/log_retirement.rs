@@ -53,7 +53,6 @@ pub enum LogRetirementSubmitError {
 
 impl LogRetirementSubmitError {
     /// Returns the entries so the caller can drop them inline.
-    #[must_use]
     pub fn into_retired_entries(self) -> RetiredLogEntries {
         match self {
             Self::Full(entries) | Self::Stopped(entries) => entries,

@@ -52,11 +52,11 @@ impl RetiredLogEntries {
     #[must_use]
     pub fn payload_bytes(&self) -> usize {
         self.entries.iter().fold(0, |total, entry| {
-            total.saturating_add(
-                entry
-                    .application_payload()
-                    .map_or(0, |payload| payload.len()),
-            )
+            let payload_bytes = match entry.application_payload() {
+                Some(payload) => payload.len(),
+                None => 0,
+            };
+            total.saturating_add(payload_bytes)
         })
     }
 }
@@ -91,7 +91,6 @@ impl PreparedLocalSnapshotInstall<'_> {
     /// The returned entries are no longer consensus state. A bounded runtime
     /// worker may drop them away from its consensus-owner thread. Dropping them
     /// inline is equivalent to [`Self::commit`].
-    #[must_use]
     pub fn commit_with_retired_entries(self) -> (Vec<Output>, RetiredLogEntries) {
         self.node
             .install_local_snapshot_state_with_committed_configuration_deferred_drop(
