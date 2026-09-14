@@ -10,11 +10,13 @@ use rafter::{
 };
 use std::{
     fs,
+    num::NonZeroU64,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
 mod reclamation;
 mod reclamation_large_suffix;
+mod reclamation_threshold;
 mod recovery;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -37,6 +39,20 @@ impl Directory {
         crate::FileRaftSnapshotStore,
     ) {
         WalRaftNodeStores::open(&self.0).unwrap().into_parts()
+    }
+    fn open_with_reclamation_threshold(
+        &self,
+        threshold_bytes: u64,
+    ) -> (
+        WalRaftHardStateStore,
+        WalRaftLogSegment,
+        crate::FileRaftSnapshotStore,
+    ) {
+        let options = WalRaftNodeStoresOptions::new()
+            .with_reclamation_threshold_bytes(NonZeroU64::new(threshold_bytes).unwrap());
+        WalRaftNodeStores::open_with_options(&self.0, options)
+            .unwrap()
+            .into_parts()
     }
 }
 impl Drop for Directory {

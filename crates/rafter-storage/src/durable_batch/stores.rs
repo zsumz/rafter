@@ -6,16 +6,46 @@ use crate::{
 };
 use std::{
     io,
+    num::NonZeroU64,
     path::Path,
     sync::{Arc, Mutex},
 };
+
+/// Physical-reclamation policy for one shared Raft WAL coordinator.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct WalRaftNodeStoresOptions {
+    reclamation_threshold_bytes: Option<NonZeroU64>,
+}
+
+impl WalRaftNodeStoresOptions {
+    /// Returns the shipped policy: physically reclaim after every compaction.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            reclamation_threshold_bytes: None,
+        }
+    }
+
+    /// Defers physical generation replacement until the active WAL segment
+    /// reaches this size at a later logical compaction boundary.
+    ///
+    /// Logical compaction remains durable immediately. This threshold bounds
+    /// obsolete operation history only at compaction opportunities; retained
+    /// live entries and bytes written between opportunities are additional.
+    #[must_use]
+    pub const fn with_reclamation_threshold_bytes(mut self, threshold: NonZeroU64) -> Self {
+        self.reclamation_threshold_bytes = Some(threshold);
+        self
+    }
+}
 
 /// Opt-in RFWB WAL with shared hard-state/log views and the existing snapshot store.
 ///
 /// No existing directory is migrated. The initial WAL generation occupies
 /// `hard-state`, so legacy backends reject its distinct header. Prefix compaction
-/// checkpoints the live state into manifest-selected generation files before
-/// reclaiming obsolete WAL history.
+/// is durable immediately. The selected policy checkpoints live state into
+/// manifest-selected generation files before reclaiming obsolete WAL history.
 #[derive(Debug)]
 pub struct WalRaftNodeStores {
     hard: WalRaftHardStateStore,
@@ -28,6 +58,20 @@ impl WalRaftNodeStores {
     /// # Errors
     /// Returns original I/O errors or `InvalidData` for incompatible/corrupt WAL bytes.
     pub fn open(directory: impl AsRef<Path>) -> io::Result<Self> {
+        Self::open_with_options(directory, WalRaftNodeStoresOptions::new())
+    }
+
+    /// Opens an exclusively owned replica with an explicit reclamation policy.
+    ///
+    /// The policy is operational and is not persisted in the WAL. Supply the
+    /// intended policy again after every reopen.
+    ///
+    /// # Errors
+    /// Returns original I/O errors or `InvalidData` for incompatible/corrupt WAL bytes.
+    pub fn open_with_options(
+        directory: impl AsRef<Path>,
+        options: WalRaftNodeStoresOptions,
+    ) -> io::Result<Self> {
         let directory = directory.as_ref();
         let ownership = acquire_file_store_ownership(directory)
             .map_err(|e| io::Error::other(ownership_error(e)))?;
@@ -53,6 +97,7 @@ impl WalRaftNodeStores {
             &directory.join("hard-state"),
             ownership.clone(),
             current_snapshot.as_ref(),
+            options.reclamation_threshold_bytes,
         )?));
         snapshots.attach_ownership(ownership);
         Ok(Self {

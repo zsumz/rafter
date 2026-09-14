@@ -216,6 +216,17 @@ impl RaftLogSegment for WalRaftLogSegment {
                 source: io::Error::other(error).into(),
             })?;
         let compacted = state.compacted;
+        let reclaim = state.reclamation_due().map_err(|source| {
+            state.poisoned = true;
+            RaftLogSegmentCompactError::CompactedButReclamationFailed {
+                compacted_through: compacted,
+                operation: "inspect shared WAL reclamation threshold",
+                source: source.into(),
+            }
+        })?;
+        if !reclaim {
+            return Ok(());
+        }
         state.reclaim().map_err(|failure| {
             RaftLogSegmentCompactError::CompactedButReclamationFailed {
                 compacted_through: compacted,

@@ -109,7 +109,12 @@ application database are not emitted a second time.
 The file-backed stores are deliberately clear reference implementations, not a
 general database engine. The opt-in shared WAL uses checkpoint-selected
 generation segments so prefix compaction bounds its physical history and replay
-work. Optional storage telemetry reports total WAL reclamation and its checkpoint,
+work. The default physically reclaims every compacted prefix. An explicit
+`WalRaftNodeStoresOptions` byte threshold can keep logical compaction durable
+while deferring generation replacement until the active WAL reaches the
+threshold at a later compaction opportunity; retained live entries and bytes
+written between opportunities are additional to that threshold. Optional
+storage telemetry reports total WAL reclamation and its checkpoint,
 manifest, and cleanup phases separately. Reclamation still synchronously rewrites
 the retained suffix while holding the shared coordinator; embeddings should
 measure and schedule that pause deliberately until a qualified incremental

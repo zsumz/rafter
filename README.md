@@ -172,7 +172,11 @@ tested one-credit node/worker composition; application durability and
 applied-index recovery remain the embedding's responsibility.
 
 The opt-in shared WAL uses checkpoint-selected generation segments to reclaim
-compacted physical history and bound Raft replay work. That bound does not cover
+compacted physical history and bound Raft replay work. Its default reclaims on
+every compaction; an explicit byte threshold can defer physical generation
+replacement while keeping each logical compaction durable. The threshold is
+checked only at compaction opportunities, and retained live entries are
+additional. That bound does not cover
 application-state or snapshot retention, which remain separate policies. A
 file-backed runtime can apply an explicit `SnapshotRetention` policy through
 `DurableRaftNode::prune_snapshot_files`; the reference durable service keeps

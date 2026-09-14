@@ -10,6 +10,7 @@ use rafter::{LogIndex, RaftSnapshot};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
+    num::NonZeroU64,
     path::Path,
 };
 
@@ -17,6 +18,7 @@ pub(super) fn open(
     path: &Path,
     ownership: SharedFileStoreOwnership,
     current_snapshot: Option<&RaftSnapshot>,
+    reclamation_threshold_bytes: Option<NonZeroU64>,
 ) -> io::Result<State> {
     let directory = path
         .parent()
@@ -43,6 +45,7 @@ pub(super) fn open(
             poisoned: false,
             syncs: 0,
             batch_encode_buffer: Vec::new(),
+            reclamation_threshold_bytes,
             _ownership: ownership,
             #[cfg(test)]
             fail_after_write: false,
@@ -64,6 +67,7 @@ pub(super) fn open(
             poisoned: false,
             syncs: 0,
             batch_encode_buffer: Vec::new(),
+            reclamation_threshold_bytes,
             _ownership: ownership,
             #[cfg(test)]
             fail_after_write: false,
@@ -76,6 +80,7 @@ pub(super) fn open(
         Authority::Generation(_) => reclamation::SEGMENT_HEADER as u64,
     };
     replay_suffix(&mut state, start)?;
+    reclamation::validate_compacted_snapshot(state.compacted, current_snapshot)?;
     File::open(directory)?.sync_all()?;
     reclamation::cleanup(directory, &state.authority, false).map_err(|failure| failure.source)?;
     state.file.seek(SeekFrom::End(0))?;

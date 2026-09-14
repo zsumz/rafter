@@ -16,7 +16,7 @@ pub use contract::{DurableReceipt, PersistenceDomain, RaftPersistenceBatch};
 pub use error::RaftPersistenceBatchError;
 
 pub use handles::{WalRaftHardStateStore, WalRaftLogSegment};
-pub use stores::WalRaftNodeStores;
+pub use stores::{WalRaftNodeStores, WalRaftNodeStoresOptions};
 
 #[cfg(test)]
 mod tests;

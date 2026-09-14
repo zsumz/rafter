@@ -12,7 +12,8 @@ use rafter::LogIndex;
 use std::sync::Barrier;
 use std::{
     fs::File,
-    io::Write,
+    io::{self, Write},
+    num::NonZeroU64,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -59,6 +60,7 @@ pub(super) struct State {
     pub poisoned: bool,
     pub syncs: u64,
     pub batch_encode_buffer: Vec<u8>,
+    pub reclamation_threshold_bytes: Option<NonZeroU64>,
     pub _ownership: SharedFileStoreOwnership,
     #[cfg(test)]
     pub fail_after_write: bool,
@@ -79,6 +81,12 @@ impl State {
             hard_state: self.hard,
             next_index: self.next_index(),
             compacted_through: self.compacted,
+        }
+    }
+    pub(super) fn reclamation_due(&self) -> io::Result<bool> {
+        match self.reclamation_threshold_bytes {
+            None => Ok(true),
+            Some(threshold) => Ok(self.file.metadata()?.len() >= threshold.get()),
         }
     }
     pub(super) fn validate(&self, record: &Record) -> Result<(), Error> {

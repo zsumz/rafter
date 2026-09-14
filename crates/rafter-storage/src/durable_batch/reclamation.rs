@@ -95,17 +95,30 @@ pub(super) fn validate_snapshot(
     }
     let current = current
         .ok_or_else(|| codec::invalid("WAL checkpoint references a missing current snapshot"))?;
-    if current.metadata.last_included_index < compacted {
-        return Err(codec::invalid(
-            "current snapshot does not cover the WAL checkpoint boundary",
-        ));
-    }
+    validate_compacted_snapshot(compacted, Some(current))?;
     if current.metadata.last_included_index == reference.last_included_index
         && (current.metadata.last_included_term != reference.last_included_term
             || current.transfer_id().0 != reference.transfer_id)
     {
         return Err(codec::invalid(
             "current snapshot conflicts with the WAL checkpoint snapshot identity",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_compacted_snapshot(
+    compacted: LogIndex,
+    current: Option<&RaftSnapshot>,
+) -> io::Result<()> {
+    if compacted == LogIndex::ZERO {
+        return Ok(());
+    }
+    let current =
+        current.ok_or_else(|| codec::invalid("compacted WAL requires a current snapshot"))?;
+    if current.metadata.last_included_index < compacted {
+        return Err(codec::invalid(
+            "current snapshot does not cover the compacted WAL boundary",
         ));
     }
     Ok(())
