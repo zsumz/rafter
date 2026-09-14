@@ -139,7 +139,7 @@ fn every_checkpoint_publication_failure_reopens_to_committed_compaction() {
 }
 
 #[test]
-fn missing_covering_snapshot_reports_committed_compaction_and_requires_reopen() {
+fn missing_covering_snapshot_reports_committed_compaction_and_fails_reopen() {
     let dir = Directory::new();
     let (h, mut l, s) = dir.open();
     publish(&h, &mut l, &[entry(1, b"one"), entry(2, b"two")], 2, None).unwrap();
@@ -158,11 +158,11 @@ fn missing_covering_snapshot_reports_committed_compaction_and_requires_reopen() 
     ));
     drop((h, l, s));
 
-    let (h, l, _s) = dir.open();
-    assert!(!l.0.lock().unwrap().retired_entries.worker_started());
-    assert_eq!(h.current(), hard(2));
-    assert_eq!(l.compacted_through(), LogIndex(1));
-    assert_eq!(l.replay_entries(), vec![entry(2, b"two")]);
+    let error = WalRaftNodeStores::open(&dir.0).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error
+        .to_string()
+        .contains("compacted WAL requires a current snapshot"));
 }
 
 #[test]
