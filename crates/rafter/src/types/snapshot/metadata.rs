@@ -4,8 +4,8 @@ use std::fmt;
 
 use super::super::{CommittedConfiguration, LogIndex, MembershipConfig, NodeId, Term};
 use super::{
-    snapshot_transfer_id_from_parts, ApplicationSnapshotKind, SnapshotGroupId,
-    SnapshotMetadataError, SnapshotTransferId,
+    application_payload_crc32, snapshot_transfer_id_from_parts, ApplicationSnapshotKind,
+    SnapshotGroupId, SnapshotMetadataError, SnapshotTransferId,
 };
 
 /// Application-defined snapshot format version.
