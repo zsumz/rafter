@@ -13,6 +13,7 @@ mod dispatch;
 mod election;
 mod event;
 mod lifecycle;
+mod local_snapshot;
 mod log;
 mod membership;
 mod observe;
@@ -32,6 +33,7 @@ pub use event::{
     LocalProposalDropReason, Output, ProposalRejection, ReadIndexCancelReason, ReadIndexRejection,
     Role,
 };
+pub use local_snapshot::PreparedLocalSnapshotInstall;
 pub use log::LocalSnapshotInstallError;
 pub use replication::PendingSnapshotTransferResumeError;
 use state::{DerivedState, ElectionState, LeaderState, PersistentState, VolatileState};

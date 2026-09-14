@@ -1,9 +1,11 @@
 //! Local snapshot installation and the log compaction that follows it.
 //!
-//! The kernel owns every boundary rule, so each entry point asks a staged
-//! clone first and writes nothing until it agrees; the durable snapshot is
-//! published before the log prefix it covers is dropped. Inbound transfer
-//! snapshots are not this module's business — those persist on the step path.
+//! The kernel owns every boundary rule, so each entry point exclusively
+//! prepares its transition and writes nothing until validation agrees. The
+//! borrow prevents intervening kernel mutation while the durable snapshot is
+//! published before the log prefix it covers is dropped; only then is the
+//! prepared kernel transition committed. Inbound transfer snapshots are not
+//! this module's business — those persist on the step path.
 
 use rafter::{
     RaftSnapshot, RaftSnapshotMetadata, SnapshotChunkSource, SnapshotCommittedConfiguration,
@@ -111,19 +113,24 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         self.fill_local_snapshot_membership(&mut snapshot.metadata);
         let descriptor =
             RaftSnapshot::from_payload(snapshot.metadata.clone(), &snapshot.application_payload);
-        // Ask the kernel first, on a clone: it owns every boundary rule, and a
-        // refusal must leave the durable medium untouched. Persisting only
-        // after it agrees, and publishing the clone only after the persist,
-        // keeps both boundaries — no write without the kernel's consent, and no
-        // published kernel state ahead of the durable medium.
-        let mut staged_node = self.node.clone();
-        staged_node
-            .install_local_snapshot(descriptor)
+        // The prepared transition owns an exclusive borrow of the kernel, so
+        // validation happens before storage and no kernel input can invalidate
+        // it while persistence runs. Commit is infallible and happens only
+        // after both the snapshot and log compaction are durable.
+        let prepared = self
+            .node
+            .prepare_local_snapshot_install(descriptor)
             .map_err(local_snapshot_install_error)?;
-        if let Err(error) = self.write_snapshot_and_compact_log(snapshot) {
+        let written = write_snapshot_and_compact_log(
+            &mut self.snapshot_store,
+            &mut self.log_segment,
+            snapshot,
+        );
+        if let Err(error) = written {
+            drop(prepared);
             return Err(self.poison(error));
         }
-        self.node = staged_node;
+        let _ = prepared.commit();
         Ok(())
     }
 
@@ -152,9 +159,9 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             snapshot: &source_snapshot,
         };
 
-        let mut staged_node = self.node.clone();
-        staged_node
-            .install_local_snapshot(snapshot.clone())
+        let prepared = self
+            .node
+            .prepare_local_snapshot_install(snapshot.clone())
             .map_err(local_snapshot_install_error)?;
 
         let boundary_index = snapshot.metadata.last_included_index;
@@ -168,9 +175,10 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
                     .map_err(RaftRuntimeError::LogCompact)
             });
         if let Err(error) = written {
+            drop(prepared);
             return Err(self.poison(error));
         }
-        self.node = staged_node;
+        let _ = prepared.commit();
         Ok(())
     }
 
@@ -194,19 +202,20 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             self.node.membership_at_index(snapshot_index),
         ));
     }
+}
 
-    fn write_snapshot_and_compact_log(
-        &mut self,
-        snapshot: PersistedRaftSnapshot,
-    ) -> Result<(), RaftRuntimeError> {
-        let boundary_index = snapshot.metadata.last_included_index;
-        self.snapshot_store
-            .write_snapshot(snapshot)
-            .map_err(RaftRuntimeError::SnapshotWrite)?;
-        self.log_segment
-            .compact_prefix_through(boundary_index)
-            .map_err(RaftRuntimeError::LogCompact)
-    }
+fn write_snapshot_and_compact_log<L: RaftLogSegment, S: RaftSnapshotStore>(
+    snapshot_store: &mut S,
+    log_segment: &mut L,
+    snapshot: PersistedRaftSnapshot,
+) -> Result<(), RaftRuntimeError> {
+    let boundary_index = snapshot.metadata.last_included_index;
+    snapshot_store
+        .write_snapshot(snapshot)
+        .map_err(RaftRuntimeError::SnapshotWrite)?;
+    log_segment
+        .compact_prefix_through(boundary_index)
+        .map_err(RaftRuntimeError::LogCompact)
 }
 
 impl<H, L> DurableRaftNode<H, L, FileRaftSnapshotStore> {
