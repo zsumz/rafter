@@ -8,6 +8,7 @@ mod error;
 mod handles;
 mod open;
 mod reclamation;
+mod retirement;
 mod state;
 mod stores;
 

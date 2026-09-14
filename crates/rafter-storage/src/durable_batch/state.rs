@@ -2,6 +2,7 @@
 use super::{
     codec::{self, Record},
     reclamation::{self, Authority},
+    retirement::EntryDropper,
     DurableReceipt, PersistenceDomain, RaftPersistenceBatchError as Error,
 };
 use crate::telemetry::{measure, Stage, Timer};
@@ -52,6 +53,7 @@ pub(super) struct State {
     pub domain: PersistenceDomain,
     pub hard: RaftHardState,
     pub entries: Vec<PersistedRaftLogEntry>,
+    pub retired_entries: EntryDropper<PersistedRaftLogEntry>,
     pub compacted: LogIndex,
     pub operation: u64,
     pub poisoned: bool,
@@ -129,13 +131,25 @@ impl State {
         Ok(())
     }
     pub(super) fn apply(&mut self, record: Record) {
+        self.apply_record(record, true);
+    }
+    pub(super) fn apply_replayed(&mut self, record: Record) {
+        self.apply_record(record, false);
+    }
+    fn apply_record(&mut self, record: Record, defer_compacted_drop: bool) {
         if let Some(from) = record.truncate {
             let count = self.entries.partition_point(|entry| entry.index < from);
             self.entries.truncate(count);
         }
         if let Some(through) = record.compact {
             let count = self.entries.partition_point(|entry| entry.index <= through);
-            self.entries.drain(..count);
+            if defer_compacted_drop && count != 0 {
+                let retained_suffix = self.entries.split_off(count);
+                let retired_prefix = std::mem::replace(&mut self.entries, retained_suffix);
+                self.retired_entries.retire(retired_prefix);
+            } else {
+                self.entries.drain(..count);
+            }
             self.compacted = self.compacted.max(through);
         }
         self.entries.extend(record.entries);

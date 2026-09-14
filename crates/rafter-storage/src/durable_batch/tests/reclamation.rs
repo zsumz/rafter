@@ -19,6 +19,7 @@ fn compaction_bounds_physical_history_and_continues_publication_sequence() {
 
     s.write_snapshot(snapshot(90)).unwrap();
     l.compact_prefix_through(LogIndex(90)).unwrap();
+    assert!(l.0.lock().unwrap().retired_entries.worker_started());
     assert_eq!(l.sync_count(), 5);
     assert_eq!(l.compacted_through(), LogIndex(90));
     assert_eq!(l.replay_entries(), entries[90..]);
@@ -158,6 +159,7 @@ fn missing_covering_snapshot_reports_committed_compaction_and_requires_reopen() 
     drop((h, l, s));
 
     let (h, l, _s) = dir.open();
+    assert!(!l.0.lock().unwrap().retired_entries.worker_started());
     assert_eq!(h.current(), hard(2));
     assert_eq!(l.compacted_through(), LogIndex(1));
     assert_eq!(l.replay_entries(), vec![entry(2, b"two")]);

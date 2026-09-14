@@ -37,6 +37,7 @@ pub(super) fn open(
             domain: PersistenceDomain::new(),
             hard: checkpoint.hard,
             entries: checkpoint.entries,
+            retired_entries: super::retirement::EntryDropper::new(),
             compacted: checkpoint.compacted,
             operation: checkpoint.operation,
             poisoned: false,
@@ -57,6 +58,7 @@ pub(super) fn open(
             domain: PersistenceDomain::new(),
             hard: RaftHardState::default(),
             entries: Vec::new(),
+            retired_entries: super::retirement::EntryDropper::new(),
             compacted: LogIndex::ZERO,
             operation: 0,
             poisoned: false,
@@ -143,7 +145,7 @@ fn replay_suffix(state: &mut State, start: u64) -> io::Result<()> {
         state
             .validate(&record)
             .map_err(|e| codec::invalid(e.to_string()))?;
-        state.apply(record);
+        state.apply_replayed(record);
         offset += (HEADER + size + TRAILER) as u64;
     }
     if offset != length {

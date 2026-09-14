@@ -120,6 +120,11 @@ every byte before the existing write-complete failpoint and data sync. A
 single scratch entry envelope is reused across each WAL batch, checkpoint
 write, checkpoint reopen, and replacement-log write, so work remains bounded
 without allocating one temporary envelope per retained entry. A
+live compaction hands destruction of its now-nonauthoritative in-memory prefix
+to one lazy zero-queue worker when that worker is idle; a busy or unavailable
+worker falls back to synchronous destruction, so obsolete prefixes cannot
+accumulate. This does not move WAL writes, syncs, or authority publication off
+the calling thread. A
 production datastore may implement the storage traits on top of its own
 transactional engine while preserving the same success, ordering, and recovery
 contracts.

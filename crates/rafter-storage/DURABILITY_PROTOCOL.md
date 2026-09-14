@@ -457,6 +457,15 @@ selects them. That manifest is the reclamation authority. Only after it is
 durable may the prior segment/checkpoint or legacy `hard-state` file be deleted.
 Deletion is cleanup and is directory-synchronized.
 
+The durable compaction record makes its covered in-memory entry prefix
+non-authoritative before generation preparation begins. Destruction of that
+owned prefix may run on one lazy worker after a zero-capacity handoff. No second
+prefix can queue: when the worker is occupied or unavailable, the caller drops
+its current prefix synchronously. This bounds detached retirement to one worker
+and one worker-owned prefix without changing the checkpoint, receipt, or
+manifest commit points. Replay drops compacted prefixes synchronously and starts
+no worker.
+
 A snapshot-binding or preparation failure occurs after logical compaction has
 committed but before physical history is reclaimed, so callers receive
 `CompactedButReclamationFailed` and must reopen. Failure after manifest rename is
