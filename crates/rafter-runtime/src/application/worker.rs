@@ -155,12 +155,12 @@ where
         let state = run::State {
             store,
             receive,
-            send: Some(send),
+            send,
             shared: Arc::clone(&shared),
             durable_through: Arc::clone(&durable_through),
             applying_through: Arc::clone(&applying_through),
             options,
-            wake: Some(wake),
+            wake,
         };
         let thread = thread::Builder::new()
             .name("rafter-application".to_owned())

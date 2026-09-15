@@ -23,12 +23,12 @@ where
 {
     pub store: S,
     pub receive: Receiver<Work<T>>,
-    pub send: Option<Sender<WorkerEvent<T, S>>>,
+    pub send: Sender<WorkerEvent<T, S>>,
     pub shared: Arc<Mutex<Shared>>,
     pub durable_through: Arc<AtomicU64>,
     pub applying_through: Arc<AtomicU64>,
     pub options: ApplicationWorkerOptions,
-    pub wake: Option<F>,
+    pub wake: F,
 }
 
 struct TerminationGuard<E, F: Fn()> {
@@ -40,11 +40,10 @@ struct TerminationGuard<E, F: Fn()> {
 
 impl<E, F: Fn()> TerminationGuard<E, F> {
     fn send(&self, event: E) -> Result<(), E> {
-        self.send
-            .as_ref()
-            .expect("termination guard owns the event sender")
-            .send(event)
-            .map_err(|error| error.0)
+        let Some(send) = &self.send else {
+            return Err(event);
+        };
+        send.send(event).map_err(|error| error.0)
     }
 
     fn notify(&self) {
@@ -74,27 +73,42 @@ where
     S: DurableApplication<T>,
     F: Fn(),
 {
-    pub(super) fn run(mut self) -> S {
+    pub(super) fn run(self) -> S {
+        let Self {
+            mut store,
+            receive,
+            send,
+            shared,
+            durable_through,
+            applying_through,
+            options,
+            wake,
+        } = self;
         let terminal = TerminationGuard {
-            send: self.send.take(),
-            shared: Arc::clone(&self.shared),
-            applying_through: Arc::clone(&self.applying_through),
-            wake: self.wake.take().expect("worker wake callback is present"),
+            send: Some(send),
+            shared: Arc::clone(&shared),
+            applying_through: Arc::clone(&applying_through),
+            wake,
         };
         let mut deferred = VecDeque::new();
-        while let Some(mut work) = deferred.pop_front().or_else(|| self.receive.recv().ok()) {
-            self.drain_ready(&mut work, &mut deferred);
+        while let Some(mut work) = deferred.pop_front().or_else(|| receive.recv().ok()) {
+            Self::drain_ready(&receive, options, &mut work, &mut deferred);
             let final_index = work.last_index;
-            self.applying_through
-                .store(final_index.0, Ordering::Release);
+            applying_through.store(final_index.0, Ordering::Release);
             let expected_outcomes = work.entries.len();
-            let event = match self.store.apply(&work.entries) {
-                Err(error) => {
-                    self.failure(work, ApplicationFailureKind::Store(error), &mut deferred)
-                }
+            let event = match store.apply(&work.entries) {
+                Err(error) => Self::failure(
+                    &shared,
+                    &receive,
+                    work,
+                    ApplicationFailureKind::Store(error),
+                    &mut deferred,
+                ),
                 Ok(outcomes) if outcomes.len() != work.entries.len() => {
                     let actual = outcomes.len();
-                    self.failure(
+                    Self::failure(
+                        &shared,
+                        &receive,
                         work,
                         ApplicationFailureKind::OutcomeCount {
                             expected: expected_outcomes,
@@ -104,16 +118,18 @@ where
                     )
                 }
                 Ok(outcomes) => {
-                    let actual = self.store.applied_through();
+                    let actual = store.applied_through();
                     if actual == final_index {
-                        self.durable_through.store(final_index.0, Ordering::Release);
+                        durable_through.store(final_index.0, Ordering::Release);
                         ApplicationEvent::Applied(ApplicationCompletion {
                             entries: work.entries,
                             outcomes,
                             retained_bytes: work.retained_bytes,
                         })
                     } else {
-                        self.failure(
+                        Self::failure(
+                            &shared,
+                            &receive,
                             work,
                             ApplicationFailureKind::DurableFloor {
                                 expected: final_index,
@@ -124,7 +140,7 @@ where
                     }
                 }
             };
-            self.applying_through.store(0, Ordering::Release);
+            applying_through.store(0, Ordering::Release);
             let failed = matches!(event, ApplicationEvent::Failed(_));
             if terminal.send(event).is_err() {
                 break;
@@ -134,12 +150,17 @@ where
                 break;
             }
         }
-        self.store
+        store
     }
 
-    fn drain_ready(&self, work: &mut Work<T>, deferred: &mut VecDeque<Work<T>>) {
+    fn drain_ready(
+        receive: &Receiver<Work<T>>,
+        options: ApplicationWorkerOptions,
+        work: &mut Work<T>,
+        deferred: &mut VecDeque<Work<T>>,
+    ) {
         loop {
-            let Ok(next) = self.receive.try_recv() else {
+            let Ok(next) = receive.try_recv() else {
                 return;
             };
             let combined_entries = work.entries.len().saturating_add(next.entries.len());
@@ -147,8 +168,8 @@ where
                 deferred.push_back(next);
                 return;
             };
-            if combined_entries > self.options.batch_entries
-                || combined_batch_bytes > self.options.batch_bytes
+            if combined_entries > options.batch_entries
+                || combined_batch_bytes > options.batch_bytes
             {
                 deferred.push_back(next);
                 return;
@@ -161,20 +182,20 @@ where
     }
 
     fn failure(
-        &self,
+        shared: &Arc<Mutex<Shared>>,
+        receive: &Receiver<Work<T>>,
         work: Work<T>,
         kind: ApplicationFailureKind<S::Error>,
         deferred: &mut VecDeque<Work<T>>,
     ) -> ApplicationEvent<T, S::Outcome, S::Error> {
-        let mut shared = self
-            .shared
+        let mut shared = shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         shared.accepting = false;
 
         let mut unattempted = Vec::new();
         let mut retained_bytes = work.retained_bytes;
-        for queued in deferred.drain(..).chain(self.receive.try_iter()) {
+        for queued in deferred.drain(..).chain(receive.try_iter()) {
             retained_bytes = retained_bytes.saturating_add(queued.retained_bytes);
             unattempted.extend(queued.entries);
         }
