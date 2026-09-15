@@ -72,6 +72,16 @@ impl ConfigurationIndex {
         self.offsets.retain(|offset| *offset < retained_log_len);
     }
 
+    pub(in crate::node) fn compact_prefix(&mut self, retired_log_len: usize) {
+        let first_retained = self
+            .offsets
+            .partition_point(|offset| *offset < retired_log_len);
+        self.offsets.drain(..first_retained);
+        for offset in &mut self.offsets {
+            *offset -= retired_log_len;
+        }
+    }
+
     /// Returns the final indexed configuration entry.
     ///
     /// A stale final offset returns `None` rather than falling back to an older

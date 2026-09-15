@@ -127,8 +127,8 @@ pub use node::{
     BootstrapLogEntry, BootstrapState, BootstrapValidationError, ClientProposalInput,
     ConfigurationProposalRejection, Input, LeadershipTransferRejection, LocalProposalDropReason,
     LocalSnapshotInstallError, Node, NodeConfig, NodeConfigError, Output,
-    PendingSnapshotTransferResumeError, ProposalRejection, ReadIndexCancelReason,
-    ReadIndexRejection, Role, StateValidationError,
+    PendingSnapshotTransferResumeError, PreparedLocalSnapshotInstall, ProposalRejection,
+    ReadIndexCancelReason, ReadIndexRejection, RetiredLogEntries, Role, StateValidationError,
 };
 pub use types::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,
@@ -137,8 +137,8 @@ pub use types::{
     JointMembership, LeaderSnapshotTransferStatus, LocalProposalId, LogEntryKind, LogIndex,
     MembershipConfig, MembershipSet, MembershipValidationError, NodeId, PendingSnapshotTransfer,
     PromotionBarrier, RaftSnapshot, RaftSnapshotMetadata, ReadId, ReplicationProgress,
-    ReplicationState, SharedPayload, SnapshotChunkRejectionCounters, SnapshotChunkRequest,
-    SnapshotChunkSend, SnapshotChunkSource, SnapshotCommittedConfiguration, SnapshotGroupId,
-    SnapshotIdError, SnapshotMetadataError, SnapshotTransferId, SnapshotTransferStatus,
-    StagedSnapshotChunk, Term,
+    ReplicationState, ReplicationWindowProgress, SharedPayload, SnapshotChunkRejectionCounters,
+    SnapshotChunkRequest, SnapshotChunkSend, SnapshotChunkSource, SnapshotCommittedConfiguration,
+    SnapshotGroupId, SnapshotIdError, SnapshotMetadataError, SnapshotTransferId,
+    SnapshotTransferStatus, StagedSnapshotChunk, Term,
 };

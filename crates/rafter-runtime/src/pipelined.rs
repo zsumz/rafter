@@ -9,11 +9,26 @@
 mod driver;
 mod eligibility;
 mod error;
+mod threaded;
 mod work;
+mod worker;
 
 pub use driver::{PipelineProgress, PipelinedRaftNode};
 pub use error::PipelineError;
+pub use threaded::{
+    ThreadedPersistenceCompletion, ThreadedPersistenceDisposition, ThreadedPipelineError,
+    ThreadedPipelineStartError, ThreadedPipelinedRaftNode, ThreadedProposalOutputs,
+};
 pub use work::{PersistenceCompletion, PersistenceOperation, PersistenceWork, PreparedProposals};
+pub use worker::{
+    PersistenceWorker, PersistenceWorkerCompletion, PersistenceWorkerOptions,
+    PersistenceWorkerShutdownError, PersistenceWorkerStopped, PersistenceWorkerSubmitError,
+    PersistenceWorkerTelemetry,
+};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod threaded_test;
+#[cfg(test)]
+mod worker_test;

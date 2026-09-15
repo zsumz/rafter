@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Fail closed on WAL reclamation receipt identity, accounting, and bounds."""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+
+
+PHASES = {
+    "wal_reclamation",
+    "wal_checkpoint_prepare",
+    "wal_manifest_publish",
+    "wal_cleanup",
+}
+TOP_LEVEL = {
+    "schema",
+    "layer",
+    "comparison_kind",
+    "source_sha",
+    "completion_boundary",
+    "config",
+    "rounds",
+    "aggregate",
+    "phase_metrics",
+    "final",
+}
+GENERATION = re.compile(r"^raft-wal-(checkpoint|segment)-(\d{20})\.(rfwc|rfwb)$")
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def check_latency(value, expected_count, name):
+    require(set(value) == {"count", "p50_ns", "p99_ns", "max_ns"},
+            f"{name} latency shape changed")
+    require(value["count"] == expected_count, f"{name} latency count disagrees")
+    require(0 <= value["p50_ns"] <= value["p99_ns"] <= value["max_ns"],
+            f"{name} latency ordering disagrees")
+
+
+def check_inventory(value, expected_generation, expected_bytes, name):
+    require(set(value) == {"file_count", "bytes", "names"},
+            f"{name} inventory shape changed")
+    require(value["file_count"] == 3 and len(value["names"]) == 3,
+            f"{name} did not retain exactly three managed WAL files")
+    require(value["bytes"] == expected_bytes and value["bytes"] > 0,
+            f"{name} managed WAL bytes disagree")
+    require(value["names"] == sorted(value["names"]), f"{name} names are not sorted")
+    require(value["names"].count("raft-wal-current") == 1,
+            f"{name} has no unique authoritative manifest")
+    generations = []
+    kinds = []
+    for filename in value["names"]:
+        if filename == "raft-wal-current":
+            continue
+        match = GENERATION.fullmatch(filename)
+        require(match is not None, f"{name} has an unexpected managed filename")
+        kinds.append(match.group(1))
+        generations.append(int(match.group(2)))
+    require(sorted(kinds) == ["checkpoint", "segment"],
+            f"{name} does not contain one checkpoint and one segment")
+    require(generations == [expected_generation, expected_generation],
+            f"{name} files do not select generation {expected_generation}")
+
+
+def check(receipt, expected_source):
+    require(set(receipt) == TOP_LEVEL, "top-level receipt shape changed")
+    require(receipt["schema"] == 1, "unsupported reclamation receipt schema")
+    require(receipt["layer"] == "durable_replication", "wrong evidence layer")
+    require(receipt["comparison_kind"] == "rafter_component_qualification",
+            "reclamation evidence was mislabeled as a competitor comparison")
+    require(receipt["source_sha"] == expected_source.lower(), "source identity disagrees")
+    require(len(expected_source) == 40 and all(c in "0123456789abcdefABCDEF" for c in expected_source),
+            "expected source identity is not a full SHA")
+
+    config = receipt["config"]
+    require(set(config) == {"retained_entries", "rounds", "batches_per_round",
+                            "batch_size", "payload_bytes"}, "config shape changed")
+    require(all(isinstance(value, int) and value > 0 for value in config.values()),
+            "config values must be positive integers")
+    rounds = receipt["rounds"]
+    require(len(rounds) == config["rounds"], "round count disagrees")
+    expected_appended = config["batches_per_round"] * config["batch_size"]
+    expected_bytes = receipt["aggregate"]["managed_wal_bytes"]
+    pauses = []
+    for number, value in enumerate(rounds, 1):
+        require(set(value) == {"round", "appended_entries", "compacted_through",
+                               "snapshot_ns", "reclamation_pause_ns", "write_latency",
+                               "managed_wal"}, f"round {number} shape changed")
+        require(value["round"] == number, f"round {number} sequence disagrees")
+        require(value["appended_entries"] == expected_appended,
+                f"round {number} append accounting disagrees")
+        require(value["compacted_through"] == number * expected_appended,
+                f"round {number} compaction boundary disagrees")
+        require(value["snapshot_ns"] > 0 and value["reclamation_pause_ns"] > 0,
+                f"round {number} timing is absent")
+        check_latency(value["write_latency"], config["batches_per_round"],
+                      f"round {number} writes")
+        check_inventory(value["managed_wal"], number, expected_bytes, f"round {number}")
+        pauses.append(value["reclamation_pause_ns"])
+
+    aggregate = receipt["aggregate"]
+    require(set(aggregate) == {"write_latency", "reclamation_pause", "reopen_ns",
+                               "managed_wal_bytes", "managed_wal_files"},
+            "aggregate shape changed")
+    check_latency(aggregate["write_latency"], config["rounds"] * config["batches_per_round"],
+                  "aggregate writes")
+    check_latency(aggregate["reclamation_pause"], config["rounds"],
+                  "aggregate reclamation")
+    require(aggregate["reopen_ns"] > 0, "reopen timing is absent")
+    require(aggregate["managed_wal_files"] == 3 and expected_bytes > 0,
+            "aggregate physical WAL bound disagrees")
+
+    metrics = receipt["phase_metrics"]
+    require(len(metrics) == 4 and {metric.get("name") for metric in metrics} == PHASES,
+            "reclamation phase inventory disagrees")
+    by_name = {}
+    for metric in metrics:
+        require(set(metric) == {"name", "calls", "total_ns", "max_ns", "buckets"},
+                "phase metric shape changed")
+        require(metric["calls"] == config["rounds"],
+                f"{metric['name']} call count disagrees")
+        require(0 < metric["max_ns"] <= metric["total_ns"],
+                f"{metric['name']} timing is incoherent")
+        require(sum(metric["buckets"]) == metric["calls"],
+                f"{metric['name']} histogram accounting disagrees")
+        by_name[metric["name"]] = metric
+    overall = by_name["wal_reclamation"]["total_ns"]
+    require(sum(by_name[name]["total_ns"] for name in PHASES - {"wal_reclamation"}) <= overall,
+            "nested reclamation phases exceed the overall timer")
+    require(overall <= sum(pauses), "reclamation telemetry exceeds synchronous pauses")
+
+    final = receipt["final"]
+    require(set(final) == {"hard_commit", "compacted_through", "retained_entries",
+                           "next_index", "recovery_verified", "physical_bound_verified",
+                           "managed_wal"}, "final verification shape changed")
+    expected_total = config["retained_entries"] + config["rounds"] * expected_appended
+    require(final["hard_commit"] == expected_total and final["next_index"] == expected_total + 1,
+            "final hard state or log boundary disagrees")
+    require(final["compacted_through"] == config["rounds"] * expected_appended,
+            "final compaction boundary disagrees")
+    require(final["retained_entries"] == config["retained_entries"],
+            "final retained suffix length disagrees")
+    require(final["recovery_verified"] is True and final["physical_bound_verified"] is True,
+            "final recovery or physical bound was not verified")
+    check_inventory(final["managed_wal"], config["rounds"], expected_bytes, "reopen")
+    return {
+        "schema": 1,
+        "source_sha": receipt["source_sha"],
+        "retained_entries": config["retained_entries"],
+        "rounds": config["rounds"],
+        "managed_wal_bytes": expected_bytes,
+        "reclamation_pause_p99_ns": aggregate["reclamation_pause"]["p99_ns"],
+        "reopen_ns": aggregate["reopen_ns"],
+        "qualified": True,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source_sha")
+    parser.add_argument("receipt", type=Path)
+    args = parser.parse_args()
+    raw = args.receipt.read_bytes()
+    receipt = json.loads(raw)
+    summary = check(receipt, args.source_sha)
+    summary["receipt_sha256"] = hashlib.sha256(raw).hexdigest()
+    print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

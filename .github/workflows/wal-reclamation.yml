@@ -1,0 +1,54 @@
+name: WAL reclamation qualification
+
+on:
+  push:
+    branches: [perf/raft-performance]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          workspaces: bench-compare
+      - name: Check harness and reclamation contracts
+        run: |
+          scripts/cargo-test-exact 3 - --locked --manifest-path bench-compare/Cargo.toml --no-default-features --bin bench-wal-reclamation
+          scripts/cargo-test-exact 2 reclamation_large_suffix --locked -p rafter-storage
+          python3 -m unittest scripts/tests/test_wal_reclamation.py
+      - name: Build the component qualification
+        run: cargo build --release --locked --manifest-path bench-compare/Cargo.toml --no-default-features --bin bench-wal-reclamation
+      - name: Measure fixed live suffixes and verify receipts
+        run: |
+          mkdir -p results/wal-reclamation
+          for retained in 10000 100000; do
+            bench-compare/target/release/bench-wal-reclamation \
+              "$retained" 3 64 8 64 "$GITHUB_SHA" "$RUNNER_TEMP" \
+              > "results/wal-reclamation/retained-$retained.json"
+            python3 scripts/check-wal-reclamation \
+              "$GITHUB_SHA" "results/wal-reclamation/retained-$retained.json" \
+              > "results/wal-reclamation/retained-$retained-summary.json"
+          done
+      - name: Measure a large retired prefix and verify its receipt
+        run: |
+          bench-compare/target/release/bench-wal-reclamation \
+            512 3 25 4096 64 "$GITHUB_SHA" "$RUNNER_TEMP" \
+            > results/wal-reclamation/retired-102400.json
+          python3 scripts/check-wal-reclamation \
+            "$GITHUB_SHA" results/wal-reclamation/retired-102400.json \
+            > results/wal-reclamation/retired-102400-summary.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: wal-reclamation-${{ github.sha }}
+          path: results/wal-reclamation
+          if-no-files-found: error

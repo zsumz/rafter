@@ -14,9 +14,10 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 #[derive(Debug, Default)]
-struct ControlledLog {
+pub(super) struct ControlledLog {
     inner: InMemoryRaftLogSegment,
-    delay: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
+    pub(super) delay: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
+    pub(super) panic_on_append: bool,
     fail: bool,
 }
 impl RaftLogSegment for ControlledLog {
@@ -28,6 +29,7 @@ impl RaftLogSegment for ControlledLog {
             started.send(()).unwrap();
             release.recv().unwrap();
         }
+        assert!(!self.panic_on_append, "injected persistence panic");
         if self.fail {
             return Err(RaftLogSegmentAppendError::Io {
                 operation: "injected local write",
@@ -52,9 +54,12 @@ impl RaftLogSegment for ControlledLog {
         self.inner.replay_entries()
     }
 }
-type Node = DurableRaftNode<InMemoryRaftHardStateStore, ControlledLog, InMemoryRaftSnapshotStore>;
-type Pipeline =
+pub(super) type Node =
+    DurableRaftNode<InMemoryRaftHardStateStore, ControlledLog, InMemoryRaftSnapshotStore>;
+pub(super) type Pipeline =
     PipelinedRaftNode<InMemoryRaftHardStateStore, ControlledLog, InMemoryRaftSnapshotStore>;
+pub(super) type Work =
+    Box<PersistenceWork<InMemoryRaftHardStateStore, ControlledLog, InMemoryRaftSnapshotStore>>;
 fn node(id: u64) -> Node {
     DurableRaftNode::with_storage(
         NodeConfig::new(
@@ -68,7 +73,7 @@ fn node(id: u64) -> Node {
     )
     .unwrap()
 }
-fn fixture() -> (Node, Node) {
+pub(super) fn fixture() -> (Node, Node) {
     let mut leader = node(1);
     let mut follower = node(2);
     let outputs = leader.step(Input::Tick).unwrap();
@@ -136,7 +141,7 @@ fn fixture() -> (Node, Node) {
     assert_eq!(leader.commit_index(), LogIndex(1));
     (leader, follower)
 }
-fn proposals() -> Vec<ClientProposalInput> {
+pub(super) fn proposals() -> Vec<ClientProposalInput> {
     vec![ClientProposalInput {
         proposal_id: None,
         payload: b"two".to_vec(),
@@ -154,12 +159,7 @@ fn append_to_two(outputs: &[Output]) -> AppendEntries {
         })
         .unwrap()
 }
-fn prepare(
-    node: &mut Pipeline,
-) -> (
-    Vec<Output>,
-    Box<PersistenceWork<InMemoryRaftHardStateStore, ControlledLog, InMemoryRaftSnapshotStore>>,
-) {
+fn prepare(node: &mut Pipeline) -> (Vec<Output>, Work) {
     match node.prepare_proposals(proposals()).unwrap() {
         PreparedProposals::Pending { replication, work } => (replication, work),
         PreparedProposals::Durable(_) => panic!("expected overlap"),
@@ -218,6 +218,7 @@ fn follower_persistence_overlaps_local_write_but_quorum_waits_for_its_receipt() 
         Err(PipelineError::PersistencePending)
     );
     assert!(pipeline.ready_node().is_none());
+    assert!(pipeline.ready_node_mut().is_none());
     assert!(!handle.is_finished());
     release_tx.send(()).unwrap();
     assert!(pipeline
@@ -226,6 +227,7 @@ fn follower_persistence_overlaps_local_write_but_quorum_waits_for_its_receipt() 
         .iter()
         .all(|o| !matches!(o, Output::Apply { .. })));
     assert_eq!(pipeline.progress().durable, LogIndex(2));
+    assert!(pipeline.ready_node_mut().is_some());
     let outputs = pipeline.step_batch(vec![ack]).unwrap();
     assert_eq!(
         outputs

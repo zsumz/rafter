@@ -5,7 +5,6 @@
 
 use crate::{CommittedConfiguration, LogIndex};
 
-use super::state::LocalProposalTracker;
 use super::{LocalProposalDropReason, Node, Output};
 
 mod batch;
@@ -15,7 +14,7 @@ mod read;
 pub use install_error::LocalSnapshotInstallError;
 
 pub(in crate::node) use batch::LogBatch;
-use read::retained_log_offset;
+pub(in crate::node) use read::retained_log_offset;
 
 impl Node {
     pub(super) fn truncate_from(
@@ -161,14 +160,12 @@ impl Node {
         &mut self,
         snapshot: crate::RaftSnapshot,
     ) -> Result<Vec<super::Output>, LocalSnapshotInstallError> {
-        let committed_configuration = self.check_local_snapshot(&snapshot)?;
-        Ok(self
-            .install_snapshot_state_with_committed_configuration(snapshot, committed_configuration))
+        Ok(self.prepare_local_snapshot_install(snapshot)?.commit())
     }
 
     /// Checks every local-install precondition without mutating anything, and
     /// returns the committed configuration state the install should record.
-    fn check_local_snapshot(
+    pub(in crate::node) fn check_local_snapshot(
         &self,
         snapshot: &crate::RaftSnapshot,
     ) -> Result<Option<CommittedConfiguration>, LocalSnapshotInstallError> {
@@ -248,7 +245,7 @@ impl Node {
         self.install_snapshot_state_with_committed_configuration(snapshot, committed_configuration)
     }
 
-    fn install_snapshot_state_with_committed_configuration(
+    pub(in crate::node) fn install_snapshot_state_with_committed_configuration(
         &mut self,
         snapshot: crate::RaftSnapshot,
         committed_configuration: Option<crate::CommittedConfiguration>,
@@ -291,21 +288,6 @@ impl Node {
     pub(super) fn replace_log(&mut self, log: Vec<crate::LogEntry>) -> Vec<Output> {
         self.derived = super::state::DerivedState::from_log(&log);
         self.persistent.log = log;
-        let mut retained = LocalProposalTracker::default();
-        let mut outputs = Vec::new();
-        for (index, proposal) in std::mem::take(&mut self.volatile.local_proposals) {
-            if self.term_at(index) == Some(proposal.term) {
-                retained.insert(index, proposal);
-            } else {
-                outputs.push(Output::LocalProposalDropped {
-                    proposal_id: proposal.id,
-                    index,
-                    term: proposal.term,
-                    reason: LocalProposalDropReason::LogOverwritten,
-                });
-            }
-        }
-        self.volatile.local_proposals = retained;
-        outputs
+        self.reconcile_local_proposals()
     }
 }

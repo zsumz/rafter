@@ -4,8 +4,8 @@ use std::fmt;
 
 use super::super::{CommittedConfiguration, LogIndex, MembershipConfig, NodeId, Term};
 use super::{
-    snapshot_transfer_id_from_parts, ApplicationSnapshotKind, SnapshotGroupId,
-    SnapshotMetadataError, SnapshotTransferId,
+    application_payload_crc32, snapshot_transfer_id_from_parts, ApplicationSnapshotKind,
+    SnapshotGroupId, SnapshotMetadataError, SnapshotTransferId,
 };
 
 /// Application-defined snapshot format version.
@@ -251,20 +251,4 @@ impl RaftSnapshot {
             self.application_payload_crc32,
         )
     }
-}
-
-#[must_use]
-pub(crate) fn application_payload_crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for byte in bytes {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            if crc & 1 == 1 {
-                crc = (crc >> 1) ^ 0xEDB8_8320;
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    !crc
 }

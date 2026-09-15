@@ -7,7 +7,10 @@ use rafter::{
     ConfigurationEntry, ConfigurationId, JointMembership, LogEntryKind, MembershipSet, NodeId, Term,
 };
 
-use crate::format::{advanceable_log_index, finish_checksummed, verify_checksum, Reader, Writer};
+use crate::{
+    crc32,
+    format::{advanceable_log_index, verify_checksum, Reader, Writer},
+};
 
 use super::{
     BorrowedPersistedRaftLogEntry, DecodeRaftLogEntryError, EncodeRaftLogEntryError,
@@ -59,17 +62,53 @@ pub fn encode_raft_log_entry(
 pub fn encode_borrowed_raft_log_entry(
     entry: BorrowedPersistedRaftLogEntry<'_>,
 ) -> Result<Vec<u8>, EncodeRaftLogEntryError> {
+    let mut encoded = Vec::new();
+    encode_borrowed_raft_log_entry_appending(entry, &mut encoded)?;
+    Ok(encoded)
+}
+
+/// Encodes one owned entry while retaining `encoded`'s allocation for the
+/// next entry in an internal batch or checkpoint loop.
+pub(crate) fn encode_raft_log_entry_reusing(
+    entry: &PersistedRaftLogEntry,
+    encoded: &mut Vec<u8>,
+) -> Result<(), EncodeRaftLogEntryError> {
+    encoded.clear();
+    encode_borrowed_raft_log_entry_appending(BorrowedPersistedRaftLogEntry::from(entry), encoded)
+        .map(|_| ())
+}
+
+/// Appends one owned entry envelope without copying it through a second buffer.
+pub(crate) fn encode_raft_log_entry_appending(
+    entry: &PersistedRaftLogEntry,
+    encoded: &mut Vec<u8>,
+) -> Result<usize, EncodeRaftLogEntryError> {
+    encode_borrowed_raft_log_entry_appending(BorrowedPersistedRaftLogEntry::from(entry), encoded)
+}
+
+fn encode_borrowed_raft_log_entry_appending(
+    entry: BorrowedPersistedRaftLogEntry<'_>,
+    encoded: &mut Vec<u8>,
+) -> Result<usize, EncodeRaftLogEntryError> {
     if advanceable_log_index(entry.index.0).is_none() {
         return Err(EncodeRaftLogEntryError::IndexAtMaximum);
     }
-    let mut writer = Writer::new();
+    let start = encoded.len();
+    let mut writer = Writer::appending(std::mem::take(encoded));
     writer.bytes(&RAFT_LOG_ENTRY_MAGIC);
     writer.u8(RAFT_LOG_ENTRY_VERSION);
     writer.u64(entry.index.0);
     writer.u64(entry.term.0);
-    write_log_entry_kind(&mut writer, entry.kind)?;
+    if let Err(error) = write_log_entry_kind(&mut writer, entry.kind) {
+        *encoded = writer.finish();
+        encoded.truncate(start);
+        return Err(error);
+    }
 
-    Ok(finish_checksummed(writer))
+    let checksum = crc32(&writer.as_slice()[start..]);
+    writer.u32(checksum);
+    *encoded = writer.finish();
+    Ok(encoded.len() - start)
 }
 
 /// Decodes and verifies one persisted Raft log-entry envelope.

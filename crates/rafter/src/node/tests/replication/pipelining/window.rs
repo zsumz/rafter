@@ -2,6 +2,7 @@
 
 use super::support::*;
 use super::*;
+use crate::node::config::DEFAULT_MAX_INFLIGHT_BYTES;
 
 #[test]
 fn replicate_mode_fill_is_bounded_by_the_batch_window() {
@@ -33,6 +34,27 @@ fn replicate_mode_fill_is_bounded_by_the_batch_window() {
     );
     assert_eq!(progress.inflights.batch_count(), 4);
     assert_eq!(progress.inflights.byte_count(), 4 * one_entry_batch_bytes());
+    assert_eq!(
+        leader.leader_replication_windows(),
+        vec![
+            ReplicationWindowProgress {
+                follower_id: NodeId(2),
+                in_flight_batches: 4,
+                in_flight_bytes: 4 * one_entry_batch_bytes(),
+                max_in_flight_batches: 4,
+                max_in_flight_bytes: DEFAULT_MAX_INFLIGHT_BYTES,
+                full: true,
+            },
+            ReplicationWindowProgress {
+                follower_id: NodeId(3),
+                in_flight_batches: 0,
+                in_flight_bytes: 0,
+                max_in_flight_batches: 4,
+                max_in_flight_bytes: DEFAULT_MAX_INFLIGHT_BYTES,
+                full: false,
+            },
+        ]
+    );
 
     let outputs = leader.step(Input::Tick);
     let heartbeats = appends_to(&outputs, NodeId(2));

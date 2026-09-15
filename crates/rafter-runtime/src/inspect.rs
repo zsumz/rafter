@@ -7,8 +7,8 @@
 
 use rafter::{
     CommittedConfiguration, ConfigurationEntry, LogEntry, LogIndex, MembershipConfig,
-    NodeId as RaftNodeId, RaftSnapshot, ReplicationProgress, Role as RaftRole, SnapshotChunkSource,
-    SnapshotTransferStatus, Term,
+    NodeId as RaftNodeId, RaftSnapshot, ReplicationProgress, ReplicationWindowProgress,
+    Role as RaftRole, SnapshotChunkSource, SnapshotTransferStatus, Term,
 };
 use rafter_storage::{RaftHardState, RaftHardStateStore, RaftLogSegment, RaftSnapshotStore};
 
@@ -128,6 +128,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     #[must_use]
     pub fn leader_replication_progress(&self) -> Vec<ReplicationProgress> {
         self.node.leader_replication_progress()
+    }
+
+    /// Returns bounded in-flight replication-window usage when this node is leader.
+    #[must_use]
+    pub fn leader_replication_windows(&self) -> Vec<ReplicationWindowProgress> {
+        self.node.leader_replication_windows()
     }
 
     /// Returns the catch-up barrier for a learner promotion, if one is active.

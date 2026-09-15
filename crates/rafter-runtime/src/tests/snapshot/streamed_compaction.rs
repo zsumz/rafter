@@ -40,10 +40,26 @@ fn compact_log_with_streamed_snapshot_persists_compacts_and_installs_descriptor(
         LogIndex(3),
         "append commits",
     );
+    let before = rafter_storage::telemetry::snapshot();
+    rafter_storage::telemetry::set_enabled(true);
 
     leader
         .compact_log_with_streamed_snapshot(descriptor.clone(), &source)
         .expect("leader compacts through the streamed snapshot");
+    rafter_storage::telemetry::set_enabled(false);
+    let after = rafter_storage::telemetry::snapshot();
+
+    for name in ["snapshot_kernel_prepare", "snapshot_kernel_commit"] {
+        let calls = |metrics: &[(&str, rafter_storage::telemetry::Metric)]| {
+            metrics
+                .iter()
+                .find(|(stage, _)| *stage == name)
+                .expect("kernel snapshot stage exists")
+                .1
+                .calls
+        };
+        assert_eq!(calls(&after) - calls(&before), 1, "{name}");
+    }
 
     assert_eq!(leader.snapshot_index(), LogIndex(3));
     assert_eq!(leader.log_segment.replay_entries(), Vec::new());

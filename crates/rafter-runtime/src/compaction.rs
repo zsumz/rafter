@@ -1,14 +1,18 @@
 //! Local snapshot installation and the log compaction that follows it.
 //!
-//! The kernel owns every boundary rule, so each entry point asks a staged
-//! clone first and writes nothing until it agrees; the durable snapshot is
-//! published before the log prefix it covers is dropped. Inbound transfer
-//! snapshots are not this module's business — those persist on the step path.
+//! The kernel owns every boundary rule, so each entry point exclusively
+//! prepares its transition and writes nothing until validation agrees. The
+//! borrow prevents intervening kernel mutation while the durable snapshot is
+//! published before the log prefix it covers is dropped; only then is the
+//! prepared kernel transition committed. Inbound transfer snapshots are not
+//! this module's business — those persist on the step path.
 
 use rafter::{
-    RaftSnapshot, RaftSnapshotMetadata, SnapshotChunkSource, SnapshotCommittedConfiguration,
+    RaftSnapshot, RaftSnapshotMetadata, RetiredLogEntries, SnapshotChunkSource,
+    SnapshotCommittedConfiguration,
 };
 use rafter_storage::{
+    telemetry::{Stage, Timer},
     PersistedRaftSnapshot, RaftHardStateStore, RaftLogSegment, RaftSnapshotStore,
 };
 
@@ -16,6 +20,7 @@ use crate::{DurableRaftNode, RaftRuntimeError};
 
 mod chunk_source;
 mod install_error;
+mod maintenance;
 
 use chunk_source::OriginalSnapshotChunkSource;
 use install_error::local_snapshot_install_error;
@@ -99,8 +104,25 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// cannot be written.
     pub fn compact_log_with_snapshot(
         &mut self,
-        mut snapshot: PersistedRaftSnapshot,
+        snapshot: PersistedRaftSnapshot,
     ) -> Result<(), RaftRuntimeError> {
+        drop(self.compact_log_with_snapshot_deferred_drop(snapshot)?);
+        Ok(())
+    }
+
+    /// Performs durable snapshot compaction and returns the retired log prefix.
+    ///
+    /// The returned entries are no longer consensus state and may be submitted
+    /// to a bounded [`crate::LogRetirementWorker`] so their payload references
+    /// are released away from the consensus-owner thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::compact_log_with_snapshot`].
+    pub fn compact_log_with_snapshot_deferred_drop(
+        &mut self,
+        mut snapshot: PersistedRaftSnapshot,
+    ) -> Result<RetiredLogEntries, RaftRuntimeError> {
         if let Some(cause) = &self.fatal_error {
             return Err(RaftRuntimeError::Poisoned {
                 cause: cause.clone(),
@@ -108,22 +130,36 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         }
 
         self.fill_local_snapshot_membership(&mut snapshot.metadata);
-        let descriptor =
-            RaftSnapshot::from_payload(snapshot.metadata.clone(), &snapshot.application_payload);
-        // Ask the kernel first, on a clone: it owns every boundary rule, and a
-        // refusal must leave the durable medium untouched. Persisting only
-        // after it agrees, and publishing the clone only after the persist,
-        // keeps both boundaries — no write without the kernel's consent, and no
-        // published kernel state ahead of the durable medium.
-        let mut staged_node = self.node.clone();
-        staged_node
-            .install_local_snapshot(descriptor)
-            .map_err(local_snapshot_install_error)?;
-        if let Err(error) = self.write_snapshot_and_compact_log(snapshot) {
+        let descriptor = RaftSnapshot::new(
+            snapshot.metadata.clone(),
+            snapshot.application_payload.len() as u64,
+            rafter_storage::crc32(&snapshot.application_payload),
+        );
+        // The prepared transition owns an exclusive borrow of the kernel, so
+        // validation happens before storage and no kernel input can invalidate
+        // it while persistence runs. Commit is infallible and happens only
+        // after both the snapshot and log compaction are durable.
+        let prepared = {
+            let _prepare = Timer::start(Stage::SnapshotKernelPrepare);
+            self.node
+                .prepare_local_snapshot_install(descriptor)
+                .map_err(local_snapshot_install_error)?
+        };
+        let written = write_snapshot_and_compact_log(
+            &mut self.snapshot_store,
+            &mut self.log_segment,
+            snapshot,
+        );
+        if let Err(error) = written {
+            drop(prepared);
             return Err(self.poison(error));
         }
-        self.node = staged_node;
-        Ok(())
+        let retired = {
+            let _commit = Timer::start(Stage::SnapshotKernelCommit);
+            let (_, retired) = prepared.commit_with_retired_entries();
+            retired
+        };
+        Ok(retired)
     }
 
     /// As [`Self::compact_log_with_snapshot`], but the payload is pulled
@@ -136,9 +172,26 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// when the source cannot serve the snapshot it describes.
     pub fn compact_log_with_streamed_snapshot(
         &mut self,
-        mut snapshot: RaftSnapshot,
+        snapshot: RaftSnapshot,
         source: &dyn SnapshotChunkSource,
     ) -> Result<(), RaftRuntimeError> {
+        drop(self.compact_log_with_streamed_snapshot_deferred_drop(snapshot, source)?);
+        Ok(())
+    }
+
+    /// Performs streamed durable snapshot compaction and returns the retired prefix.
+    ///
+    /// This is the bounded-memory snapshot-source form of
+    /// [`Self::compact_log_with_snapshot_deferred_drop`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::compact_log_with_streamed_snapshot`].
+    pub fn compact_log_with_streamed_snapshot_deferred_drop(
+        &mut self,
+        mut snapshot: RaftSnapshot,
+        source: &dyn SnapshotChunkSource,
+    ) -> Result<RetiredLogEntries, RaftRuntimeError> {
         if let Some(cause) = &self.fatal_error {
             return Err(RaftRuntimeError::Poisoned {
                 cause: cause.clone(),
@@ -151,10 +204,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             snapshot: &source_snapshot,
         };
 
-        let mut staged_node = self.node.clone();
-        staged_node
-            .install_local_snapshot(snapshot.clone())
-            .map_err(local_snapshot_install_error)?;
+        let prepared = {
+            let _prepare = Timer::start(Stage::SnapshotKernelPrepare);
+            self.node
+                .prepare_local_snapshot_install(snapshot.clone())
+                .map_err(local_snapshot_install_error)?
+        };
 
         let boundary_index = snapshot.metadata.last_included_index;
         let written = self
@@ -167,10 +222,15 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
                     .map_err(RaftRuntimeError::LogCompact)
             });
         if let Err(error) = written {
+            drop(prepared);
             return Err(self.poison(error));
         }
-        self.node = staged_node;
-        Ok(())
+        let retired = {
+            let _commit = Timer::start(Stage::SnapshotKernelCommit);
+            let (_, retired) = prepared.commit_with_retired_entries();
+            retired
+        };
+        Ok(retired)
     }
 
     /// Records the boundary's committed configuration in a descriptor that
@@ -193,17 +253,18 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             self.node.membership_at_index(snapshot_index),
         ));
     }
+}
 
-    fn write_snapshot_and_compact_log(
-        &mut self,
-        snapshot: PersistedRaftSnapshot,
-    ) -> Result<(), RaftRuntimeError> {
-        let boundary_index = snapshot.metadata.last_included_index;
-        self.snapshot_store
-            .write_snapshot(snapshot)
-            .map_err(RaftRuntimeError::SnapshotWrite)?;
-        self.log_segment
-            .compact_prefix_through(boundary_index)
-            .map_err(RaftRuntimeError::LogCompact)
-    }
+fn write_snapshot_and_compact_log<L: RaftLogSegment, S: RaftSnapshotStore>(
+    snapshot_store: &mut S,
+    log_segment: &mut L,
+    snapshot: PersistedRaftSnapshot,
+) -> Result<(), RaftRuntimeError> {
+    let boundary_index = snapshot.metadata.last_included_index;
+    snapshot_store
+        .write_snapshot(snapshot)
+        .map_err(RaftRuntimeError::SnapshotWrite)?;
+    log_segment
+        .compact_prefix_through(boundary_index)
+        .map_err(RaftRuntimeError::LogCompact)
 }

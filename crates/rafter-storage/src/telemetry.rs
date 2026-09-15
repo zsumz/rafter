@@ -2,7 +2,8 @@
 //!
 //! Disabled by default. Enable on the thread that owns the runtime, and read
 //! snapshots there. Counters cover attempted instrumented operations, including
-//! failures; they exclude recovery, snapshot publication, and log rewrites.
+//! failures; they exclude recovery. Snapshot publication and WAL reclamation
+//! expose their whole operation and constituent phases separately.
 //! Timing runs should disable diagnostics and use a separate diagnostic run.
 
 use std::{cell::RefCell, time::Instant};
@@ -34,9 +35,33 @@ pub enum Stage {
     BatchWrite,
     /// Shared WAL batch data sync.
     BatchSync,
+    /// Full physical WAL reclamation after the logical compaction marker.
+    WalReclamation,
+    /// Immutable checkpoint, fresh segment, and their directory fence.
+    WalCheckpointPrepare,
+    /// Manifest replacement and directory fence selecting the new generation.
+    WalManifestPublish,
+    /// Obsolete generation deletion and its directory fence.
+    WalCleanup,
+    /// Full immutable snapshot publication, including selection and staging cleanup.
+    SnapshotPublication,
+    /// Snapshot source reads, envelope checksumming, and file writes before the data sync.
+    SnapshotDataWrite,
+    /// Snapshot envelope data sync.
+    SnapshotDataSync,
+    /// Snapshot-file rename and directory fence.
+    SnapshotFilePublish,
+    /// Current-snapshot manifest write, replacement, and directory fence.
+    SnapshotManifestPublish,
+    /// Snapshot inventory, obsolete-file deletion, and directory fence.
+    SnapshotPrune,
+    /// Kernel validation and retained-state preparation before snapshot persistence.
+    SnapshotKernelPrepare,
+    /// Kernel installation of an already-durable local snapshot boundary.
+    SnapshotKernelCommit,
 }
 
-const NAMES: [&str; 11] = [
+const NAMES: [&str; 23] = [
     "kernel",
     "log_encode",
     "log_write",
@@ -48,6 +73,18 @@ const NAMES: [&str; 11] = [
     "batch_encode",
     "batch_write",
     "batch_sync",
+    "wal_reclamation",
+    "wal_checkpoint_prepare",
+    "wal_manifest_publish",
+    "wal_cleanup",
+    "snapshot_publication",
+    "snapshot_data_write",
+    "snapshot_data_sync",
+    "snapshot_file_publish",
+    "snapshot_manifest_publish",
+    "snapshot_prune",
+    "snapshot_kernel_prepare",
+    "snapshot_kernel_commit",
 ];
 
 /// Cumulative timings on the owning thread; no percentile subtraction is valid.
@@ -66,7 +103,7 @@ pub struct Metric {
 #[derive(Default)]
 struct State {
     enabled: bool,
-    metrics: [Metric; 11],
+    metrics: [Metric; 23],
 }
 std::thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());

@@ -106,7 +106,30 @@ Application state must maintain its own durable applied floor. Supply that
 floor during runtime recovery so committed commands already reflected in the
 application database are not emitted a second time.
 
-The file-backed stores are a deliberately clear reference implementation, not
-a segmented high-throughput WAL or a database engine. A production datastore
-may implement the storage traits on top of its own transactional engine while
-preserving the same success, ordering, and recovery contracts.
+The file-backed stores are deliberately clear reference implementations, not a
+general database engine. The opt-in shared WAL uses checkpoint-selected
+generation segments so prefix compaction bounds its physical history and replay
+work. The default physically reclaims every compacted prefix. An explicit
+`WalRaftNodeStoresOptions` byte threshold can keep logical compaction durable
+while deferring generation replacement until the active WAL reaches the
+threshold at a later compaction opportunity; retained live entries and bytes
+written between opportunities are additional to that threshold. Optional
+storage telemetry reports total WAL reclamation and its checkpoint,
+manifest, and cleanup phases separately. Reclamation still synchronously rewrites
+the retained suffix while holding the shared coordinator; embeddings should
+measure and schedule that pause deliberately until a qualified incremental
+reclaimer exists. Snapshot and application-state retention remain separate. A
+bounded 256 KiB buffer coalesces typical checkpoint entry reads and writes
+without changing the checkpoint bytes or durability order. The writer flushes
+every byte before the existing write-complete failpoint and data sync. A
+single scratch entry envelope is reused across each WAL batch, checkpoint
+write, checkpoint reopen, and replacement-log write, so work remains bounded
+without allocating one temporary envelope per retained entry. A
+live compaction hands destruction of its now-nonauthoritative in-memory prefix
+to one lazy zero-queue worker when that worker is idle; a busy or unavailable
+worker falls back to synchronous destruction, so obsolete prefixes cannot
+accumulate. This does not move WAL writes, syncs, or authority publication off
+the calling thread. A
+production datastore may implement the storage traits on top of its own
+transactional engine while preserving the same success, ordering, and recovery
+contracts.

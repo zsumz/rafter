@@ -4,7 +4,10 @@ Status: completed application-durability acceptance consumer. Its deterministic
 adapter and independent bounded linearizability checker run against public
 Rafter APIs in source and exact-package modes. Its integration process suite
 runs one durable operating-system process per replica in both source and
-exact-package process modes.
+exact-package process modes. Its transactional adapter also implements the
+public bounded application-worker contract, and the exact-package deterministic
+lane proves that durable completions, retained credits, and applied-floor
+recovery compose without benchmark or checkout-only code.
 
 This crate began as a dependency-free deterministic ledger. It now also carries
 the `rafter-app` adapter that runs that exact application contract through
@@ -901,6 +904,18 @@ The durable slice makes the application's state real. It adds:
 - a driver that opens each replica's application through a factory, so a
   restart reopens a journal rather than handing back a value, and a replica
   whose durable apply failed is treated as the dead process it is.
+
+The later application-worker adoption keeps that durable backend and adds no
+ledger policy to Rafter. A ledger-owned entry wrapper implements
+`ApplicationEntry`, the existing durable state machine implements
+`DurableApplication`, and the external-package test drives them through
+`ApplicationWorker`. Its one-entry limit proves that credits cover completed
+but unconsumed outcomes; only consuming the durable completion admits the next
+entry. Shutting the worker and reopening the ledger proves that the consumed
+floor and application state moved together. Package mode supplies every Rafter
+dependency from the exact unpacked archives and rejects any checkout path, so
+this is evidence for the public artifact rather than an in-tree privileged
+composition.
 
 Two limits stay. Raft's own durable state is still in-memory media the driver
 hands between incarnations, so this is application durability rather than

@@ -13691,3 +13691,26 @@ any one of the three lands alone.
     comments, all of which assert the feature exists. The simulator layer's
     source-contract label is deliberately left for the evidence programme; see
     the entry's deferred section.
+28. **The bounded pipeline persistence worker.**
+    `rafter-runtime::pipelined::PersistenceWorker` promotes the one-credit I/O
+    executor first exercised by the durable-service benchmark. Its credit spans
+    queued, executing, and completed-but-unconsumed work; nonblocking refusal
+    returns the exact owned `PersistenceWork`; and explicit shutdown refuses
+    while an operation remains outstanding. The worker may return opt-in
+    storage telemetry, but it chooses no proposal threshold, transport policy,
+    application batch, or client-ack boundary. `PipelinedRaftNode` still owns
+    generation and operation validation and still accepts no consensus input
+    until the matching completion returns. This step is additive and is the
+    first reusable mechanism in the fast durable-service composition; ordered
+    application and transport remain separate embedding responsibilities.
+29. **The bounded ordered application worker.**
+    `rafter-runtime::application::ApplicationWorker` promotes the second
+    durable fence from the service benchmark: one ordered application thread,
+    nonblocking entry and retained-byte admission, ready-only batching, owned
+    refusals and failures, and completion verification against the
+    application's durable applied floor. It owns no client, snapshot,
+    transport, or recovery policy. The runtime example composes it with the
+    pipelined node and persistence worker; the independent ledger consumer
+    implements both public traits over its own transactional store, and the
+    exact-package lane proves bounded completion and reopen without any
+    benchmark dependency or checkout-only hook. This step is additive.

@@ -20,7 +20,7 @@ const APP_STATE_MAGIC: &[u8; 4] = b"RKVS";
 const APP_STATE_VERSION: u8 = 1;
 const APP_STATE_HEADER_LEN: usize = 4 + 1 + 8 + 8 + 4;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AppState {
     pub kv: BTreeMap<String, String>,
     pub applied: LogIndex,
@@ -40,7 +40,15 @@ pub fn load_app_state(root: &Path, node_id: NodeId) -> AppState {
 }
 
 pub fn persist_app_state(dir: &Path, kv: &BTreeMap<String, String>, applied: LogIndex) {
-    std::fs::create_dir_all(dir).expect("create app state directory");
+    try_persist_app_state(dir, kv, applied).expect("persist application state");
+}
+
+pub fn try_persist_app_state(
+    dir: &Path,
+    kv: &BTreeMap<String, String>,
+    applied: LogIndex,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
     let tmp_path = dir.join(APP_STATE_TMP_FILE);
     let path = dir.join(APP_STATE_FILE);
     let record = encode_app_state_record(kv, applied);
@@ -54,13 +62,12 @@ pub fn persist_app_state(dir: &Path, kv: &BTreeMap<String, String>, applied: Log
         .create(true)
         .truncate(true)
         .write(true)
-        .open(&tmp_path)
-        .expect("open app state temp file");
-    file.write_all(&record).expect("write app state record");
-    file.sync_all().expect("sync app state temp file");
+        .open(&tmp_path)?;
+    file.write_all(&record)?;
+    file.sync_all()?;
     drop(file);
-    std::fs::rename(&tmp_path, &path).expect("install app state record");
-    sync_parent_dir(dir);
+    std::fs::rename(&tmp_path, &path)?;
+    sync_parent_dir(dir)
 }
 
 fn encode_app_state_record(kv: &BTreeMap<String, String>, applied: LogIndex) -> Vec<u8> {
@@ -125,10 +132,11 @@ fn decode_app_state_record(record: &[u8]) -> Result<AppState, String> {
 }
 
 #[cfg(unix)]
-fn sync_parent_dir(dir: &Path) {
-    let directory = std::fs::File::open(dir).expect("open app state directory for sync");
-    directory.sync_all().expect("sync app state directory");
+fn sync_parent_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
 }
 
 #[cfg(not(unix))]
-fn sync_parent_dir(_dir: &Path) {}
+fn sync_parent_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}

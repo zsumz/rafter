@@ -9,6 +9,8 @@
 
 use super::*;
 
+mod prepared;
+
 /// Everything a local install can move, captured for an unchanged-assertion.
 #[derive(Debug, Eq, PartialEq)]
 struct NodeSnapshotState {

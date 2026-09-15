@@ -1,33 +1,71 @@
 //! One coordinator owns the durable file, acknowledged views, and poison state.
 use super::{
     codec::{self, Record},
+    reclamation::{self, Authority},
+    retirement::EntryDropper,
     DurableReceipt, PersistenceDomain, RaftPersistenceBatchError as Error,
 };
-use crate::telemetry::{measure, Stage};
+use crate::telemetry::{measure, Stage, Timer};
 use crate::{file_store_ownership::SharedFileStoreOwnership, PersistedRaftLogEntry, RaftHardState};
 use rafter::LogIndex;
+#[cfg(test)]
+use std::sync::Barrier;
 use std::{
     fs::File,
-    io::Write,
+    io::{self, Write},
+    num::NonZeroU64,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct ReclamationGate {
+    entered: Barrier,
+    release: Barrier,
+}
+#[cfg(test)]
+impl ReclamationGate {
+    pub(super) fn new() -> Self {
+        Self {
+            entered: Barrier::new(2),
+            release: Barrier::new(2),
+        }
+    }
+    pub(super) fn wait_until_entered(&self) {
+        self.entered.wait();
+    }
+    pub(super) fn release(&self) {
+        self.release.wait();
+    }
+    fn hold(&self) {
+        self.entered.wait();
+        self.release.wait();
+    }
+}
 
 pub(super) type Shared = Arc<Mutex<State>>;
 #[derive(Debug)]
 pub(super) struct State {
     pub file: File,
     pub path: PathBuf,
+    pub authority: Authority,
+    pub snapshot_directory: PathBuf,
     pub domain: PersistenceDomain,
     pub hard: RaftHardState,
     pub entries: Vec<PersistedRaftLogEntry>,
+    pub retired_entries: EntryDropper<PersistedRaftLogEntry>,
     pub compacted: LogIndex,
     pub operation: u64,
     pub poisoned: bool,
     pub syncs: u64,
+    pub batch_encode_buffer: Vec<u8>,
+    pub reclamation_threshold_bytes: Option<NonZeroU64>,
     pub _ownership: SharedFileStoreOwnership,
     #[cfg(test)]
     pub fail_after_write: bool,
+    #[cfg(test)]
+    pub reclaim_gate: Option<Arc<ReclamationGate>>,
 }
 impl State {
     pub(super) fn next_index(&self) -> LogIndex {
@@ -43,6 +81,12 @@ impl State {
             hard_state: self.hard,
             next_index: self.next_index(),
             compacted_through: self.compacted,
+        }
+    }
+    pub(super) fn reclamation_due(&self) -> io::Result<bool> {
+        match self.reclamation_threshold_bytes {
+            None => Ok(true),
+            Some(threshold) => Ok(self.file.metadata()?.len() >= threshold.get()),
         }
     }
     pub(super) fn validate(&self, record: &Record) -> Result<(), Error> {
@@ -95,13 +139,25 @@ impl State {
         Ok(())
     }
     pub(super) fn apply(&mut self, record: Record) {
+        self.apply_record(record, true);
+    }
+    pub(super) fn apply_replayed(&mut self, record: Record) {
+        self.apply_record(record, false);
+    }
+    fn apply_record(&mut self, record: Record, defer_compacted_drop: bool) {
         if let Some(from) = record.truncate {
             let count = self.entries.partition_point(|entry| entry.index < from);
             self.entries.truncate(count);
         }
         if let Some(through) = record.compact {
             let count = self.entries.partition_point(|entry| entry.index <= through);
-            self.entries.drain(..count);
+            if defer_compacted_drop && count != 0 {
+                let retained_suffix = self.entries.split_off(count);
+                let retired_prefix = std::mem::replace(&mut self.entries, retained_suffix);
+                self.retired_entries.retire(retired_prefix);
+            } else {
+                self.entries.drain(..count);
+            }
             self.compacted = self.compacted.max(through);
         }
         self.entries.extend(record.entries);
@@ -126,13 +182,22 @@ impl State {
             .operation
             .checked_add(1)
             .ok_or(Error::InvalidBatch("publication number exhausted"))?;
-        let bytes =
-            measure(Stage::BatchEncode, || codec::encode(&record)).map_err(|source| Error::Io {
+        let encode_result = measure(Stage::BatchEncode, || {
+            codec::encode_reusing(&record, &mut self.batch_encode_buffer)
+        });
+        if let Err(source) = encode_result {
+            codec::clear_encode_buffer(&mut self.batch_encode_buffer);
+            return Err(Error::Io {
                 operation: "encode Raft WAL batch",
                 source: source.into(),
-            })?;
+            });
+        }
         self.poisoned = true;
-        measure(Stage::BatchWrite, || self.file.write_all(&bytes)).map_err(|source| Error::Io {
+        let write_result = measure(Stage::BatchWrite, || {
+            self.file.write_all(&self.batch_encode_buffer)
+        });
+        codec::clear_encode_buffer(&mut self.batch_encode_buffer);
+        write_result.map_err(|source| Error::Io {
             operation: "append Raft WAL batch",
             source: source.into(),
         })?;
@@ -151,5 +216,43 @@ impl State {
         self.apply(record);
         self.poisoned = false;
         Ok(self.receipt())
+    }
+
+    pub(super) fn reclaim(&mut self) -> Result<(), reclamation::Failure> {
+        let _reclamation = Timer::start(Stage::WalReclamation);
+        self.poisoned = true;
+        #[cfg(test)]
+        if let Some(gate) = self.reclaim_gate.take() {
+            gate.hold();
+        }
+        let snapshot = reclamation::snapshot_reference(&self.snapshot_directory, self.compacted)
+            .map_err(|source| reclamation::Failure {
+                operation: "bind WAL checkpoint to current snapshot",
+                source,
+            })?;
+        let prepared = measure(Stage::WalCheckpointPrepare, || {
+            reclamation::prepare(self, snapshot)
+        })?;
+        measure(Stage::WalManifestPublish, || {
+            reclamation::publish_manifest(&self.path, &prepared.manifest)
+        })?;
+        // Checkpoint, fresh segment header, and manifest temp are three
+        // additional successful data-sync calls beyond the compaction record.
+        self.syncs += 3;
+
+        let old_file = std::mem::replace(&mut self.file, prepared.segment);
+        drop(old_file);
+        self.path = prepared.segment_path;
+        self.authority = Authority::Generation(prepared.manifest.generation);
+
+        let directory = self.path.parent().ok_or_else(|| reclamation::Failure {
+            operation: "resolve WAL cleanup directory",
+            source: codec::invalid("opened WAL path has no parent"),
+        })?;
+        measure(Stage::WalCleanup, || {
+            reclamation::cleanup(directory, &self.authority, true)
+        })?;
+        self.poisoned = false;
+        Ok(())
     }
 }

@@ -111,6 +111,50 @@ fn prune_keeps_current_and_requested_number_of_previous_snapshots() {
 }
 
 #[test]
+fn snapshot_publication_and_pruning_report_each_native_stage() {
+    let directory = test_store_dir("snapshot-publication-telemetry");
+    let mut store = FileRaftSnapshotStore::open(&directory).expect("store opens");
+    let before = crate::telemetry::snapshot();
+    crate::telemetry::set_enabled(true);
+
+    store
+        .write_snapshot(snapshot(1, 1, b"one"))
+        .expect("first snapshot publishes");
+    store
+        .write_snapshot(snapshot(2, 2, b"two"))
+        .expect("second snapshot publishes");
+    store
+        .prune_snapshots(SnapshotRetention::CurrentOnly)
+        .expect("old snapshot prunes");
+
+    let after = crate::telemetry::snapshot();
+    crate::telemetry::set_enabled(false);
+    for (name, expected_calls) in [
+        ("snapshot_publication", 2),
+        ("snapshot_data_write", 2),
+        ("snapshot_data_sync", 2),
+        ("snapshot_file_publish", 2),
+        ("snapshot_manifest_publish", 2),
+        ("snapshot_prune", 1),
+    ] {
+        let calls_before = before
+            .iter()
+            .find(|(stage, _)| *stage == name)
+            .expect("stage exists before")
+            .1
+            .calls;
+        let calls_after = after
+            .iter()
+            .find(|(stage, _)| *stage == name)
+            .expect("stage exists after")
+            .1
+            .calls;
+        assert_eq!(calls_after - calls_before, expected_calls, "{name}");
+    }
+    remove_test_dir(directory);
+}
+
+#[test]
 fn retention_keeps_previous_snapshots_but_removes_future_crash_orphans() {
     let directory = test_store_dir("inventory-future-orphan");
     let mut store = FileRaftSnapshotStore::open(&directory).expect("store opens");

@@ -211,11 +211,29 @@ impl RaftLogSegment for WalRaftLogSegment {
                 hard: None,
                 entries: Vec::new(),
             })
-            .map(|_| ())
             .map_err(|error| RaftLogSegmentCompactError::Io {
                 operation: "compact shared WAL log",
                 source: io::Error::other(error).into(),
-            })
+            })?;
+        let compacted = state.compacted;
+        let reclaim = state.reclamation_due().map_err(|source| {
+            state.poisoned = true;
+            RaftLogSegmentCompactError::CompactedButReclamationFailed {
+                compacted_through: compacted,
+                operation: "inspect shared WAL reclamation threshold",
+                source: source.into(),
+            }
+        })?;
+        if !reclaim {
+            return Ok(());
+        }
+        state.reclaim().map_err(|failure| {
+            RaftLogSegmentCompactError::CompactedButReclamationFailed {
+                compacted_through: compacted,
+                operation: failure.operation,
+                source: failure.source.into(),
+            }
+        })
     }
     fn replay_entries(&self) -> Vec<PersistedRaftLogEntry> {
         self.0

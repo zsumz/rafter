@@ -130,30 +130,67 @@ platform requirements, and the Rafter-specific guards that remain alongside zrai
 
 ## Benchmarks
 
-Recorded five-run medians: three-node in-memory protocol benchmark, 512-byte
-payloads, aarch64 Linux.
-Lower latency is better; higher throughput is better.
+The current qualified service comparison measures client requests over TCP,
+three-node replication, durable consensus storage, durable application updates,
+and responses sent only after application durability.
 
-| Library | Serial props/s | Serial p99 us | Pipelined props/s | Pipelined p99 us |
-| --- | ---: | ---: | ---: | ---: |
-| `rafter` | 777,013 | 3.9 | 1,988,986 | 142.3 |
-| `raft-rs` | 379,723 | 7.4 | 653,298 | 234.3 |
-| `openraft` | 111,254 | 19.2 | 540,752 | 172.3 |
+| Added loopback egress | Rafter pipeline + completion priority | OpenRaft | Ratio | Rafter p99 at 1,000/s | OpenRaft p99 at 1,000/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0 ms | **10,263 writes/s** | 2,590 writes/s | **3.96x** | **4.063 ms** | 9.568 ms |
+| 2 ms | **5,042 writes/s** | 1,827 writes/s | **2.76x** | **12.583 ms** | 24.117 ms |
 
-Results and per-run measurements are in
-[`bench-compare/results/latest.json`](./bench-compare/results/latest.json).
-These are hardware-sensitive protocol measurements; commit-latency boundaries
-differ across implementations. Reproduce the comparison or measure Rafter's
-durable runtime with:
+Conditions: 3 nodes on one host, 64 clients, 512-byte writes, and medians of
+3 repetitions. Added delay affects both client and peer egress. The OpenRaft
+arm is the tested asynchronous-flusher integration. The selected Rafter arm had
+zero errors, unknown outcomes, or unsent requests and beat the synchronous and
+asynchronous OpenRaft controls in all 24 displayed p99 and p99.9 comparisons.
+Against same-code FIFO Rafter, completion priority improved saturated throughput
+29.3% at 0 ms and 5.9% at 2 ms; its small fixed-load tail tradeoffs remain
+visible in the report.
+
+The [immutable report and source cases](https://github.com/zraftz/benchmarks/tree/407c3b7685338792935e489fa2b9f5ef498c19da/reports/qualified-34904893568-wal-34907033422)
+contain the methodology, individual runs, accounting, and known limitations.
+These are implementation and integration results, not a claim about a faster
+Raft algorithm or every workload. The report also retains a completion-aligned
+seven-repeat in-memory comparison and the separately named asynchronous
+OpenRaft storage control.
+
+Reproduce the in-memory comparison or measure Rafter's durable runtime with:
 
 ```sh
 scripts/bench-compare.sh
 cargo run --release -p rafter-runtime --bin rafter-bench-cluster
 ```
 
-The comparison harness measures the in-memory protocol path. The
+The comparison harness measures the in-memory implementation path. The
 `rafter-bench-cluster` binary measures Rafter's durable runtime path, including
-file-backed storage and group commit.
+file-backed storage and group commit. The optional pipelined runtime overlaps
+eligible leader replication with local persistence while retaining the durable
+output boundary.
+[`ThreadedPipelinedRaftNode`](./crates/rafter-runtime/README.md) provides the
+tested one-credit node/worker composition; application durability and
+applied-index recovery remain the embedding's responsibility.
+
+The opt-in shared WAL uses checkpoint-selected generation segments to reclaim
+compacted physical history and bound Raft replay work. Its default reclaims on
+every compaction; an explicit byte threshold can defer physical generation
+replacement while keeping each logical compaction durable. The threshold is
+checked only at compaction opportunities, and retained live entries are
+additional. That bound does not cover
+application-state or snapshot retention, which remain separate policies. A
+file-backed runtime can apply an explicit `SnapshotRetention` policy through
+`DurableRaftNode::prune_snapshot_files`; the reference durable service keeps
+only its manifest-selected snapshot after successful compaction and uses
+`cleanup_abandoned_snapshot_temporary_files` after recovery to remove only
+recognized interrupted-publication residue.
+After durable compaction, the opt-in bounded `LogRetirementWorker` can release
+the already-retired in-memory log prefix away from the consensus owner; full or
+stopped workers return ownership for immediate inline release.
+The runtime's opt-in `application::ApplicationWorker` makes the measured
+ordered application pattern reusable: bounded entry and byte credits include
+queued, executing, and unconsumed results, and durable completions are verified
+against the application's own applied floor so the embedding can answer clients
+only after consuming that completion.
 
 ## Boundaries
 

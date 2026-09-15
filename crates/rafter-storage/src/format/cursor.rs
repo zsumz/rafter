@@ -90,6 +90,10 @@ impl Writer {
         Self { bytes: Vec::new() }
     }
 
+    pub(crate) const fn appending(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes
     }
