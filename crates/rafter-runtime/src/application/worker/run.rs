@@ -1,12 +1,13 @@
 //! Drain-only-ready application batching and failure ownership return.
 
-use super::{Shared, Work};
+use super::{Shared, Work, WorkerEvent};
 use crate::application::{
     ApplicationCompletion, ApplicationEntry, ApplicationEvent, ApplicationFailure,
     ApplicationFailureKind, ApplicationWorkerOptions, DurableApplication,
 };
 use std::{
     collections::VecDeque,
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc::{Receiver, Sender},
@@ -22,24 +23,48 @@ where
 {
     pub store: S,
     pub receive: Receiver<Work<T>>,
-    pub send: Sender<ApplicationEvent<T, S::Outcome, S::Error>>,
+    pub send: Option<Sender<WorkerEvent<T, S>>>,
     pub shared: Arc<Mutex<Shared>>,
     pub durable_through: Arc<AtomicU64>,
     pub applying_through: Arc<AtomicU64>,
     pub options: ApplicationWorkerOptions,
-    pub wake: F,
+    pub wake: Option<F>,
 }
 
-struct AdmissionGuard {
+struct TerminationGuard<E, F: Fn()> {
+    send: Option<Sender<E>>,
     shared: Arc<Mutex<Shared>>,
+    applying_through: Arc<AtomicU64>,
+    wake: F,
 }
 
-impl Drop for AdmissionGuard {
+impl<E, F: Fn()> TerminationGuard<E, F> {
+    fn send(&self, event: E) -> Result<(), E> {
+        self.send
+            .as_ref()
+            .expect("termination guard owns the event sender")
+            .send(event)
+            .map_err(|error| error.0)
+    }
+
+    fn notify(&self) {
+        (self.wake)();
+    }
+}
+
+impl<E, F: Fn()> Drop for TerminationGuard<E, F> {
     fn drop(&mut self) {
+        self.applying_through.store(0, Ordering::Release);
         self.shared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .accepting = false;
+        self.send.take();
+        if std::thread::panicking() {
+            let _ = catch_unwind(AssertUnwindSafe(|| (self.wake)()));
+        } else {
+            (self.wake)();
+        }
     }
 }
 
@@ -50,8 +75,11 @@ where
     F: Fn(),
 {
     pub(super) fn run(mut self) -> S {
-        let _admission = AdmissionGuard {
+        let terminal = TerminationGuard {
+            send: self.send.take(),
             shared: Arc::clone(&self.shared),
+            applying_through: Arc::clone(&self.applying_through),
+            wake: self.wake.take().expect("worker wake callback is present"),
         };
         let mut deferred = VecDeque::new();
         while let Some(mut work) = deferred.pop_front().or_else(|| self.receive.recv().ok()) {
@@ -98,10 +126,10 @@ where
             };
             self.applying_through.store(0, Ordering::Release);
             let failed = matches!(event, ApplicationEvent::Failed(_));
-            if self.send.send(event).is_err() {
+            if terminal.send(event).is_err() {
                 break;
             }
-            (self.wake)();
+            terminal.notify();
             if failed {
                 break;
             }

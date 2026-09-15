@@ -115,6 +115,16 @@ fn worker(
     limits: ApplicationWorkerOptions,
     pause: bool,
 ) -> (TestWorker, PauseGate, BatchLog) {
+    worker_with_wake(applied, mode, limits, pause, || {})
+}
+
+fn worker_with_wake(
+    applied: u64,
+    mode: Mode,
+    limits: ApplicationWorkerOptions,
+    pause: bool,
+    wake: impl Fn() + Send + 'static,
+) -> (TestWorker, PauseGate, BatchLog) {
     let (entered, entering) = mpsc::sync_channel(0);
     let (release, resume) = mpsc::sync_channel(0);
     let batches = Arc::new(Mutex::new(Vec::new()));
@@ -124,7 +134,7 @@ fn worker(
         pause: pause.then_some((entered, resume)),
         batches: Arc::clone(&batches),
     };
-    let worker = ApplicationWorker::start(store, limits, || {}).expect("worker starts");
+    let worker = ApplicationWorker::start(store, limits, wake).expect("worker starts");
     (worker, pause.then_some((entering, release)), batches)
 }
 
@@ -240,22 +250,6 @@ fn store_failure_stops_admission_and_returns_all_owned_work() {
     let error = worker.try_submit(Vec::new()).unwrap_err();
     assert_eq!(error.rejection(), ApplicationSubmitRejection::Stopped);
     worker.shutdown().unwrap();
-}
-
-#[test]
-fn application_panic_closes_admission_and_is_observable_at_shutdown() {
-    let (mut worker, _, _) = worker(0, Mode::Panic, ApplicationWorkerOptions::new(), false);
-    worker.try_submit(vec![Entry::new(1)]).unwrap();
-    assert!(matches!(
-        worker.complete(),
-        Err(super::ApplicationWorkerStopped)
-    ));
-    assert!(!worker.is_accepting());
-    assert!(!worker.is_busy());
-    assert_eq!(
-        worker.shutdown(),
-        Err(ApplicationWorkerShutdownError::Panicked)
-    );
 }
 
 #[test]

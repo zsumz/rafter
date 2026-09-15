@@ -2,12 +2,25 @@
 
 use super::{
     tests::{fixture, proposals, Pipeline, Work},
-    PersistenceWorker, PersistenceWorkerOptions, PersistenceWorkerShutdownError, PreparedProposals,
+    PersistenceWorker, PersistenceWorkerOptions, PersistenceWorkerShutdownError, PipelineError,
+    PreparedProposals,
 };
+use rafter::Input;
 use std::sync::mpsc::TrySendError;
 
 fn pending() -> (Pipeline, Work) {
     let mut pipeline = Pipeline::new(fixture().0);
+    let PreparedProposals::Pending { work, .. } = pipeline.prepare_proposals(proposals()).unwrap()
+    else {
+        panic!("fixture leader must produce pipelined work")
+    };
+    (pipeline, work)
+}
+
+fn panicking_pending() -> (Pipeline, Work) {
+    let mut node = fixture().0;
+    node.log_segment.panic_on_append = true;
+    let mut pipeline = Pipeline::new(node);
     let PreparedProposals::Pending { work, .. } = pipeline.prepare_proposals(proposals()).unwrap()
     else {
         panic!("fixture leader must produce pipelined work")
@@ -58,4 +71,31 @@ fn explicit_shutdown_refuses_while_completion_is_unconsumed() {
         .complete(worker.complete().unwrap().into_parts().0)
         .unwrap();
     worker.shutdown().unwrap();
+}
+
+#[test]
+fn stopped_completion_releases_worker_credit_without_releasing_the_node_fence() {
+    let (mut lost, work) = panicking_pending();
+    let mut worker = PersistenceWorker::start(PersistenceWorkerOptions::new()).unwrap();
+    worker.try_submit(work).unwrap();
+
+    assert!(worker.complete().is_err());
+    assert!(!worker.is_busy());
+    assert!(lost.pending_operation().is_some());
+    assert_eq!(
+        lost.step_batch(vec![Input::Tick]),
+        Err(PipelineError::PersistencePending)
+    );
+
+    let (mut recoverable, work) = pending();
+    let returned = match worker.try_submit(work) {
+        Err(TrySendError::Disconnected(work)) => work,
+        other => panic!("stopped worker must return the submitted work: {other:?}"),
+    };
+    recoverable.complete(returned.persist()).unwrap();
+    assert!(recoverable.pending_operation().is_none());
+    assert_eq!(
+        worker.shutdown(),
+        Err(PersistenceWorkerShutdownError::Panicked)
+    );
 }

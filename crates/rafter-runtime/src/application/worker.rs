@@ -127,8 +127,9 @@ where
 {
     /// Starts one named application thread at the store's durable floor.
     ///
-    /// `wake` runs after every event becomes available. It must remain bounded
-    /// and must not call back into this worker.
+    /// `wake` runs after every event becomes available and after the worker's
+    /// terminal state becomes observable. It must remain bounded and must not
+    /// call back into this worker.
     ///
     /// # Errors
     ///
@@ -154,12 +155,12 @@ where
         let state = run::State {
             store,
             receive,
-            send,
+            send: Some(send),
             shared: Arc::clone(&shared),
             durable_through: Arc::clone(&durable_through),
             applying_through: Arc::clone(&applying_through),
             options,
-            wake,
+            wake: Some(wake),
         };
         let thread = thread::Builder::new()
             .name("rafter-application".to_owned())

@@ -225,26 +225,23 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`PersistenceWorkerStopped`] when the thread ended without a
-    /// completion. The originating node remains pending and must not process
-    /// consensus input.
+    /// Returns [`PersistenceWorkerStopped`] when the thread ends without a completion. The
+    /// originating node remains pending and must not process consensus input.
     pub fn complete(
         &self,
     ) -> Result<PersistenceWorkerCompletion<H, L, S>, PersistenceWorkerStopped> {
-        let completion = self
-            .completions
-            .recv()
-            .map_err(|_| PersistenceWorkerStopped)?;
+        let completion = self.completions.recv().map_err(|_| {
+            self.busy.store(false, Ordering::Release);
+            PersistenceWorkerStopped
+        })?;
         self.busy.store(false, Ordering::Release);
         Ok(completion)
     }
-
     /// Polls once for the outstanding completion without waiting.
     ///
     /// # Errors
     ///
-    /// Returns [`PersistenceWorkerStopped`] when the thread ended without a
-    /// completion.
+    /// Returns [`PersistenceWorkerStopped`] when the thread ends without a completion.
     pub fn try_complete(
         &self,
     ) -> Result<Option<PersistenceWorkerCompletion<H, L, S>>, PersistenceWorkerStopped> {
@@ -254,7 +251,10 @@ where
                 Ok(Some(completion))
             }
             Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Disconnected) => Err(PersistenceWorkerStopped),
+            Err(TryRecvError::Disconnected) => {
+                self.busy.store(false, Ordering::Release);
+                Err(PersistenceWorkerStopped)
+            }
         }
     }
 

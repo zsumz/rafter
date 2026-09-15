@@ -133,3 +133,45 @@ fn busy_worker_refuses_shutdown_and_nonblocking_completion_preserves_credit() {
     assert!(!pipeline.persistence_pending());
     pipeline.shutdown_worker().unwrap();
 }
+
+#[test]
+fn polling_observes_worker_panic_and_keeps_the_originating_node_fenced() {
+    let (mut leader, _) = fixture();
+    leader.log_segment.panic_on_append = true;
+    let mut pipeline = ThreadedPipelinedRaftNode::start(leader, PersistenceWorkerOptions::new())
+        .map_err(|error| error.into_parts().0)
+        .unwrap();
+    assert_eq!(
+        pipeline
+            .step_proposal_batch(proposals())
+            .unwrap()
+            .persistence(),
+        ThreadedPersistenceDisposition::Pending
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match pipeline.try_complete() {
+            Err(ThreadedPipelineError::WorkerStopped(_)) => break,
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "worker termination timed out");
+                std::thread::yield_now();
+            }
+            other => panic!("unexpected persistence result: {other:?}"),
+        }
+    }
+
+    assert!(pipeline.persistence_pending());
+    assert!(pipeline.ready_node().is_none());
+    assert_eq!(
+        pipeline.step_batch(vec![Input::Tick]),
+        Err(ThreadedPipelineError::Pipeline(
+            PipelineError::PersistencePending
+        ))
+    );
+    assert_eq!(
+        pipeline.shutdown_worker(),
+        Err(PersistenceWorkerShutdownError::Panicked)
+    );
+    assert!(pipeline.persistence_pending());
+}

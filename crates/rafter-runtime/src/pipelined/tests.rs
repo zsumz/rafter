@@ -17,6 +17,7 @@ use std::time::Duration;
 pub(super) struct ControlledLog {
     inner: InMemoryRaftLogSegment,
     pub(super) delay: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
+    pub(super) panic_on_append: bool,
     fail: bool,
 }
 impl RaftLogSegment for ControlledLog {
@@ -28,6 +29,7 @@ impl RaftLogSegment for ControlledLog {
             started.send(()).unwrap();
             release.recv().unwrap();
         }
+        assert!(!self.panic_on_append, "injected persistence panic");
         if self.fail {
             return Err(RaftLogSegmentAppendError::Io {
                 operation: "injected local write",
