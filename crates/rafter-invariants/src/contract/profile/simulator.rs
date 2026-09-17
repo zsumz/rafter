@@ -19,7 +19,8 @@ use serde_support::{optional_string_u64, state_floors, string_u64};
 const PR_SOAK_STEPS: u64 = 320;
 const SCHEDULED_SOAK_STEPS: u64 = 1_024;
 const SCHEDULED_SEED_COUNT: u64 = 6;
-const SCHEDULED_STATE_FLOOR: u64 = 13_000_000;
+const SCHEDULED_PROTOCOL_STATE_FLOOR: u64 = 8_000_000;
+const SCHEDULED_VERIFIER_STATE_FLOOR: u64 = 11_000_000;
 const SCHEDULED_LAYER_TIMEOUT: &str = "170m";
 
 pub(crate) const PR_FAST_CHECK_IDS: [&str; 13] = [
@@ -127,7 +128,8 @@ impl SimulatorRunnerConfiguration {
                     profile,
                     SCHEDULED_SOAK_STEPS,
                     SCHEDULED_SEED_COUNT,
-                    SCHEDULED_STATE_FLOOR,
+                    SCHEDULED_PROTOCOL_STATE_FLOOR,
+                    SCHEDULED_VERIFIER_STATE_FLOOR,
                     SCHEDULED_LAYER_TIMEOUT,
                 ) =>
             {
@@ -143,7 +145,8 @@ impl SimulatorRunnerConfiguration {
         profile: &str,
         soak_steps: u64,
         seed_count: u64,
-        state_floor: u64,
+        protocol_state_floor: u64,
+        verifier_state_floor: u64,
         layer_timeout: &str,
     ) -> bool {
         // An unmapped lane has no reviewed model profile, so it matches nothing.
@@ -161,8 +164,8 @@ impl SimulatorRunnerConfiguration {
             && self.canonical_check_binding.as_deref() == Some("scheduled-suffix-v1")
             && self.state_floors
                 == SimulatorStateFloors::Aggregate {
-                    protocol: state_floor,
-                    verifier: state_floor,
+                    protocol: protocol_state_floor,
+                    verifier: verifier_state_floor,
                 }
     }
 }

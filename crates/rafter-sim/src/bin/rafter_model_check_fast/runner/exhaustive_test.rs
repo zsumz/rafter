@@ -8,22 +8,24 @@ use super::*;
 
 #[test]
 fn exhaustive_target_gate_requires_protocol_and_verifier_state_counts() {
-    assert_eq!(
-        target_values(Profile::RaftNightly),
-        (13_000_000, 13_000_000)
-    );
+    assert_eq!(target_values(Profile::RaftNightly), (8_000_000, 11_000_000));
     assert_eq!(
         target_values(Profile::RaftWeekly),
         (250_000_000, 250_000_000)
     );
     assert_eq!(Profile::Fast.exhaustive_targets(), None);
-    let target = 13_000_000;
+    let protocol_target = 8_000_000;
+    let verifier_target = 11_000_000;
 
-    assert!(assert_exhaustive_targets(Profile::RaftNightly, target, target).is_ok());
-    let protocol_error = assert_exhaustive_targets(Profile::RaftNightly, target - 1, target)
-        .expect_err("below-target protocol states should fail");
-    let verifier_error = assert_exhaustive_targets(Profile::RaftNightly, target, target - 1)
-        .expect_err("below-target verifier states should fail");
+    assert!(
+        assert_exhaustive_targets(Profile::RaftNightly, protocol_target, verifier_target).is_ok()
+    );
+    let protocol_error =
+        assert_exhaustive_targets(Profile::RaftNightly, protocol_target - 1, verifier_target)
+            .expect_err("below-target protocol states should fail");
+    let verifier_error =
+        assert_exhaustive_targets(Profile::RaftNightly, protocol_target, verifier_target - 1)
+            .expect_err("below-target verifier states should fail");
 
     assert!(protocol_error.to_string().contains("protocol states"));
     assert!(verifier_error.to_string().contains("verifier states"));

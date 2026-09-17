@@ -27,7 +27,7 @@ fn simulator_contract_deserializes_numeric_and_floor_policy() {
         ("seed_count", "6"),
         ("seed_policy", "source-derived-sha256-v1"),
         ("soak_steps", "1024"),
-        ("state_floors", "13000000-protocol-and-verifier"),
+        ("state_floors", "8000000-protocol-11000000-verifier"),
         ("termination_grace", "30s"),
         ("canonical_check_binding", "scheduled-suffix-v1"),
     ]);
@@ -41,8 +41,8 @@ fn simulator_contract_deserializes_numeric_and_floor_policy() {
     assert_eq!(
         contract.state_floors,
         SimulatorStateFloors::Aggregate {
-            protocol: 13_000_000,
-            verifier: 13_000_000,
+            protocol: 8_000_000,
+            verifier: 11_000_000,
         }
     );
     contract
@@ -277,7 +277,7 @@ fn simulator_contract_rejects_weakened_pr_thresholds() {
 fn simulator_contract_rejects_weakened_nightly_thresholds() {
     assert_weakened_scheduled_thresholds_are_rejected(
         "nightly",
-        reviewed_scheduled_contract("nightly", 1_024, 6, 13_000_000),
+        reviewed_scheduled_contract("nightly", 1_024, 6, 8_000_000, 11_000_000),
     );
 }
 
@@ -285,7 +285,7 @@ fn simulator_contract_rejects_weakened_nightly_thresholds() {
 fn simulator_contract_rejects_weakened_weekly_thresholds() {
     assert_weakened_scheduled_thresholds_are_rejected(
         "weekly",
-        reviewed_scheduled_contract("weekly", 1_024, 6, 13_000_000),
+        reviewed_scheduled_contract("weekly", 1_024, 6, 8_000_000, 11_000_000),
     );
 }
 
@@ -294,7 +294,7 @@ fn simulator_contract_rejects_weakened_weekly_thresholds() {
 /// runner service killed three times running and that nothing produces today.
 #[test]
 fn simulator_contract_rejects_the_unrunnable_weekly_deep_bounds() {
-    let mut deep = reviewed_scheduled_contract("weekly", 4_096, 10, 250_000_000);
+    let mut deep = reviewed_scheduled_contract("weekly", 4_096, 10, 250_000_000, 250_000_000);
     deep.model_profile = "raft-weekly".to_owned();
     deep.layer_timeout = "340m".to_owned();
     assert!(deep.validate_profile("weekly").is_err());
@@ -367,7 +367,8 @@ fn reviewed_scheduled_contract(
     profile: &str,
     soak_steps: u64,
     seed_count: u64,
-    state_floor: u64,
+    protocol_state_floor: u64,
+    verifier_state_floor: u64,
 ) -> SimulatorRunnerConfiguration {
     SimulatorRunnerConfiguration {
         build: "release-and-test-locked".to_owned(),
@@ -389,8 +390,8 @@ fn reviewed_scheduled_contract(
         snapshot_catchup_probe: None,
         soak_steps,
         state_floors: SimulatorStateFloors::Aggregate {
-            protocol: state_floor,
-            verifier: state_floor,
+            protocol: protocol_state_floor,
+            verifier: verifier_state_floor,
         },
         termination_grace: "30s".to_owned(),
         canonical_check_binding: Some("scheduled-suffix-v1".to_owned()),

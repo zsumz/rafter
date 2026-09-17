@@ -40,7 +40,7 @@ is restored once a >=32GB — likely self-hosted — runner exists:
 | `model_profile` | `raft-nightly` | `raft-weekly` |
 | `seed_count` | `6` | `10` |
 | `soak_steps` | `1024` | `4096` |
-| `state_floors` | `13000000-protocol-and-verifier` | `250000000-protocol-and-verifier` |
+| `state_floors` | `8000000-protocol-11000000-verifier` | `250000000-protocol-and-verifier` |
 | `layer_timeout` | `170m` | `340m` |
 
 Only the lane's choice of profile moved. The `raft-weekly` profile definition
@@ -859,12 +859,20 @@ Each exhaustive check reports two distinct cardinalities:
 
 Profile totals add each check's independently explored cardinality. They are
 not a globally deduplicated union. The scheduled gates enforce reviewed lower
-bounds on both totals. Nightly and weekly both enforce 13 million, because
-both lanes currently run the `raft-nightly` profile; the `raft-weekly`
-profile's 250 million floor is the target recorded in
-[Weekly simulator demotion](#weekly-simulator-demotion) and is not enforced by
-any lane today. The floors are coverage ratchets; they do not control the
-configured exploration depth or workloads.
+bounds on both totals. Nightly and weekly both enforce 8 million protocol
+states and 11 million verifier states, because both lanes currently run the
+`raft-nightly` profile; the `raft-weekly` profile's 250 million floor is the
+target recorded in [Weekly simulator demotion](#weekly-simulator-demotion) and
+is not enforced by any lane today. The floors are coverage ratchets; they do
+not control the configured exploration depth or workloads.
+
+Demand-driven replication removed proposal-time contact-only branches without
+removing a scheduled check, configured depth, exhausted frontier, or required
+semantic observation. The last pre-change run explored 13,834,518 protocol and
+17,686,454 verifier states. Repeated post-change runs explore 8,508,629 and
+11,122,812 respectively. The independent 8M/11M ratchets preserve that reviewed
+state-space shape without requiring the optimized implementation to reproduce
+the obsolete contact traffic.
 
 ## Retained Logical Prefixes
 
