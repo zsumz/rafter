@@ -136,24 +136,26 @@ and responses sent only after application durability.
 
 | Added loopback egress | Rafter pipeline + completion priority | OpenRaft | Ratio | Rafter p99 at 1,000/s | OpenRaft p99 at 1,000/s |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 0 ms | **10,263 writes/s** | 2,590 writes/s | **3.96x** | **4.063 ms** | 9.568 ms |
-| 2 ms | **5,042 writes/s** | 1,827 writes/s | **2.76x** | **12.583 ms** | 24.117 ms |
+| 0 ms | **12,060 writes/s** | 3,382 writes/s | **3.57x** | **2.785 ms** | 14.680 ms |
+| 2 ms | **5,433 writes/s** | 2,166 writes/s | **2.51x** | **11.010 ms** | 22.807 ms |
 
 Conditions: 3 nodes on one host, 64 clients, 512-byte writes, and medians of
-3 repetitions. Added delay affects both client and peer egress. The OpenRaft
-arm is the tested asynchronous-flusher integration. The selected Rafter arm had
-zero errors, unknown outcomes, or unsent requests and beat the synchronous and
-asynchronous OpenRaft controls in all 24 displayed p99 and p99.9 comparisons.
-Against same-code FIFO Rafter, completion priority improved saturated throughput
-29.3% at 0 ms and 5.9% at 2 ms; its small fixed-load tail tradeoffs remain
-visible in the report.
+3 repetitions. Added delay affects both client and peer egress. The selected
+OpenRaft arm is the tested asynchronous-flusher integration. Both selected arms
+had zero errors, unknown outcomes, or unsent requests, and Rafter won all 12
+displayed p99 and p99.9 comparisons. Against same-code FIFO Rafter, completion
+priority improved saturated throughput 45.1% at 0 ms and 1.9% at 2 ms; its
+small fixed-load tail tradeoff remains visible in the report. This shared-runner
+comparison does not establish fixed-machine capacity beyond 1,000 writes/s.
 
-The [immutable report and source cases](https://github.com/zraftz/benchmarks/tree/407c3b7685338792935e489fa2b9f5ef498c19da/reports/qualified-34904893568-wal-34907033422)
+The [immutable report and source cases](https://github.com/zraftz/benchmarks/tree/f9696c28c25b2a8646bc2a8804fec38a8c3c1075/reports/qualified-35386922113)
 contain the methodology, individual runs, accounting, and known limitations.
-These are implementation and integration results, not a claim about a faster
-Raft algorithm or every workload. The report also retains a completion-aligned
-seven-repeat in-memory comparison and the separately named asynchronous
-OpenRaft storage control.
+The report records benchmark source `ff5c1253dcae6734b080731ddbea41c7e8818cdd`
+and Rafter `88d43848e460187cfb80a15a28c3ef855b20595b` exactly as measured; the
+archive commit does not relabel them. These are implementation and integration
+results, not a claim about a faster Raft algorithm or every workload. The
+completion-aligned seven-repeat in-memory comparison remains separate qualified
+evidence.
 
 Reproduce the in-memory comparison or measure Rafter's durable runtime with:
 
