@@ -96,6 +96,8 @@ jobs:
         run: |
           cargo run --manifest-path bench-compare/Cargo.toml --locked \
             --no-default-features --bin check-transport-receive-memory
+      - name: standalone counter walkthrough
+        run: python3 scripts/check-counter-guide
       - name: reviewed action pins resolve upstream
         # `cargo test --workspace` already asserts that these workflows use
         # exactly the specifications in verification/github-actions.lock, and
