@@ -345,7 +345,8 @@ jobs:
       - invariants-simulator
       - invariants-tla
       - invariants-maelstrom
-    if: always()
+    # Preserve failure reports, but let canceled runs release the CI queue.
+    if: always() && !cancelled()
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:

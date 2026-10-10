@@ -579,7 +579,7 @@ jobs:
   invariants-maelstrom:
     name: invariants-maelstrom
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -588,6 +588,8 @@ jobs:
       - uses: ./.github/actions/setup-rust
       - uses: ./.github/actions/setup-invariant-runtime
         timeout-minutes: 8
+        with:
+          analysis-tools: "true"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -631,7 +633,8 @@ jobs:
       - invariants-tla
       - invariants-tla-validation
       - invariants-maelstrom
-    if: always()
+    # Preserve failure reports, but let canceled runs release the CI queue.
+    if: always() && !cancelled()
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:

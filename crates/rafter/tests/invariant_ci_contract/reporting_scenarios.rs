@@ -61,6 +61,13 @@ fn complete_reports_publish_when_an_upstream_job_failed_but_the_gate_stays_red()
 fn verify_always_publish_failure_branch(root: &Path, contract: AggregateWorkflowContract) {
     let workflow = read(&root.join(contract.workflow));
     let aggregate = job_block(&workflow, contract.job);
+    assert!(
+        aggregate
+            .lines()
+            .any(|line| line == "    if: always() && !cancelled()"),
+        "{} must report failed producers while respecting workflow cancellation",
+        contract.profile
+    );
     let fixture = AggregateReportFixture::new(root, contract.profile);
 
     assert_aggregate_timeout_budget(aggregate, contract.profile);

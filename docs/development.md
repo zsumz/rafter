@@ -120,6 +120,11 @@ patch cannot supply that decision. A new PR push cancels the previous run.
 Repository settings require this environment review and the documented PR
 checks while retaining signed commits and linear history.
 
+Invariant aggregate jobs retain failure reports when a producer fails, but stop
+when the workflow is canceled. A job guarded only by `always()` can continue
+after cancellation and hold the concurrency queue; see GitHub's
+[cancellation rules](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation).
+
 zrail resolves dependency macro exports offline from Cargo's registry archives.
 On a fresh checkout, run `cargo fetch --locked` before invoking `zrail check`
 directly. The zcheck graph and CI perform this fetch before architecture analysis.

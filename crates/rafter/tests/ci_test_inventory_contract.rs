@@ -246,6 +246,8 @@ fn every_linux_evidence_job_normalizes_its_authenticated_runtime() {
                     installation < normalized,
                     "normalize after upstream apt installs"
                 );
+            }
+            if job == "invariants-maelstrom" || (profile != "pr" && job == aggregate) {
                 assert!(
                     block[normalized..cache].contains("analysis-tools: \"true\""),
                     "{workflow}: {job} must normalize authenticated analysis tools"
