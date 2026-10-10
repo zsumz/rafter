@@ -74,7 +74,11 @@ fn status(state: &mut State, config: &Config) -> String {
     let (_sender, flushed) = mpsc::channel();
     let job = Job {
         request: Request::Status,
-        reply: ClientReply { response, flushed },
+        reply: ClientReply {
+            response,
+            batch_index: 0,
+            flushed,
+        },
     };
     match handle_job(state, config, &job, 1) {
         Disposition::Answered(response) => response,

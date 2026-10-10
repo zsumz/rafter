@@ -670,11 +670,11 @@ impl Drop for StatusFlood {
 /// answer.
 ///
 /// **The primitive a "queued behind" test needs and `NodeProcess::ask` cannot
-/// give.** A connection is strictly sequential, so a client cannot have two
-/// requests outstanding — which means the only way to put a second request in a
-/// replica's job queue *while it is handling the first* is a second connection
-/// whose line has already been written. Splitting the write from the read is
-/// what makes that expressible.
+/// give.** Ordinary connections are sequential; overlapping operations use
+/// separate connections. The fault harness additionally accepts a bounded
+/// `HARNESS_BATCH` to establish queue order before a breaking request executes.
+/// Splitting writes from reads supports both forms without treating socket order
+/// as admission order.
 #[derive(Debug)]
 pub struct QueuedRequest {
     conn: LineConnection,
@@ -697,11 +697,6 @@ impl QueuedRequest {
         self.conn
             .send_line(line)
             .expect("the request is written and flushed");
-    }
-
-    /// Attempts to write one request when the process may already be exiting.
-    pub fn try_send(&mut self, line: &str) -> Result<(), String> {
-        self.conn.send_line(line).map_err(|error| error.to_string())
     }
 
     /// Reads the answer to whatever was sent.

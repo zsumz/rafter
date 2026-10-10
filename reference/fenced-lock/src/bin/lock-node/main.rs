@@ -40,6 +40,9 @@
 //! test that spawns this process, and it is the state the shutdown discipline
 //! below is entirely about. See
 //! [`OpenRequest::control_plane_fault_after`](replica::OpenRequest::control_plane_fault_after).
+//! This seam also enables `HARNESS_BATCH n`: up to 64 following request lines
+//! are admitted together, with indexed replies, to prove terminal queue ordering.
+//! Ordinary client connections remain sequential and reject that command.
 //!
 //! `--recover` is the only way this process loses acknowledged work, and both
 //! settings above `open` are deliberate operator acts that a restart never
@@ -231,6 +234,7 @@
 //! writeback. The store's own crash suites inject at byte boundaries to cover
 //! what a signal cannot.
 
+mod client;
 mod control_plane;
 mod peer_link;
 mod protocol;
@@ -240,13 +244,12 @@ mod replica;
 mod terminal_readiness_test;
 
 use std::{
-    collections::BTreeMap,
-    io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
+    collections::{BTreeMap, VecDeque},
+    io::Write,
+    net::TcpListener,
     path::PathBuf,
     process::ExitCode,
     sync::mpsc::{self, Receiver, Sender},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -255,8 +258,7 @@ use rafter_reference_fenced_lock::{LockConfig, QueryOutcome, SubmitOutcome};
 
 use peer_link::PeerLink;
 use protocol::{
-    parse_request, render_applied, render_lock, render_not_committed, render_status, Readiness,
-    Request,
+    render_applied, render_lock, render_not_committed, render_status, Readiness, Request,
 };
 use replica::{Answer, OpenError, OpenRequest, RecoveryMode, Replica};
 
@@ -462,7 +464,8 @@ struct Job {
 /// The client thread that owns a request's socket and its flush acknowledgement.
 #[derive(Debug)]
 struct ClientReply {
-    response: Sender<String>,
+    response: Sender<(usize, String)>,
+    batch_index: usize,
     flushed: Receiver<()>,
 }
 
@@ -470,7 +473,7 @@ impl ClientReply {
     /// Hands the answer to the socket owner, optionally waiting until it has
     /// attempted the write before the process is allowed to exit.
     fn send(self, response: String, wait_for_flush: bool) {
-        if self.response.send(response).is_ok() && wait_for_flush {
+        if self.response.send((self.batch_index, response)).is_ok() && wait_for_flush {
             let _ = self.flushed.recv();
         }
     }
@@ -574,7 +577,11 @@ fn run(config: &Config) -> Result<(), String> {
     let client_addr = client_listener
         .local_addr()
         .map_err(|error| format!("could not read the client address: {error}"))?;
-    spawn_client_acceptor(client_listener, jobs_tx);
+    client::spawn_acceptor(
+        client_listener,
+        jobs_tx,
+        config.control_plane_fault_after.is_some(),
+    );
     emit(&format!("LISTENING {} {client_addr}", config.node_id.0));
 
     let link = PeerLink::bind(
@@ -598,7 +605,7 @@ fn serve(
     config: &Config,
     node_dir: &std::path::Path,
     link: &PeerLink,
-    jobs: &Receiver<Job>,
+    jobs: &Receiver<VecDeque<Job>>,
     client_addr: std::net::SocketAddr,
 ) -> Result<(), String> {
     let mut state = State::Opening {
@@ -611,6 +618,7 @@ fn serve(
     let mut next_tick = Instant::now() + config.tick_interval;
     let mut announced_ready = false;
     let mut stopping = false;
+    let mut pending_jobs = VecDeque::new();
 
     loop {
         // Client requests first, so that a `SHUTDOWN` or a `STATUS` is answered
@@ -624,12 +632,15 @@ fn serve(
             // needed to pay, and blocking on the first is what keeps an idle
             // replica off the CPU while still bounding how long an arrived peer
             // frame waits.
-            let received = if slot == 0 {
-                jobs.recv_timeout(LOOP_POLL_INTERVAL).ok()
-            } else {
-                jobs.try_recv().ok()
-            };
-            let Some(job) = received else {
+            if pending_jobs.is_empty() {
+                pending_jobs = if slot == 0 {
+                    jobs.recv_timeout(LOOP_POLL_INTERVAL).ok()
+                } else {
+                    jobs.try_recv().ok()
+                }
+                .unwrap_or_default();
+            }
+            let Some(job) = pending_jobs.pop_front() else {
                 break;
             };
             let ticket = next_ticket;
@@ -1109,75 +1120,6 @@ fn render_answer(answer: Answer) -> (u64, String) {
         }
         Answer::Unknown { ticket, detail } => (ticket, format!("UNKNOWN {detail}")),
         Answer::Abandoned { ticket, detail } => (ticket, format!("ABANDONED {detail}")),
-    }
-}
-
-fn spawn_client_acceptor(listener: TcpListener, jobs: Sender<Job>) {
-    thread::spawn(move || {
-        while let Ok((stream, _)) = listener.accept() {
-            let jobs = jobs.clone();
-            if thread::Builder::new()
-                .name(String::from("client"))
-                .spawn(move || serve_client(stream, &jobs))
-                .is_err()
-            {
-                return;
-            }
-        }
-    });
-}
-
-/// Serves one client connection, one request at a time.
-///
-/// A connection is strictly sequential: the reply to a request is written
-/// before the next line is read. That keeps the protocol trivially correlatable
-/// without request identifiers, and a client that wants overlapping operations
-/// opens a second connection — which is also what makes concurrent operations
-/// in a recorded history genuinely concurrent rather than interleaved by one
-/// socket.
-fn serve_client(stream: TcpStream, jobs: &Sender<Job>) {
-    let Ok(read_half) = stream.try_clone() else {
-        return;
-    };
-    let mut write_half = stream;
-    for line in BufReader::new(read_half).lines() {
-        let Ok(line) = line else { return };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let (response, flushed) = match parse_request(&line) {
-            Ok(request) => {
-                let (reply_tx, reply_rx) = mpsc::channel();
-                let (flushed_tx, flushed_rx) = mpsc::channel();
-                if jobs
-                    .send(Job {
-                        request,
-                        reply: ClientReply {
-                            response: reply_tx,
-                            flushed: flushed_rx,
-                        },
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-                match reply_rx.recv() {
-                    Ok(response) => (response, Some(flushed_tx)),
-                    // The loop that owed this answer is gone. Saying nothing is
-                    // correct: the client observes a dropped connection, which
-                    // is the unknown outcome it already has to handle.
-                    Err(_) => return,
-                }
-            }
-            Err(error) => (format!("ERR {error}"), None),
-        };
-        let written = writeln!(write_half, "{response}").and_then(|()| write_half.flush());
-        if let Some(flushed) = flushed {
-            let _ = flushed.send(());
-        }
-        if written.is_err() {
-            return;
-        }
     }
 }
 

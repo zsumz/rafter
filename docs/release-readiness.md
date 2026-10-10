@@ -104,6 +104,21 @@ admission barrier to the test harness so it establishes the ordering it checks;
 retain the assertion that later work is refused. A longer sleep or deleting the
 non-vacuity assertion would not establish that behavior.
 
+The release branch now supplies bounded, atomic batch admission through the
+existing control-plane fault seam. The regression admits the breaking query and
+eight later reads together, checks the admission acknowledgement, and rejects
+every successful reply from that batch. Ordinary connections reject the harness
+command. Indexed replies preserve independent completion and flush accounting.
+Validation: 24 concurrent regression runs, all seven control-plane process tests,
+and the complete reference source checks passed. Reintroducing the original
+per-pass fail-open condition makes the regression fail explicitly on a served
+local read, rather than relying on a timeout.
+
+The failed PR-tier logs confirm runner drift: the TLA producer used Ubuntu image
+`20260920.314.1`, while its aggregate used `20260907.300.1`. All thirteen missing
+evidence rows belong to the rejected TLA layer. Runtime qualification remains
+open until the candidate's producer and aggregate receipts authenticate together.
+
 **Acceptance:** all required jobs pass in one attempt at the candidate SHA;
 all 44 verdicts have current evidence; the process failure test repeatedly
 establishes its fault ordering under load. Rerun every invariant producer and
