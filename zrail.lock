@@ -1211,7 +1211,7 @@ sha256 = "d0bd42b67da87cd2aafabb4df2c3dc9a26bad783968911c44dc73b3aa7931559"
 
 [[gate.input]]
 path = ".github/actions/setup-rust/action.yml"
-sha256 = "4adb8f2b8f881839631c73e4f3d759616b8f380489c7ea23e5b549ba8e422053"
+sha256 = "7ae4cdd9c7d91b6d352fdc68d1e1daaa8780c803f1cadedb09245efc5084fa5a"
 
 [[gate.input]]
 path = "scripts/invariants-pr-preflight"

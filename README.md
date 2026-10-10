@@ -106,6 +106,16 @@ the contracts and [work completion](./docs/work-completion.md) for the proof map
 
 ## Testing
 
+With [rustup](https://rustup.rs/) installed, the checkout selects Rust 1.88.0
+and its formatting/lint components through `rust-toolchain.toml`:
+
+```sh
+cargo build --locked --workspace --all-targets
+cargo test --locked --workspace
+```
+
+For the complete local qualification graph (Python 3.11+ is also required):
+
 ```sh
 rustup toolchain install 1.97.1 --profile minimal
 cargo +1.97.1 install zcheck --version 0.0.1 --locked
@@ -213,6 +223,8 @@ snapshot validation
 Rafter is pre-1.0. APIs and durable formats remain alpha. See the
 [changelog](./CHANGELOG.md) for recent work and [release guide](./RELEASE.md)
 for published versions and compatibility boundaries.
+The [release-readiness assessment](./docs/release-readiness.md) records the
+October 10, 2026 branch review, qualification findings, and prioritized code work.
 
 ## License
 

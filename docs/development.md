@@ -2,6 +2,25 @@
 
 ## Local qualification
 
+Install Rust through [rustup](https://rustup.rs/) and make its binaries available
+in your shell (`. "$HOME/.cargo/env"` on Unix). The checked-in
+[`rust-toolchain.toml`](../rust-toolchain.toml) selects Rust 1.88.0, rustfmt, and
+Clippy for this checkout, independently of your global default toolchain.
+CI's shared setup action exports `RUSTUP_TOOLCHAIN` so jobs that explicitly
+request newer packaging tools or nightly fuzzing retain their chosen compiler.
+
+Start with the locked workspace build and tests:
+
+```sh
+cargo build --locked --workspace --all-targets
+cargo test --locked --workspace
+```
+
+These commands include the examples and repository tooling. On macOS, the
+Linux-only invariant executor emits dead-code warnings; its authoritative
+execution remains in Linux CI. The reference applications are a separate
+workspace and need the reference checks below.
+
 Install [zcheck](https://github.com/zsumz/zcheck) and the same
 [zrail release](https://github.com/zsumz/zrail/releases/tag/v0.0.3-rc.8) as CI:
 
@@ -15,6 +34,10 @@ zcheck
 Rafter remains qualified on Rust 1.88. These developer tools have a newer
 Rust source requirement; the explicit 1.97.1 install toolchain matches CI.
 The qualification scripts also require Python 3.11 or newer.
+Check `python3 --version` in the same shell before running `zcheck`; macOS's
+system Python can be older even when a newer Python is installed elsewhere.
+For an existing Homebrew Python 3.13 installation, select it with
+`export PATH="$(brew --prefix python@3.13)/libexec/bin:$PATH"`.
 
 The default graph in [`zcheck.toml`](../zcheck.toml) runs formatting, Clippy,
 rustdoc, proof-reference checks, the architecture contract, and workspace tests.

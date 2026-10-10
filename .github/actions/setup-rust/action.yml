@@ -18,3 +18,11 @@ runs:
       with:
         toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
+    # rustup's directory toolchain file takes precedence over a global default.
+    # Explicitly select the job's requested toolchain so packaging, fuzzing,
+    # and developer-tool jobs can override the checkout's Rust 1.88 pin.
+    - name: Select the requested toolchain for subsequent steps
+      shell: bash
+      env:
+        RAFTER_RUST_TOOLCHAIN: ${{ inputs.toolchain }}
+      run: printf 'RUSTUP_TOOLCHAIN=%s\n' "$RAFTER_RUST_TOOLCHAIN" >> "$GITHUB_ENV"

@@ -1,0 +1,5 @@
+[toolchain]
+# Match the workspace MSRV and the default CI build toolchain.
+channel = "1.88.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
