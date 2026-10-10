@@ -31,7 +31,7 @@ fn detector_compile_failure_round_trips_without_charging_the_scoped_check() {
         .negative_test = None;
     let descriptors = vec![failing.clone(), unaffected.clone()];
 
-    let root = Path::new("target/rafter-invariants/tests").join(format!(
+    let root = crate::tests::scratch_path("tests").join(format!(
         "simulator-detector-compile-metrics-{}",
         std::process::id()
     ));

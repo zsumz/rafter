@@ -40,13 +40,16 @@ Run logs are retained under `target/release-readiness/` in this checkout;
 The Linux-only invariant executor emits dead-code warnings on macOS; the
 repository already excludes it from the macOS Clippy lane.
 
-One local qualification issue was reproduced: verifier tests create
+One local qualification issue was reproduced: verifier tests created
 `crates/rafter-invariants/target/` without `CACHEDIR.TAG`, and a subsequent zrail
-check rejects that excluded directory with `REP-006`. This run explicitly
-marked that generated scratch directory with the standard cache signature.
-Make scratch-directory creation supply the marker (or use a cache root already
-owned by Cargo) as part of the qualification cleanup; do not relax the exclusion
-guard. This is separate from compilation and from the hosted CI failures below.
+check rejected that excluded directory with `REP-006`. The release branch now
+routes those fixture paths through shared, descriptor-confined cache
+initialization. It publishes the standard marker atomically, preserves existing
+valid markers, and refuses malformed or symlinked markers without overwriting
+them. The exclusion guard remains unchanged. All 892 invariant-library tests
+passed, and separate fresh-directory checks cover creation, preservation,
+truncated/invalid signatures, and symlink refusal. This is separate from
+compilation and from the hosted CI failures below.
 
 The build is not equivalent to release qualification. The authoritative Linux
 invariant, process, exact-package, and MSRV lanes remain necessary.

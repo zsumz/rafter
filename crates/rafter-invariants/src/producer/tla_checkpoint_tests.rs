@@ -12,7 +12,7 @@ use crate::ArtifactRef;
 use std::{
     collections::BTreeMap,
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -38,7 +38,7 @@ fn checkpoint_inputs() -> (BTreeMap<String, String>, Vec<ArtifactRef>) {
 }
 
 fn test_root(label: &str) -> PathBuf {
-    Path::new("target/rafter-invariants/checkpoint-fs-tests")
+    crate::tests::scratch_path("checkpoint-fs-tests")
         .join(format!("{label}-{}", std::process::id()))
 }
 
@@ -176,8 +176,8 @@ fn stale_candidate_is_rejected_without_deleting_usable_state() {
 #[test]
 fn incompatible_candidate_is_sanitized_before_the_next_prepare() {
     let profile = format!("checkpoint-self-heal-{}", std::process::id());
-    let root = Path::new("target/rafter-invariants/tla-checkpoint").join(&profile);
-    let output_dir = Path::new("target/rafter-invariants/checkpoint-test-artifacts").join(&profile);
+    let root = crate::tests::scratch_path("tla-checkpoint").join(&profile);
+    let output_dir = crate::tests::scratch_path("checkpoint-test-artifacts").join(&profile);
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&output_dir);
 
@@ -272,8 +272,8 @@ fn restored_metadata_symlink_is_rejected_without_copying_its_target() {
     use std::os::unix::fs::symlink;
 
     let profile = format!("checkpoint-metadata-symlink-{}", std::process::id());
-    let root = Path::new("target/rafter-invariants/tla-checkpoint").join(&profile);
-    let output_dir = Path::new("target/rafter-invariants/checkpoint-test-artifacts").join(&profile);
+    let root = crate::tests::scratch_path("tla-checkpoint").join(&profile);
+    let output_dir = crate::tests::scratch_path("checkpoint-test-artifacts").join(&profile);
     let external = std::env::temp_dir().join(format!("rafter-checkpoint-external-{profile}"));
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&output_dir);
@@ -329,8 +329,8 @@ fn restored_checkpoint_root_symlink_does_not_touch_external_sentinel() {
     use std::os::unix::fs::symlink;
 
     let profile = format!("checkpoint-root-symlink-{}", std::process::id());
-    let root = Path::new("target/rafter-invariants/tla-checkpoint").join(&profile);
-    let output_dir = Path::new("target/rafter-invariants/checkpoint-test-artifacts").join(&profile);
+    let root = crate::tests::scratch_path("tla-checkpoint").join(&profile);
+    let output_dir = crate::tests::scratch_path("checkpoint-test-artifacts").join(&profile);
     let external = std::env::temp_dir().join(format!("rafter-checkpoint-root-target-{profile}"));
     let sentinel = external.join("sentinel.txt");
     let external_marker = external.join(CACHE_VALID_FILE);
@@ -388,9 +388,9 @@ fn restored_states_symlink_does_not_touch_external_sentinel() {
     use std::os::unix::fs::symlink;
 
     let profile = format!("checkpoint-states-symlink-{}", std::process::id());
-    let root = Path::new("target/rafter-invariants/tla-checkpoint").join(&profile);
+    let root = crate::tests::scratch_path("tla-checkpoint").join(&profile);
     let states = root.join("states");
-    let output_dir = Path::new("target/rafter-invariants/checkpoint-test-artifacts").join(&profile);
+    let output_dir = crate::tests::scratch_path("checkpoint-test-artifacts").join(&profile);
     let external = std::env::temp_dir().join(format!("rafter-checkpoint-states-target-{profile}"));
     let sentinel = external.join("sentinel.txt");
     let external_checkpoint = external.join("states_0.chkpt");
@@ -439,8 +439,8 @@ fn restored_states_symlink_does_not_touch_external_sentinel() {
 #[test]
 fn oversized_metadata_is_reported_sanitized_and_not_preserved() {
     let profile = format!("checkpoint-oversized-metadata-{}", std::process::id());
-    let root = Path::new("target/rafter-invariants/tla-checkpoint").join(&profile);
-    let output_dir = Path::new("target/rafter-invariants/checkpoint-test-artifacts").join(&profile);
+    let root = crate::tests::scratch_path("tla-checkpoint").join(&profile);
+    let output_dir = crate::tests::scratch_path("checkpoint-test-artifacts").join(&profile);
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&output_dir);
 
@@ -579,8 +579,8 @@ fn checkpoint_many_empty_directories_exhaust_global_budgets() {
 #[test]
 fn transient_candidate_io_error_preserves_recovery_state() {
     let profile = format!("checkpoint-io-error-{}", std::process::id());
-    let root = Path::new("target/rafter-invariants/tla-checkpoint").join(&profile);
-    let output_dir = Path::new("target/rafter-invariants/checkpoint-test-artifacts").join(&profile);
+    let root = crate::tests::scratch_path("tla-checkpoint").join(&profile);
+    let output_dir = crate::tests::scratch_path("checkpoint-test-artifacts").join(&profile);
     let _ = fs::remove_dir_all(&root);
     let _ = fs::remove_dir_all(&output_dir);
 

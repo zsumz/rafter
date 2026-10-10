@@ -83,7 +83,7 @@ fn capture_detector_witness_identity_log(
         .rsplit("::")
         .next()
         .ok_or("detector witness fixture has no leaf name")?;
-    let target_dir = Path::new("target/rafter-invariants").join(format!(
+    let target_dir = crate::tests::scratch_path("").join(format!(
         "detector-witness-e2e-build-{}-{fixture}",
         std::process::id()
     ));

@@ -9,7 +9,7 @@ fn staged_bundle_is_invisible_until_atomic_publication() {
         .into_iter()
         .next()
         .expect("passing fixture bundle");
-    let output_dir = std::path::Path::new("target/rafter-invariants").join(format!(
+    let output_dir = crate::tests::scratch_path("").join(format!(
         "rafter-staged-bundle-{}-{}",
         std::process::id(),
         bundle.runner

@@ -9,6 +9,7 @@ mod maelstrom;
 mod observations;
 mod receipts;
 mod scenario;
+mod scratch;
 
 pub(crate) use bundles::{passing_bundles, passing_bundles_for_profile};
 pub(crate) use receipts::plan_receipt;
@@ -17,3 +18,4 @@ pub(in crate::tests) use receipts::{
 };
 pub(in crate::tests) use scenario::{aggregate, assert_only_parent_red, verify_layer_bundle};
 pub(crate) use scenario::{aggregate_unverified, loaded, synthetic_obligation_summary};
+pub(crate) use scratch::scratch_path;

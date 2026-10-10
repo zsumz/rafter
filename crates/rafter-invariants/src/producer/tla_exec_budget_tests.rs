@@ -343,8 +343,8 @@ fn nightly_tla_job_uses_exact_compatible_checkpointing() {
 #[test]
 fn main_counterexample_abandons_checkpoint_before_expired_finalization() {
     let profile = format!("complete-main-counterexample-{}", std::process::id());
-    let output_dir = Path::new("target/rafter-invariants/checkpoint-test-artifacts").join(&profile);
-    let checkpoint_root = Path::new("target/rafter-invariants/tla-checkpoint").join(&profile);
+    let output_dir = crate::tests::scratch_path("checkpoint-test-artifacts").join(&profile);
+    let checkpoint_root = crate::tests::scratch_path("tla-checkpoint").join(&profile);
     let _ = fs::remove_dir_all(&output_dir);
     let _ = fs::remove_dir_all(&checkpoint_root);
     let configuration = BTreeMap::from([

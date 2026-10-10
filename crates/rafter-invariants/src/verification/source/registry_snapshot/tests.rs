@@ -2,7 +2,7 @@
 
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -531,10 +531,9 @@ struct Scratch {
 
 impl Scratch {
     fn new() -> Self {
-        let parent = HeldDirectory::create_all(Path::new(
-            "target/rafter-invariants/registry-extraction-tests",
-        ))
-        .expect("create registry test parent");
+        let parent =
+            HeldDirectory::create_all(&crate::tests::scratch_path("registry-extraction-tests"))
+                .expect("create registry test parent");
         let directory = tempfile::Builder::new()
             .prefix("registry-")
             .tempdir_in(parent.external_path())

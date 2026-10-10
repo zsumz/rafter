@@ -49,7 +49,7 @@ fn materialize_fixture_with_roots(defect: RuntimeDefect, cross_root: bool) -> Si
         producer_root.clone()
     };
     let bundle_path = fixture_base.with_extension("bundle.json");
-    let timeout_output_dir = Path::new("target/rafter-invariants/tests")
+    let timeout_output_dir = crate::tests::scratch_path("tests")
         .join(format!("simulator-loader-real-timeout-{fixture_suffix}"));
     cleanup_fixture_artifacts(&root, &producer_root, &bundle_path, &timeout_output_dir);
     let pending = PendingSimulatorFixture {

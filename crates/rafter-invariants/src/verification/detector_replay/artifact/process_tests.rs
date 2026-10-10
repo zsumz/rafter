@@ -7,7 +7,7 @@ use crate::verification::detector_replay::process::RetainedProcessDiagnostics;
 
 #[test]
 fn lifecycle_failure_publishes_retained_logs_and_missing_file_diagnostic() {
-    let root = std::path::PathBuf::from("target/rafter-invariants/replay-process-failure-tests")
+    let root = crate::tests::scratch_path("replay-process-failure-tests")
         .join(std::process::id().to_string());
     std::fs::create_dir_all(&root).expect("create process failure fixture");
     let stdout = root.join("stdout");

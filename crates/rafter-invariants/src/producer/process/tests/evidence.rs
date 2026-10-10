@@ -1,10 +1,6 @@
 //! Process receipt framing, timeout classification, and schema scenarios.
 
-use std::{
-    ffi::OsString,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{ffi::OsString, path::Path, time::Duration};
 
 use super::{
     super::{combined_detector_log, combined_log, json_log, timed_with_timeout},
@@ -96,7 +92,7 @@ fn timed_out_process_transcript_retains_output_and_timeout_classification() {
     assert_eq!(output.stdout, b"retained-before-timeout");
 
     let unique = unique_test_path("timeout-artifact");
-    let directory = PathBuf::from("target/rafter-invariants/test-artifacts").join(
+    let directory = crate::tests::scratch_path("test-artifacts").join(
         unique
             .file_name()
             .expect("timeout artifact path has a file name"),

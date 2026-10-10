@@ -12,7 +12,7 @@ use support::{
 };
 pub(crate) use support::{
     aggregate_unverified, loaded, passing_bundles, passing_bundles_for_profile, plan_receipt,
-    synthetic_obligation_summary,
+    scratch_path, synthetic_obligation_summary,
 };
 
 #[test]

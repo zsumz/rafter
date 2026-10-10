@@ -1,12 +1,6 @@
 //! Descriptor-bound executable and working-directory substitution scenarios.
 
-use std::{
-    collections::BTreeMap,
-    ffi::OsString,
-    fs,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{collections::BTreeMap, ffi::OsString, fs, path::Path, time::Duration};
 
 use super::super::{timed_with_timeout_and_policy_and_descriptors, ProcessPolicy};
 use super::{
@@ -250,7 +244,7 @@ fn inherited_directory_binding_survives_path_replacement_through_launcher_chain(
     use std::os::unix::fs::symlink;
 
     let repository_test_path = |label| {
-        PathBuf::from("target/rafter-invariants/process-tests").join(
+        crate::tests::scratch_path("process-tests").join(
             unique_test_path(label)
                 .file_name()
                 .expect("temporary fixture has a file name"),
