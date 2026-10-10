@@ -167,7 +167,7 @@ fn aggregate_job_timeout_is_a_minimum_budget_not_an_exact_identity() {
     let root = workspace_root();
     let workflow = read(&root.join(".github/workflows/ci.yml"));
     let aggregate = job_block(&workflow, "invariants-pr");
-    let safer = aggregate.replacen("timeout-minutes: 110", "timeout-minutes: 115", 1);
+    let safer = aggregate.replacen("timeout-minutes: 120", "timeout-minutes: 125", 1);
     assert_ne!(
         safer, aggregate,
         "fixture must increase the aggregate timeout"

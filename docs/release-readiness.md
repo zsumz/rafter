@@ -6,10 +6,10 @@ Remote branches, pull requests, and workflow results were refreshed on October
 instructions; they do not change consensus behavior or declare a release.
 CI's shared setup action explicitly selects each job's requested toolchain so
 the local pin does not override newer tool-installation, packaging, or fuzz jobs.
-The candidate `zrail.lock` update changes only that setup action's input digest.
-The policy diff reports no grants or added debt and one unknown gate-input
-change, which requires the repository's architecture environment review when
-submitted as a pull request.
+The initial build slice's `zrail.lock` update changed only that setup action's
+input digest. Subsequent qualification changes are described below. Changes to
+these gate inputs require the repository's architecture environment review when
+submitted as a pull request; a candidate lock refresh does not grant that review.
 
 Rafter has a strong foundation: a dependency-free deterministic kernel,
 persist-before-output runtime, bounded persistence and application workers,
@@ -89,10 +89,15 @@ violations.
 [`verify_runtime_identities`](../crates/rafter-invariants/src/verification/source/policy.rs)
 compares the producer's executable path and SHA-256 with the aggregate job's
 local runtime. Ubuntu's moving runner image is not an immutable runtime
-contract. Use a shared, digest-pinned Linux environment for producers and the
-aggregate, including Perl, shell, process tools, Java, and Rust. Preserve exact
-identity validation. Investigate the missing results separately; do not assume
-fixing Perl makes the complete aggregate green.
+contract. The release branch now installs exact Bash, Perl, procps, and time
+packages from a [signed Ubuntu snapshot](https://snapshot.ubuntu.com/) in every
+Linux evidence producer and aggregate. Maelstrom jobs also normalize Graphviz
+and Gnuplot after the upstream setup action. Rust and Java retain their existing
+exact toolchain selections. The shared action preserves ordinary unprivileged
+execution and the verifier's exact identity validation; it does not claim to pin
+the host kernel or every system library. A digest-pinned complete environment
+remains a broader reproducibility option. Full hosted qualification is still
+required; do not assume fixing Perl makes the complete aggregate green.
 
 The October 4
 [nightly failure](https://github.com/zsumz/rafter/actions/runs/37197270717)

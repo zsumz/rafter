@@ -1,0 +1,79 @@
+name: Normalize authenticated invariant runtimes
+description: Install exact Ubuntu snapshot packages before producing or authenticating evidence.
+
+inputs:
+  analysis-tools:
+    description: Also normalize the Graphviz and Gnuplot executables authenticated by Maelstrom.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install reviewed runtime packages from the signed Ubuntu snapshot
+      shell: bash
+      env:
+        ANALYSIS_TOOLS: ${{ inputs.analysis-tools }}
+      run: |
+        set -euo pipefail
+        . /etc/os-release
+        test "$ID" = ubuntu
+        test "$VERSION_ID" = 24.04
+        test "$(dpkg --print-architecture)" = amd64
+        case "$ANALYSIS_TOOLS" in true|false) ;; *) exit 2 ;; esac
+
+        # A runner label is not an image pin. In one failed run the producer
+        # and aggregate received different ubuntu-24.04 images and Perl bytes.
+        # Keep the ordinary unprivileged runner execution model, but normalize
+        # the exact executables covered by the source receipt before using it.
+        snapshot=20261009T000000Z
+        state="$(mktemp -d "$RUNNER_TEMP/rafter-invariant-runtime.XXXXXX")"
+        chmod 0755 "$state"
+        mkdir -m 0755 "$state/lists"
+        cat > "$state/ubuntu.sources" <<EOF
+        Types: deb
+        URIs: https://snapshot.ubuntu.com/ubuntu/$snapshot/
+        Suites: noble noble-updates noble-security
+        Components: main universe
+        Architectures: amd64
+        Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+        Check-Valid-Until: no
+        EOF
+        # The dated archive remains signature-checked. Its historical metadata
+        # must not expire; neither host sources nor host apt lists participate.
+        apt_options=(
+          -o "Dir::Etc::sourcelist=$state/ubuntu.sources"
+          -o "Dir::Etc::sourceparts=-"
+          -o "Dir::State::lists=$state/lists"
+          -o Acquire::Retries=3
+        )
+        packages=(
+          bash=5.2.21-2ubuntu4
+          perl=5.38.2-3.2ubuntu0.6
+          perl-base=5.38.2-3.2ubuntu0.6
+          perl-modules-5.38=5.38.2-3.2ubuntu0.6
+          libperl5.38t64=5.38.2-3.2ubuntu0.6
+          procps=2:4.0.4-4ubuntu3.3
+          libproc2-0=2:4.0.4-4ubuntu3.3
+          time=1.9-0.2build1
+        )
+        if [[ "$ANALYSIS_TOOLS" = true ]]; then
+          packages+=(
+            graphviz=2.42.2-9ubuntu0.1
+            gnuplot-nox=6.0.0+dfsg1-1ubuntu3
+            gnuplot-data=6.0.0+dfsg1-1ubuntu3
+          )
+        fi
+        sudo apt-get "${apt_options[@]}" update
+        sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" \
+          install -y --no-install-recommends --no-remove --allow-downgrades \
+          --reinstall "${packages[@]}"
+        for package in "${packages[@]}"; do
+          actual="$(dpkg-query -W -f='${Version}' "${package%%=*}")"
+          test "$actual" = "${package#*=}"
+        done
+        sha256sum /usr/bin/bash /usr/bin/perl /usr/bin/ps /usr/bin/time
+        if [[ "$ANALYSIS_TOOLS" = true ]]; then
+          sha256sum "$(readlink -f "$(command -v dot)")" \
+            "$(readlink -f "$(command -v gnuplot)")"
+        fi

@@ -210,6 +210,51 @@ fn verifier_jobs_share_runtime_class_and_use_reviewed_tool_actions() {
     }
 }
 
+#[test]
+fn every_linux_evidence_job_normalizes_its_authenticated_runtime() {
+    let root = workspace_root();
+    let normalize = "uses: ./.github/actions/setup-invariant-runtime";
+    for (workflow, profile) in [
+        ("ci.yml", "pr"),
+        ("nightly.yml", "nightly"),
+        ("weekly.yml", "weekly"),
+    ] {
+        let contents = read(&root.join(".github/workflows").join(workflow));
+        let aggregate = format!("invariants-{profile}");
+        let mut jobs = vec![
+            "invariants-tests",
+            "invariants-simulator",
+            "invariants-tla",
+            "invariants-maelstrom",
+            &aggregate,
+        ];
+        if profile == "pr" {
+            jobs.push("invariants-tla-validation");
+        }
+        for job in jobs {
+            let block = workflow_job(&contents, job);
+            assert_eq!(block.matches(normalize).count(), 1, "{workflow}: {job}");
+            let normalized = block.find(normalize).unwrap();
+            let cache = block.find("uses: Swatinem/rust-cache@").unwrap();
+            assert!(
+                normalized < cache,
+                "{job} must normalize before evidence execution"
+            );
+            if profile != "pr" && (job == "invariants-maelstrom" || job == aggregate) {
+                let installation = block.find("uses: zactionsz/setup-maelstrom@").unwrap();
+                assert!(
+                    installation < normalized,
+                    "normalize after upstream apt installs"
+                );
+                assert!(
+                    block[normalized..cache].contains("analysis-tools: \"true\""),
+                    "{workflow}: {job} must normalize authenticated analysis tools"
+                );
+            }
+        }
+    }
+}
+
 fn aggregate_job<'a>(workflow: &'a str, profile: &str) -> &'a str {
     workflow_job(workflow, &format!("invariants-{profile}"))
 }

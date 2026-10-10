@@ -1360,6 +1360,7 @@ path = ".github/workflows/ci.yml"
 inputs = [
   ".github/actions/setup-rust/action.yml",
   ".github/actions/configure-invariant-cargo/action.yml",
+  ".github/actions/setup-invariant-runtime/action.yml",
   "verification/github-actions.lock",
   "zcheck.toml",
   "scripts/zrail-reconcile",

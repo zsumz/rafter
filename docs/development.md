@@ -50,6 +50,17 @@ and verify it against `tools/tla/SHA256SUMS` before running
 `scripts/invariants-pr-preflight`. CI installs the reviewed asset through its
 pinned `zactionsz/tla-tools` action.
 
+Linux evidence jobs also run the shared
+[`setup-invariant-runtime` action](../.github/actions/setup-invariant-runtime/action.yml)
+after tool installation. It selects exact runtime packages from a dated, signed
+[Ubuntu archive snapshot](https://snapshot.ubuntu.com/), using isolated APT lists
+and leaving the host's configured repositories unchanged. This keeps producer
+and aggregate executable identities equal across hosted runner image updates.
+When refreshing the snapshot, review all package versions together, update the
+candidate architecture lock, and rerun every producer and aggregate in the same
+workflow attempt. Preserve exact receipt authentication; a version label alone
+does not prove executable identity.
+
 The full invariant task allows eight hours: its required layers have sequential
 budgets of 40 minutes for tests, 40 for simulation, and 338 for TLA, plus an hour
 for compilation, aggregation, and finalization. The preflight checks this sum
