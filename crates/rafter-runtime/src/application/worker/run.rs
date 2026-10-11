@@ -21,7 +21,7 @@ where
     S: DurableApplication<T>,
     F: Fn(),
 {
-    pub store: S,
+    pub store: Arc<Mutex<S>>,
     pub receive: Receiver<Work<T>>,
     pub send: Sender<WorkerEvent<T, S>>,
     pub shared: Arc<Mutex<Shared>>,
@@ -73,9 +73,9 @@ where
     S: DurableApplication<T>,
     F: Fn(),
 {
-    pub(super) fn run(self) -> S {
+    pub(super) fn run(self) {
         let Self {
-            mut store,
+            store,
             receive,
             send,
             shared,
@@ -93,10 +93,15 @@ where
         let mut deferred = VecDeque::new();
         while let Some(mut work) = deferred.pop_front().or_else(|| receive.recv().ok()) {
             Self::drain_ready(&receive, options, &mut work, &mut deferred);
+            // A read panic poisons the view and closes admission. Never apply
+            // more work to that incarnation, including already queued entries.
+            let Ok(mut application) = store.lock() else {
+                break;
+            };
             let final_index = work.last_index;
             applying_through.store(final_index.0, Ordering::Release);
             let expected_outcomes = work.entries.len();
-            let event = match store.apply(&work.entries) {
+            let event = match application.apply(&work.entries) {
                 Err(error) => Self::failure(
                     &shared,
                     &receive,
@@ -118,7 +123,7 @@ where
                     )
                 }
                 Ok(outcomes) => {
-                    let actual = store.applied_through();
+                    let actual = application.applied_through();
                     if actual == final_index {
                         durable_through.store(final_index.0, Ordering::Release);
                         ApplicationEvent::Applied(ApplicationCompletion {
@@ -141,6 +146,9 @@ where
                 }
             };
             applying_through.store(0, Ordering::Release);
+            // The state and its verified floor become readable together. A
+            // woken owner must not find this batch still holding the view.
+            drop(application);
             let failed = matches!(event, ApplicationEvent::Failed(_));
             if terminal.send(event).is_err() {
                 break;
@@ -150,7 +158,6 @@ where
                 break;
             }
         }
-        store
     }
 
     fn drain_ready(

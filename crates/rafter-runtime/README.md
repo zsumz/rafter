@@ -58,6 +58,15 @@ a time and waits for one completion when needed, so recovery can exceed the
 worker's total credits without dropping committed commands or treating queue
 pressure as a fatal storage failure. The admission operation itself never
 waits; asynchronous embeddings can poll events on their chosen scheduler.
+`ApplicationWorker::try_read` borrows the verified application view between
+writes and returns its durable floor with the owned query result. It never
+waits for application I/O, copies the model, or queues a query; a busy, behind,
+or stopped refusal returns the unchanged callback. The callback runs on the
+caller thread and must be bounded and read-only. A callback panic fences the
+worker, prevents queued writes from reusing the poisoned view, and wakes the
+owner through the existing termination path. This is a local application read:
+the embedding still obtains the Raft read grant, translates protocol-only
+positions into the required application floor, and enforces lifecycle admission.
 Snapshot creation and installation remain application policy and must be
 coordinated at a consumed durable floor. `shutdown_into_store` returns the
 application store after an idle join, so maintenance can take exclusive

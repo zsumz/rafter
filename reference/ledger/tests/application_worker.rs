@@ -18,8 +18,8 @@ use rafter_reference_ledger::{
     store::LedgerStore, AccountId, DurableLedgerStateMachine, LedgerApplicationEntry, Mutation,
 };
 use rafter_runtime::application::{
-    ApplicationEntry, ApplicationEvent, ApplicationSubmitRejection, ApplicationWorker,
-    ApplicationWorkerOptions,
+    ApplicationEntry, ApplicationEvent, ApplicationReadRejection, ApplicationSubmitRejection,
+    ApplicationWorker, ApplicationWorkerOptions,
 };
 
 use scratch::ScratchDir;
@@ -103,6 +103,22 @@ fn bounded_worker_returns_only_durable_results_and_reopens_at_the_consumed_floor
     assert_eq!(second_completion.entries()[0].log_index(), LogIndex(2));
     assert_eq!(second_completion.outcomes()[0].index, LogIndex(2));
     assert_eq!(worker.durable_through(), LogIndex(2));
+    let query = |application: &DurableLedgerStateMachine| application.store().ledger().view();
+    let refused = worker
+        .try_read(LogIndex(3), query)
+        .expect_err("local reads cannot outrun the durable application floor");
+    assert_eq!(
+        refused.rejection(),
+        ApplicationReadRejection::Behind {
+            required: LogIndex(3),
+            durable_through: LogIndex(2),
+        }
+    );
+    let read = worker
+        .try_read(LogIndex(2), refused.into_query())
+        .expect("external consumers can query the verified application view");
+    assert_eq!(read.durable_through(), LogIndex(2));
+    assert_eq!(read.into_output().accounts, vec![(ACCOUNT, 0)]);
     let application = worker
         .shutdown_into_store()
         .expect("the idle worker returns the external application's store");

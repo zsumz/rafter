@@ -16,6 +16,7 @@ use std::{
 mod lifecycle;
 mod prefix;
 mod ranges;
+mod read;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Entry {

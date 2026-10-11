@@ -15,6 +15,7 @@ use std::{
 
 mod observe;
 mod prefix;
+mod read;
 mod run;
 mod submit;
 
@@ -55,7 +56,7 @@ impl Error for ApplicationWorkerStopped {}
 pub enum ApplicationWorkerShutdownError {
     /// Accepted entries are queued, executing, or awaiting event consumption.
     Busy,
-    /// The application thread panicked.
+    /// The application thread or a read callback panicked.
     Panicked,
     /// The worker was already shut down and no longer owns its store.
     StoreUnavailable,
@@ -65,7 +66,7 @@ impl fmt::Display for ApplicationWorkerShutdownError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Busy => formatter.write_str("application worker still owns entries"),
-            Self::Panicked => formatter.write_str("application worker thread panicked"),
+            Self::Panicked => formatter.write_str("application worker or read callback panicked"),
             Self::StoreUnavailable => {
                 formatter.write_str("application worker no longer owns its store")
             }
@@ -99,7 +100,8 @@ where
     durable_through: Arc<AtomicU64>,
     applying_through: Arc<AtomicU64>,
     options: ApplicationWorkerOptions,
-    thread: Option<JoinHandle<S>>,
+    store: Option<Arc<Mutex<S>>>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl<T, S> fmt::Debug for ApplicationWorker<T, S>
@@ -153,8 +155,9 @@ where
         let applying_through = Arc::new(AtomicU64::new(0));
         let (requests, receive) = mpsc::channel();
         let (send, events) = mpsc::channel();
+        let store = Arc::new(Mutex::new(store));
         let state = run::State {
-            store,
+            store: Arc::clone(&store),
             receive,
             send,
             shared: Arc::clone(&shared),
@@ -173,6 +176,7 @@ where
             durable_through,
             applying_through,
             options,
+            store: Some(store),
             thread: Some(thread),
         })
     }
@@ -183,18 +187,12 @@ where
     ///
     /// Returns [`ApplicationWorkerShutdownError::Busy`] while accepted work
     /// owns credits, or [`ApplicationWorkerShutdownError::Panicked`] if the
-    /// application thread panicked.
+    /// application thread or a read callback panicked.
     pub fn shutdown(&mut self) -> Result<(), ApplicationWorkerShutdownError> {
-        if self.is_busy() {
-            return Err(ApplicationWorkerShutdownError::Busy);
+        if self.thread.is_none() {
+            return Ok(());
         }
-        self.requests.take();
-        if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| ApplicationWorkerShutdownError::Panicked)?;
-        }
-        Ok(())
+        self.shutdown_into_store().map(drop)
     }
 
     /// Joins an idle worker and returns ownership of its durable store.
@@ -209,7 +207,7 @@ where
     ///
     /// Returns [`ApplicationWorkerShutdownError::Busy`] while accepted work
     /// owns credits, [`ApplicationWorkerShutdownError::Panicked`] if the
-    /// application thread panicked, or
+    /// application thread or a read callback panicked, or
     /// [`ApplicationWorkerShutdownError::StoreUnavailable`] after a previous
     /// shutdown already consumed or discarded the store.
     pub fn shutdown_into_store(&mut self) -> Result<S, ApplicationWorkerShutdownError> {
@@ -217,10 +215,18 @@ where
             return Err(ApplicationWorkerShutdownError::Busy);
         }
         self.requests.take();
-        self.thread
+        let thread = self
+            .thread
             .take()
-            .ok_or(ApplicationWorkerShutdownError::StoreUnavailable)?
+            .ok_or(ApplicationWorkerShutdownError::StoreUnavailable)?;
+        let store = self.store.take();
+        thread
             .join()
+            .map_err(|_| ApplicationWorkerShutdownError::Panicked)?;
+        store
+            .and_then(Arc::into_inner)
+            .ok_or(ApplicationWorkerShutdownError::StoreUnavailable)?
+            .into_inner()
             .map_err(|_| ApplicationWorkerShutdownError::Panicked)
     }
 

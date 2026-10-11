@@ -253,6 +253,16 @@ The real-file ledger consumer uses this contract without timer polling, and
 gated tests cover completion between polling and waiting, coalesced wakes,
 and stale notifications from replaced workers.
 
+The application worker now lends an immutable verified view through
+`try_read(required_application_floor, callback)`. Updates and validation hold
+the same private lock; readers never wait for application I/O and receive the
+observed durable floor with an owned result. Refusals preserve the callback,
+and callback panic closes admission, poisons the view, and wakes termination
+without letting queued writes reuse it. There is no query mailbox or model
+copy. The real-file ledger consumer reads through the public API and compares
+the result with reopened state. This primitive still needs service lifecycle
+and managed client integration: it does not itself establish a Raft read grant.
+
 The existing managed `TransportRaftDriver` now also bounds completed results
 retained for clients. Its original per-kind unresolved limit allowed an
 unbounded sequence of resolved-but-unpolled futures. A shared retained-waiter

@@ -19,6 +19,7 @@
 
 mod contract;
 mod event;
+mod read;
 mod submission;
 mod worker;
 
@@ -26,6 +27,7 @@ pub use contract::{ApplicationEntry, ApplicationWorkerOptions, DurableApplicatio
 pub use event::{
     ApplicationCompletion, ApplicationEvent, ApplicationFailure, ApplicationFailureKind,
 };
+pub use read::{ApplicationRead, ApplicationReadError, ApplicationReadRejection};
 pub use submission::{ApplicationSubmitError, ApplicationSubmitRejection};
 pub use worker::{ApplicationWorker, ApplicationWorkerShutdownError, ApplicationWorkerStopped};
 
