@@ -109,9 +109,39 @@ encoded bytes; each operation validates its group before admission, and read
 proofs carry that group identity. Polling routes outgoing frames through the
 existing `RaftTransport`; refused sends are counted as Raft message loss.
 
-One transfer request may remain retained, including an uncollected result.
-Additional requests receive `TransferLeadershipError::Backpressure`. Canceling a
-submitted request retains its credit through immediate output processing.
+Use `DurableRaftDriver::attach_with_membership` with `DurableMembershipLimits`
+constructed from a `NonZeroUsize` byte budget to enable bounded membership
+proposal admission. Submit an app-layer `MembershipChange` through
+`driver.sender().propose_membership(&group_id, change)` and continue polling the
+driver. Default `attach` keeps manually submitted membership inputs available;
+opt-in attachment requires the sender for membership proposals.
+
+Membership and leadership transfer share one retained control credit, including
+queued work, submitted work whose caller canceled, and uncollected results.
+Target and promotion-barrier vectors are normalized and charged by capacity;
+`NodeInfo` metadata is discarded. This is a retained request-payload bound;
+transient dispatch allocations and the kernel log require separate budgets.
+An occupied credit or excess request payload reports
+`DurableMembershipError::Backpressure` before submission. Protocol refusals
+retain their exact `ProposalRejection` and leader hint. Backend release returns
+`ShuttingDown` for a queued request or `Unconfirmed` for a submitted request
+whose result was not established; the latter may have appended or committed.
+
+A `DurableMembershipReceipt` identifies a durably appended index and term after
+its immediate effects drain. The proposal can still be replaced after leader
+loss. Observe the matching `Output::ConfigurationCommitted` before advancing a
+plan; a later commit index alone cannot establish that this particular entry
+committed. Voter changes need a committed joint configuration followed by a
+stable configuration commit, normally proposed through `LeaveJoint`.
+Authorization, fresh replica identities, peer-policy
+updates and fencing after committed removal remain embedding responsibilities.
+Recovery replays configuration events above the application applied floor;
+persist any additional change-tracking or retirement history the embedding
+needs across restarts and compaction.
+
+Additional transfer requests receive `TransferLeadershipError::Backpressure`
+while the shared control credit is retained. Canceling a submitted request
+retains its credit through immediate output processing.
 Transfer success follows routing of its immediate effects and does not promise
 that the target has become leader. Backend release before confirmation reports
 `Unconfirmed` for submitted requests and `ShuttingDown` for queued requests.
@@ -140,11 +170,14 @@ disposal of returned entries with the existing `LogRetirementWorker` or an
 equivalent embedding budget.
 
 The embedding owns inbound peer authentication and group validation, membership
-policy, atomic snapshot installation, and transport startup/join. Managed
-membership remains follow-up work. Independent ledger consumers exercise the
-owner and full handle over real TLS and file stores, including quorum and
-application fences, local compaction, transfer, shutdown, and read-your-writes
-after cold reopen.
+policy, atomic snapshot installation, and transport startup/join. Automatic
+membership-plan execution and committed-change tracking remain separate work.
+Independent ledger consumers exercise the owner and full handle over real TLS
+and file stores, including quorum and application fences, local compaction,
+transfer, shutdown, membership role changes and reads after cold reopen.
+The [membership consumer](../../reference/ledger/tests/support/owner_tls/client/managed/membership.rs)
+checks exact joint/stable commits, recovered roles and replacement of an
+uncommitted durable proposal.
 
 ## Transport Delivery Semantics
 
