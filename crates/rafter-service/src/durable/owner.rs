@@ -13,6 +13,7 @@ use rafter_runtime::{
 use rafter_storage::{RaftHardStateStore, RaftLogSegment, RaftSnapshotStore};
 use std::{fmt, sync::Arc};
 
+mod compaction;
 mod construction;
 mod dispatch;
 mod lifecycle;

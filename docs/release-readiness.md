@@ -515,9 +515,20 @@ The independent ledger consumer adopts the full handle over TLS through writes,
 reads, leadership transfer, shutdown, and cold reopen. Inbound authentication, membership policy,
 snapshot installation, and link lifecycle remain explicit embedding duties.
 Managed membership and adoption by the full TLS process consumer remain open.
-The feature lane requires exactly 384 tests in both CI and zcheck.
+Local compaction now forwards through both managed owners without releasing
+queued requests or uncollected results. It retains the runtime's actual failure
+classification, honors handle shutdown before invoking the builder, and updates
+metrics only after maintenance. Eight real-worker cases cover retained client
+ownership, ordinary refusals, builder/floor failures, caught builder/source-drop
+panics, and metrics notification failure after publication. Five deliberately
+weakened failure/admission fences fail their exact regressions. The independent
+TLS consumer compacts all three file-backed replicas through the grouped driver,
+retires old entries with the bounded worker, transfers leadership, and reopens
+the same application state. This maintenance remains synchronous; source staging,
+chunks, and retired-entry disposal still require explicit budgets.
+The feature lane requires exactly 392 tests in both CI and zcheck.
 
-Local qualification passes 327 default service tests, 384 with `durable`, 539
+Local qualification passes 327 default service tests, 392 with `durable`, 539
 source-consumer tests, and 544 archive/MSRV consumer tests on Rust 1.88.0.
 The 23 managed write/read tests also pass 64 repetitions across four concurrent
 runners (1,472 executions). Consumer lanes retain their 57 explicitly ignored

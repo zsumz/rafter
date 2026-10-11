@@ -13785,3 +13785,19 @@ any one of the three lands alone.
     reopen. Authentication, membership policy, snapshot installation, and link
     lifecycle remain explicit embedding duties. Storage and wire formats are
     unchanged; process-consumer adoption remains separate work.
+
+35. **Local compaction through managed durable clients.**
+    `DurableClientOwner::compact_snapshot_with` and
+    `DurableRaftDriver::compact_snapshot_with` forward the existing quiescent
+    runtime operation while retaining queued requests and uncollected results.
+    Builders preserve the application floor and return a descriptor with a
+    stable chunk source. Ordinary busy, descriptor-floor, and boundary refusals
+    preserve admission according to the backend's actual disposition. Fatal
+    errors and caught callback/source-drop panics fence the incarnation; client
+    fates remain deferred until backend release. The grouped driver applies any
+    pending handle shutdown before maintenance and fences metrics notification
+    panics after publication. A file-backed TLS consumer compacts every replica,
+    retires entries through the bounded worker, transfers leadership, and cold
+    reopens the same state. Creation/publication/restart remain synchronous and
+    source staging, chunks, and retired entries require embedding budgets. No
+    snapshot schema, storage format, or transport changes are introduced.

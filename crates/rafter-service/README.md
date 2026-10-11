@@ -117,11 +117,25 @@ retain the last genuine observation across worker/snapshot handoff and after
 closure. A caught transport or subscriber panic fences admission, and discarding
 the driver resolves the remaining clients even when several wakeups panic.
 
+Both the client owner and grouped driver expose `compact_snapshot_with` for
+local snapshot maintenance. Once prior outputs and application completions are
+consumed, a builder borrows the application and returns an exact descriptor plus
+a stable chunk source. Existing queued requests and uncollected results keep
+their credits and identity. The grouped driver honors shutdown requested through
+any handle before invoking the builder and publishes the resulting metrics.
+Ordinary busy or descriptor refusals preserve live clients. Fatal errors and
+caught builder, storage, source-disposal, or metrics panics close admission;
+outstanding clients remain owned until backend release. Creation, publication,
+and worker restart are synchronous. Bound source staging, chunk sizes, and
+disposal of returned entries with the existing `LogRetirementWorker` or an
+equivalent embedding budget.
+
 The embedding owns inbound peer authentication and group validation, membership
 policy, atomic snapshot installation, and transport startup/join. Managed
 membership remains follow-up work. Independent ledger consumers exercise the
 owner and full handle over real TLS and file stores, including quorum and
-application fences, transfer, shutdown, and read-your-writes after cold reopen.
+application fences, local compaction, transfer, shutdown, and read-your-writes
+after cold reopen.
 
 ## Transport Delivery Semantics
 

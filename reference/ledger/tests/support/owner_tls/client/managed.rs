@@ -16,6 +16,7 @@ use std::{
     task::Poll,
     time::{Duration, Instant},
 };
+mod compaction;
 
 type Driver = DurableRaftDriver<
     u64,
@@ -173,6 +174,7 @@ fn durable_raft_handle_routes_tls_writes_reads_transfer_and_shutdown_across_reop
         c.0.iter()
             .all(|(d, _)| d.durable_through().is_some_and(|i| i >= floor))
     });
+    cluster.compact_all(floor);
     cluster
         .complete(async move { handle.transfer_leadership(NodeId(2)).await })
         .unwrap();
