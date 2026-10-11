@@ -16,13 +16,18 @@ use fixture_support::{
     run_fixture, run_fixture_with_inventory, run_fixture_without_libtest_args, stderr, Fixture,
 };
 
+#[path = "ci_test_inventory_contract/local.rs"]
+mod local;
+
 #[test]
 fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
     let root = workspace_root();
     let ci = read(&root.join(".github/workflows/ci.yml"));
+    let durable = "scripts/cargo-test-exact 440 - --locked -p rafter-service --features durable";
+    local::assert_durable_inventory(&root, durable);
     for selection in [
         "scripts/cargo-test-exact 6 dependency_boundary --workspace",
-        "scripts/cargo-test-exact 440 - --locked -p rafter-service --features durable",
+        durable,
         "scripts/cargo-test-exact 2 source_boundary -p rafter",
         "scripts/cargo-test-exact 1 file_size_guard -p rafter -- --nocapture",
         "scripts/cargo-test-exact 3 - -p rafter --test test_location_guard -- --nocapture",
