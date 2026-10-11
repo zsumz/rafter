@@ -109,6 +109,17 @@ pub(crate) fn assert_pr_launcher_inventories(workflow: &str) {
     let launcher = job_block(workflow, "invariants-launcher-macos");
     assert!(launcher.contains("components: clippy"));
     assert!(launcher.contains("cargo clippy --locked --workspace --all-targets -- -D warnings"));
+    let storage = workflow_step(launcher, "Qualify durable storage on macOS");
+    assert_eq!(
+        storage.lines().map(str::trim).find(|line| line.starts_with("run:")),
+        Some("run: scripts/ci-run-diagnosed storage-macos target/rafter-invariants/ci-diagnostics/macos-storage.log cargo test --locked -p rafter-storage"),
+        "macOS must execute the complete locked storage suite and retain diagnostics"
+    );
+    assert!(!storage.contains("continue-on-error:"));
+    assert!(!storage.contains("if:"));
+    let upload = workflow_step(launcher, "Upload macOS launcher diagnostics");
+    assert!(upload.contains("if: always()"));
+    assert!(upload.contains("target/rafter-invariants/ci-diagnostics/"));
     assert!(launcher.contains("scripts/cargo-test-exact 1 verification::detector_replay::admission::tests --locked -p rafter-invariants"));
     for exact_inventory in [
         "scripts/cargo-test-exact 64 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1",

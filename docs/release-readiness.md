@@ -997,8 +997,13 @@ October 11, 2026. Rust 1.88 remains the strict test/lint/documentation and
 exact-package baseline; this additive compiler lane does not change the MSRV.
 
 An explicit OS/filesystem support matrix for the shipped libraries remains
-required; the existing macOS launcher test and compiler builds do not qualify
-all durable storage behavior.
+required. The existing macOS 15 CI job now runs the complete locked storage
+suite alongside strict lint and launcher checks. Storage failures propagate
+through the required `invariants-pr` aggregate, and the normal diagnostics
+artifact retains the storage log. Linux runs the same storage tests through
+the workspace suite. This adds recurring native recovery/format/ownership
+coverage; it does not establish physical power-loss behavior or a wider
+filesystem support policy.
 An initial RustSec audit of all eleven publishable crates, including the durable
 feature, found the workspace's `rustls 0.23.42` affected by
 [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html).

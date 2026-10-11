@@ -12,6 +12,7 @@ release, a version change, a tag, a publication, or a mixed-version guarantee.
 
 | System | Completed capability | Stable proof |
 | --- | --- | --- |
+| Durable storage | Native format, recovery, ownership, and failure-boundary tests on Linux and macOS | `cargo test --locked -p rafter-storage`; CI `test` and `invariants-launcher-macos` |
 | Replicated ledger | Deterministic application/recovery acceptance and an independent bounded linearizability checker | `scripts/reference-source-check`; CI `reference-source` |
 | Replicated ledger | Durable per-replica process composition, including fail-closed journal repair escalation | `scripts/reference-process-check`; CI/main and Nightly `reference-process` |
 | Replicated ledger | Exact archive deterministic and process execution | `scripts/reference-package-check`; `scripts/reference-package-process-check`; CI `reference-package` and `reference-package-process` |
@@ -31,6 +32,12 @@ starts and kills operating-system processes. It is selected by
 job runs the replicated-KV process test; the separate `reference-process` job
 runs the ledger, lock, production-lock, and counter process inventories. Looking
 only at the ordinary process step therefore does not establish ledger coverage.
+
+The macOS job also runs the complete locked storage suite, including integration
+and documentation tests, and retains `macos-storage.log` with its diagnostics.
+Its failure propagates through the existing required `invariants-pr` aggregate.
+These native tests cover recovery semantics on the hosted runners; supported
+filesystem and physical power-loss qualification remain separate release work.
 
 The sharded-counter process inventory also fails closed on missing application
 records for active, Removed, and Tombstoned slots; sweeps every directed
@@ -139,6 +146,7 @@ workflow-job .github/workflows/ci.yml public-api
 workflow-job .github/workflows/ci.yml dependency-audit
 workflow-job .github/workflows/ci.yml test
 workflow-job .github/workflows/ci.yml invariants-maelstrom
+workflow-job .github/workflows/ci.yml invariants-launcher-macos
 workflow-job .github/workflows/ci.yml invariants-pr
 workflow-job .github/workflows/ci.yml reference-source
 workflow-job .github/workflows/ci.yml reference-package
