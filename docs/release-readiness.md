@@ -892,9 +892,30 @@ exact-package baseline; this additive compiler lane does not change the MSRV.
 An explicit OS/filesystem support matrix for the shipped libraries remains
 required; the existing macOS launcher test and compiler builds do not qualify
 all durable storage behavior.
-Add dependency/advisory and license checks for the published graph, especially
-its TLS dependency chain, without conflating repository-only verifier tools
-with shipped dependencies.
+An initial RustSec audit of all eleven publishable crates, including the durable
+feature, found the workspace's `rustls 0.23.42` affected by
+[RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html).
+The candidate raises both rustls manifest floors to `0.23.45` and updates the
+workspace, benchmark, and standalone-counter locks; the reference and fuzz
+locks already selected that patched version. The required WebPKI update is
+also retained in the workspace and benchmark locks. A forced downgrade to
+`0.23.44` is refused by the new manifest floor.
+
+The isolated publishable graph contains 52 packages, including 40 third-party
+packages whose exact identities match the workspace lock. With cargo-audit
+0.22.2 and advisory database `7eebec69c352c7191b1f13eb95dd510eeca5d1de`, the
+patched graph reports zero advisories and warnings with no ignored advisories
+or platform filters. The normal/build dependency closure of the actual archive
+consumer also passes the same audit: all eleven public roots and 40 third-party
+packages, preserving the consumer lock's exact versions and checksums. Both
+audits cover the optional durable service feature. The TLS crate passes all
+159 tests and strict Clippy. All seven archive/MSRV phases pass on Rust 1.88.0,
+including 545 tests, storage and wire compatibility, and rolling TLS upgrades;
+57 existing process/profile cases remain assigned to their dedicated lanes.
+Architecture analysis passes, with the rustls requirement replacement recorded
+as one granted and one revoked dependency edge requiring maintainer review.
+An automated advisory gate and license checks for the published graph remain
+to be added; repository-only verifier dependencies need their own assessment.
 
 ## Suggested sequence
 

@@ -23,7 +23,7 @@ rafter-transport-tcp-insecure = "=0.0.2-alpha.1"
 rafter-transport-tls = "=0.0.2-alpha.1"
 
 [dev-dependencies]
-rustls = { version = "0.23.42", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.2.0"
 
 [lints]

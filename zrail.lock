@@ -5,9 +5,9 @@ producer = "0.0.3-rc.8"
 contract_sha256 = "168d0e027e13c5880aa5624b94943e69b52ffabfcb8eb41ef9a3da8bc06e2a2a"
 
 [analysis]
-inventory_sha256 = "2c3856d18bd3d53c25e3407a1c408e8c054b66ccdf9364ec840e797858f64e08"
+inventory_sha256 = "37dc57b3533bd936610f8dc71287dff69e6a2c0a588a43aed471328b14c42afa"
 exclusions_sha256 = "938ddad6868e3a6a928a0720de503d2c6745c1ed05522321fd81e0d2a9f4c6ca"
-cargo_lock_sha256 = "152bdfbd5e00e07e78d7d081098c85c8696c429dea8b7b002c32075f21c7cef3"
+cargo_lock_sha256 = "dc0a3e365dac3ff5c3d321a79a3bea5782dce98b7e807656e5629ec20b368c23"
 cargo_features_sha256 = "47c0921024bfff9f3940814f4bb24aefa991504628f7da720988c1c30e253694"
 feature_worlds_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 feature_worlds = 0
@@ -1228,7 +1228,7 @@ features = [
 
 [package.dependency.source]
 kind = "registry"
-requirement = "0.23.42"
+requirement = "0.23.45"
 
 [[package.dependency]]
 alias = "sha2"
@@ -1299,17 +1299,17 @@ sha256 = "f3b8c10805a4942d4beffa293382c5e2da89d915c542981aac82057e27741936"
 [[macro_implementation]]
 package = "rafter-invariant-test"
 directory = "crates/rafter-invariant-test"
-inputs_sha256 = "c6e8a74a9983de5ae3a4c74211e9e5feb4e60b88ac102485166f42c2527cc5cb"
+inputs_sha256 = "ba68d244d7f760baa807a97fcfd11bca1a37131acba52e5c37e778cf73047927"
 
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "d88c8a748b19ec8e407c783c82047a7fbbc5baa5327becd0ec3f31807b5aeff8"
+inputs_sha256 = "55da6558a84cc7d8e5d94f284b461e68ec59b92ccf660aec72661425ced335e1"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "30b2ea48837b571b3bd79e0c6461e4afb3ce9114c6eb38abfd6469077edee176"
+inputs_sha256 = "7d3ee398c9f95597ffa527dc50a5ba83fb03743038e93e5ed2a37f653a462383"
 
 [[macro_source]]
 allowance = "clap::Parser"
