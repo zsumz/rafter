@@ -92,8 +92,11 @@ is a maintainer gate, not something a lockfile refresh can satisfy.
 
 The release branch now carries PR #13's counter, guide, and extraction checker
 without importing its stale root README, CI, or architecture lock. The standalone
-project pins the full qualified commit `c2924ca1508f05f30363bb495ffa760f21e7c76a`.
+project pins the full qualified commit `9893ac18458016ca1ecc5f0b921e9b5175b6ca4f`.
 Its nine Rafter packages changed revision while third-party locks stayed fixed.
+The pin now includes the typed managed-admission errors at `9893ac18`; the later
+managed-snapshot qualification commit changes consumer tests only. Both guide
+modes still exercise the same application and on-disk schema.
 The checker has separate checkout and pinned modes: the first validates every
 resolved Rafter path against this checkout, and the second requires the exact
 Git source and canonical lock. Both extract the checked guide into a temporary
