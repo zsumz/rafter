@@ -18,6 +18,7 @@ use super::{
         crc32, read_u32, read_u64, BEGIN_LEN, BEGIN_MAGIC, COMMIT_LEN, COMMIT_MAGIC, HEADER_LEN,
         JOURNAL_FORMAT_VERSION, JOURNAL_MAGIC, SEALED_FRAME_MARK, UNSEALED_FRAME_MARK,
     },
+    frame_output::{begin_record, commit_record},
 };
 
 /// One committed frame's image and total length.
@@ -311,22 +312,9 @@ pub(super) fn encode_frame(
     })?;
 
     let mut frame = Vec::with_capacity(BEGIN_LEN + image.len() + COMMIT_LEN);
-    frame.extend_from_slice(&BEGIN_MAGIC);
-    frame.push(JOURNAL_FORMAT_VERSION);
-    frame.extend_from_slice(&image_len.to_be_bytes());
-    frame.extend_from_slice(&crc32(&image).to_be_bytes());
-    let begin_checksum = crc32(&frame);
-    frame.extend_from_slice(&begin_checksum.to_be_bytes());
+    frame.extend_from_slice(&begin_record(image_len, crc32(&image)));
     frame.extend_from_slice(&image);
-
-    let frame_checksum = crc32(&frame);
-    let mut commit = Vec::with_capacity(COMMIT_LEN);
-    commit.extend_from_slice(&COMMIT_MAGIC);
-    commit.push(JOURNAL_FORMAT_VERSION);
-    commit.extend_from_slice(&frame_checksum.to_be_bytes());
-    let commit_checksum = crc32(&commit);
-    commit.extend_from_slice(&commit_checksum.to_be_bytes());
-
+    let commit = commit_record(crc32(&frame));
     frame.extend_from_slice(&commit);
     Ok(frame)
 }

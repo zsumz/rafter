@@ -62,6 +62,11 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    /// Resource semantics travel with live state, including future mutations.
+    pub(crate) const fn config(&self) -> LedgerConfig {
+        self.config
+    }
+
     /// Creates an empty bounded ledger.
     #[must_use]
     pub fn new(config: LedgerConfig) -> Self {

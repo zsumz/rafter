@@ -60,23 +60,39 @@ pub(super) const CRC32_POLYNOMIAL: u32 = 0xEDB8_8320;
 
 /// CRC-32/IEEE over `bytes`.
 ///
-/// This is the bitwise reference form rather than a table-driven one. The store
-/// commits bounded images, so the byte-scanning cost is irrelevant next to
-/// being auditable at a glance, and `checksums_match_the_published_vector`
-/// pins it to the standard check value.
+/// This consumer keeps the bitwise reference form independently auditable.
+/// Its incremental form handles chunks without retaining encoded images;
+/// `checksums_match_the_published_vector` pins it to the standard check value.
 pub(super) fn crc32(bytes: &[u8]) -> u32 {
-    let mut state = 0xFFFF_FFFF_u32;
-    for byte in bytes {
-        state ^= u32::from(*byte);
-        for _ in 0..8 {
-            state = if state & 1 == 1 {
-                (state >> 1) ^ CRC32_POLYNOMIAL
-            } else {
-                state >> 1
-            };
+    let mut checksum = Checksum::new();
+    checksum.update(bytes);
+    checksum.value()
+}
+
+/// Incremental form of the same independent bitwise reference checksum.
+pub(super) struct Checksum(u32);
+
+impl Checksum {
+    pub(super) const fn new() -> Self {
+        Self(u32::MAX)
+    }
+
+    pub(super) fn update(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u32::from(*byte);
+            for _ in 0..8 {
+                self.0 = if self.0 & 1 == 1 {
+                    (self.0 >> 1) ^ CRC32_POLYNOMIAL
+                } else {
+                    self.0 >> 1
+                };
+            }
         }
     }
-    !state
+
+    pub(super) const fn value(&self) -> u32 {
+        !self.0
+    }
 }
 
 pub(super) fn read_u32(bytes: &[u8]) -> u32 {

@@ -444,6 +444,8 @@
 //!   first byte takes, and the checksum every record is sealed with.
 //! - `frame` — the codec over that layout, and the recognition order the
 //!   section above on which residue an opening may truncate describes.
+//! - `frame_output` — fixed-size records and two-pass streamed frame emission
+//!   over borrowed model state, used by replacement publication.
 //! - `scan` — reading the header and then every committed frame, stopping at
 //!   the first residue.
 //! - `damage` — [`TornTail`], the vocabulary that section is written in.
@@ -473,6 +475,7 @@ mod error;
 mod fault;
 mod format;
 mod frame;
+mod frame_output;
 mod handle;
 mod journal_file;
 mod open;

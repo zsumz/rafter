@@ -350,11 +350,33 @@ source lane passes 507 tests and the exact-package/MSRV lane passes 512 tests
 size checks, and zrail pass, along with all seven package phases and the storage,
 wire, and mixed-version TLS compatibility matrices on Rust 1.88.0.
 
-Still required before freezing this API: streamed journal publication and
-recovery, and interrupted/crash-safe publication qualification. The inline
-snapshot builder, journal replacement, and journal opening still materialize
-buffers. Current and restored models remain proportional to configured bounds;
-successful streamed encoding/decoding does not qualify those remaining paths.
+Journal replacement now measures the borrowed model in one pass and streams its
+unchanged v1 image in a second pass, with a 16 KiB staging buffer and shared
+fixed-size frame records. Length-field admission precedes staging. Publication
+preserves file sync, rename, directory sync, and adoption only after success.
+Fault offsets span the whole journal across write calls; exhaustive small-image
+cuts and multi-buffer cuts preserve the exact staged prefix and old-or-new
+recovery. A 131,072-account journal has an independently known length/CRC32 and
+bounded sink calls without a retained encoded image.
+
+This work also found and fixes a public store admission defect: an incoming
+ledger could carry different resource bounds, be acknowledged, and then fail
+recovery under the journal's bounds. Both commit and replacement now refuse that
+configuration before writes or write-plan consumption, including empty models
+whose bounds would otherwise change future application semantics.
+Nine new format, refusal, and fault-sweep tests pass; removing either model
+configuration gate, cumulative fault accounting, or final buffer draining fails
+its regression. Final source qualification passes 516 tests and all seven
+exact-package/MSRV phases pass with 521 tests (57 ignored profiles each), plus
+storage, wire, and mixed-version TLS compatibility on Rust 1.88.0. Strict
+consumer lint/docs, formatting, size checks, and zrail pass without a lock change.
+
+Still required before freezing this API: streamed journal append and recovery,
+and broader interrupted/crash-safe publication qualification. The inline
+snapshot builder, journal append, and journal opening still materialize buffers.
+Current/restored models, adoption, and compaction remain proportional to
+configured state bounds. Deterministic file-fault tests do not establish physical
+power-loss behavior or qualify these remaining paths.
 
 One prerequisite is now fixed in the ledger consumer's existing schema decoder:
 untrusted account/session counts previously reached `Vec::with_capacity` before

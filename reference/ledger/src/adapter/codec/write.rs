@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{BusinessRejection, Command, Ledger, Mutation, MutationResult};
 
-pub(super) trait Output {
+pub(crate) trait Output {
     type Error;
     fn emit(&mut self, bytes: &[u8]) -> Result<(), Self::Error>;
 }
@@ -41,9 +41,10 @@ impl<W: Write> Output for Sink<'_, W> {
     }
 }
 
-pub(crate) enum SnapshotEncodingError {
+#[derive(Debug)]
+pub(crate) enum SnapshotEncodingError<E = io::Error> {
     Codec(LedgerCodecError),
-    Sink(io::Error),
+    Sink(E),
 }
 
 pub(crate) fn encode_snapshot(at: u64, ledger: &Ledger) -> Result<Vec<u8>, LedgerCodecError> {
@@ -58,8 +59,16 @@ pub(crate) fn encode_snapshot_stream(
     at: u64,
     ledger: &Ledger,
 ) -> Result<(), SnapshotEncodingError> {
+    encode_snapshot_with(&mut Sink(sink), at, ledger)
+}
+
+pub(crate) fn encode_snapshot_with<O: Output>(
+    sink: &mut O,
+    at: u64,
+    ledger: &Ledger,
+) -> Result<(), SnapshotEncodingError<O::Error>> {
     let counts = counts(ledger).map_err(SnapshotEncodingError::Codec)?;
-    snapshot(&mut Sink(sink), at, ledger, counts).map_err(SnapshotEncodingError::Sink)
+    snapshot(sink, at, ledger, counts).map_err(SnapshotEncodingError::Sink)
 }
 
 fn counts(ledger: &Ledger) -> Result<(u32, u32), LedgerCodecError> {

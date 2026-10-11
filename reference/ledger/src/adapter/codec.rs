@@ -4,7 +4,9 @@ mod input;
 mod read;
 mod snapshot;
 mod write;
-pub(crate) use write::{encode_snapshot, encode_snapshot_stream, SnapshotEncodingError};
+pub(crate) use write::{
+    encode_snapshot, encode_snapshot_stream, encode_snapshot_with, Output, SnapshotEncodingError,
+};
 
 use read::Cursor;
 pub(crate) use snapshot::{decode_snapshot, decode_snapshot_stream, snapshot_payload_limit};

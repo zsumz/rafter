@@ -215,10 +215,31 @@ staging must be discarded. Public tests preserve independent v1 vectors and
 encode a 131,072-account ledger into a counting sink in at most 130 calls, each
 at most 16 KiB, with an independently computed length and CRC32.
 
-The existing inline builder still returns an application snapshot buffer.
-Journal publication still builds a whole image, and journal opening still reads
-the journal into memory. Their streaming and crash qualification remain separate
-work; the model itself remains proportional to configured state bounds.
+Journal replacement for installation and compaction now streams as well. The
+v1 begin record needs the image's length and checksum first, so one pass measures
+the borrowed model and a second emits it through one 16 KiB staging buffer.
+The model cannot change between passes. A frame that exceeds its u32 length field
+is refused before a write plan begins. Fixed-size begin/commit records are shared
+with append encoding, and valid v1 bytes are unchanged.
+
+Replacement still drains staged bytes, syncs the file, renames the one staging
+name, and syncs the directory before adopting state and floor. Every byte cut of
+a small real image, cuts across multiple buffer boundaries, and the existing
+sync/rename cuts exercise old-or-new recovery. A failed attempt poisons the store
+and requires reopening, including a failure after rename. These deterministic
+faults and ordinary reopen checks do not simulate physical power loss.
+
+Both store publication entry points also require the incoming model's resource
+configuration to equal the journal's. Even an empty foreign model is refused:
+adopting it would change the bounds governing future mutations. A reproduced
+pre-fix case acknowledged a foreign client slot, then could not reopen the
+journal. Refusal now preserves the file, floor, health, and next write-plan
+ordinal. Existing format/configuration errors remain the public taxonomy.
+
+The inline snapshot builder and journal append still construct complete encoded
+buffers, and journal opening still reads the whole journal. Model adoption and
+compaction retain state clones proportional to configured bounds. Streaming
+those remaining paths and broader crash qualification remain separate work.
 
 The durable adapter's application transaction must atomically persist:
 

@@ -69,9 +69,9 @@ pub enum LedgerStoreError {
         journal_max_clients: u32,
         /// Account bound recorded in the journal header.
         journal_max_accounts: u64,
-        /// Client-slot bound the caller opened with.
+        /// Client-slot bound the caller opened or offered a model with.
         requested_max_clients: u32,
-        /// Account bound the caller opened with.
+        /// Account bound the caller opened or offered a model with.
         requested_max_accounts: u64,
     },
     /// The journal holds a frame recovery cannot show an interrupted append left.
@@ -199,7 +199,7 @@ impl fmt::Display for LedgerStoreError {
             } => write!(
                 formatter,
                 "journal was created for {journal_max_clients} clients and {journal_max_accounts} accounts, \
-                 but was opened for {requested_max_clients} clients and {requested_max_accounts} accounts"
+                 but the requested bounds are {requested_max_clients} clients and {requested_max_accounts} accounts"
             ),
             Self::UnreadableFrame {
                 offset,
