@@ -1,5 +1,6 @@
 //! Verifier-owned planning and execution of registered detector fixtures.
 
+mod admission;
 mod artifact;
 mod assessment;
 mod compiler;
@@ -54,29 +55,26 @@ pub(in crate::verification) fn execute(
     source_ref: &str,
     deadlines: ReplayDeadlines,
 ) -> Result<DetectorReplayAssessment, Box<dyn Error>> {
-    #[cfg(target_os = "linux")]
-    let attempt = match execution::compile(
-        replay,
-        source,
-        contract,
-        profile,
-        source_ref,
-        deadlines.work(),
-    ) {
-        Ok(compilation) => {
-            let fixtures =
-                fixture::execute(replay, &compilation, source, contract, deadlines.work());
-            result::DetectorReplayAttempt::Completed(Box::new(result::DetectorReplayRun {
-                compilation,
-                fixtures,
-            }))
+    let attempt = admission::run(|| {
+        match execution::compile(
+            replay,
+            source,
+            contract,
+            profile,
+            source_ref,
+            deadlines.work(),
+        ) {
+            Ok(compilation) => {
+                let fixtures =
+                    fixture::execute(replay, &compilation, source, contract, deadlines.work());
+                result::DetectorReplayAttempt::Completed(Box::new(result::DetectorReplayRun {
+                    compilation,
+                    fixtures,
+                }))
+            }
+            Err(failure) => result::DetectorReplayAttempt::CompilationFailed(failure),
         }
-        Err(failure) => result::DetectorReplayAttempt::CompilationFailed(failure),
-    };
-    #[cfg(not(target_os = "linux"))]
-    let attempt = result::DetectorReplayAttempt::CompilationFailed(Box::new(
-        execution::CompilationFailure::unsupported_platform(),
-    ));
+    });
     artifact::publish_attempt(
         replay,
         attempt,

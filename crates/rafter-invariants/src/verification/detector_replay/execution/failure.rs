@@ -15,7 +15,6 @@ pub(in crate::verification::detector_replay) struct CompilationFailure {
 }
 
 impl CompilationFailure {
-    #[cfg(not(target_os = "linux"))]
     pub(in crate::verification::detector_replay) fn unsupported_platform() -> Self {
         Self::setup("detector replay requires descriptor-bound executable launch on Linux")
     }

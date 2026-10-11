@@ -107,6 +107,9 @@ pub(crate) fn assert_unique_paths(paths: &[String]) -> Result<(), String> {
 
 pub(crate) fn assert_pr_launcher_inventories(workflow: &str) {
     let launcher = job_block(workflow, "invariants-launcher-macos");
+    assert!(launcher.contains("components: clippy"));
+    assert!(launcher.contains("cargo clippy --locked --workspace --all-targets -- -D warnings"));
+    assert!(launcher.contains("scripts/cargo-test-exact 1 verification::detector_replay::admission::tests --locked -p rafter-invariants"));
     for exact_inventory in [
         "scripts/cargo-test-exact 64 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1",

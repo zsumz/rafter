@@ -37,8 +37,20 @@ their separate Rust 1.97.1 installation requirement.
 
 Run logs are retained under `target/release-readiness/` in this checkout;
 `lint-receipt.json` is the local lint graph's machine-readable receipt.
-The Linux-only invariant executor emits dead-code warnings on macOS; the
-repository already excludes it from the macOS Clippy lane.
+The candidate now passes strict whole-workspace Clippy on macOS, including the
+private invariant verifier. Its former compile-time platform gate removed the
+sole caller of the shared replay pipeline and produced dead-code errors. A
+constant platform check now keeps that pipeline type-checked while refusing
+non-Linux replay before compilation or fixture effects. The macOS CI launcher
+job and local `clippy-macos` task both lint the entire workspace. A platform
+regression requires refusal without effects on macOS and exactly one backend
+attempt on Linux; this does not enable or qualify Linux replay on macOS.
+Local validation passes 36 replay tests, 53 architecture/CI/source guards, and
+the exact 64-case process inventory (60 executed, four existing cases reserved
+for Linux-authoritative timing evidence). Deliberately bypassing platform
+admission fails the new regression. The candidate lock records only inventory,
+macro input, and qualification input changes for this slice, with no new grants;
+maintainer architecture approval remains required.
 
 One local qualification issue was reproduced: verifier tests created
 `crates/rafter-invariants/target/` without `CACHEDIR.TAG`, and a subsequent zrail

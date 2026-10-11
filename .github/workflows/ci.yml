@@ -344,6 +344,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -351,6 +353,8 @@ jobs:
           cache-bin: false
       - name: Prefetch locked registry for offline source identity
         run: cargo fetch --locked
+      - name: Strict workspace lint on macOS
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Validate managed process launcher on macOS
         id: launcher-validation
         env:
@@ -359,6 +363,7 @@ jobs:
           set -o pipefail
           mkdir -p target/rafter-invariants/ci-diagnostics
           {
+            scripts/cargo-test-exact 1 verification::detector_replay::admission::tests --locked -p rafter-invariants -- --test-threads=1
             scripts/cargo-test-exact 64 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1
             scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1
             scripts/cargo-test-exact 4 producer::test_exec::detector_proof::tests --locked -p rafter-invariants -- --test-threads=1

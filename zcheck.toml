@@ -7,10 +7,9 @@
 # are slow and, for the invariant evidence, Linux-authoritative — scheduled CI
 # remains the authority for those, per docs/work-completion.md.
 #
-# Platform honesty: workspace-wide clippy is Linux-only because the invariant
-# evidence executor's descriptor-bound launch path compiles only on Linux and
-# dead-codes elsewhere; macOS runs the same lints over every other crate. The
-# skipped branch stays visible in the plan instead of claiming Linux proof.
+# Both supported hosts lint the complete workspace. The invariant executor's
+# descriptor-bound replay still admits execution only on Linux; macOS lint and
+# launcher tests do not qualify the Linux-authoritative evidence lanes.
 
 schema = 1
 default = "check"
@@ -35,34 +34,16 @@ tools = ["cargo"]
 resources = ["fuzz-target"]
 
 [tasks.clippy]
-description = "Run workspace Clippy with warnings denied; Linux-only because the invariant launcher dead-codes on other hosts."
+description = "Run workspace Clippy with warnings denied on Linux."
 platforms = ["linux"]
 run = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
 tools = ["cargo"]
 resources = ["cargo-target"]
 
 [tasks.clippy-macos]
-description = "Run Clippy with warnings denied over every crate except the Linux-gated invariant tooling."
+description = "Run workspace Clippy with warnings denied on macOS."
 platforms = ["macos"]
-run = [
-  "cargo", "clippy",
-  "-p", "rafter",
-  "-p", "rafter-app",
-  "-p", "rafter-codec",
-  "-p", "rafter-crc32",
-  "-p", "rafter-invariant-test",
-  "-p", "rafter-invariant-test-macros",
-  "-p", "rafter-maelstrom",
-  "-p", "rafter-multiraft",
-  "-p", "rafter-runtime",
-  "-p", "rafter-runtime-api",
-  "-p", "rafter-service",
-  "-p", "rafter-sim",
-  "-p", "rafter-storage",
-  "-p", "rafter-transport-tcp-insecure",
-  "-p", "rafter-transport-tls",
-  "--all-targets", "--", "-D", "warnings",
-]
+run = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
 tools = ["cargo"]
 resources = ["cargo-target"]
 
