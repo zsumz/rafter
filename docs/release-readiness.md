@@ -930,6 +930,18 @@ with RUSTSEC-2026-0285. The existing 28 CI contracts and all ten immutable actio
 pin checks pass. The audit gate's three source files are content-addressed by
 the architecture contract without adding dependency grants or adoption debt.
 
+A separate complete-workspace audit found quick-xml 0.39.4 affected by
+[RUSTSEC-2026-0194](https://rustsec.org/advisories/RUSTSEC-2026-0194.html) and
+[RUSTSEC-2026-0195](https://rustsec.org/advisories/RUSTSEC-2026-0195.html).
+It is only a dev dependency of the unpublished invariant verifier, used by one
+generated-JUnit parseability test through a plain `Reader`; that use does not
+iterate attributes or resolve namespaces. The requirement and lock now select
+patched 0.41.0 (dependency MSRV 1.79), without changing public dependencies.
+The full 272-package workspace lock, including 256 registry packages, now passes
+the same strict audit with no exclusions. All three report tests preserve the
+golden formats, escaping and complete invariant coverage. The separate benchmark,
+fuzz and reference workspaces are outside this root-lock assessment.
+
 ## Suggested sequence
 
 1. Finish hosted evidence for the repaired CI and reconcile PR #13 with the
