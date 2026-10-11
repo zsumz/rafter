@@ -2,7 +2,7 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "7691744f07f9fabec9c1f60c5acd577188c6bdca4d2b8885ae2a7540779e05cf"
+contract_sha256 = "9efa271a43e0647d7963e9b3f40ead54acfc0590de18beecaeb48f8a229d0dd5"
 
 [analysis]
 inventory_sha256 = "197e3742d1ffa3e3e220ba8667b88c70557b5a154536fdc528dadaa1504d767a"
@@ -28,7 +28,7 @@ sha256 = "9259ae9e9f531ebd96eb0f449385e3dd80c795aef987588b244eb06b2bb5bb0e"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "d2c9d0a28393711cb0cb8f361e2101d9d3c2799022b9ba8a73ea99ab289afed1"
+sha256 = "c3c150b967a95273cdcab212febd2cdd9300674ff7ffe764c89e4b20a461fbb2"
 
 [[package]]
 name = "rafter"
@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "10c0b579415628f83b9b1710150af56f12f751e10f22451e13df3468275eee0b"
+sha256 = "18ebb0ce868f089a9eab9d35aef4d7a0afc824be2e0ef230458a83c8ed5ef3ff"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1272,8 +1272,16 @@ path = "scripts/audit-published-dependencies"
 sha256 = "606d7bfd9710396ec7ce09dd6551f656eb5b011e5bb6ca88e9ecb31022e28b51"
 
 [[gate.input]]
+path = "scripts/check-public-api"
+sha256 = "b39f0399a94640bfece882f33842854bb025393174d6dc1fc8a682cc99e691c7"
+
+[[gate.input]]
 path = "scripts/invariants-pr-preflight"
 sha256 = "a5f1d1036378a673269addb26223ee593eb340bd11a36e0aff4a177cabc996c5"
+
+[[gate.input]]
+path = "scripts/public_api_check.py"
+sha256 = "bef9fa7fd1fb1e554d3f1377c69e7dd1c3eae0abc0cc67d53d08b4c28ec37d95"
 
 [[gate.input]]
 path = "scripts/published_dependency_audit.py"
@@ -1300,6 +1308,10 @@ path = "scripts/tests/test_invariant_runtime_setup.py"
 sha256 = "30e199304ad5cddd4f832d8ae4467d2cad6325653cbe9532dcbab95eebf31b72"
 
 [[gate.input]]
+path = "scripts/tests/test_public_api_check.py"
+sha256 = "d27403fa373882281008d8c7be8f13df719b48961fa5823f5453338672b822eb"
+
+[[gate.input]]
 path = "scripts/tests/test_published_dependency_audit.py"
 sha256 = "15b9bbee2fde6cf5d0800b14ab9a7e3152c4f41861df0e67cf832855c3de67b4"
 
@@ -1313,7 +1325,7 @@ sha256 = "d9cdce68c892ba18e227f77106f64df324df02ace62c727d02de89a6453a3561"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "c3604db06f25f6f858382574ed0b47d975aa560c7c9114e47c25514174499b3f"
+sha256 = "812081322b0e8ac79f6062b0eddfadfbcac97cfb2f1346fd67c2068ad65b8da4"
 
 [[gate]]
 name = "rustdoc"

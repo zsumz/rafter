@@ -6,7 +6,7 @@
 # repository settings, not in this file. Branch protection on `main` must
 # list these required status checks:
 #
-#   lint, current-stable, dependency-audit, zrail, zcheck, test, reference-source, reference-package, reference-package-msrv,
+#   lint, current-stable, public-api, dependency-audit, zrail, zcheck, test, reference-source, reference-package, reference-package-msrv,
 #   fuzz-smoke, counter-reference-fast, invariants-pr
 #
 # `reference-process` is deliberately absent from that list: it only runs on
@@ -45,6 +45,37 @@ defaults:
     shell: bash
 
 jobs:
+  public-api:
+    name: public-api
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Install the pinned source API checker
+        run: cargo install cargo-semver-checks --version 0.51.0 --locked
+      - name: Public API coverage and source identity controls
+        run: python3 -m unittest scripts/tests/test_public_api_check.py
+      - name: Compare every public crate with the published alpha
+        run: python3 scripts/check-public-api --artifacts target/public-api-ci
+      - name: Upload source API evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: public-api-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/public-api-ci/
+          if-no-files-found: error
+          retention-days: 30
+
   dependency-audit:
     name: dependency-audit
     runs-on: ubuntu-24.04

@@ -50,6 +50,11 @@ multiplexed peer connection.
 - `public_api_docs_guard` remains the source-policy gate for intentional enum
   exhaustiveness, untracked public-doc TODO/FIXME markers, risky library
   macros, and the reviewed invariant allowlist.
+- `scripts/check-public-api` compares every public crate against published
+  `0.0.2-alpha.1` with default and all features. It retains the current working
+  source snapshot and requires complete, unsuppressed patch-level comparisons
+  from the pinned checker. CI `public-api` covers the Linux host target;
+  other targets and feature combinations remain separate qualification.
 - `managed_policy_boundary` rejects scheduler dependencies on consumer
   schemas, lifecycle-retention policy, authentication/certificate policy,
   unpublished simulation hooks, and test-only observation surfaces.
@@ -65,7 +70,7 @@ multiplexed peer connection.
 
 | Tier | Stable jobs and commands | Claim |
 | --- | --- | --- |
-| Every pull request | CI `lint`, `current-stable`, `dependency-audit`, `test`, `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` | Workspace quality; current-stable workspace and optional durable builds; public dependency advisories across all features and a separate complete-workspace audit; source and exact-package deterministic consumers; process-inventory membership; published-shape Rust 1.88; fast scheduler profile; deterministic 44-invariant aggregate |
+| Every pull request | CI `lint`, `current-stable`, `public-api`, `dependency-audit`, `test`, `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` | Workspace quality; current-stable workspace and optional durable builds; published source API comparisons; public dependency advisories across all features and a separate complete-workspace audit; source and exact-package deterministic consumers; process-inventory membership; published-shape Rust 1.88; fast scheduler profile; deterministic 44-invariant aggregate |
 | Push to main | CI `reference-process` and `reference-package-process` | Every reviewed durable process suite in source and exact-package shapes |
 | Nightly | Nightly `reference-process`, `burn-in`, `invariants-nightly`, `invariants-maelstrom`, `multi-gigabyte-test`, and `counter-reference-nightly` | Process rerun, burn-in, randomized/replayable invariant evidence, real pinned Maelstrom, bounded multi-gigabyte snapshot streaming, and the 1,024-group scheduler profile |
 | Weekly | Weekly `invariants-weekly`, `invariants-maelstrom`, and `counter-reference-weekly` | Deep tests/model checking, storage and snapshot histories, three-trial pinned Maelstrom, and the retained 4,096-group scheduler profile |
@@ -118,6 +123,7 @@ not display names.
 
 ```text completion-manifest
 script scripts/rustdoc-check
+script scripts/check-public-api
 script scripts/check-counter-guide
 script scripts/audit-published-dependencies
 script scripts/reference-source-check
@@ -129,6 +135,7 @@ script scripts/maelstrom-lin-kv
 script scripts/raft-burn-in
 workflow-job .github/workflows/ci.yml lint
 workflow-job .github/workflows/ci.yml current-stable
+workflow-job .github/workflows/ci.yml public-api
 workflow-job .github/workflows/ci.yml dependency-audit
 workflow-job .github/workflows/ci.yml test
 workflow-job .github/workflows/ci.yml invariants-maelstrom

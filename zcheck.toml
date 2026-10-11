@@ -147,6 +147,7 @@ needs = [
   "durable-bench-tests",
   "policy-tools",
   "runtime-setup-tests",
+  "public-api-tests",
   "counter-guide",
   "counter-guide-pinned",
   "counter-pressure",
@@ -210,6 +211,17 @@ tools = ["rustc"]
 description = "Reject incomplete public dependency graphs and narrowed advisory reports. Requires Python 3.11+."
 run = ["python3", "-m", "unittest", "scripts/tests/test_published_dependency_audit.py"]
 tools = ["python3"]
+
+[tasks.public-api-tests]
+description = "Reject missing API comparisons, narrowed lints and changed source inputs. Requires Python 3.11+."
+run = ["python3", "-m", "unittest", "scripts/tests/test_public_api_check.py"]
+tools = ["python3"]
+
+[tasks.public-api]
+description = "Compare all public default/all-feature APIs with published 0.0.2-alpha.1. Requires Rust 1.97.1, cargo-semver-checks 0.51.0, Python 3.11+ and network."
+needs = ["public-api-tests"]
+run = ["python3", "scripts/check-public-api"]
+tools = ["rustup", "cargo", "cargo-semver-checks", "python3"]
 
 [tasks.dependency-audit]
 description = "Audit all public features and separately the complete workspace lock against fresh RustSec data. Requires cargo-audit 0.22.2, Python 3.11+, and network access."
@@ -287,7 +299,7 @@ tools = ["python3"]
 
 [tasks.full]
 description = "Qualify the checkout and every locally runnable deeper evidence lane."
-needs = ["check", "current-stable", "dependency-audit", "invariants-pr", "model-check", "reference-source", "reference-package"]
+needs = ["check", "current-stable", "public-api", "dependency-audit", "invariants-pr", "model-check", "reference-source", "reference-package"]
 
 # Performance evidence stays opt-in, separate from concurrent correctness work.
 [tasks.build-durable-bench]

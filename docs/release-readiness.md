@@ -313,8 +313,8 @@ Choose the supported storage modes before freezing them. The
 [storage contract](../crates/rafter-storage/STORAGE_FORMAT_V1.md) has independent
 RFHS, RFHJ, and shared WAL layouts with no implicit migration. A migration tool
 needs interruption/restart tests and a recoverable publication boundary.
-Retain the current format vectors and exact-archive consumer lanes; add a
-public API baseline that detects unintended breaking changes.
+Retain the current format vectors, exact-archive consumer lanes and published
+source API comparison gate to detect unintended breaking changes.
 
 An initial public-API comparison now covers all eleven crates against the
 explicit published `0.0.2-alpha.1` baseline, separately with default and all
@@ -326,7 +326,28 @@ numeric error-kind values. A downstream Rust 1.88 consumer reproduced
 variants preserves all 35 published write/read/transfer categories; a regression
 also preserves their ordering. Both full API comparisons now pass with no
 findings. This is source API evidence, not a Rust memory-layout or wire-encoding
-promise. The automated gate and supported target matrix remain follow-up work.
+promise.
+
+`scripts/check-public-api`, CI `public-api` and `zcheck run public-api` now run
+both comparisons against the public inventory shared with `RELEASE.md`. The
+runner snapshots current working files (including uncommitted additions and
+deletions), retains that source and its digests, and builds in isolation. It
+rejects lint overrides, warnings, missing/duplicate crate comparisons, narrowed
+lint counts and changed source inputs; failed runs retain diagnostics without a
+success receipt. The pinned tool's policy runs 229 lints and leaves 31 at its
+built-in allow level. Updating that policy or baseline requires review. The
+checker resolves its own documentation dependencies, so this gate does not
+replace the locked MSRV or exact-archive lanes. CI checks the Linux host target;
+other targets and feature combinations remain follow-up work. Branch protection
+must require the new job separately in repository settings.
+
+The checker is not a complete compatibility proof. A deliberate removal of
+the handwritten `Default` implementation for `RunningCrc32` passed its API
+comparison, while an ordinary Rust 1.88 downstream `Default::default()` consumer
+failed to compile. Its derived-trait lint does not cover that handwritten case.
+Supplemental compiler contracts are needed for such gaps. The actual enum
+regression above is detected by the automated gate, with no success receipt
+written on failure.
 
 The release branch now adds an initial
 [archive-based file-store matrix](storage-upgrades.md). It compiles identical

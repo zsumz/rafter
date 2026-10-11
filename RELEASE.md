@@ -26,6 +26,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 scripts/rustdoc-check
+scripts/check-public-api
 scripts/work-completion-check
 scripts/audit-published-dependencies --include-workspace
 scripts/reference-source-check
@@ -47,6 +48,18 @@ database identity alongside archive evidence. It rejects advisories and warnings
 without exclusions. The root workspace, including test/verifier dependencies,
 receives a separate audit and retained lock. Standalone benchmark/fuzz/reference
 locks and license policy need separate review.
+
+The source API gate requires Rust 1.97.1, cargo-semver-checks 0.51.0 (install with
+`cargo +1.97.1 install cargo-semver-checks --version 0.51.0 --locked`), Python
+3.11+, and network access. It compares all eleven public crates with the explicit
+published `0.0.2-alpha.1` baseline in default and all-feature modes. Patch-level
+policy detects unintended breaks even while the candidate still has its alpha
+version. Retain its source snapshot, tool/compiler identity and complete raw
+reports. CI checks its Linux host; local runs check their recorded host target.
+Other feature combinations and targets require separate qualification. This is
+source API evidence, not a Rust ABI, behavior, wire or storage compatibility proof.
+Known checker gaps, including handwritten trait implementation removal, require
+supplemental downstream compiler contracts; see [release readiness](docs/release-readiness.md).
 
 The scheduled `invariants-nightly`, `invariants-weekly`, and pinned Maelstrom
 jobs remain the authoritative Linux evidence for their full profiles. The
