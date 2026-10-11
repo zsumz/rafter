@@ -18,6 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod compaction;
+mod mixed_load;
 mod snapshot;
 
 type Driver = DurableRaftDriver<
@@ -92,46 +93,49 @@ impl Managed {
         }
         .close();
     }
+    fn turn(&mut self, polls: usize) {
+        for (driver, link) in &mut self.nodes {
+            for _ in 0..polls {
+                match driver.poll_next().unwrap() {
+                    ServicePoll::Pending => break,
+                    ServicePoll::Event(ServiceEvent::InstallSnapshot {
+                        snapshot,
+                        application,
+                    }) => {
+                        let id = driver.handle().metrics().unwrap().current().node_id;
+                        let floor = snapshot.metadata.last_included_index;
+                        snapshot::install(driver, snapshot, application);
+                        self.installs.push((id, floor));
+                    }
+                    ServicePoll::Event(ServiceEvent::ApplicationFailed(failure)) => {
+                        panic!("managed application failed: {failure:?}")
+                    }
+                    _ => {}
+                }
+            }
+            if driver.state() == ServiceState::Ready {
+                for frame in link.inbound().drain(1).unwrap() {
+                    assert_eq!(frame.group_id, link::GROUP);
+                    assert_eq!(frame.raft_to, driver.ready_node().unwrap().id());
+                    assert_eq!(frame.authenticated_peer, link::peer(frame.raft_from.0));
+                    if let Message::InstallSnapshotChunk(chunk) = &frame.message {
+                        assert!(chunk.chunk.len() <= 64 * 1024);
+                        self.chunks.push((frame.raft_to, chunk.offset));
+                    }
+                    driver
+                        .try_step(Input::Message {
+                            from: frame.raft_from,
+                            message: frame.message,
+                        })
+                        .unwrap();
+                }
+            }
+        }
+    }
     fn until(&mut self, mut done: impl FnMut(&Self) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(15);
         while !done(self) {
-            for (driver, link) in &mut self.nodes {
-                for _ in 0..64 {
-                    match driver.poll_next().unwrap() {
-                        ServicePoll::Pending => break,
-                        ServicePoll::Event(ServiceEvent::InstallSnapshot {
-                            snapshot,
-                            application,
-                        }) => {
-                            let id = driver.handle().metrics().unwrap().current().node_id;
-                            let floor = snapshot.metadata.last_included_index;
-                            snapshot::install(driver, snapshot, application);
-                            self.installs.push((id, floor));
-                        }
-                        ServicePoll::Event(ServiceEvent::ApplicationFailed(failure)) => {
-                            panic!("managed application failed: {failure:?}")
-                        }
-                        _ => {}
-                    }
-                }
-                if driver.state() == ServiceState::Ready {
-                    for frame in link.inbound().drain(1).unwrap() {
-                        assert_eq!(frame.group_id, link::GROUP);
-                        assert_eq!(frame.raft_to, driver.ready_node().unwrap().id());
-                        assert_eq!(frame.authenticated_peer, link::peer(frame.raft_from.0));
-                        if let Message::InstallSnapshotChunk(chunk) = &frame.message {
-                            assert!(chunk.chunk.len() <= 64 * 1024);
-                            self.chunks.push((frame.raft_to, chunk.offset));
-                        }
-                        driver
-                            .try_step(Input::Message {
-                                from: frame.raft_from,
-                                message: frame.message,
-                            })
-                            .unwrap();
-                    }
-                }
-            }
+            self.turn(64);
             assert!(
                 Instant::now() < deadline,
                 "managed handle TLS cluster stalled"

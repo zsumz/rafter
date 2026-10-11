@@ -921,6 +921,15 @@ either fixed scheduling priority fails with the corresponding starvation
 verdict. This is a bounded regression with real workers and in-memory stores
 and links; physical disk/TLS soak and latency qualification remain separate.
 
+The independent ledger consumer now completes 128 deposits alongside 128
+local/quorum reads through real file stores, application journals and mutual TLS.
+Two-request windows stay replenished; excess reads and writes must report
+backpressure. The scenario checks receipt identity, read freshness and quorum
+views against the complete acknowledged history, converges all replicas, compacts
+their snapshots and reopens under a different leader. Retrying the final deposit
+must preserve the balance without applying it twice. This is a bounded,
+single-host correctness case, not a sustained performance or physical-fault claim.
+
 The same backlog review reproduced a control-plane liveness defect: a full
 local-read stream could indefinitely postpone an accepted or rejected leadership
 transfer reply. The driver now drains the transfer's already-admitted effects

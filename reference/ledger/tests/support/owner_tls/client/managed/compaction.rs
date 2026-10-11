@@ -14,8 +14,10 @@ use std::time::{Duration, Instant};
 
 impl Managed {
     pub(super) fn compact_all(&mut self, floor: LogIndex) {
+        // Three replicas can each retire the 128-operation load plus setup
+        // before the drop thread returns any credits.
         let mut retirement =
-            LogRetirementWorker::start(LogRetirementWorkerOptions::new(64, 256 * 1024)).unwrap();
+            LogRetirementWorker::start(LogRetirementWorkerOptions::new(512, 256 * 1024)).unwrap();
         for (driver, _) in &mut self.nodes {
             let metrics = driver.handle().metrics().unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
