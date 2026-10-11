@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::super::ManagedInternalProcess;
+use super::super::{ManagedInternalProcess, ProcessLeaseState};
 
 /// Teardown allowance for bounded internal commands in tests.
 ///
@@ -35,13 +35,14 @@ pub(crate) fn inject_next_internal_drain_errors(count: usize) {
     INJECT_NEXT_DRAIN_ERROR.with(|inject| inject.set(count));
 }
 
-/// Hold the next completion check until the child has exited and its execution
-/// deadline has arrived.
+/// Hold the next completion check until the child has exited, its lifetime
+/// lease has released, and its execution deadline has arrived.
 ///
 /// Callers use this to reach the "clean exit classified after its deadline"
-/// ordering. Waiting for both facts avoids guessing whether a fixed delay is
-/// long enough for the child or accidentally classifying a fast child before
-/// the deadline.
+/// ordering. A direct child's exit alone cannot prove lineage completion:
+/// another concurrent fork may retain a close-on-exec lease writer until exec.
+/// Waiting for all three facts avoids guessing a delay or classifying a fast
+/// child before the deadline.
 pub(crate) fn await_next_internal_completion_after_deadline() {
     AWAIT_NEXT_COMPLETION_AFTER_DEADLINE.with(|await_completion| await_completion.set(true));
 }
@@ -104,9 +105,9 @@ pub(super) fn await_completion_boundary_if_requested(
     {
         return Ok(());
     }
-    while !process.exit_observed()? {
+    while !process.exit_observed()? || process.lifetime_state()? != ProcessLeaseState::Released {
         if Instant::now() >= lifecycle_deadline {
-            return Err("internal command did not exit before its absolute deadline".into());
+            return Err("internal command did not finish before its absolute deadline".into());
         }
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -129,3 +130,6 @@ pub(super) fn inject_drain_error_if_requested() -> std::io::Result<()> {
         Err(std::io::Error::other("injected internal drain failure"))
     })
 }
+
+#[cfg(unix)]
+mod tests;

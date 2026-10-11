@@ -122,7 +122,7 @@ pub(crate) fn assert_pr_launcher_inventories(workflow: &str) {
     assert!(upload.contains("target/rafter-invariants/ci-diagnostics/"));
     assert!(launcher.contains("scripts/cargo-test-exact 1 verification::detector_replay::admission::tests --locked -p rafter-invariants"));
     for exact_inventory in [
-        "scripts/cargo-test-exact 64 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 65 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 8 artifact_verify::test_logs::tests --locked -p rafter-invariants -- --test-threads=1",
     ] {

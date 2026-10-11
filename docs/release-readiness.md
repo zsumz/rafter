@@ -295,6 +295,16 @@ model/checker corrections and the repaired qualification pipeline at that exact
 checkpoint. Later library changes still need a fresh complete candidate run;
 this result does not qualify the current branch tip by inheritance.
 
+A later [PR test job at `275a876f`](https://github.com/zsumz/rafter/actions/runs/38147347821/job/114493483985)
+exposed an observer-fixture ordering gap: the late-completion hook waited for
+direct-child exit, but not release of its inherited lifetime lease. A concurrent
+fork can retain a close-on-exec writer after that child exits. The test-only hook
+now waits for both facts within its existing lifecycle deadline. A held-lease
+regression fails the old hook and passes after release with the corrected hook.
+Production deadline/cleanup behavior and the original timeout, retained-output,
+and no-signal assertions are unchanged; the exact process inventory now has 65
+scenarios.
+
 **Acceptance:** all required jobs pass in one attempt at the candidate SHA;
 all 44 verdicts have current evidence; the process failure test repeatedly
 establishes its fault ordering under load. Rerun every invariant producer and
