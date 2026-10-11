@@ -493,11 +493,32 @@ independent ledger consumer exercises terminal notification through public APIs.
 The tests also preserve the first of multiple panics and verify reentrant
 observation, visible state, registration cleanup, and subsequent publication.
 
-Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
-The feature lane requires exactly 367 tests in both CI and zcheck.
+The optional `DurableRaftDriver` now owns the client backend and an existing
+transport sender while `DurableCommandSender` implements the managed handle
+contract. Group validation precedes admission, and read proofs retain their
+actual grant/floor under the chosen group identity. Metrics watches preserve
+the last genuine snapshot during ownership handoffs. A single retained transfer
+slot covers queued, submitted, and uncollected work; acknowledgement follows
+immediate output routing, and backend release preserves uncertainty through
+`Unconfirmed`. Duplicate and canceled shutdown requests cannot finish before
+backend release. Disposal catches each callback panic separately so all clients
+and watchers are notified before the first panic resumes.
 
-Local qualification passes 327 default service tests, 367 with `durable`, 538
-source-consumer tests, and 543 archive/MSRV consumer tests on Rust 1.88.0.
+Seventeen public group tests exercise real workers and quorum traffic, including
+snapshot installation during shutdown, attachment refusal preserving resources,
+cancellation and credits, transport loss followed by a durable write, and
+backend/transport/metrics/terminal callback failures. Seven deliberately weakened
+variants fail their regressions: wrong-group admission, early transfer success,
+an enlarged control slot, early duplicate shutdown, terminal notification before
+backend release, lost transfer uncertainty, and a lowered proof floor.
+The independent ledger consumer adopts the full handle over TLS through writes,
+reads, leadership transfer, shutdown, and cold reopen. Inbound authentication, membership policy,
+snapshot installation, and link lifecycle remain explicit embedding duties.
+Managed membership and adoption by the full TLS process consumer remain open.
+The feature lane requires exactly 384 tests in both CI and zcheck.
+
+Local qualification passes 327 default service tests, 384 with `durable`, 539
+source-consumer tests, and 544 archive/MSRV consumer tests on Rust 1.88.0.
 The 23 managed write/read tests also pass 64 repetitions across four concurrent
 runners (1,472 executions). Consumer lanes retain their 57 explicitly ignored
 cases for dedicated qualification. Strict docs and Clippy, 105 source/API/CI

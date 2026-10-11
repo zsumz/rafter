@@ -194,6 +194,8 @@ fn every_transfer_leadership_error() -> Vec<TransferLeadershipError> {
             reason: LeadershipTransferRejection::TargetNotVoter,
             leader_hint: None,
         },
+        TransferLeadershipError::Backpressure,
+        TransferLeadershipError::Unconfirmed,
         TransferLeadershipError::WrongGroup,
         TransferLeadershipError::Storage {
             cause: ErrorCause::new(TestCause("disk full")),

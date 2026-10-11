@@ -20,7 +20,7 @@
 
 /// Managed driver implementations and command-sender traits.
 pub mod driver;
-/// Bounded client writes owned by the asynchronous durable service.
+/// Bounded durable clients and a transport-attached managed handle.
 #[cfg(feature = "durable")]
 pub mod durable;
 /// Public service-layer error types.

@@ -1,5 +1,6 @@
 //! Managed client adoption through only public package APIs and real TLS.
 mod cluster;
+mod managed;
 mod replica;
 use super::config;
 use cluster::Cluster;

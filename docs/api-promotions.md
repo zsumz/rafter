@@ -13765,3 +13765,23 @@ any one of the three lands alone.
     This additive method imposes no new snapshot schema or whole-payload buffer;
     `rafter-app::ApplicationSnapshot` streaming policy is still a separate API
     decision, and the maintenance operation itself remains synchronous.
+
+34. **Managed handle over the durable owner and existing transport.**
+    The default-off service `durable` feature adds `DurableRaftDriver`,
+    `DurableCommandSender`, and the `DurableRaftHandle` alias. Attachment consumes
+    the unique client owner and an already configured `RaftTransport`; the typed
+    `DurableDriverAttachError` returns both on refusal. Encoded write/read bounds
+    and durable receipts stay with that owner. Group validation precedes admission,
+    and proof remapping preserves the actual grant term and application floor.
+    A single retained transfer slot reports additive `Backpressure` and
+    `Unconfirmed` errors rather than inventing acceptance or refusal. Raw transfer
+    input is refused while the driver owns correlation. Shutdown coalesces its
+    lifetime through the metrics close signal: duplicates await backend release
+    before `AlreadyShutDown`, and cancellation cannot revoke shutdown. Watches
+    retain genuine observations through ownership gaps; subscriber counts remain
+    embedding-owned. Panic isolation spans backend disposal and all notifications.
+    Real-worker/quorum regressions and a public TLS ledger consumer adopt the
+    complete handle through durable writes, queries, transfer, shutdown, and
+    reopen. Authentication, membership policy, snapshot installation, and link
+    lifecycle remain explicit embedding duties. Storage and wire formats are
+    unchanged; process-consumer adoption remains separate work.

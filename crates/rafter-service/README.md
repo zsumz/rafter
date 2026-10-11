@@ -94,10 +94,34 @@ the store, or the backend has been released. Reading metrics drives no work and
 proves no quorum. Collecting or dropping a result notifies the owner after
 releasing the future's ownership; credits still held by the owner remain charged.
 
-Managed membership operations and `DriverCommandSender` integration remain
-follow-up work. The independent ledger consumer exercises writes and reads over
-real TLS and file stores, including withheld quorum, paused durable application
-work, cancellation, shutdown, and read-your-writes after cold reopen.
+`durable::DurableRaftDriver::attach(group_id, owner, transport)` adds the existing
+`RaftHandle` API through `DurableCommandSender`. Use the configured transport's
+sender (for example, `TlsPeerTransport::sender()`). Attachment needs an observable
+live owner and returns both resources on refusal. Commands and queries remain
+encoded bytes; each operation validates its group before admission, and read
+proofs carry that group identity. Polling routes outgoing frames through the
+existing `RaftTransport`; refused sends are counted as Raft message loss.
+
+One transfer request may remain retained, including an uncollected result.
+Additional requests receive `TransferLeadershipError::Backpressure`. Canceling a
+submitted request retains its credit through immediate output processing.
+Transfer success follows routing of its immediate effects and does not promise
+that the target has become leader. Backend release before confirmation reports
+`Unconfirmed` for submitted requests and `ShuttingDown` for queued requests.
+
+Handle shutdown closes admission, drains the owner, and completes after backend
+release. Duplicate shutdown calls also await release before returning
+`AlreadyShutDown`; canceling a shutdown future leaves the request in force.
+Outstanding snapshot installation must still be completed. Metrics watches
+retain the last genuine observation across worker/snapshot handoff and after
+closure. A caught transport or subscriber panic fences admission, and discarding
+the driver resolves the remaining clients even when several wakeups panic.
+
+The embedding owns inbound peer authentication and group validation, membership
+policy, atomic snapshot installation, and transport startup/join. Managed
+membership remains follow-up work. Independent ledger consumers exercise the
+owner and full handle over real TLS and file stores, including quorum and
+application fences, transfer, shutdown, and read-your-writes after cold reopen.
 
 ## Transport Delivery Semantics
 

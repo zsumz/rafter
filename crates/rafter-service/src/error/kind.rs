@@ -61,6 +61,10 @@ pub enum TransferLeadershipErrorKind {
     NotLeader,
     /// The Raft runtime rejected the transfer.
     Rejected,
+    /// Managed transfer admission is full.
+    Backpressure,
+    /// Backend release prevented request confirmation.
+    Unconfirmed,
     /// The request named another group.
     WrongGroup,
     /// Durable storage failed.

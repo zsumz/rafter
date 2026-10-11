@@ -18,16 +18,22 @@
 //! and honor the caller's freshness minimum. Canceled quorum rounds retain their
 //! credits until protocol completion or backend release. Local reads carry no
 //! quorum proof; lease reads are refused. Query results need an application bound.
-//! Membership ownership remains an embedding obligation; this is not yet a
-//! `DriverCommandSender`.
+//! [`DurableRaftDriver`](crate::durable::DurableRaftDriver) attaches a group identity and an existing transport,
+//! exposing the managed `RaftHandle` through [`DurableCommandSender`](crate::durable::DurableCommandSender). The
+//! embedding owns authenticated inbound routing, membership policy, snapshot
+//! installation, and transport lifecycle.
 
 mod budget;
+mod group;
 mod owner;
 mod read;
 mod reply;
 mod sender;
 mod shared;
 
+pub use group::{
+    DurableCommandSender, DurableDriverAttachError, DurableRaftDriver, DurableRaftHandle,
+};
 pub use owner::{DurableClientOwner, DurableClientStepError};
 pub use read::{DurableClientOptions, DurableReadLimits, DurableReadSender, DurableReadStats};
 pub use sender::DurableWriteSender;

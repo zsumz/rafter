@@ -207,6 +207,8 @@ pub enum DurableClientStepError {
     UnmanagedProposal(Box<Input>),
     /// Use the read sender; raw read IDs could collide with managed barriers.
     UnmanagedRead(Box<Input>),
+    /// A grouped driver owns transfer correlation; use its managed handle.
+    UnmanagedTransfer(Box<Input>),
     /// The underlying service's unchanged refusal or fatal failure.
     Service(ServiceStepError),
 }
