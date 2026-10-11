@@ -10,7 +10,7 @@ import tempfile
 import tomllib
 
 from published_dependency_audit import (
-    ADVISORY_URL, AUDIT_VERSION, audit_lock, digest, probe_manifest, public_packages,
+    AUDIT_VERSION, audit_lock, audit_policy, digest, probe_manifest, public_packages,
     validate_closure,
 )
 
@@ -51,9 +51,7 @@ def audit(artifacts, *, include_workspace=False):
         # A project-local config takes precedence over ~/.cargo/audit.toml.
         # Do not inherit a developer's advisory ignores or offline/target policy.
         (probe / ".cargo").mkdir()
-        (probe / ".cargo/audit.toml").write_text(
-            f'[database]\nurl = "{ADVISORY_URL}"\nfetch = true\nstale = false\n'
-            '[output]\ndeny = ["warnings"]\nquiet = false\n[yanked]\nenabled = true\n')
+        (probe / ".cargo/audit.toml").write_text(audit_policy())
         shutil.copyfile(probe / "Cargo.toml", artifacts / "consumer.toml")
         shutil.copyfile(probe / ".cargo/audit.toml", artifacts / "audit-policy.toml")
         # Only the temporary seed may be pruned. Reject any changed third-party

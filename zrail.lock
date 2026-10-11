@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "c05c508c3b9fdd25c295c4d26626a69f13fde11d94f7f234670ac5716075c0fc"
+sha256 = "7a0049984e7af020e42967c86397a6a2bc3f5bf0906e767e0a88cc8e4259a5ef"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1265,11 +1265,11 @@ sha256 = "7ae4cdd9c7d91b6d352fdc68d1e1daaa8780c803f1cadedb09245efc5084fa5a"
 
 [[gate.input]]
 path = "scripts/archive_dependencies.py"
-sha256 = "492a04cccfe45ddb4fab450c6225456c7fb03acb9d4e62e839b97ecaaf62c98e"
+sha256 = "061c7fb3d9763c7e193624e0fcc0597ef990919d5c32f8b95b5e7999c1259a77"
 
 [[gate.input]]
 path = "scripts/audit-published-dependencies"
-sha256 = "2f5d5e44fe62d462122c07b568995c527860ed693e1478beaf8b4d515c7e0ec2"
+sha256 = "606d7bfd9710396ec7ce09dd6551f656eb5b011e5bb6ca88e9ecb31022e28b51"
 
 [[gate.input]]
 path = "scripts/invariants-pr-preflight"
@@ -1277,7 +1277,7 @@ sha256 = "a5f1d1036378a673269addb26223ee593eb340bd11a36e0aff4a177cabc996c5"
 
 [[gate.input]]
 path = "scripts/published_dependency_audit.py"
-sha256 = "d036c2c8ff3c1ab4127d0f404671f39f913eeaeaeaa009edee7cc43945e6ca77"
+sha256 = "63ec18c9e87e0d5ca730b57f3a2ae5eadeff7498749e2fd12cfdc7c041d1c48c"
 
 [[gate.input]]
 path = "scripts/reference-package-check"
@@ -1293,7 +1293,7 @@ sha256 = "e82fc776949cd198e04885c066a33565fb1182f0e20b2aeac133b88175ea28e3"
 
 [[gate.input]]
 path = "scripts/tests/test_archive_dependencies.py"
-sha256 = "36a29415675c45a06134f35da29dfeb484029be6fd925cc0cc79032912ae35a9"
+sha256 = "ef11594cf8be27db8ef338d23fb7beb17e3f1abe4eec1e5661bd5a3a7a6ce711"
 
 [[gate.input]]
 path = "scripts/tests/test_invariant_runtime_setup.py"

@@ -922,8 +922,7 @@ lock before auditing. It retains the lock, graph, tool versions, exact manifest
 hashes and freshly fetched database identity. Missing roots/features, unexpected
 paths, changed versions/checksums, narrowed advisory settings, vulnerabilities,
 informational warnings and yanked packages fail. An explicit isolated policy
-prevents inherited developer exclusions. License policy still requires review;
-archive dependency auditing above was a separate manual qualification.
+prevents inherited developer exclusions. License policy still requires review.
 Eleven adversarial controls pass, and the real pre-fix rustls lock is rejected
 with RUSTSEC-2026-0285. The existing 28 CI contracts and all ten immutable action
 pin checks pass. The audit gate's three source files are content-addressed by
@@ -945,6 +944,18 @@ through `--include-workspace`. They retain separate public and workspace locks,
 raw reports, package counts and database identities. A clean public graph cannot
 mask a workspace advisory, checker failure or a changed audit input. Fourteen
 controls exercise those boundaries; neither graph uses advisory exclusions.
+
+Exact-archive dependency auditing is now executable in both per-PR package
+jobs. Offline package qualification retains the final lock/metadata pair and
+projects all public archives' normal/build dependencies, requiring every public
+feature. The separate online audit verifies that projection and its source
+hashes before and after inspection, with the same pinned checker and explicit
+policy as the source audit. It preserves the tested versions and checksums
+without resolving dependencies again. The 51-package archive graph, including
+40 registry packages, passes; 25 projection/audit controls cover substituted
+inputs, missing features/archives, private paths, changed evidence, checker
+failures and refusal to overwrite prior receipts. The seven offline MSRV and
+compatibility phases pass, with 545 tests and 57 existing ignored profiles.
 
 The reference workspace's sole advisory warning was the unmaintained
 `rustls-pemfile` dev dependency ([RUSTSEC-2025-0134](https://rustsec.org/advisories/RUSTSEC-2025-0134.html)).

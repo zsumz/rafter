@@ -5,9 +5,11 @@ import hashlib
 import json
 from pathlib import Path, PurePath
 import re
+import subprocess
+import tempfile
 import tomllib
 
-from published_dependency_audit import REGISTRY
+from published_dependency_audit import AUDIT_VERSION, REGISTRY, audit_lock, audit_policy
 
 
 def identity(package):
@@ -162,7 +164,7 @@ def hash_records(text):
     return result
 
 
-def prepare(artifacts, release):
+def derive(artifacts, release):
     """Consume retained inputs only: do not resolve Cargo or follow archive paths."""
     names = ("Cargo.resolved.lock", "consumer-metadata.json", "resolved-inputs.sha256",
              "package-sha256.txt", "crate-versions.txt", "metadata-boundary.txt")
@@ -215,6 +217,11 @@ def prepare(artifacts, release):
     receipt.update(schema=1, source_sha256={name: digest(data) for name, data in inputs.items()},
                    release_sha256=digest(release_bytes), archive_sha256=archive_hashes,
                    projected_lock_sha256=digest(projected.encode()))
+    return projected, receipt
+
+
+def prepare(artifacts, release):
+    projected, receipt = derive(artifacts, release)
     destination = artifacts / "public-dependencies"
     destination.mkdir(exist_ok=False)
     (destination / "Cargo.lock").write_text(projected)
@@ -222,17 +229,72 @@ def prepare(artifacts, release):
     return destination, receipt
 
 
+def verify_projection(artifacts, release):
+    """Reproduce the projection from retained inputs before trusting its lock."""
+    projected, expected = derive(artifacts, release)
+    destination = artifacts / "public-dependencies"
+    if destination.is_symlink() or not destination.is_dir():
+        raise ValueError("required public dependency projection is missing")
+    for name in ("Cargo.lock", "receipt.json"):
+        path = destination / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"required regular projection file missing: {name}")
+    if ((destination / "Cargo.lock").read_bytes() != projected.encode()
+            or json.loads((destination / "receipt.json").read_bytes()) != expected):
+        raise ValueError("retained projection differs from the exact archive inputs")
+    return destination, expected
+
+
+def audit(artifacts, release):
+    """Audit the verified retained graph online, without invoking Cargo resolution."""
+    projection, expected = verify_projection(artifacts, release)
+    projection_hash = digest((projection / "receipt.json").read_bytes())
+    destination = projection / "audit"
+    destination.mkdir(exist_ok=False)
+    versions = {}
+    for name, command in (("cargo", ["cargo", "--version"]),
+                          ("rustc", ["rustc", "--version", "--verbose"]),
+                          ("cargo-audit", ["cargo", "audit", "--version"])):
+        result = subprocess.run(command, capture_output=True)
+        (destination / f"{name}-version.txt").write_bytes(result.stdout)
+        (destination / f"{name}-version.stderr").write_bytes(result.stderr)
+        if result.returncode:
+            raise ValueError(f"{name} version probe failed (exit {result.returncode})")
+        versions[name] = result.stdout.decode().strip()
+    if versions["cargo-audit"].split()[-1] != AUDIT_VERSION:
+        raise ValueError(f"install cargo-audit {AUDIT_VERSION} with --locked")
+    policy = audit_policy()
+    (destination / "audit-policy.toml").write_text(policy)
+    with tempfile.TemporaryDirectory(prefix="rafter-archive-audit-") as temporary:
+        project = Path(temporary)
+        (project / ".cargo").mkdir()
+        (project / ".cargo/audit.toml").write_text(policy)
+        result = audit_lock(projection / "Cargo.lock", project, destination)
+    _, after = verify_projection(artifacts, release)
+    if (after != expected or digest((projection / "receipt.json").read_bytes()) != projection_hash):
+        raise ValueError("archive evidence changed during the audit")
+    receipt = dict(schema=1, status="passed", versions=versions,
+                   projection_receipt_sha256=projection_hash,
+                   policy_sha256=digest(policy.encode()), **result)
+    (destination / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    return destination, expected
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--release", type=Path,
                         default=Path(__file__).resolve().parents[1] / "RELEASE.md")
+    parser.add_argument("--audit", action="store_true",
+                        help="audit an existing verified projection using fresh online advisories")
     args = parser.parse_args()
     try:
-        destination, receipt = prepare(args.artifacts.resolve(), args.release)
+        operation = audit if args.audit else prepare
+        destination, receipt = operation(args.artifacts.resolve(), args.release)
     except (ValueError, KeyError, IndexError, TypeError, OSError) as error:
         raise SystemExit(f"FAIL: archive dependency projection: {error}") from error
-    print(f'PASS: {len(receipt["public_versions"])} public archives, '
+    verb = "audit" if args.audit else "projection"
+    print(f'PASS: archive dependency {verb}: {len(receipt["public_versions"])} public archives, '
           f'{receipt["package_count"]} packages, {receipt["registry_count"]} registry dependencies; '
           f'evidence: {destination}')
 

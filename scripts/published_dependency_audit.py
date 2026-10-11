@@ -13,6 +13,12 @@ REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 ADVISORY_URL = "https://github.com/RustSec/advisory-db"
 
 
+def audit_policy():
+    """Override inherited exclusions and require fresh advisories and yank checks."""
+    return (f'[database]\nurl = "{ADVISORY_URL}"\nfetch = true\nstale = false\n'
+            '[output]\ndeny = ["warnings"]\nquiet = false\n[yanked]\nenabled = true\n')
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 

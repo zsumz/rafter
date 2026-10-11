@@ -43,7 +43,7 @@ multiplexed peer connection.
 
 ## Public-surface and architecture completion
 
-- `scripts/rustdoc-check` builds the ten publishable crates together under
+- `scripts/rustdoc-check` builds the eleven publishable crates together under
   `-D warnings -D missing-docs`. This compiler backstop covers public variants,
   fields, trait methods, associated types, and re-exports. It then builds the
   full workspace under `-D warnings`.
@@ -57,7 +57,9 @@ multiplexed peer connection.
   archives they receive. They also execute the packaged fast durable-service
   reference. `rafter` now declares no features at all, so that shape is also
   what every workspace command builds; the lanes' rejection of hidden test
-  features remains as a standing boundary against reintroduction.
+  features remains as a standing boundary against reintroduction. The per-PR
+  package and MSRV jobs also audit their retained public dependency graphs,
+  separately from the source/workspace audit and offline package qualification.
 
 ## Verification lanes
 

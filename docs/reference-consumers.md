@@ -221,6 +221,23 @@ lock/metadata disagreement. Its receipt binds the retained inputs and archive
 hash inventory. This offline projection does not itself check advisories; it
 provides the exact tested public graph for a separate audit.
 
+The per-PR `reference-package` and `reference-package-msrv` jobs then audit
+their respective retained graph with pinned cargo-audit 0.22.2. This separate
+step fetches current advisories and checks yanked dependencies; it never runs
+Cargo resolution. It verifies the projection against its source artifacts
+before and after the audit, rejects advisory exclusions and warnings, and
+retains tool identities, policy, raw diagnostics and a success receipt under
+`public-dependencies/audit/`. To run it locally after a successful package run:
+
+```sh
+python3 scripts/archive_dependencies.py --audit --artifacts /path/to/package-artifacts
+```
+
+Install the pinned checker first with `cargo install cargo-audit --version
+0.22.2 --locked`. The package runner's `--offline` behavior is unchanged; only
+the separate `--audit` command requires network access. An existing audit
+directory is never overwritten.
+
 This mode tests the artifact users receive, not merely the source tree that
 produced it.
 

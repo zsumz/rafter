@@ -5,13 +5,15 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from archive_dependencies import prepare, public_closure  # noqa: E402
-from published_dependency_audit import REGISTRY  # noqa: E402
+from archive_dependencies import audit, derive, prepare, public_closure  # noqa: E402
+from published_dependency_audit import AUDIT_VERSION, REGISTRY, audit_policy  # noqa: E402
 
 
 class ArchiveClosure(unittest.TestCase):
@@ -255,6 +257,122 @@ class RetainedArtifactBoundary(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.prepare()
         self.assertEqual((destination / "receipt.json").read_bytes(), receipt)
+
+
+class ArchiveAudit(unittest.TestCase):
+    def setUp(self):
+        self.fixture = RetainedArtifactBoundary()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.artifacts = self.fixture.artifacts
+        self.release = self.fixture.release
+        self.projection, _ = self.fixture.prepare()
+        self.destination = self.projection / "audit"
+        self.version = AUDIT_VERSION
+        self.returncode = 0
+        self.effect = lambda: None
+        self.report = {
+            "database": {"advisory-count": 1000, "last-commit": "a" * 40,
+                         "last-updated": "2026-10-01T00:00:00Z"},
+            "lockfile": {"dependency-count": 4},
+            "settings": {"target_arch": [], "target_os": [], "severity": None, "ignore": [],
+                         "informational_warnings": ["unmaintained", "unsound", "notice"]},
+            "vulnerabilities": {"found": False, "count": 0, "list": []}, "warnings": {},
+        }
+
+    def command(self, command, **kwargs):
+        versions = {("cargo", "--version"): "cargo 1.88.0",
+                    ("rustc", "--version", "--verbose"): "rustc 1.88.0",
+                    ("cargo", "audit", "--version"): f"cargo-audit-audit {self.version}"}
+        if tuple(command) in versions:
+            return subprocess.CompletedProcess(command, 0, versions[tuple(command)].encode(), b"")
+        self.assertEqual(command, ["cargo", "audit", "--file", str(self.projection / "Cargo.lock"),
+                                   "--json", "--deny", "warnings"])
+        self.assertEqual((Path(kwargs["cwd"]) / ".cargo/audit.toml").read_text(), audit_policy())
+        self.effect()
+        return subprocess.CompletedProcess(command, self.returncode,
+                                           json.dumps(self.report).encode(), b"audit diagnostic")
+
+    def run_audit(self):
+        with patch("archive_dependencies.subprocess.run", side_effect=self.command):
+            return audit(self.artifacts, self.release)
+
+    def test_exact_retained_lock_is_audited_with_isolated_policy_and_tool_identity(self):
+        destination, expected = self.run_audit()
+        receipt = json.loads((destination / "receipt.json").read_text())
+        self.assertEqual(receipt["package_count"], expected["package_count"])
+        self.assertEqual(receipt["registry_count"], 1)
+        self.assertEqual(receipt["report"], self.report)
+        self.assertEqual(receipt["projection_receipt_sha256"],
+                         hashlib.sha256((self.projection / "receipt.json").read_bytes()).hexdigest())
+        self.assertEqual((destination / "audit-policy.toml").read_text(), audit_policy())
+        self.assertEqual(receipt["versions"]["cargo-audit"], f"cargo-audit-audit {AUDIT_VERSION}")
+        policy = tomllib.loads(audit_policy())
+        self.assertTrue(policy["database"]["fetch"])
+        self.assertFalse(policy["database"]["stale"])
+        self.assertTrue(policy["yanked"]["enabled"])
+        self.assertEqual(policy["output"]["deny"], ["warnings"])
+
+    def test_substituted_projection_or_receipt_is_refused_before_running_tools(self):
+        for name in ("Cargo.lock", "receipt.json"):
+            path = self.projection / name
+            original = path.read_text()
+            path.write_text(original + "\n# changed\n" if name == "Cargo.lock" else "{}")
+            with self.subTest(name=name), patch("archive_dependencies.subprocess.run") as run:
+                with self.assertRaisesRegex(ValueError, "projection differs"):
+                    audit(self.artifacts, self.release)
+                run.assert_not_called()
+                self.assertFalse(self.destination.exists())
+            path.write_text(original)
+
+    def test_projection_symlinks_are_refused(self):
+        path = self.projection / "Cargo.lock"
+        saved = self.fixture.root / "saved.lock"
+        path.rename(saved)
+        path.symlink_to(saved)
+        with self.assertRaisesRegex(ValueError, "regular projection file"):
+            self.run_audit()
+        path.unlink()
+        saved.rename(path)
+        saved = self.fixture.root / "saved-projection"
+        self.projection.rename(saved)
+        self.projection.symlink_to(saved, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "projection is missing"):
+            self.run_audit()
+
+    def test_wrong_checker_version_is_refused_with_version_diagnostics(self):
+        self.version = "0.22.1"
+        with self.assertRaisesRegex(ValueError, "install cargo-audit"):
+            self.run_audit()
+        self.assertIn(self.version, (self.destination / "cargo-audit-version.txt").read_text())
+        self.assertFalse((self.destination / "receipt.json").exists())
+
+    def test_failed_audit_keeps_raw_report_without_a_success_receipt(self):
+        self.returncode = 1
+        self.report["warnings"] = {"unmaintained": [{"package": "tls"}]}
+        with self.assertRaisesRegex(ValueError, "refused the dependency graph"):
+            self.run_audit()
+        self.assertEqual(json.loads((self.destination / "audit.json").read_text()), self.report)
+        self.assertEqual((self.destination / "audit.stderr").read_text(), "audit diagnostic")
+        self.assertFalse((self.destination / "receipt.json").exists())
+
+    def test_rewritten_source_and_consistent_projection_during_audit_are_refused(self):
+        def rewrite():
+            path = self.artifacts / "crate-versions.txt"
+            path.write_text(path.read_text() + "private 1.0.0\n")
+            _, receipt = derive(self.artifacts, self.release)
+            (self.projection / "receipt.json").write_text(json.dumps(receipt))
+        self.effect = rewrite
+        with self.assertRaisesRegex(ValueError, "evidence changed during"):
+            self.run_audit()
+        self.assertFalse((self.destination / "receipt.json").exists())
+
+    def test_existing_audit_is_never_overwritten(self):
+        self.run_audit()
+        original = (self.destination / "receipt.json").read_bytes()
+        with self.assertRaises(FileExistsError):
+            self.run_audit()
+        self.assertEqual((self.destination / "receipt.json").read_bytes(), original)
 
 
 if __name__ == "__main__":

@@ -1096,6 +1096,14 @@ jobs:
           # sibling of the workspace, never a child.
           TMPDIR: ${{ runner.temp }}
         run: scripts/reference-package-check --artifacts artifacts/reference-package
+      - name: Select advisory checker toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.97.1"
+      - name: Install the pinned advisory checker
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit dependencies from the tested exact archives
+        run: python3 scripts/archive_dependencies.py --audit --artifacts artifacts/reference-package
       - name: Upload exact-package and compatibility receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -1134,6 +1142,14 @@ jobs:
           scripts/reference-package-process-check --msrv-only \
             --artifacts artifacts/reference-package-msrv \
             2>&1 | tee artifacts/reference-package-msrv.log
+      - name: Select advisory checker toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.97.1"
+      - name: Install the pinned advisory checker
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit dependencies from the tested MSRV archives
+        run: python3 scripts/archive_dependencies.py --audit --artifacts artifacts/reference-package-msrv
       - name: Upload exact-package MSRV evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
