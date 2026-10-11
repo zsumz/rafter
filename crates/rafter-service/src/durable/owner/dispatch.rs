@@ -33,8 +33,9 @@ where
     /// On a fatal service error, new admission is closed. Discard the owner
     /// before recovery; its destruction releases the backend and all waiters.
     /// # Panics
-    /// Application outcome cloning or a client waker may panic. Even if caught,
-    /// the owner is then fenced and must be discarded before recovery.
+    /// Backend callbacks, application outcome cloning, or client wakers may
+    /// panic. Even if caught, the owner and both client endpoints are then
+    /// fenced and the backend must be discarded before recovery.
     pub fn poll_next(&mut self) -> Result<ServicePoll<T, A>, ServiceError> {
         if self.failed {
             return Err(ServiceError::Failed);
@@ -43,24 +44,18 @@ where
         if let Some(reads) = &self.reads {
             reads.shared.discard_canceled();
         }
+        let mut fence = self.callback_fence();
         let Some(service) = self.service.as_mut() else {
             return Ok(ServicePoll::Pending);
         };
-        let polled = match service.poll_next() {
-            Ok(polled) => polled,
-            Err(error) => {
-                self.close_clients();
-                return Err(error);
-            }
-        };
+        self.failed = true;
+        let polled = service.poll_next()?;
         if let ServicePoll::Event(event) = &polled {
-            self.failed = true;
-            let mut fence = self.callback_fence();
             self.observe(event);
             self.observe_reads(event)?;
-            fence.armed = false;
-            self.failed = false;
         }
+        fence.armed = false;
+        self.failed = false;
         if !matches!(polled, ServicePoll::Pending) || self.state() != ServiceState::Ready {
             return Ok(polled);
         }
@@ -88,28 +83,26 @@ where
             self.close_clients();
             return Err(ServiceError::Failed);
         };
+        self.failed = true;
+        fence.armed = true;
         let result = service.try_step(ServiceInput::Proposals(batch));
         match result {
-            Ok(()) => Ok(ServicePoll::Progress),
+            Ok(()) => {
+                self.failed = false;
+                fence.armed = false;
+                Ok(ServicePoll::Progress)
+            }
             Err(
                 ServiceStepError::Unavailable { input, .. }
                 | ServiceStepError::ProposalLimit { input },
             ) => {
-                if let Err(error) = self.restore(input) {
-                    self.failed = true;
-                    self.close_clients();
-                    return Err(error);
-                }
+                self.restore(input)?;
+                self.failed = false;
+                fence.armed = false;
                 Ok(ServicePoll::Pending)
             }
-            Err(ServiceStepError::Fatal(error)) => {
-                self.close_clients();
-                Err(error)
-            }
-            Err(_) => {
-                self.close_clients();
-                Err(ServiceError::Failed)
-            }
+            Err(ServiceStepError::Fatal(error)) => Err(error),
+            Err(_) => Err(ServiceError::Failed),
         }
     }
 

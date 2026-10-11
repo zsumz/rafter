@@ -461,10 +461,20 @@ managed cases pass with the fix; against the prior implementation, the three
 failure cases fail while successful installation still passes. The full runtime
 suite passes 236 tests, retaining its two existing process-profile ignores.
 
-Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
-The feature lane requires exactly 352 tests in both CI and zcheck.
+Consensus input and polling now keep the client fence armed across backend
+storage and command-adapter calls as well as outcome publication. Caught panics
+close both endpoints immediately; they cannot leave newly accepted work waiting
+for a later owner poll. Three real-worker fault cases cover election persistence,
+proposal commit persistence, and committed-command decoding. Each fails against
+the prior implementation. A fourth case verifies a temporary busy refusal keeps
+healthy read and write admission usable. Release-order wakers check that both
+storage and application ownership end before unresolved writes become terminal,
+with the original request identity preserved.
 
-Local qualification passes 325 default service tests, 352 with `durable`, 537
+Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
+The feature lane requires exactly 356 tests in both CI and zcheck.
+
+Local qualification passes 325 default service tests, 356 with `durable`, 537
 source-consumer tests, and 542 archive/MSRV consumer tests on Rust 1.88.0.
 The 23 managed write/read tests also pass 64 repetitions across four concurrent
 runners (1,472 executions). Consumer lanes retain their 57 explicitly ignored

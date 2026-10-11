@@ -104,6 +104,8 @@ where
     /// # Errors
     /// Returns unmanaged proposal/read inputs unchanged, or the service's refusal
     /// or fatal error. On a fatal error, discard this owner and recover.
+    /// # Panics
+    /// A caught backend panic fences this owner and closes both client endpoints.
     pub fn try_step(&mut self, input: Input) -> Result<(), DurableClientStepError> {
         if self.failed {
             return Err(DurableClientStepError::Service(ServiceStepError::Fatal(
@@ -120,6 +122,7 @@ where
             return Err(DurableClientStepError::UnmanagedRead(Box::new(input)));
         }
         let input = ServiceInput::from(input);
+        let mut fence = self.callback_fence();
         let Some(service) = self.service.as_mut() else {
             return Err(DurableClientStepError::Service(
                 ServiceStepError::Unavailable {
@@ -128,9 +131,11 @@ where
                 },
             ));
         };
+        self.failed = true;
         let result = service.try_step(input);
-        if matches!(result, Err(ServiceStepError::Fatal(_))) {
-            self.close_clients();
+        if !matches!(result, Err(ServiceStepError::Fatal(_))) {
+            self.failed = false;
+            fence.armed = false;
         }
         result.map_err(DurableClientStepError::Service)
     }

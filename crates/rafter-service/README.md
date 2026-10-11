@@ -79,6 +79,9 @@ application-defined retry identities, not a new unconditional mutation.
 Snapshot resumption errors and caught floor-validation panics close both client
 endpoints immediately. Outstanding requests retain their ownership until the
 backend is released; correcting the floor cannot revive a failed incarnation.
+The same admission fence spans storage and command-adapter callbacks during
+consensus input and polling. A caught panic requires recovery; an ordinary busy
+refusal preserves the live owner and its client endpoints.
 
 Managed membership operations and `DriverCommandSender` integration remain
 follow-up work. The independent ledger consumer exercises writes and reads over
