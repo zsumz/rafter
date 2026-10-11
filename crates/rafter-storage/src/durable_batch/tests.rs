@@ -14,6 +14,7 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
+mod entry_counts;
 mod reclamation;
 mod reclamation_large_suffix;
 mod reclamation_threshold;

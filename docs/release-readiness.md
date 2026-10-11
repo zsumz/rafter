@@ -981,6 +981,15 @@ I/O failures retain the original diagnostics. An oversized real manifest leaves
 the selected snapshot and resumable transfer body unchanged; explicit restoration
 recovers both. These metadata readers still perform linear checksum scans.
 
+The shared WAL batch decoder now grows its entry vector only after each nested
+entry decodes successfully. A checksummed 16,413-byte malformed body previously
+reserved 491,520 bytes from its claimed count before rejecting the first entry;
+an isolated allocation probe now observes a largest allocation of 16,413 bytes
+for the same refusal. Recovery regressions preserve diagnostics, outer-checksum
+precedence and complete records in both legacy and manifest-selected generations,
+and reopen a valid 4,096-entry batch. The existing 64 MiB body bound and legitimate
+decoded-entry memory still apply; this is not a whole-process memory ceiling.
+
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and
 TLS enabled. Publish throughput alongside p99/p99.9 latency, retained memory,

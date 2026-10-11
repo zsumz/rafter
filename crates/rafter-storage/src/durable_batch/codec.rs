@@ -117,7 +117,10 @@ pub(super) fn decode(body: &[u8], trailer: [u8; TRAILER]) -> io::Result<Record> 
     if count > (body.len() - reader.at) / 4 {
         return Err(invalid("invalid WAL entry count"));
     }
-    let mut entries = Vec::with_capacity(count);
+    // The count only proves that length fields fit, not that entries exist.
+    // Grow after successful decoding so malformed bodies cannot reserve a
+    // much larger in-memory entry array before their first entry is checked.
+    let mut entries = Vec::new();
     for _ in 0..count {
         let size = reader.u32()? as usize;
         entries
