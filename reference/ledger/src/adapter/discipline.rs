@@ -182,8 +182,8 @@ fn read_promoted(
     let decoded = codec::decode_snapshot_stream(
         &mut reader,
         descriptor.application_payload_len,
-        descriptor.metadata.last_included_index,
         config,
+        |_| unavailable,
     )?;
     reader.finish().map_err(|_| unavailable)?;
     Ok(decoded)

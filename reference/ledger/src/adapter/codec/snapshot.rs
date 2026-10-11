@@ -1,17 +1,13 @@
 //! One bounded snapshot grammar builds temporary, model-validated state.
 
-use std::io::Read;
-
-use rafter::LogIndex;
+use std::io::{self, Read};
 
 use super::{
     input::{Input, Stream},
     read::Cursor,
     LedgerCodecError, SNAPSHOT_FORMAT_VERSION,
 };
-use crate::{
-    model::Restore, AccountId, Ledger, LedgerAdapterError, LedgerConfig, SessionView, SnapshotError,
-};
+use crate::{model::Restore, AccountId, Ledger, LedgerConfig, SessionView, SnapshotError};
 
 pub(crate) fn decode_snapshot<E>(payload: &[u8], config: LedgerConfig) -> Result<(u64, Ledger), E>
 where
@@ -20,17 +16,20 @@ where
     decode(Cursor::new(payload), config)
 }
 
-pub(crate) fn decode_snapshot_stream(
+pub(crate) fn decode_snapshot_stream<E>(
     reader: &mut impl Read,
     length: u64,
-    applied_index: LogIndex,
     config: LedgerConfig,
-) -> Result<(u64, Ledger), LedgerAdapterError> {
+    map_error: impl Fn(io::Error) -> E,
+) -> Result<(u64, Ledger), E>
+where
+    E: From<LedgerCodecError> + From<SnapshotError>,
+{
     decode(
         Cursor::from_input(Stream {
             reader,
             remaining: length,
-            applied_index,
+            map_error,
         }),
         config,
     )

@@ -1,11 +1,8 @@
 //! Field-sized reads preserve codec errors without collecting an encoded frame.
 
-use std::io::Read;
-
-use rafter::LogIndex;
+use std::io::{self, Read};
 
 use super::LedgerCodecError;
-use crate::LedgerAdapterError;
 
 pub(super) trait Input {
     type Error: From<LedgerCodecError>;
@@ -32,14 +29,14 @@ impl Input for &[u8] {
     }
 }
 
-pub(super) struct Stream<R> {
+pub(super) struct Stream<R, F> {
     pub(super) reader: R,
     pub(super) remaining: u64,
-    pub(super) applied_index: LogIndex,
+    pub(super) map_error: F,
 }
 
-impl<R: Read> Input for Stream<R> {
-    type Error = LedgerAdapterError;
+impl<R: Read, F: Fn(io::Error) -> E, E: From<LedgerCodecError>> Input for Stream<R, F> {
+    type Error = E;
 
     fn take<const N: usize>(&mut self) -> Result<[u8; N], Self::Error> {
         if self.remaining < N as u64 {
@@ -50,11 +47,9 @@ impl<R: Read> Input for Stream<R> {
             .into());
         }
         let mut field = [0; N];
-        self.reader.read_exact(&mut field).map_err(|_| {
-            LedgerAdapterError::SnapshotPayloadUnavailable {
-                applied_index: self.applied_index,
-            }
-        })?;
+        self.reader
+            .read_exact(&mut field)
+            .map_err(&self.map_error)?;
         self.remaining -= N as u64;
         Ok(field)
     }

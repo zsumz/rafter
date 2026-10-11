@@ -248,9 +248,20 @@ without drop-time retries are covered alongside the original exhaustive crash
 sweep. A 2 MiB frame has an independent expected length and checksum, with every
 sink call bounded by 16 KiB.
 
-The inline snapshot builder still constructs a complete encoded buffer, and
-journal opening still reads the whole journal. Model adoption and
-compaction retain state clones proportional to configured bounds. Streaming
+Journal recovery now reads fixed-size framing and verifies each image through
+16 KiB chunks, then seeks back to decode the verified image through a 16 KiB
+buffer. Checksums still precede schema/model errors, so corruption and repair
+classification do not depend on which invalid field a decoder reaches first.
+Decoding checks the image checksum again before adoption; changed bytes or an
+I/O failure refuse recovery rather than authorize truncation. Offsets and loss
+accounting use `u64`. The original whole-slice classifier remains a test oracle
+for the streamed reader's exhaustive corruption and recognition-order cases.
+No complete encoded image, journal, or unsealed-tail copy is retained. The cost
+is a second read of each committed image; directory ownership remains the
+embedder's responsibility.
+
+The inline snapshot builder still constructs a complete encoded buffer. Model
+adoption and compaction retain state clones proportional to configured bounds. Streaming
 those remaining paths and broader crash qualification remain separate work.
 
 The durable adapter's application transaction must atomically persist:

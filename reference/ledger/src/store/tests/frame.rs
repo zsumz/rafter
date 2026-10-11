@@ -3,9 +3,30 @@
 use super::support::sealed_frame;
 use crate::store::{
     format::{SEALED_FRAME_MARK, UNSEALED_FRAME_MARK},
-    frame::read_frame,
+    frame::{read_frame as read_inline, Frame},
     TornTail,
 };
+
+// Every existing recognition/damage case also exercises the production reader.
+// Keep the old slice implementation as an independent classification oracle.
+fn read_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
+    let expected = read_inline(bytes);
+    let streamed =
+        crate::store::frame_input::read_frame(&mut std::io::Cursor::new(bytes), bytes.len() as u64)
+            .unwrap();
+    assert_eq!(
+        streamed
+            .as_ref()
+            .map(|frame| (frame.len, frame.image_len, frame.image_crc)),
+        expected.as_ref().map(|frame| (
+            frame.len as u64,
+            frame.image.len() as u64,
+            crate::store::format::crc32(frame.image)
+        )),
+        "streamed classification differs from the slice oracle"
+    );
+    expected
+}
 
 /// The recognition order, as a table rather than a paragraph.
 ///

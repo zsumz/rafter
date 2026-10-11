@@ -66,7 +66,7 @@ pub(super) fn create_journal(
 /// Discards an uncommitted tail and makes the shortened file durable.
 pub(super) fn truncate_journal(
     journal_path: &Path,
-    committed_len: usize,
+    committed_len: u64,
 ) -> Result<(), LedgerStoreError> {
     let file = OpenOptions::new()
         .write(true)
@@ -76,7 +76,7 @@ pub(super) fn truncate_journal(
             path: journal_path.to_path_buf(),
             source,
         })?;
-    file.set_len(committed_len as u64)
+    file.set_len(committed_len)
         .and_then(|()| file.sync_all())
         .map_err(|source| LedgerStoreError::Io {
             operation: "truncate the ledger journal's uncommitted tail",

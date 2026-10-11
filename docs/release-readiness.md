@@ -398,9 +398,26 @@ archive/MSRV phases pass with 526 tests (57 ignored profiles each), including
 storage, wire, and mixed-version TLS compatibility on Rust 1.88.0. Strict consumer
 lint/docs, formatting, size checks, and zrail pass without a lock change.
 
-Still required before freezing this API: streamed journal recovery and broader
-interrupted/crash-safe publication qualification. The inline snapshot builder
-and journal opening still materialize buffers.
+Journal recovery now verifies frames with fixed records and 16 KiB reads, then
+decodes each verified image through a 16 KiB buffer. The second read rechecks the
+image checksum before adoption. This preserves checksum-before-schema error
+precedence and the exact refusal/repair rules without retaining the whole
+journal, an encoded image, or a copied unsealed tail. File offsets use `u64`.
+The old slice parser remains an oracle for the production reader across the
+existing exhaustive corruption cases. Tests also cover I/O failures, partial
+and interrupted reads, changed bytes, a 5 MiB zero tail, and a real 6 MiB journal
+whose damaged middle frame is refused before an explicit repair and later append.
+All eight new cases pass, and six deliberate checksum, truncation, changed-image,
+and I/O-error bypasses fail their regressions. Full source qualification passes
+529 tests; all seven archive/MSRV phases pass with 534 tests (57 ignored profiles
+each), including storage, wire, and mixed-version TLS compatibility on Rust
+1.88.0. All nine reviewed ledger process cases pass separately, including kill,
+restart, repair readiness, and cached retries. Strict consumer lint/docs,
+formatting, size checks, and zrail pass without a lock change.
+
+Still required before freezing this API: broader interrupted/crash-safe
+publication qualification and operational measurements of the second recovery
+read. The inline snapshot builder still materializes a buffer.
 Current/restored models, adoption, and compaction remain proportional to
 configured state bounds. Deterministic file-fault tests do not establish physical
 power-loss behavior or qualify these remaining paths.

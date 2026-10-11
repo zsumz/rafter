@@ -20,11 +20,11 @@
 //! Each frame carries the whole application state rather than a delta. The
 //! ledger's durable state is bounded by [`LedgerConfig`], so a whole image is
 //! affordable, and it buys the property that every committed frame is
-//! independently complete: recovery decodes the newest committed frame and
-//! stops. A delta journal would need a base image, a checkpoint protocol, and
-//! a rule for ordering the two on recovery — three mechanisms to audit instead
-//! of one, and three chances for a torn tail to strand a delta whose base is
-//! gone.
+//! independently complete: recovery validates every committed frame while
+//! retaining only the newest model. A delta journal would need a base image,
+//! a checkpoint protocol, and a rule for ordering the two on recovery — three
+//! mechanisms to audit instead of one, and three chances for a torn tail to
+//! strand a delta whose base is gone.
 //!
 //! The image is exactly the adapter's application snapshot frame. The contract
 //! enumerates the same facts for the durable transaction and for the
@@ -475,6 +475,7 @@ mod error;
 mod fault;
 mod format;
 mod frame;
+mod frame_input;
 mod frame_output;
 mod handle;
 mod journal_file;
