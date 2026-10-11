@@ -13,6 +13,7 @@ release, a version change, a tag, a publication, or a mixed-version guarantee.
 | System | Completed capability | Stable proof |
 | --- | --- | --- |
 | Durable storage | Native format, recovery, ownership, and failure-boundary tests on Linux and macOS | `cargo test --locked -p rafter-storage`; CI `test` and `invariants-launcher-macos` |
+| Durable storage | Allocation-counted refusal of malformed shared-WAL entry counts, preserving error and file contents | `zcheck run wal-recovery-memory`; CI `lint` |
 | Replicated ledger | Deterministic application/recovery acceptance and an independent bounded linearizability checker | `scripts/reference-source-check`; CI `reference-source` |
 | Replicated ledger | Durable per-replica process composition, including fail-closed journal repair escalation | `scripts/reference-process-check`; CI/main and Nightly `reference-process` |
 | Replicated ledger | Exact archive deterministic and process execution | `scripts/reference-package-check`; `scripts/reference-package-process-check`; CI `reference-package` and `reference-package-process` |

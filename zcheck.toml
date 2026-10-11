@@ -71,6 +71,12 @@ run = ["cargo", "run", "--manifest-path", "bench-compare/Cargo.toml", "--locked"
 tools = ["cargo"]
 resources = ["bench-target"]
 
+[tasks.wal-recovery-memory]
+description = "Bound allocations while rejecting malformed shared-WAL entry counts."
+run = ["cargo", "run", "--manifest-path", "bench-compare/Cargo.toml", "--locked", "--no-default-features", "--bin", "check-wal-recovery-memory"]
+tools = ["cargo"]
+resources = ["bench-target"]
+
 [tasks.rustdoc]
 description = "Build the publishable crates under -D warnings -D missing-docs, then the workspace under -D warnings."
 run = ["scripts/rustdoc-check"]
@@ -141,6 +147,7 @@ needs = [
   "clippy-fuzz",
   "clippy-bench",
   "transport-memory",
+  "wal-recovery-memory",
   "rustdoc",
   "work-completion",
   "tla-telemetry",

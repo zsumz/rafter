@@ -989,6 +989,13 @@ for the same refusal. Recovery regressions preserve diagnostics, outer-checksum
 precedence and complete records in both legacy and manifest-selected generations,
 and reopen a valid 4,096-entry batch. The existing 64 MiB body bound and legitimate
 decoded-entry memory still apply; this is not a whole-process memory ceiling.
+The probe is now a recurring `check-wal-recovery-memory` binary in the existing
+standalone benchmark package. CI `lint` and local `zcheck` lint execute four
+modest-count cases, with and without a valid entry prefix. They bound both the
+largest Rust allocation request and cumulative requested bytes during refusal,
+while requiring the nested-entry error and unchanged WAL contents. This measures
+allocation requests rather than live heap or RSS; unrelated benchmark comparator
+features stay disabled.
 
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and

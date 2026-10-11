@@ -203,6 +203,8 @@ jobs:
         run: |
           cargo run --manifest-path bench-compare/Cargo.toml --locked \
             --no-default-features --bin check-transport-receive-memory
+      - name: WAL recovery allocation gate
+        run: cargo run --manifest-path bench-compare/Cargo.toml --locked --no-default-features --bin check-wal-recovery-memory
       - name: reviewed action pins resolve upstream
         # `cargo test --workspace` already asserts that these workflows use
         # exactly the specifications in verification/github-actions.lock, and
