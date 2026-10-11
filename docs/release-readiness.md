@@ -792,6 +792,17 @@ high-level removal obligation: its executor must finish any voter finalization
 inside `RemoveNode` before fencing. Mapping that obligation to just one kernel
 input leaves a joint configuration; the new helper makes this work explicit.
 
+`MembershipChange::into_raft_input` now exposes the same translation used by
+`RaftGroup` to manually driven durable consumers. It preserves learner removal,
+promotion barriers and explicit joint finalization without a second command
+mapping. The caller supplies fresh effective membership, retries translation
+when busy admission makes that observation stale, and retains responsibility
+for metadata and transport policy. Real durable-driver tests cover learner
+removal, voter removal with premature finalization refused, both promotion
+forms, protocol refusals, and a durable write plus quorum read after removal.
+This is a shared translation boundary; it does not yet add a queued membership
+executor or a committed-change receipt to the durable owner.
+
 **Acceptance:** an external consumer composes the supported fast durable path
 without copying an owner loop from the benchmark/example, with the same
 behavior in source and exact-package tests.

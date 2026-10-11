@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use rafter::{LogIndex, MembershipSet, NodeId, PromotionBarrier};
 
 mod event;
+mod input;
 
 pub use event::MembershipEvent;
 
@@ -63,7 +64,12 @@ pub enum MembershipChange {
     },
     /// Commit the stable target of the current joint configuration.
     LeaveJoint,
-    /// Plan the safe learner/joint-consensus flow to a voter set.
+    /// Request a target membership through the kernel's safe change path.
+    ///
+    /// This carries no promotion barriers and does not run a multi-step plan.
+    /// Add learners and prove catch-up before promoting them through
+    /// `PromoteLearner` or `EnterJoint`, then finalize committed joint consensus
+    /// with `LeaveJoint`.
     ChangeVoters {
         /// Desired stable membership.
         target: MembershipSet,

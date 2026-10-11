@@ -165,6 +165,8 @@ mod control;
 mod control_load;
 #[path = "durable_group/lifecycle.rs"]
 mod lifecycle;
+#[path = "durable_group/membership.rs"]
+mod membership;
 #[path = "durable_group/mixed_load.rs"]
 mod mixed_load;
 
