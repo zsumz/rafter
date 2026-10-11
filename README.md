@@ -52,7 +52,7 @@ Choose the layer that matches how much of the integration you want Rafter to pro
 | `rafter` | You want the deterministic protocol kernel and explicit outputs. |
 | `rafter-runtime` | You want a durable persist-before-output node. |
 | `rafter-app` | You want an embedded replicated state machine. |
-| `rafter-service` | You want async handles and transport traits. |
+| `rafter-service` | You want async handles, an optional durable owner, and transport traits. |
 | `rafter-multiraft` | You want many caller-defined Raft groups in one host. |
 
 ## Example
@@ -117,6 +117,14 @@ and its formatting/lint components through `rust-toolchain.toml`:
 ```sh
 cargo build --locked --workspace --all-targets
 cargo test --locked --workspace
+```
+
+The managed durable service is an optional feature. Include it explicitly when
+qualifying that integration:
+
+```sh
+cargo build --locked --workspace --all-targets --features rafter-service/durable
+cargo test --locked --workspace --features rafter-service/durable
 ```
 
 For the complete local qualification graph (Python 3.11+ is also required):

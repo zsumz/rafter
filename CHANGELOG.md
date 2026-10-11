@@ -6,6 +6,40 @@ release mechanics and exact publish lists live in [RELEASE.md](./RELEASE.md).
 
 ## Unreleased
 
+- The default-off `rafter-service/durable` feature adds a uniquely owned durable
+  service with cloneable bounded client senders and the existing `RaftHandle`
+  API. Writes acknowledge durable application completion; local and quorum
+  reads preserve application freshness floors. Cancellation, uncollected
+  results, shutdown and ambiguous outcomes have explicit ownership contracts.
+  It reuses the existing persistence/application workers and TLS transport.
+- Durable drivers support application snapshot handoff, local snapshot
+  maintenance, leadership transfer and bounded membership proposal admission.
+  A membership receipt identifies a durable append; applications must still
+  observe the exact configuration commit and manage authorization, peer fencing
+  and retirement history. Automatic membership-plan execution is not included.
+- Managed service admission now counts completed results until collection or
+  drop, and canceled metrics watches release their wake registrations.
+  Durable senders expose retained count/byte charges and cumulative admission
+  refusals; owners expose existing opt-in persistence-worker diagnostics.
+- Membership helpers correctly remove stable learners, finish promotion plans
+  with `LeaveJoint`, and offer explicit voter-removal plans. Transport-backed
+  membership calls return typed protocol rejections with leader hints.
+  Existing numeric write/read/transfer error-kind values remain stable.
+- Storage recovery bounds retained metadata and rejects malformed WAL counts
+  and truncated checkpoint lengths without eager allocations based on their
+  claims. Checksums, error precedence and selected-file authority remain intact;
+  these changes do not alter the version-1 storage formats.
+- The public transport requires patched rustls `0.23.45`; the invariant
+  verifier's test-only quick-xml dependency moves to `0.41.0`. Public API checks
+  compare default and all-feature builds of all eleven public crates; dependency
+  audits cover their full feature graph.
+  Exact-package tests qualify storage recovery, bidirectional wire exchange and
+  rolling TLS upgrades against the published alpha.
+- Local builds pin Rust `1.88.0`, with a separate current-stable CI lane. CI
+  evidence uses pinned runtime inputs and reviewed test selections. The
+  standalone durable TLS counter and checked integration guide exercise real
+  recovery, quorum loss, bounded overload and shutdown through the public APIs.
+
 - `rafter-runtime` now provides an opt-in bounded ordered application worker.
   It drains only ready work, retains entry and byte credits through completion
   consumption, independently bounds application batch work, rejects

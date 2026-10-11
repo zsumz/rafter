@@ -6,17 +6,24 @@
 //! deterministic kernel, runtime API boundary, and synchronous app driver stay
 //! free of async runtime dependencies.
 //!
+//! The default-off `durable` feature adds `durable::DurableClientOwner` and
+//! `durable::DurableRaftDriver` over the existing asynchronous durable runtime.
+//! Encoded writes and queries use retained count/byte budgets; successful writes
+//! follow durable application completion. The embedding drives the owner,
+//! supplies its application adapters, and routes authenticated inbound traffic.
+//!
 //! `rafter-service` owns handle ergonomics, managed command routing, async
-//! sender traits, watch surfaces, and transport contracts. It does not own
-//! durable storage, concrete authenticated transport implementations, or the
-//! app-side applied-floor/recovery contract.
+//! sender traits, watch surfaces, and transport contracts. It delegates storage
+//! implementation and recovery to the runtime/storage layers; embeddings supply
+//! authenticated transports and the application's durable applied-floor contract.
 //!
 //! The transport contract is synchronous, and the async half of it is the
 //! embedder's. [`RaftTransport::send`] means "accepted or enqueued" rather than
 //! "delivered", so an embedder whose link layer is async owns the queue and the
 //! task that drains it, and hands this crate a handle to that queue. Rafter
-//! opens no sockets and spawns no tasks, which leaves it nothing to say about
-//! how the frames get there.
+//! service adapters open no sockets and start no transport tasks. The optional
+//! durable owner starts the runtime's persistence and application worker threads;
+//! the embedding owns transport startup, inbound validation, and shutdown.
 
 /// Managed driver implementations and command-sender traits.
 pub mod driver;
