@@ -954,7 +954,16 @@ dependency or changes to its wire encoder. The reference lock now audits cleanly
 with 55 packages and 40 registry dependencies. The standalone fuzz and counter
 locks also audit cleanly. Benchmark comparator dependencies remain a separate
 assessment: their lock reports protobuf and rkyv advisories, unmaintained fxhash,
-and yanked validit; these packages are outside the shipped library graph.
+and previously yanked validit; these packages are outside the shipped library
+graph. The validit lock is now 0.2.6, whose twelve Rust source files match 0.2.5;
+the release also declares the correct Rust 1.88 minimum. OpenRaft remains pinned
+to 0.9.24. Strict comparator Clippy and all three release workloads pass on Rust
+1.88 (2,000 serial, 20,000 pipelined and 256 large-payload proposals). This is
+execution qualification, with no new published performance comparison.
+The yanked warning is cleared without exclusions. Protobuf and fxhash are in
+the active raft-rs comparator tree; rkyv is an optional rust_decimal dependency
+retained in the lock but absent from the current all-feature/all-target build
+tree. Those remaining findings require separate comparator dependency work.
 
 ## Suggested sequence
 
