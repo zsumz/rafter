@@ -50,6 +50,19 @@ where
     T: RaftTransport<G>,
     V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
 {
+    pub(super) fn check_retained_waiter_capacity(&self) -> Result<(), DriverRoutingError> {
+        let retained = self
+            .write_waiters
+            .len()
+            .saturating_add(self.read_waiters.len());
+        if retained >= self.options.max_retained_waiters {
+            return Err(DriverRoutingError::RetainedWaiterLimit {
+                max_retained_waiters: self.options.max_retained_waiters,
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn resolve_write(
         &mut self,
         local_proposal_id: LocalProposalId,
@@ -101,8 +114,8 @@ where
     /// dropped future is the moment a waiter provably has no reader. Until this
     /// existed, a client that timed out and dropped its future left its entry —
     /// and, for a read, its cloned request — in the table for the life of the
-    /// driver. The bound was never the leak: `max_pending_waiters` counts
-    /// unresolved waiters, so the slot came back and the entry did not.
+    /// driver. `max_pending_waiters` counts only unresolved waiters. The separate
+    /// `max_retained_waiters` credit covers this entry until it is removed.
     ///
     /// This does not replace abandonment. `abandon_write` and `abandon_read`
     /// resolve rather than remove, so a caller that abandons and still holds its

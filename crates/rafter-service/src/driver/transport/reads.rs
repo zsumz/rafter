@@ -114,6 +114,10 @@ where
                 }),
             });
         }
+        self.check_retained_waiter_capacity()
+            .map_err(|cause| ReadError::Transport {
+                cause: ErrorCause::new(cause),
+            })?;
         let next = self.next_read_id.ok_or(ReadError::ReadIdExhausted)?;
         self.next_read_id = next.checked_add(1);
         let read_id = ReadId(next);

@@ -65,6 +65,8 @@ where
     /// in the durable log and may still commit, and there is no
     /// `cancel_proposal` that could make it otherwise. The waiter stops counting
     /// against [`TransportDriverOptions::max_pending_waiters`] immediately.
+    /// It retains its [`TransportDriverOptions::max_retained_waiters`] credit
+    /// until the client consumes the outcome or drops the future.
     ///
     /// Abandonment is terminal for the client. A later `Applied`, `Rejected`, or
     /// `UnknownOutcome` event for this proposal resolves nothing and changes

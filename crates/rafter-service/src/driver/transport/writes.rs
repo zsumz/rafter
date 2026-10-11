@@ -67,6 +67,11 @@ where
                 }),
             });
         }
+        self.check_retained_waiter_capacity()
+            .map_err(|cause| WriteError::Transport {
+                fate: WriteFate::NotAppended,
+                cause: ErrorCause::new(cause),
+            })?;
         let next = self
             .next_proposal_id
             .ok_or(WriteError::LocalProposalIdExhausted)?;

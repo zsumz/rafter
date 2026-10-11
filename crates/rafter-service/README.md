@@ -11,6 +11,21 @@ Use this crate when you want an async handle over a Rafter group while keeping
 transport authentication, peer routing, and durable application storage
 explicit.
 
+`TransportDriverOptions` bounds unresolved writes and reads separately through
+`max_pending_waiters` (1024 each by default). A second, shared
+`max_retained_waiters` limit (2048 by default) counts every registered waiter,
+including completed results that clients have not collected. Set it with
+`with_max_retained_waiters`. Both limits must admit a new operation; refusal
+happens before an ID is allocated, a write is proposed, or a read barrier is
+reserved. Refused writes report `NotAppended` through the existing transport
+error surface.
+
+Polling a future to completion or dropping it returns its retained credit.
+Abandonment resolves the future and releases its pending slot, but keeps the
+terminal answer and its retained credit until the client consumes or drops it.
+Local reads register no waiter. These are entry-count bounds; embeddings must
+also bound application query/result sizes and receipts they have collected.
+
 ## Transport Delivery Semantics
 
 Rafter transports are allowed to drop, duplicate, reorder, reconnect, and

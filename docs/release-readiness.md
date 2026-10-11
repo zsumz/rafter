@@ -229,7 +229,15 @@ The real-file ledger consumer uses this contract without timer polling, and
 gated tests cover completion between polling and waiting, coalesced wakes,
 and stale notifications from replaced workers.
 
-Remaining composition work includes bounded client/read waiter ownership and
+The existing managed `TransportRaftDriver` now also bounds completed results
+retained for clients. Its original per-kind unresolved limit allowed an
+unbounded sequence of resolved-but-unpolled futures. A shared retained-waiter
+limit defaults to 2048 and covers pending and completed reads/writes until
+their futures are consumed or dropped. Refusal spends no identity or protocol
+step. Abandonment still preserves unknown outcomes for late polls. This is an
+entry-count bound; application query/result bytes still need application limits.
+
+Remaining composition work includes integrating managed client/read ownership and
 TLS process adoption of the owner. Ordinary consensus inputs retain synchronous
 I/O. Its memory claim covers one existing output batch, one converted command,
 and worker credits; it does not bound the kernel log or an entire recovery
