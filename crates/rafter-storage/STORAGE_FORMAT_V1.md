@@ -74,6 +74,11 @@ bytes.
 
 Checksum coverage ends immediately before `crc32`.
 
+File-backed opening verifies the complete checksum using a 4 KiB read buffer
+and retaining only the 47-byte body prefix. Oversized files preserve checksum,
+schema and trailing-byte error precedence without a file-sized allocation.
+Verification time remains proportional to the file length.
+
 ## Hard-state journal (opt-in)
 
 `JournalRaftHardStateStore` uses a distinct format at the same `hard-state`

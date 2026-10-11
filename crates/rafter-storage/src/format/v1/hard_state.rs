@@ -15,6 +15,7 @@ use crate::format::{
 pub const RAFT_HARD_STATE_MAGIC: [u8; 4] = *b"RFHS";
 /// Current Raft hard-state envelope version.
 pub const RAFT_HARD_STATE_VERSION: u8 = 1;
+pub(crate) const HARD_STATE_BODY_LEN: usize = 47;
 
 /// Durable Raft hard state persisted outside the log.
 ///
@@ -195,6 +196,12 @@ pub fn encode_raft_hard_state(state: &RaftHardState) -> Vec<u8> {
 /// unsupported version, has trailing bytes, or fails checksum verification.
 pub fn decode_raft_hard_state(envelope: &[u8]) -> Result<RaftHardState, DecodeRaftHardStateError> {
     let body = verify_checksum(envelope)?;
+    decode_hard_state_body(body)
+}
+
+pub(crate) fn decode_hard_state_body(
+    body: &[u8],
+) -> Result<RaftHardState, DecodeRaftHardStateError> {
     let mut reader = Reader::new(body);
     let magic = reader.magic()?;
     if magic != RAFT_HARD_STATE_MAGIC {

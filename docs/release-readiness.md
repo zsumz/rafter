@@ -946,8 +946,16 @@ read to 37 bytes, enough to refuse an oversized file. Previously the whole file
 was read and allocated before its length was checked. Reader-budget, interrupted
 I/O, truncation, checksum and trailing-byte cases preserve strict rejection;
 a real oversized-manifest case leaves the selected WAL files intact and refuses
-an obsolete fallback. Other metadata readers and whole-host memory limits remain
-separate qualification work.
+an obsolete fallback.
+
+The fixed RFHS hard-state file also avoids whole-file allocation during open.
+A streaming checksum reader retains its 47-byte body prefix and a 4 KiB read
+buffer, preserving the original checksum-before-schema error precedence and
+trailing-byte counts. The existing slice decoder is the oracle across truncated,
+corrupt and re-signed inputs, including short/interrupted reads. An oversized
+real file is refused without mutation. The full checksum still requires a
+linear scan; other metadata readers and whole-host memory limits remain separate
+qualification work.
 
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and

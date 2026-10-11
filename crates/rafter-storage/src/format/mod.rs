@@ -8,11 +8,13 @@
 mod cursor;
 mod envelope;
 mod log_position;
+mod stream;
 pub(crate) mod v1;
 
 pub(crate) use cursor::{CursorError, Reader, Writer};
 pub(crate) use envelope::{finish_checksummed, verify_checksum, ChecksumError};
 pub(crate) use log_position::advanceable_log_index;
+pub(crate) use stream::{read_checksummed_prefix, StreamChecksumError};
 
 #[cfg(test)]
 mod tests;

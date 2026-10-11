@@ -12,6 +12,7 @@ mod journal_checkpoint;
 mod journal_error;
 mod journal_recovery;
 mod memory;
+mod read;
 
 pub use contract::RaftHardStateStore;
 pub use error::{OpenRaftHardStateStoreError, RaftHardStateStoreWriteError};
