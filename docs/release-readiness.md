@@ -973,6 +973,14 @@ An oversized real selector refuses open without choosing an older snapshot or
 cleaning up incomplete pending-transfer files; explicit restoration recovers
 the selected snapshot and resumes normal cleanup.
 
+Pending-transfer RFPT manifests retain at most the existing 4 MiB nested-metadata
+cap plus their 53-byte header during outer checksum verification. The decoder
+preserves nested checksum/payload errors, exact trailing-byte counts and their
+precedence over transfer-progress/identity errors. Short/interrupted reads and
+I/O failures retain the original diagnostics. An oversized real manifest leaves
+the selected snapshot and resumable transfer body unchanged; explicit restoration
+recovers both. These metadata readers still perform linear checksum scans.
+
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and
 TLS enabled. Publish throughput alongside p99/p99.9 latency, retained memory,

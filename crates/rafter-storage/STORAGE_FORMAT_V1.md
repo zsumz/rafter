@@ -275,6 +275,13 @@ envelope checksums remain present. This nesting is part of the current v1 bytes
 and cannot be changed without a new `RFPT` version. Readers reject nested
 metadata envelopes larger than 4 MiB or carrying application payload bytes.
 
+File-backed opening verifies the full outer checksum with a 4 KiB read buffer
+and retains at most 4 MiB plus the 53-byte RFPT header. Nested decoding keeps
+the existing metadata cap. Trailing-byte counts include the unretained suffix
+and are rejected before progress/transfer-identity validation. An invalid
+manifest leaves snapshot and pending-body files intact; checksum verification
+still scans the complete manifest file.
+
 `transfer_id` must equal the deterministic `RaftSnapshot::transfer_id()` derived
 from `metadata_envelope`, `total_payload_len`, and
 `application_payload_crc32`. `received_payload_len` must not exceed

@@ -15,8 +15,7 @@ use super::{
         OpenRaftSnapshotStoreError, PendingSnapshotTransferRecovery, RaftSnapshotStoreWriteError,
     },
     cleanup::clear_pending_snapshot_transfer,
-    codec::decode_pending_snapshot_transfer_manifest,
-    manifest::PendingTransferManifest,
+    manifest_read::read_pending_snapshot_transfer_manifest,
     paths::{pending_snapshot_transfer_body_path, pending_snapshot_transfer_path},
 };
 
@@ -165,30 +164,4 @@ fn discard_inconsistent_staging(directory: &Path) -> Result<(), OpenRaftSnapshot
             source: std::io::Error::other(other).into(),
         },
     })
-}
-
-fn read_pending_snapshot_transfer_manifest(
-    path: &Path,
-) -> Result<Option<PendingTransferManifest>, OpenRaftSnapshotStoreError> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(OpenRaftSnapshotStoreError::Io {
-                operation: "open pending snapshot transfer manifest",
-                path: path.to_path_buf(),
-                source: error.into(),
-            });
-        }
-    };
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|error| OpenRaftSnapshotStoreError::Io {
-            operation: "read pending snapshot transfer manifest",
-            path: path.to_path_buf(),
-            source: error.into(),
-        })?;
-    decode_pending_snapshot_transfer_manifest(&bytes)
-        .map(Some)
-        .map_err(OpenRaftSnapshotStoreError::PendingTransfer)
 }
