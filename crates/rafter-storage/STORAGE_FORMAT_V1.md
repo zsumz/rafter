@@ -246,6 +246,13 @@ snapshot-<sequence>-<last_included_index>-<last_included_term>-<writer_id>.rfsn
 The manifest is the sole selector of the current snapshot. A complete snapshot
 file not named by this manifest is retained but ignored by open.
 
+File-backed opening checks the entire checksum with a 4 KiB read buffer and
+retains at most 65,550 body bytes: the 15-byte header plus a full `u16` filename.
+The format's maximum filename length remains accepted by the decoder. Oversized
+files preserve checksum, schema, filename and trailing-byte diagnostics without
+a file-sized allocation. Refusal precedes pending-transfer recovery cleanup;
+checksum verification time remains proportional to the manifest file length.
+
 ## Pending-transfer manifest (`RFPT`)
 
 ```text

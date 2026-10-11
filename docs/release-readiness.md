@@ -965,6 +965,14 @@ without changing either file. Restoring a valid marker explicitly permits the
 eligible tail repair while preserving the retained suffix. This removes another
 whole-file allocation, while retaining a full linear checksum scan.
 
+The RFSM current-snapshot selector also uses the bounded checksum reader. It
+retains at most the format's 65,550-byte body, including the maximum `u16`
+filename, and preserves the full trailing-byte count beyond that prefix.
+Short/interrupted reads and malformed filenames match the existing decoder.
+An oversized real selector refuses open without choosing an older snapshot or
+cleaning up incomplete pending-transfer files; explicit restoration recovers
+the selected snapshot and resumes normal cleanup.
+
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and
 TLS enabled. Publish throughput alongside p99/p99.9 latency, retained memory,
