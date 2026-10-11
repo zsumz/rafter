@@ -989,10 +989,13 @@ The ledger supplies only its command codec, range-aware application entry,
 transactional store, and descriptor installation policy. Three committed
 commands recover through a single application credit; a tracked write's result
 is consumed after its transaction becomes durable; shutdown preserves that
-completion. Real Raft files and the ledger journal then reopen, and a separate
-blank application installs the exact promoted snapshot before admission opens.
+completion. Real Raft files and the ledger journal then reopen. The owner lends the
+quiescent application to `compact_snapshot_with`, publishes its descriptor
+through the streamed path, and returns retired entries to the bounded retirement
+worker. A separate blank application installs that exact promoted snapshot
+before admission opens.
 The same source is built against extracted archives in the package lane.
 
 This proves the owner/application boundary, not network deployment or latency.
-Authenticated transport, client waiter limits, local snapshot scheduling,
+Authenticated transport, client waiter limits, snapshot scheduling policy,
 completion wakes, and multi-host qualification remain separate work.

@@ -213,8 +213,16 @@ work to verify no early success. The independent ledger adopts the public API
 over real Raft files and its transactional journal, including a backlog larger
 than credits, durable tracked completion, snapshot installation, and reopen.
 
-Remaining composition work includes local snapshot creation/compaction,
-completion wake integration, and bounded client/read waiter ownership. The
+Local creation/compaction now also runs through the owner at a consumed
+application floor, with a stable chunk source and returned retired log prefix.
+A 2 MiB + 17-byte file-backed test observes nine reads of at most 256 KiB while
+the application budget is 64 bytes. Metadata refusals leave service usable;
+source/publication/compaction failures fence it, including a failure after the
+new snapshot was published. The ledger uses this path and the existing bounded
+retirement worker before snapshot restore and reopen.
+
+Remaining composition work includes completion wake integration and bounded
+client/read waiter ownership. The
 current owner polls workers and ordinary consensus inputs retain synchronous
 I/O. Its memory claim covers one existing output batch, one converted command,
 and worker credits; it does not bound the kernel log or an entire recovery

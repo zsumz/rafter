@@ -28,6 +28,21 @@ pub enum ServiceError {
     AdapterRange,
     /// Committed command conversion failed; recovery is required.
     Adapter(ServiceAdapterError),
+    /// Snapshot construction failed; the application must recover before reuse.
+    SnapshotBuild(ServiceAdapterError),
+    /// Local snapshot validation or publication failed. Boundary validation is
+    /// nonfatal; publication/compaction failures fence the service for recovery.
+    Snapshot(RaftRuntimeError),
+    /// Snapshot metadata does not name the quiescent application floor. Nothing
+    /// was published, and the service remains usable.
+    SnapshotFloor {
+        /// Exact durable application floor the snapshot must represent.
+        expected: LogIndex,
+        /// Boundary returned by the snapshot builder.
+        actual: LogIndex,
+    },
+    /// Application work or unconsumed completions prevent local maintenance.
+    NotQuiescent,
     /// Application floor does not agree with the recovery or snapshot boundary.
     ApplicationFloor {
         /// Maximum recovery floor or exact installed snapshot floor.
@@ -54,10 +69,10 @@ impl fmt::Display for ServiceError {
 impl Error for ServiceError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Recovery(error) => Some(error),
+            Self::Recovery(error) | Self::Snapshot(error) => Some(error),
             Self::Persistence(error) => Some(error),
             Self::Start(error) => Some(error),
-            Self::Adapter(error) => Some(error.as_ref()),
+            Self::Adapter(error) | Self::SnapshotBuild(error) => Some(error.as_ref()),
             Self::ApplicationShutdown(error) => Some(error),
             Self::PersistenceShutdown(error) => Some(error),
             _ => None,

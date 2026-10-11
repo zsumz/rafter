@@ -85,6 +85,8 @@ impl Default for ServiceOptions {
 pub enum ServiceEvent<T: ApplicationEntry, A: DurableApplication<T>> {
     /// Durability-safe control or peer output; never `Apply` or `ApplySnapshot`.
     /// A `ReadIndexGranted` has additionally crossed the application fence.
+    /// It may precede the corresponding `Applied` notification: the verified
+    /// durable floor, not notification delivery order, establishes that fence.
     Output(Output),
     /// Both command bytes and the corresponding application floor are durable.
     Applied(ApplicationCompletion<T, A::Outcome>),

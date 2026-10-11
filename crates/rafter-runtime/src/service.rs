@@ -28,6 +28,7 @@
 //! of work already persisted by the runtime, not requests to persist it again.
 
 mod command;
+mod compaction;
 mod contract;
 mod driver;
 mod error;

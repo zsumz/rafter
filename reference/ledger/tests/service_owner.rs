@@ -24,7 +24,7 @@ use rafter_runtime::{
 };
 use rafter_storage::{
     FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
-    PersistedRaftSnapshot,
+    InMemoryRaftSnapshotStore, PersistedRaftSnapshot, RaftSnapshotStore,
 };
 use scratch::ScratchDir;
 use std::{
@@ -182,13 +182,20 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
         Some(LocalProposalId(42))
     );
     assert_eq!(owner.durable_through(), Some(LogIndex(6)));
-    let mut application = shutdown(&mut owner);
+    let application = shutdown(&mut owner);
     assert_eq!(application.store().ledger().view().accounts, [(ACCOUNT, 9)]);
-    let snapshot = application.build_snapshot(LogIndex(6)).unwrap();
     drop(application);
     drop(owner);
-
-    compact(root, snapshot);
+    let mut owner = open(root, "application");
+    assert!(poll_until(&mut owner, |o| o.state() == ServiceState::Ready).is_empty());
+    compact(&mut owner);
+    assert_eq!(owner.ready_node().unwrap().snapshot_index(), LogIndex(6));
+    assert_eq!(owner.durable_through(), Some(LogIndex(6)));
+    assert_eq!(
+        shutdown(&mut owner).store().ledger().view().accounts,
+        [(ACCOUNT, 9)]
+    );
+    drop(owner);
 
     // A separate blank application recovers only from the promoted descriptor.
     let mut owner = open(root, "restored-application");
@@ -261,32 +268,36 @@ fn seed_recovery(root: &Path) {
     drop(node);
 }
 
-fn compact(root: &Path, snapshot: ApplicationSnapshot) {
-    let storage = stores(root);
-    let mut node = DurableRaftNode::with_storage_and_snapshot_store_applied_through(
-        raft_config(),
-        storage.hard_state_store,
-        storage.log_segment,
-        storage.snapshot_store,
-        LogIndex(6),
+fn compact(owner: &mut Owner) {
+    let retired = owner
+        .compact_snapshot_with(|application, node| {
+            let at = application.store().applied_index();
+            let snapshot = application.build_snapshot(at)?;
+            let metadata = RaftSnapshotMetadata::new(
+                SnapshotGroupId::new("ledger-owner")?,
+                node.id(),
+                at,
+                node.term_at_index(at).unwrap(),
+                node.current_term(),
+                ApplicationSnapshotMetadata::new(
+                    ApplicationSnapshotKind::new("ledger")?,
+                    ApplicationSnapshotVersion::new(1)?,
+                ),
+            )?;
+            // The bounded ledger uses its existing small snapshot format. Large
+            // applications can return a file-backed source through the same API.
+            let source = InMemoryRaftSnapshotStore::with_snapshot(PersistedRaftSnapshot {
+                metadata,
+                application_payload: snapshot.payload,
+            });
+            Ok((source.current_snapshot().unwrap(), source))
+        })
+        .unwrap();
+    assert!(!retired.is_empty());
+    let mut retirement = rafter_runtime::LogRetirementWorker::start(
+        rafter_runtime::LogRetirementWorkerOptions::new(64, 256 * 1024),
     )
     .unwrap();
-    let metadata = RaftSnapshotMetadata::new(
-        SnapshotGroupId::new("ledger-owner").unwrap(),
-        NodeId(1),
-        LogIndex(6),
-        node.term_at_index(LogIndex(6)).unwrap(),
-        node.current_term(),
-        ApplicationSnapshotMetadata::new(
-            ApplicationSnapshotKind::new("ledger").unwrap(),
-            ApplicationSnapshotVersion::new(1).unwrap(),
-        ),
-    )
-    .unwrap();
-    node.compact_log_with_snapshot(PersistedRaftSnapshot {
-        metadata,
-        application_payload: snapshot.payload,
-    })
-    .unwrap();
-    drop(node);
+    retirement.try_submit(retired).unwrap();
+    retirement.shutdown().unwrap();
 }

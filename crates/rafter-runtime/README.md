@@ -88,11 +88,26 @@ output batch, one converted command, and bounded worker credits; a runtime or
 recovery batch itself can be large. The caller still bounds input frames,
 client/read waiters, transport queues, and consumed events. Ordinary consensus
 steps remain synchronous, and the caller provides periodic completion polling.
-Local snapshot creation/compaction and executor wake integration remain on the
-lower-level APIs pending their own composition slices. The independent ledger's
+Executor wake integration remains a separate composition slice. The independent ledger's
 `tests/service_owner.rs` uses this API over real Raft files and its transactional
 journal, exercising backlog recovery, tracked durable completion, shutdown,
 descriptor installation, and reopen in source and exact-package lanes.
+
+`DurableService::compact_snapshot_with` now lends the quiescent application
+store and read-only runtime to a snapshot builder. It refuses outstanding work
+or unconsumed completions without invoking the builder, verifies that the
+application floor did not change and the descriptor names exactly that floor,
+and publishes through the existing streamed compaction path. The builder owns
+its snapshot format and supplies a stable `SnapshotChunkSource`; this API adds
+no whole-payload buffer. File-backed publication pulls at most 256 KiB per
+chunk, while in-memory snapshot stores retain the whole payload by design.
+Returned retired entries can go directly to `LogRetirementWorker`. Building and
+publication are synchronous maintenance, and the application worker restarts
+at the unchanged floor. Invalid descriptor boundaries write nothing and leave
+the owner usable; build, application-floor, publication, or worker-start
+failures require recovery. The independent ledger now compacts through this
+owner before descriptor-based restore. A file-backed test streams 2 MiB + 17
+bytes through nine bounded reads with only 64 application-byte credits.
 
 `LogRetirementWorker` optionally releases entries retired by a successfully
 published local snapshot away from the consensus-owner thread. Entry and

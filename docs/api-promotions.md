@@ -13749,3 +13749,19 @@ any one of the three lands alone.
     adopts it over file-backed Raft and its transactional journal. This first
     composition uses periodic polling, leaves ordinary consensus I/O synchronous,
     and does not yet wrap local compaction or manage bounded client waiters.
+
+33. **Quiescent streamed snapshot compaction on the durable owner.**
+    `DurableService::compact_snapshot_with` lends the application store to a
+    builder only after all worker completions and earlier outputs are consumed.
+    The builder returns a descriptor and stable chunk source. The owner checks
+    the application floor before publication, delegates metadata validation and
+    publication/compaction ordering to the existing runtime, restarts the worker
+    at the unchanged floor, and returns retired entries for bounded disposal.
+    Snapshot-floor and kernel-boundary refusals are nonfatal and publish
+    nothing; build errors, mutated application floors, storage failures, caught
+    panics, and failed worker restarts fence the incarnation. The ledger adopts
+    the public operation and retirement worker over real files. A source larger
+    than its application credits is published in bounded chunks and reopened.
+    This additive method imposes no new snapshot schema or whole-payload buffer;
+    `rafter-app::ApplicationSnapshot` streaming policy is still a separate API
+    decision, and the maintenance operation itself remains synchronous.

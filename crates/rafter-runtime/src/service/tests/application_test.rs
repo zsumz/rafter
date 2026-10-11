@@ -91,17 +91,39 @@ fn read_grant_waits_for_application_but_noop_barrier_needs_no_phantom_apply() {
         assert!(service.poll().unwrap().is_none());
     }
     release.now();
-    let events = until(&mut service, DurableService::idle);
-    assert!(
-        matches!(events.first(), Some(ServiceEvent::Applied(done)) if done.outcomes() == [Some(LocalProposalId(7))])
-    );
-    assert!(matches!(
-        events.last(),
-        Some(ServiceEvent::Output(Output::ReadIndexGranted {
-            read_id: ReadId(2),
-            ..
-        }))
-    ));
+    // The verified durable floor can advance between poll's completion check
+    // and its read check. Notifications may therefore arrive in either order.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let (mut applied, mut granted) = (false, false);
+    while !service.idle() {
+        assert!(std::time::Instant::now() < deadline);
+        match service.poll().unwrap() {
+            Some(ServiceEvent::Applied(done)) => {
+                assert!(!applied, "one write completion");
+                assert_eq!(done.outcomes(), [Some(LocalProposalId(7))]);
+                applied = true;
+            }
+            Some(ServiceEvent::Output(Output::ReadIndexGranted {
+                read_id: ReadId(2),
+                read_index,
+            })) => {
+                assert!(!granted, "one read grant");
+                let required = service
+                    .ready_node()
+                    .unwrap()
+                    .committed_application_index_through(read_index);
+                assert_eq!(required, LogIndex(3));
+                assert!(
+                    service.durable_through().unwrap() >= required,
+                    "the application prefix is durable when the grant is delivered"
+                );
+                granted = true;
+            }
+            None => std::thread::yield_now(),
+            other => panic!("unexpected read/write completion: {other:?}"),
+        }
+    }
+    assert!(applied && granted, "both notifications must be delivered");
 }
 
 #[test]

@@ -182,6 +182,14 @@ fn speculative_replication_overlaps_fsync_but_quorum_and_client_success_stay_fen
             other => panic!("dependent output escaped: {other:?}"),
         }
     }
+    assert!(matches!(
+        cluster
+            .owner
+            .compact_snapshot_with::<InMemoryRaftSnapshotStore>(|_, _| panic!(
+                "persistence still owns node"
+            )),
+        Err(ServiceError::NotReady(ServiceState::Busy))
+    ));
     assert_eq!(cluster.follower.last_log_index(), LogIndex(2));
     assert_eq!(cluster.owner.progress().durable, LogIndex(1));
     assert_eq!(cluster.owner.durable_through(), Some(LogIndex::ZERO));
