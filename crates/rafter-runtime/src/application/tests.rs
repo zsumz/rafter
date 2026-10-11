@@ -14,6 +14,7 @@ use std::{
 };
 
 mod lifecycle;
+mod ranges;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Entry {
@@ -77,7 +78,7 @@ type PauseGate = Option<(mpsc::Receiver<()>, mpsc::SyncSender<()>)>;
 type BatchLog = Arc<Mutex<Vec<Vec<LogIndex>>>>;
 type TestWorker = ApplicationWorker<Entry, Store>;
 
-impl DurableApplication<Entry> for Store {
+impl<T: ApplicationEntry> DurableApplication<T> for Store {
     type Outcome = LogIndex;
     type Error = TestError;
 
@@ -85,7 +86,7 @@ impl DurableApplication<Entry> for Store {
         self.applied
     }
 
-    fn apply(&mut self, entries: &[Entry]) -> Result<Vec<Self::Outcome>, Self::Error> {
+    fn apply(&mut self, entries: &[T]) -> Result<Vec<Self::Outcome>, Self::Error> {
         if let Some((entered, resume)) = self.pause.take() {
             entered.send(()).expect("test observes apply entry");
             resume.recv().expect("test releases apply");
@@ -125,6 +126,16 @@ fn worker_with_wake(
     pause: bool,
     wake: impl Fn() + Send + 'static,
 ) -> (TestWorker, PauseGate, BatchLog) {
+    worker_with_wake_for(applied, mode, limits, pause, wake)
+}
+
+fn worker_with_wake_for<T: ApplicationEntry>(
+    applied: u64,
+    mode: Mode,
+    limits: ApplicationWorkerOptions,
+    pause: bool,
+    wake: impl Fn() + Send + 'static,
+) -> (ApplicationWorker<T, Store>, PauseGate, BatchLog) {
     let (entered, entering) = mpsc::sync_channel(0);
     let (release, resume) = mpsc::sync_channel(0);
     let batches = Arc::new(Mutex::new(Vec::new()));
@@ -354,7 +365,7 @@ fn invalid_limits_fail_before_the_thread_starts() {
         pause: None,
         batches,
     };
-    let error = ApplicationWorker::start(
+    let error = ApplicationWorker::<Entry, _>::start(
         store,
         ApplicationWorkerOptions::new().with_limits(1, 1, 2, 1),
         || {},

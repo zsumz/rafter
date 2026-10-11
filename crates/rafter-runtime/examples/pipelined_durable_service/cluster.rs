@@ -20,6 +20,10 @@ mod apply;
 #[path = "cluster/outputs.rs"]
 mod outputs;
 
+#[cfg(test)]
+#[path = "cluster/tests.rs"]
+mod tests;
+
 const PEER_QUEUE_CAPACITY: usize = 1_024;
 const RETIREMENT_ENTRY_CAPACITY: usize = 1_024;
 const RETIREMENT_PAYLOAD_CAPACITY: usize = 1024 * 1024;

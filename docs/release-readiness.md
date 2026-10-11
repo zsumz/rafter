@@ -192,6 +192,13 @@ bounded TLS transport, and the
 [`pipelined_durable_service` example](../crates/rafter-runtime/examples/pipelined_durable_service.rs).
 The owner loop still has to coordinate all of them itself.
 
+The application worker now accepts validated contiguous ranges through
+`ApplicationEntry::first_log_index`. The durable reference service uses this
+to cover protocol-only prefixes with the next application command, avoiding
+gap-sized placeholder allocations and batch-limit failures. Range support is
+an application-dispatch building block; unified bounded admission, completion,
+snapshot, and shutdown orchestration remains to be extracted.
+
 Extract a small supported driver/composition that owns bounded admission,
 persistence completion, ordered application completion, client outcomes,
 snapshot maintenance, and shutdown. Keep application schemas, authentication

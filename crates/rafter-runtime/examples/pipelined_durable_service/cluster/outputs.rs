@@ -26,18 +26,15 @@ impl Cluster {
                         .checked_add(1)
                         .expect("reference log index remains advanceable");
                     assert!(next <= index.0, "application outputs remain ordered");
-                    let mut entries: Vec<_> = (next..index.0)
-                        .map(|marker| AppliedCommand {
-                            index: LogIndex(marker),
-                            payload: None,
-                            proposal_id: None,
-                        })
-                        .collect();
-                    entries.push(AppliedCommand {
+                    // The complete ordered Apply stream proves that positions
+                    // before this command contain only protocol entries. One
+                    // range covers them without allocating gap-sized markers.
+                    let entries = vec![AppliedCommand {
+                        first_index: LogIndex(next),
                         index,
                         payload: Some(payload.as_slice().to_vec()),
                         proposal_id: local_proposal_id,
-                    });
+                    }];
                     replica
                         .application
                         .as_ref()

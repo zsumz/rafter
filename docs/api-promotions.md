@@ -13714,3 +13714,14 @@ any one of the three lands alone.
     implements both public traits over its own transactional store, and the
     exact-package lane proves bounded completion and reopen without any
     benchmark dependency or checkout-only hook. This step is additive.
+30. **Range-aware application dispatch.**
+    `ApplicationEntry::first_log_index` defaults to `log_index`, preserving
+    existing implementations. An item can cover a known protocol-only prefix
+    with its command instead of allocating no-op placeholders. Admission
+    validates both ends and contiguous coverage, returning the new
+    `ApplicationSubmitRejection::InvalidRange` for reversed ranges. Limits and
+    outcomes count items; retained-byte estimates still include all owned
+    data, and completion requires the final covered index to be durable.
+    The embedding must include every application command in the covered range.
+    The durable reference service uses this contract during live output routing
+    and recovery; storage and wire formats are unchanged.

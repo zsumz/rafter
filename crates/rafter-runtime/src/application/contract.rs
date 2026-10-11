@@ -3,12 +3,29 @@
 use rafter::LogIndex;
 use std::error::Error;
 
-/// One committed item whose durable application is ordered by log index.
+/// One committed item whose durable application covers a contiguous log range.
 pub trait ApplicationEntry: Send + 'static {
-    /// Returns the Raft log index represented by this item.
+    /// Returns the final Raft log index represented by this item.
     ///
     /// This value must remain stable for the item's lifetime.
     fn log_index(&self) -> LogIndex;
+
+    /// Returns the first log index covered by this item, inclusive.
+    ///
+    /// The default represents a single log entry. An embedding may override
+    /// this to include a known protocol-only prefix before an application
+    /// command, without allocating placeholder items for no-ops or membership
+    /// entries. The range must not omit any application work: the embedding
+    /// must consume the complete ordered Raft output stream and include every
+    /// command covered by the item. The worker validates range continuity but
+    /// cannot verify the contents of the Raft log.
+    ///
+    /// This value must remain stable and must not exceed [`Self::log_index`].
+    /// Entry credits and outcomes count items, not covered log positions;
+    /// byte estimates must still account for all work and retained data.
+    fn first_log_index(&self) -> LogIndex {
+        self.log_index()
+    }
 
     /// Returns a conservative bound for memory retained through completion.
     ///
@@ -44,11 +61,12 @@ where
     /// Returns the application's authoritative durable applied floor.
     fn applied_through(&self) -> LogIndex;
 
-    /// Applies one nonempty contiguous batch in order.
+    /// Applies one nonempty batch of contiguous log ranges in order.
     ///
     /// `Ok` must mean both the application bytes and the final applied floor
     /// are durable as one crash-consistency unit. The returned vector must have
-    /// exactly one outcome per entry. An error has an application-defined
+    /// exactly one outcome per item, including when an item covers multiple
+    /// log positions. An error has an application-defined
     /// durability disposition; the live worker stops and requires recovery.
     ///
     /// # Errors

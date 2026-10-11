@@ -42,6 +42,13 @@ with completion-retained memory. Store success is accepted only when it returns
 one outcome per item and reports the matching durable applied floor. Refusals
 and failures preserve owned work; a failure or worker panic closes admission
 and requires recovery before the service continues.
+An item normally covers one log position. `ApplicationEntry::first_log_index`
+can include a known protocol-only prefix with the next command, so long runs
+of no-ops or membership entries need no allocated placeholders. The worker
+rejects reversed, overlapping, or discontinuous ranges before taking ownership;
+the embedding remains responsible for including every application command.
+One outcome and one entry credit belong to each item regardless of range length,
+and success must durably publish the final covered index with the matching bytes.
 Snapshot creation and installation remain application policy and must be
 coordinated at a consumed durable floor. `shutdown_into_store` returns the
 application store after an idle join, so maintenance can take exclusive

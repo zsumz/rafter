@@ -17,14 +17,23 @@ use super::{
     storage::node_dir,
 };
 
+#[cfg(test)]
+#[path = "application/tests.rs"]
+mod tests;
+
 #[derive(Debug)]
 pub(crate) struct AppliedCommand {
+    pub first_index: LogIndex,
     pub index: LogIndex,
     pub payload: Option<Vec<u8>>,
     pub proposal_id: Option<LocalProposalId>,
 }
 
 impl ApplicationEntry for AppliedCommand {
+    fn first_log_index(&self) -> LogIndex {
+        self.first_index
+    }
+
     fn log_index(&self) -> LogIndex {
         self.index
     }
