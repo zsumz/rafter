@@ -23,7 +23,7 @@ burden for durable applications. More throughput work should follow those.
 ## Current code checkpoint
 
 The release work is on `codex/stable-release-slices`, with code through
-[`2717e88e`](https://github.com/zsumz/rafter/commit/2717e88eaec391e5c22c85cd0bb24db3b077d20f)
+[`552616c2`](https://github.com/zsumz/rafter/commit/552616c2254694a88ac5bafca49559e800bf2d39)
 in draft [PR #23](https://github.com/zsumz/rafter/pull/23). The transport already
 exists: durable composition reuses its authenticated TLS sender and inbound
 validation. No transport replacement, version bump, tag, or publication is part
@@ -38,6 +38,9 @@ persists peer retirement and authorization policy. The feature remains default-o
 
 | Qualification | Source checkpoint and result |
 | --- | --- |
+| Integrated workspace with durable feature | `b62f8464`: all-target build, 3,339 tests (zero failed, 58 ignored), strict all-target Clippy and strict rustdoc pass on Rust 1.88; tracked source hashes remain unchanged. |
+| Ready-query fairness | `9c08dd5a`: 440 service tests, 47 guards, strict lint/docs and all nine canonical file/TLS cases pass. The identical public production sources also pass nine isolated TLS cases with 96 mixed-load/compaction/cold-recovery cycles. The original scheduler and a partial fix fail deterministic regressions. |
+| Durable benchmark report integrity | `552616c2`: 16 Python tests and four Rust configuration tests pass. Four malformed reports accepted by the previous checker are rejected; seven synthetic reports emitted by the actual Rust formatter pass. No new performance result is claimed. |
 | Storage recovery, corruption and publication | `2717e88e`: all 315 storage tests pass; the allocation gate rejects the previous checkpoint reader and passes the fix. |
 | Public API compatibility | `2717e88e`: all 22 default/all-feature comparisons against `0.0.2-alpha.1` pass. |
 | Exact packages and Rust 1.88 MSRV | `2717e88e`: all seven phases pass, including 548 tests and storage, wire and rolling TLS upgrades; 57 profiles remain assigned to dedicated lanes. |
@@ -50,9 +53,10 @@ Stable-release qualification remains open. In priority order:
 
 1. Freeze one final candidate and finish its complete hosted Linux qualification,
    including dedicated process profiles and the authenticated invariant aggregate.
-   The successful full nightly at `961d621e` is an earlier checkpoint; the preserved
-   `04ce0772` nightly was still running its TLA producer at the October 11 refresh.
-   Obtain the repository's architecture review and reconcile the overlapping PR #13.
+   The successful full nightlies at `961d621e` and `04ce0772` qualify earlier
+   checkpoints. The latter completed all 15 jobs and all 44 invariants; neither
+   contains the new ready-query fairness fix. Obtain the repository's architecture
+   review and reconcile the overlapping PR #13.
 2. Set the supported integration scope explicitly. Automatic membership-plan
    execution, committed-change tracking, general peer policy and retirement-history
    recovery remain embedding work; bounded proposal admission is already available.
@@ -1110,6 +1114,26 @@ and no refusal history, then serves the next full workload. The complete case
 covers 384 deposits and 384 mixed reads plus three recovery retries and quorum
 reads. This is a bounded, single-host correctness case, not a sustained performance
 or physical-fault claim; diagnostic collection remains enabled in this fixture.
+
+Extending the file/TLS workload to 96 cycles at `4d20785d` exposed a ready-query
+fairness defect after 61 completed cycles. Two of four diagnostic repetitions
+also failed after eight and 35 cycles; the other two completed all 96. In a
+failure, 64 writes completed while a local read and a quorum-confirmed read
+remained pending, despite no pending leader read barriers or transport refusals.
+The owner treated both an absent read and a busy application view as permission
+to dispatch another write, allowing new writes to keep that view occupied.
+
+The fix retains the ready read's admission turn until already-owned application
+work releases the view. Three real-worker regressions cover repeated polling,
+cancellation releasing the turn, and unconfirmed quorum reads allowing writes.
+The original implementation fails the blocked-view regression; removing only
+priority retention fails its repeated-poll check. All 440 service tests, strict
+lint/docs, 47 guards and nine canonical TLS cases pass. The candidate also passes
+all nine TLS cases with the temporary 96-cycle extension: 12,288 load writes, 12,288
+mixed reads, 96 exact retries and 96 quorum reads after recovery. The source
+snapshot is preserved, and all 831 public production Rust files match the applied
+checkout. These are single-host correctness results with diagnostics enabled,
+not throughput, whole-host memory or physical-fault guarantees.
 
 The same backlog review reproduced a control-plane liveness defect: a full
 local-read stream could indefinitely postpone an accepted or rejected leadership

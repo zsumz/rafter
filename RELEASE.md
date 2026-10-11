@@ -23,8 +23,10 @@ For a non-release completion run at one checked-out SHA, run and retain:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked -p rafter-service --features durable --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo test --locked -p rafter-service --features durable
 scripts/rustdoc-check
 scripts/check-public-api
 scripts/work-completion-check
@@ -72,12 +74,16 @@ This section does not authorize a version change, RC, `1.0.0`, tag, publish,
 mandatory release workflow, or mixed-version compatibility claim.
 
 The deterministic and MSRV package lanes include the
-[file-store upgrade matrix](docs/storage-upgrades.md) and the
-[bidirectional peer-codec matrix](docs/wire-compatibility.md). They exercise
-published archive writes, candidate recovery and continuation, canonical peer
-frames in both directions, and typed refusals. Retain both receipts with the
-exact-package evidence. Other storage layouts, downgrades and mixed-version
-cluster operation remain outside those matrices and require separate qualification.
+[file-store upgrade matrix](docs/storage-upgrades.md), the
+[bidirectional peer-codec matrix](docs/wire-compatibility.md), and the
+[rolling TLS upgrade scenario](docs/rolling-upgrades.md). They exercise published
+alpha archive writes, candidate recovery and continuation, canonical peer frames
+in both directions, typed refusals, and a mixed-version cluster through writes,
+quorum reads, membership changes, and snapshot catch-up. Retain all three
+receipts with the exact-package evidence. The rolling scenario covers its stated
+single-host fixture and upgrade path; other versions, application schema changes,
+downgrades, multi-host operation, and crashes during replacement need separate
+qualification.
 
 ## 0.0.2-alpha.1 Product Preview
 
@@ -306,8 +312,10 @@ Before publishing, run:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked -p rafter-service --features durable --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo test --locked -p rafter-service --features durable
 scripts/rustdoc-check
 cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
 cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings

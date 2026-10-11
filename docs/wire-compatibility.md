@@ -67,10 +67,13 @@ Hosted package jobs retain the compatibility receipts with their other evidence.
 
 ## Scope still to qualify
 
-This proves codec interoperability for the listed messages. It does not prove
-mixed-version cluster correctness, transport authentication interoperability,
-rolling storage upgrades or safe downgrades. The next check must run old and
-candidate replicas together through writes, linearizable reads, membership
-changes and snapshot catch-up. Older `0.0.1` combinations, full public API
-compatibility, and unsupported-version negotiation need their own policy and
-executable cases before any stable-release promise.
+This matrix proves codec interoperability for the listed messages. The separate
+[rolling TLS upgrade scenario](rolling-upgrades.md) exercises published-alpha
+and candidate replicas together through authenticated transport, writes,
+linearizable reads, membership changes, and snapshot catch-up. The
+[public API gate](../RELEASE.md#current-work-completion-preflight) separately checks
+source compatibility; codec evidence alone does not establish either contract.
+
+Older `0.0.1` combinations, downgrades, multi-host operation, application schema
+changes, crashes during replica replacement, and unsupported-version negotiation
+still need their own policy and executable cases before a stable-release promise.
