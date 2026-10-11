@@ -1,4 +1,4 @@
-"""Archive and dependency checks for the public storage upgrade fixture."""
+"""Archive and dependency checks for public compatibility fixtures."""
 
 import hashlib
 import json
@@ -8,7 +8,6 @@ import tarfile
 import tomllib
 import urllib.request
 
-PACKAGES = {"rafter", "rafter-crc32", "rafter-storage"}
 MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
 MAX_UNPACKED_BYTES = 128 * 1024 * 1024
 MAX_ENTRIES = 10_000
@@ -19,10 +18,10 @@ def sha256(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def baseline_lock(path):
+def baseline_lock(path, packages):
     lock = json.loads(Path(path).read_text())
-    if lock.get("schema") != 1 or set(lock.get("packages", {})) != PACKAGES:
-        raise ValueError("baseline must pin exactly the three public fixture packages")
+    if lock.get("schema") != 1 or set(lock.get("packages", {})) != packages:
+        raise ValueError("baseline must pin exactly the public fixture packages")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", lock["version"]):
         raise ValueError("invalid baseline version")
     if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in lock["packages"].values()):
@@ -91,7 +90,7 @@ def unpack(archive, destination, name):
     return root, package["version"]
 
 
-def audit_graph(metadata, checkout, roots, consumer):
+def audit_graph(metadata, checkout, roots, consumer, probe_name):
     """Prove both builds resolve Rafter only from their respective archive set."""
     packages = {package["id"]: package for package in metadata["packages"]}
     members = {
@@ -100,22 +99,22 @@ def audit_graph(metadata, checkout, roots, consumer):
     if len(members) != 1 or set(metadata["workspace_members"]) != members:
         raise ValueError("probe must be the only workspace member")
     found = set()
+    allowed_paths = {root / "Cargo.toml" for root in roots.values()} | {consumer / "Cargo.toml"}
     for package in packages.values():
         manifest = Path(package["manifest_path"]).resolve()
         if manifest.is_relative_to(checkout):
             raise ValueError(f"dependency reaches checkout: {manifest}")
-        allowed_paths = {root / "Cargo.toml" for root in roots.values()} | {consumer / "Cargo.toml"}
         if package["source"] is None and manifest not in allowed_paths:
             raise ValueError(f"unpublished path dependency: {manifest}")
         name = package["name"]
         if name == "rafter" or name.startswith("rafter-"):
-            if name == "rafter-storage-upgrade-probe" and manifest == consumer / "Cargo.toml":
+            if name == probe_name and manifest == consumer / "Cargo.toml":
                 continue
             if name not in roots or name in found or manifest != roots[name] / "Cargo.toml":
                 raise ValueError(f"unexpected Rafter dependency: {name} at {manifest}")
             found.add(name)
-    if found != PACKAGES:
-        raise ValueError("fixture did not resolve the complete public storage dependency set")
+    if found != set(roots):
+        raise ValueError("fixture did not resolve the complete public archive dependency set")
     for node in metadata["resolve"]["nodes"]:
         if "internal-test-hooks" in node["features"]:
             raise ValueError("internal test hooks are forbidden in archive upgrade checks")

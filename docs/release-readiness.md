@@ -166,6 +166,13 @@ The deterministic and MSRV package lanes run this matrix and retain evidence;
 it does not qualify journal/shared WAL migration, downgrades, or mixed-version
 wire behavior.
 
+The [peer-codec matrix](wire-compatibility.md) now adds 22 cases covering every
+encodable top-level message, stable/joint membership, snapshot chunks and wide
+replication sequence numbers. Both archive-built binaries decode each other's
+frames to exact expected values and retain identical canonical bytes. Both
+refuse seven malformed inputs and the unsupported whole-snapshot form. This
+is codec evidence; a mixed-version cluster test is still required.
+
 **Acceptance:** the advertised upgrade matrix passes from real package
 archives, each durable layout has a stated support/migration policy, and public
 API diffs are reviewed for every coordinated release.

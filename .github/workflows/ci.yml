@@ -998,7 +998,7 @@ jobs:
       - name: Exact-package boundary adversarial checks
         run: |
           scripts/tests/reference_package_boundary_test.sh
-          python3 -m unittest scripts/tests/test_storage_upgrade.py
+          python3 -m unittest scripts/tests/test_archive_compatibility.py
       - name: Reference consumers against exact package archives
         # This used to be the only lane that built `rafter` in its published
         # shape: every cargo invocation over the root workspace resolved
@@ -1013,7 +1013,7 @@ jobs:
           # sibling of the workspace, never a child.
           TMPDIR: ${{ runner.temp }}
         run: scripts/reference-package-check --artifacts artifacts/reference-package
-      - name: Upload exact-package and storage upgrade receipts
+      - name: Upload exact-package and compatibility receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

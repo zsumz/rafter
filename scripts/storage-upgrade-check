@@ -7,101 +7,23 @@ The checksum-pinned published archives may be cached for later --offline runs.
 Every invocation produces a fresh receipt, logs, locks, graphs and durable states.
 """
 
-import argparse
-import json
-import os
-from pathlib import Path
 import shutil
-import subprocess
 import sys
-import tempfile
-import tomllib
 import zlib
 
-from storage_upgrade_archives import (
-    PACKAGES, audit_graph, baseline_archive, baseline_lock, candidate_archive,
-    sha256, tree_inventory, unpack,
-)
-
-ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "reference/fenced-lock/src/bin/storage-format-probe"
+from archive_compatibility import ArchiveRun, ROOT, run_matrix
+from archive_inputs import tree_inventory
 
 
-class Run:
-    def __init__(self, artifacts, toolchain, offline):
-        self.artifacts = artifacts
-        self.toolchain = toolchain
-        self.offline = offline
-        self.receipt = {"schema": 1, "status": "running", "commands": [], "cases": []}
-
-    def command(self, name, arguments, cwd, env=None):
-        stdout = self.artifacts / f"{name}.stdout"
-        stderr = self.artifacts / f"{name}.stderr"
-        record = {"name": name, "argv": list(map(str, arguments)), "cwd": str(cwd),
-                  "stdout": stdout.name, "stderr": stderr.name}
-        self.receipt["commands"].append(record)
-        print(f"storage-upgrade: {name}", flush=True)
-        with stdout.open("xb") as out, stderr.open("xb") as err:
-            try:
-                result = subprocess.run(arguments, cwd=cwd, env=env, stdout=out, stderr=err,
-                                        timeout=900, check=False)
-            except subprocess.TimeoutExpired:
-                record["status"] = "timeout"
-                raise
-        record["exit_code"] = result.returncode
-        if result.returncode:
-            raise RuntimeError(f"{name} failed ({result.returncode}); see {stdout} and {stderr}")
-        return stdout
-
-    def cargo(self, name, arguments, cwd, target):
-        env = os.environ.copy()
-        env["CARGO_TARGET_DIR"] = str(target)
-        argv = ["rustup", "run", self.toolchain, "cargo", *arguments]
-        if self.offline:
-            argv.append("--offline")
-        return self.command(name, argv, cwd, env)
-
-    def build(self, role, archives, work):
-        directory = work / role
-        directory.mkdir()
-        roots = {}
-        versions = set()
-        archive_records = {}
-        for name in sorted(PACKAGES):
-            original = candidate_archive(archives, name)
-            archive = directory / original.name
-            shutil.copyfile(original, archive)
-            roots[name], version = unpack(archive, directory / name, name)
-            versions.add(version)
-            archive_records[name] = {"version": version, "sha256": sha256(archive)}
-        if len(versions) != 1:
-            raise ValueError(f"{role} archives are not a coordinated version set")
-        version = versions.pop()
-        consumer = directory / "probe"
-        shutil.copytree(FIXTURE, consumer / "src")
-        manifest = (
-            '[package]\nname = "rafter-storage-upgrade-probe"\nversion = "0.0.0"\n'
-            'edition = "2021"\npublish = false\n\n[workspace]\n\n[dependencies]\n'
-            f'rafter = "={version}"\nrafter-storage = "={version}"\n')
-        (consumer / "Cargo.toml").write_text(manifest)
-        (consumer / ".cargo").mkdir()
-        (consumer / ".cargo/config.toml").write_text(
-            "[patch.crates-io]\n" + "".join(
-                f"{name} = {{ path = {json.dumps(str(path))} }}\n"
-                for name, path in sorted(roots.items())))
-        target = directory / "target"
-        self.cargo(f"{role}-lock", ["generate-lockfile"], consumer, target)
-        metadata_path = self.cargo(f"{role}-metadata", ["metadata", "--locked", "--format-version=1"],
-                                   consumer, target)
-        metadata = json.loads(metadata_path.read_text())
-        audit_graph(metadata, ROOT, roots, consumer)
-        self.cargo(f"{role}-build", ["build", "--locked"], consumer, target)
-        binary = target / "debug/rafter-storage-upgrade-probe"
-        lock = self.artifacts / f"{role}-Cargo.lock"
-        shutil.copyfile(consumer / "Cargo.lock", lock)
-        self.receipt[role] = {"archives": archive_records, "binary_sha256": sha256(binary),
-                              "lock_sha256": sha256(lock), "metadata_sha256": sha256(metadata_path)}
-        return binary
+class Run(ArchiveRun):
+    label = "storage-upgrade"
+    scope = "forward file-store recovery"
+    packages = frozenset({"rafter", "rafter-crc32", "rafter-storage"})
+    dependencies = ("rafter", "rafter-storage")
+    probe_name = "rafter-storage-upgrade-probe"
+    fixture = ROOT / "reference/fenced-lock/src/bin/storage-format-probe"
+    baseline = ROOT / "verification/storage-upgrade-baseline.json"
+    script = "storage-upgrade-check"
 
     def matrix(self, baseline, candidate):
         states = self.artifacts / "states"
@@ -136,74 +58,5 @@ class Run:
                                        "unchanged": True})
 
 
-def arguments():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--candidate-archives", type=Path)
-    parser.add_argument("--baseline-cache", type=Path, default=ROOT / "target/storage-upgrade/archives")
-    parser.add_argument("--artifacts", type=Path, help="new directory; an existing path is refused")
-    parser.add_argument("--offline", action="store_true")
-    parser.add_argument("--keep", action="store_true", help="keep temporary unpacked sources and binaries")
-    parser.add_argument("--toolchain", help="rustup toolchain; defaults to the selected checkout toolchain")
-    return parser.parse_args()
-
-
-def main():
-    args = arguments()
-    toolchain = args.toolchain or os.environ.get("RUSTUP_TOOLCHAIN") or tomllib.loads(
-        (ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
-    parent = ROOT / "target/storage-upgrade"
-    parent.mkdir(parents=True, exist_ok=True)
-    if args.artifacts:
-        artifacts = args.artifacts.resolve()
-        artifacts.mkdir(parents=True)
-    else:
-        artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
-    work = Path(tempfile.mkdtemp(prefix="rafter-storage-upgrade-")).resolve()
-    run = Run(artifacts, toolchain, args.offline)
-    try:
-        if work.is_relative_to(ROOT):
-            raise ValueError("temporary consumer workspace must be outside the checkout; change TMPDIR")
-        run.receipt.update({"toolchain": toolchain, "scope": "forward file-store recovery",
-                            "fixture_sha256": {path.name: sha256(path) for path in FIXTURE.glob("*.rs")},
-                            "runner_sha256": {name: sha256(ROOT / "scripts" / name) for name in
-                                              ["storage-upgrade-check", "storage_upgrade_archives.py"]}})
-        version = run.command("rustc-version", ["rustup", "run", toolchain, "rustc", "-Vv"], ROOT)
-        run.receipt["rustc"] = version.read_text()
-        lock = baseline_lock(ROOT / "verification/storage-upgrade-baseline.json")
-        run.receipt["baseline_lock"] = lock
-        cache = args.baseline_cache.resolve()
-        cache.mkdir(parents=True, exist_ok=True)
-        baseline_archives = work / "baseline-archives"
-        baseline_archives.mkdir()
-        for name, checksum in sorted(lock["packages"].items()):
-            archive = baseline_archive(cache, name, lock["version"], checksum, args.offline)
-            copied = baseline_archives / archive.name
-            shutil.copyfile(archive, copied)
-            if sha256(copied) != checksum:
-                raise ValueError(f"copied baseline checksum mismatch: {name}")
-        candidate_archives = args.candidate_archives
-        if candidate_archives is None:
-            package_target = work / "package-target"
-            run.cargo("candidate-package", ["package", "--locked", "--allow-dirty", "--no-verify",
-                                            *[arg for name in sorted(PACKAGES) for arg in ("-p", name)]],
-                      ROOT, package_target)
-            candidate_archives = package_target / "package"
-        baseline = run.build("baseline", baseline_archives, work)
-        candidate = run.build("candidate", candidate_archives.resolve(), work)
-        run.matrix(baseline, candidate)
-        run.receipt["status"] = "pass"
-    except Exception as error:
-        run.receipt.update(status="fail", error=str(error))
-        print(f"storage-upgrade: {error}", file=sys.stderr)
-    finally:
-        (artifacts / "receipt.json").write_text(json.dumps(run.receipt, indent=2) + "\n")
-        if args.keep:
-            print(f"storage-upgrade: kept {work}")
-        else:
-            shutil.rmtree(work)
-        print(f"storage-upgrade: {run.receipt['status']}; receipt: {artifacts / 'receipt.json'}")
-    return 0 if run.receipt["status"] == "pass" else 1
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run_matrix(Run, __doc__))

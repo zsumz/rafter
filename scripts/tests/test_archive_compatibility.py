@@ -1,4 +1,4 @@
-"""Adversarial boundaries of the real-archive storage qualification runner."""
+"""Adversarial boundaries of the real-archive compatibility runners."""
 
 import copy
 import io
@@ -11,10 +11,13 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from storage_upgrade_archives import (  # noqa: E402
-    PACKAGES, audit_graph, baseline_archive, baseline_lock, candidate_archive,
+from archive_inputs import (  # noqa: E402
+    audit_graph, baseline_archive, baseline_lock, candidate_archive,
     sha256, tree_inventory, unpack,
 )
+
+
+PACKAGES = {"rafter", "rafter-crc32", "rafter-storage"}
 
 
 class ArchiveBoundary(unittest.TestCase):
@@ -67,7 +70,7 @@ class ArchiveBoundary(unittest.TestCase):
                            ("rafter-1.0.0/second", b"5678", tarfile.REGTYPE)])
         for index, (limit, value) in enumerate([("MAX_ENTRIES", 1), ("MAX_UNPACKED_BYTES", 7),
                                                 ("MAX_ARCHIVE_BYTES", 1)]):
-            with self.subTest(limit=limit), patch(f"storage_upgrade_archives.{limit}", value):
+            with self.subTest(limit=limit), patch(f"archive_inputs.{limit}", value):
                 with self.assertRaisesRegex(ValueError, "budget"):
                     unpack(self.archive, self.root / f"limit-{index}", "rafter")
 
@@ -104,8 +107,16 @@ class ArchiveBoundary(unittest.TestCase):
 
     def test_baseline_lock_is_complete(self):
         root = Path(__file__).resolve().parents[2]
-        self.assertEqual(set(baseline_lock(root / "verification/storage-upgrade-baseline.json")["packages"]),
+        self.assertEqual(set(baseline_lock(root / "verification/storage-upgrade-baseline.json", PACKAGES)["packages"]),
                          PACKAGES)
+
+    def test_baseline_from_another_matrix_cannot_substitute_a_dependency(self):
+        root = Path(__file__).resolve().parents[2]
+        wire_packages = {"rafter", "rafter-codec", "rafter-crc32"}
+        path = root / "verification/wire-compatibility-baseline.json"
+        self.assertEqual(set(baseline_lock(path, wire_packages)["packages"]), wire_packages)
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            baseline_lock(path, PACKAGES)
 
 
 class DependencyBoundary(unittest.TestCase):
@@ -124,7 +135,7 @@ class DependencyBoundary(unittest.TestCase):
         }
 
     def audit(self, metadata):
-        audit_graph(metadata, self.checkout, self.roots, self.consumer)
+        audit_graph(metadata, self.checkout, self.roots, self.consumer, "rafter-storage-upgrade-probe")
 
     def test_exact_archive_graph_is_accepted(self):
         self.audit(self.metadata)

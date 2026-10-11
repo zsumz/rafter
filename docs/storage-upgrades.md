@@ -77,8 +77,9 @@ behavior remain unqualified. There is no implicit migration between storage
 layouts. Treat these combinations as unsupported until their policy and
 executable cases are added.
 
-Mixed-version wire traffic and rolling three-node upgrades are separate work.
-The next matrix should exercise acknowledged writes, linearizable reads,
+The [peer-codec matrix](wire-compatibility.md) separately checks both wire
+directions against released archives. Rolling three-node upgrades remain work:
+the next matrix should exercise acknowledged writes, linearizable reads,
 membership changes and snapshot catch-up while old and candidate processes
 coexist. Public API compatibility also needs a broader baseline than this
 fixture. Keep the format vectors and same-version process suites alongside
