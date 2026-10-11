@@ -54,3 +54,40 @@ fn recovery_routes_a_long_noop_prefix_as_one_application_item() {
     cluster.shutdown();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn recovery_drains_more_commands_than_the_application_credit_limit() {
+    let root = std::env::temp_dir().join(format!("rafter-backlog-recovery-{}", std::process::id()));
+    assert!(
+        !root.exists(),
+        "recovery requires a fresh scenario directory"
+    );
+    let directory = super::super::storage::node_dir(&root, NodeId(1));
+    std::fs::create_dir_all(&directory).unwrap();
+    let (mut hard, mut log, snapshots) = WalRaftNodeStores::open(&directory).unwrap().into_parts();
+    let entries: Vec<_> = (1..=4_100)
+        .map(|index| PersistedRaftLogEntry {
+            index: LogIndex(index),
+            term: Term(1),
+            kind: LogEntryKind::Application(encode_set("backlog", &index.to_string()).into()),
+        })
+        .collect();
+    log.append_entries(&entries).unwrap();
+    hard.write_hard_state(RaftHardState {
+        current_term: Term(1),
+        voted_for: None,
+        commit_index: LogIndex(4_100),
+        committed_configuration: None,
+    })
+    .unwrap();
+    drop((hard, log, snapshots));
+
+    let mut cluster = Cluster::open(root.clone());
+    cluster.drain_application(NodeId(1));
+    let state = application::snapshot(&cluster.replicas[&NodeId(1)].state);
+    assert_eq!(state.applied, LogIndex(4_100));
+    assert_eq!(state.kv.get("backlog"), Some(&String::from("4100")));
+    assert_eq!(cluster.restart(NodeId(1)), LogIndex(4_100));
+    cluster.shutdown();
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -14,6 +14,7 @@ use std::{
 };
 
 mod lifecycle;
+mod prefix;
 mod ranges;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -49,6 +49,15 @@ rejects reversed, overlapping, or discontinuous ranges before taking ownership;
 the embedding remains responsible for including every application command.
 One outcome and one entry credit belong to each item regardless of range length,
 and success must durably publish the final covered index with the matching bytes.
+`ApplicationWorker::try_submit_prefix` sizes one submission to the current
+entry, retained-byte, and per-batch work budgets. It removes only accepted
+items from a caller-owned `VecDeque`; every refusal restores the entire queue.
+The owner bounds that queue and consumes completions before retrying `Full`.
+The durable reference converts at most 64 consecutive application outputs at
+a time and waits for one completion when needed, so recovery can exceed the
+worker's total credits without dropping committed commands or treating queue
+pressure as a fatal storage failure. The admission operation itself never
+waits; asynchronous embeddings can poll events on their chosen scheduler.
 Snapshot creation and installation remain application policy and must be
 coordinated at a consumed durable floor. `shutdown_into_store` returns the
 application store after an idle join, so maintenance can take exclusive

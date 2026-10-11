@@ -13725,3 +13725,13 @@ any one of the three lands alone.
     The embedding must include every application command in the covered range.
     The durable reference service uses this contract during live output routing
     and recovery; storage and wire formats are unchanged.
+31. **Budgeted application prefix dispatch.**
+    `ApplicationWorker::try_submit_prefix` accepts at most one batch from a
+    caller-owned `VecDeque`, selecting by both per-batch limits and available
+    credits. Successful calls remove only accepted items; every refusal
+    preserves the queue and its order. The owner still bounds outstanding
+    committed work and chooses how to consume completions. This additive
+    operation reuses ordinary range, size, and worker-lifecycle validation.
+    The durable reference uses it to recover a backlog larger than the worker's
+    credit limit without a queue-pressure panic. Full asynchronous owner-loop
+    scheduling and admission remain separate composition work.

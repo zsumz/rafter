@@ -14,6 +14,7 @@ use std::{
 };
 
 mod observe;
+mod prefix;
 mod run;
 mod submit;
 

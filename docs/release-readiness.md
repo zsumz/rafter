@@ -198,6 +198,11 @@ to cover protocol-only prefixes with the next application command, avoiding
 gap-sized placeholder allocations and batch-limit failures. Range support is
 an application-dispatch building block; unified bounded admission, completion,
 snapshot, and shutdown orchestration remains to be extracted.
+Budgeted prefix dispatch now keeps unsubmitted commands with the owner and
+reuses completion credits while draining recovery. A 4,100-command recovery
+regression exceeds the default 4,096 credits and verifies durable restart;
+the previous reference loop panicked on `Full`. The library dispatch operation
+is nonblocking; the reference scheduler waits for a completion under pressure.
 
 Extract a small supported driver/composition that owns bounded admission,
 persistence completion, ordered application completion, client outcomes,
