@@ -199,11 +199,26 @@ the reader's final receipt verifies length and CRC32 before the temporary ledger
 can be published. Current live state remains present during validation, so
 model memory is still proportional to the configured state bounds.
 
-This is streamed decoding, not a claim that all snapshot maintenance uses
-constant additional memory. Encoding still creates an application snapshot
-buffer, journal publication still builds a whole image, and journal opening
-still reads the journal into memory. Their streaming and crash qualification
-remain separate work.
+Both adapters also expose `write_snapshot_to`: they borrow stable ledger state
+and encode directly into caller-owned private staging through
+`SnapshotPayloadWriter`, using one 16 KiB encoder buffer. There is no full model
+clone or full encoded image on this path. Command fields, cached results, and
+inline snapshots share the version-1 output grammar. The descriptor must name
+kind `ledger`, version 1, and exactly the application's applied floor. A durable
+store requiring recovery refuses both streaming and inline snapshot builders.
+
+Success returns the flushed sink and its length/checksum descriptor; the caller
+still owns fsync, immutable chunk-source construction, cleanup, and publication.
+Cancellation, a failed write or flush, and sink unwinding cannot yield a usable
+descriptor. Buffered bytes are not retried from drop after failure. Partial
+staging must be discarded. Public tests preserve independent v1 vectors and
+encode a 131,072-account ledger into a counting sink in at most 130 calls, each
+at most 16 KiB, with an independently computed length and CRC32.
+
+The existing inline builder still returns an application snapshot buffer.
+Journal publication still builds a whole image, and journal opening still reads
+the journal into memory. Their streaming and crash qualification remain separate
+work; the model itself remains proportional to configured state bounds.
 
 The durable adapter's application transaction must atomically persist:
 
@@ -1018,12 +1033,15 @@ transactional store, and descriptor installation policy. Three committed
 commands recover through a single application credit; a tracked write's result
 is consumed after its transaction becomes durable; shutdown preserves that
 completion. Real Raft files and the ledger journal then reopen. The owner lends the
-quiescent application to `compact_snapshot_with`, publishes its descriptor
-through the streamed path, and returns retired entries to the bounded retirement
-worker. A separate blank application installs that exact promoted snapshot
+quiescent application to `compact_snapshot_with`, encodes through
+`write_snapshot_to` into private file staging, fsyncs it, and exposes an immutable
+file-backed source. Existing runtime compaction publishes its descriptor and
+returns retired entries to the bounded retirement worker. A separate blank
+application installs that exact promoted snapshot
 before admission opens.
 The same source is built against extracted archives in the package lane.
 
 This proves the owner/application boundary, not network deployment or latency.
-Authenticated transport, client waiter limits, snapshot scheduling policy,
-completion wakes, and multi-host qualification remain separate work.
+Authenticated transport, managed client/read ownership, snapshot scheduling
+policy, and multi-host qualification remain separate work. Worker completion
+wakes and bounded application credits are exercised here.

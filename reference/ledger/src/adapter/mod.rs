@@ -11,6 +11,7 @@
 pub(crate) mod codec;
 mod discipline;
 mod durable;
+mod snapshot_write;
 mod worker;
 
 use std::{error::Error, fmt};
@@ -27,6 +28,7 @@ use crate::{
 
 pub use codec::{LedgerCodecError, NonZeroField};
 pub use durable::{DurableLedgerError, DurableLedgerStateMachine};
+pub use snapshot_write::LedgerSnapshotWriteError;
 pub use worker::LedgerApplicationEntry;
 
 /// Failure of an adapter operation, as distinct from a ledger result.
@@ -285,7 +287,7 @@ impl ReplicatedStateMachine for LedgerStateMachine {
         discipline::admit_snapshot_request(at, self.applied_index)?;
         Ok(ApplicationSnapshot {
             applied_index: at,
-            payload: codec::encode_snapshot(at.0, &self.ledger.snapshot())
+            payload: codec::encode_snapshot(at.0, &self.ledger)
                 .map_err(LedgerAdapterError::from)?,
             raft_snapshot: None,
         })

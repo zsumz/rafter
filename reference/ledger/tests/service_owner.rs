@@ -3,6 +3,8 @@
 
 #[path = "support/scratch.rs"]
 mod scratch;
+#[path = "support/snapshot_source.rs"]
+mod snapshot_source;
 #[allow(dead_code)]
 mod support;
 
@@ -20,11 +22,11 @@ use rafter_runtime::{
         CommittedCommand, DurableService, ServiceAdapterError, ServiceError, ServiceEvent,
         ServiceInput, ServiceOptions, ServicePoll, ServiceState,
     },
+    snapshot_io::SnapshotCancellation,
     DurableRaftNode, DurableRaftNodeStorage,
 };
 use rafter_storage::{
     FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
-    InMemoryRaftSnapshotStore, PersistedRaftSnapshot, RaftSnapshotStore,
 };
 use scratch::ScratchDir;
 use std::{
@@ -299,7 +301,6 @@ fn compact(owner: &mut Owner) {
     let retired = owner
         .compact_snapshot_with(|application, node| {
             let at = application.store().applied_index();
-            let snapshot = application.build_snapshot(at)?;
             let metadata = RaftSnapshotMetadata::new(
                 SnapshotGroupId::new("ledger-owner")?,
                 node.id(),
@@ -311,13 +312,12 @@ fn compact(owner: &mut Owner) {
                     ApplicationSnapshotVersion::new(1)?,
                 ),
             )?;
-            // The bounded ledger uses its existing small snapshot format. Large
-            // applications can return a file-backed source through the same API.
-            let source = InMemoryRaftSnapshotStore::with_snapshot(PersistedRaftSnapshot {
-                metadata,
-                application_payload: snapshot.payload,
-            });
-            Ok((source.current_snapshot().unwrap(), source))
+            let source = snapshot_source::FileSource::build(|file| {
+                let (_, snapshot) =
+                    application.write_snapshot_to(metadata, file, SnapshotCancellation::new())?;
+                Ok(snapshot)
+            })?;
+            Ok((source.snapshot().clone(), source))
         })
         .unwrap();
     assert!(!retired.is_empty());

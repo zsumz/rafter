@@ -183,10 +183,7 @@ fn largest_cached_record_fits_the_configured_byte_budget_and_round_trips() {
     let config = LedgerConfig::new(1, 1).unwrap();
     assert_eq!(bytes.len() as u64, payload_limit(config));
     let ledger = accept(bytes.clone(), config).unwrap();
-    assert_eq!(
-        codec::encode_snapshot(FLOOR.0, &ledger.snapshot()).unwrap(),
-        bytes
-    );
+    assert_eq!(codec::encode_snapshot(FLOOR.0, &ledger).unwrap(), bytes);
     assert_eq!(
         payload_limit(LedgerConfig::new(u32::MAX, usize::MAX).unwrap()),
         33 + 79 * u64::from(u32::MAX)

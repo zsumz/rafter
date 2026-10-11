@@ -32,40 +32,6 @@ pub struct LedgerSnapshot {
     successful_deposits: u128,
 }
 
-impl LedgerSnapshot {
-    /// Returns the snapshot's account balances in canonical order.
-    ///
-    /// Snapshot contents stay opaque outside this crate. The adapter reads
-    /// them only to define its versioned byte representation; it never
-    /// bypasses the model validator shared by decoding and [`Ledger::from_snapshot`].
-    pub(crate) fn accounts(&self) -> &[(AccountId, u64)] {
-        &self.accounts
-    }
-
-    /// Returns the snapshot's active sessions in canonical order.
-    pub(crate) fn sessions(&self) -> Vec<SessionView> {
-        self.sessions
-            .iter()
-            .map(|(client_id, session)| SessionView {
-                client_id: *client_id,
-                session_epoch: session.session_epoch,
-                cached: session.cached.as_ref().map(|cached| {
-                    (
-                        cached.sequence,
-                        cached.mutation.clone(),
-                        cached.result.clone(),
-                    )
-                }),
-            })
-            .collect()
-    }
-
-    /// Returns the cumulative successful external deposits.
-    pub(crate) const fn successful_deposits(&self) -> u128 {
-        self.successful_deposits
-    }
-}
-
 /// Invalid ledger snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {
@@ -198,6 +164,32 @@ impl Ledger {
                 .collect(),
             successful_deposits: self.successful_deposits,
         }
+    }
+
+    /// Borrows ordered snapshot accounts without capturing a second model.
+    pub(crate) fn snapshot_accounts(&self) -> impl ExactSizeIterator<Item = (AccountId, u64)> + '_ {
+        self.accounts.iter().map(|(id, balance)| (*id, *balance))
+    }
+
+    /// Each session view has fixed-size fields and does not allocate.
+    pub(crate) fn snapshot_sessions(&self) -> impl ExactSizeIterator<Item = SessionView> + '_ {
+        self.sessions
+            .iter()
+            .map(|(client_id, session)| SessionView {
+                client_id: *client_id,
+                session_epoch: session.session_epoch,
+                cached: session.cached.as_ref().map(|cached| {
+                    (
+                        cached.sequence,
+                        cached.mutation.clone(),
+                        cached.result.clone(),
+                    )
+                }),
+            })
+    }
+
+    pub(crate) const fn snapshot_supply(&self) -> u128 {
+        self.successful_deposits
     }
 
     /// Captures all safety-relevant state, including the deduplication cache.

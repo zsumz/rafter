@@ -305,8 +305,7 @@ pub(super) fn encode_frame(
     ledger: &Ledger,
     applied_index: LogIndex,
 ) -> Result<Vec<u8>, LedgerStoreError> {
-    let image =
-        encode_snapshot(applied_index.0, &ledger.snapshot()).map_err(LedgerStoreError::Image)?;
+    let image = encode_snapshot(applied_index.0, ledger).map_err(LedgerStoreError::Image)?;
     let image_len = u32::try_from(image.len()).map_err(|_| LedgerStoreError::ImageTooLarge {
         length: image.len() as u64,
     })?;

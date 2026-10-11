@@ -328,11 +328,33 @@ zrail, and all seven exact-package phases including storage, wire, and mixed TLS
 compatibility on Rust 1.88.0. Four deliberate bypasses of checksum completion,
 account/session admission, and source-opening admission fail their regressions.
 
-Still required before freezing this API: bounded application encoding, streamed
-journal publication and recovery, and interrupted/crash-safe publication
-qualification. The ledger's current encoding, journal replacement, and journal
-opening still materialize buffers; successful streamed decoding does not qualify
-those remaining paths.
+The ledger now also exposes `write_snapshot_to` on both adapters. It borrows
+stable model state and emits the unchanged v1 schema through the existing
+payload writer with one 16 KiB buffer, avoiding a model clone and a complete
+encoded image. The inline builder and journal encoder share its output grammar.
+Schema/floor mismatch and prior cancellation refuse before sink effects; both
+durable builders refuse a store requiring recovery. Failed drains, flushes,
+cancellation during an accepted write, and sink unwinding return no descriptor.
+Successful completion flushes staging; fsync and publication remain explicit
+caller obligations.
+
+An independent 131,072-account fixture encodes 2 MiB + 46 bytes into a counting
+sink with bounded calls and a known CRC32. Literal vectors protect every command
+mutation, cached result, and business-rejection tag. Real-file staging promotes
+through the existing snapshot store, installs, and reopens the same ledger. The
+durable-owner consumer now uses this file-backed encoder during compaction.
+All eleven new encoder/refusal checks pass. Removing the buffer drain, floor
+check, or either durable-builder health check fails its regression. The complete
+source lane passes 507 tests and the exact-package/MSRV lane passes 512 tests
+(57 existing ignored profiles each). Strict consumer Clippy, docs, formatting,
+size checks, and zrail pass, along with all seven package phases and the storage,
+wire, and mixed-version TLS compatibility matrices on Rust 1.88.0.
+
+Still required before freezing this API: streamed journal publication and
+recovery, and interrupted/crash-safe publication qualification. The inline
+snapshot builder, journal replacement, and journal opening still materialize
+buffers. Current and restored models remain proportional to configured bounds;
+successful streamed encoding/decoding does not qualify those remaining paths.
 
 One prerequisite is now fixed in the ledger consumer's existing schema decoder:
 untrusted account/session counts previously reached `Vec::with_capacity` before

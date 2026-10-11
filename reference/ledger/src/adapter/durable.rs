@@ -274,11 +274,14 @@ impl ReplicatedStateMachine for DurableLedgerStateMachine {
         &mut self,
         at: LogIndex,
     ) -> Result<ApplicationSnapshot, ApplicationSnapshotError<Self::Error>> {
+        if self.store.requires_reopen() {
+            return Err(DurableLedgerError::Store(LedgerStoreError::StoreRequiresReopen).into());
+        }
         discipline::admit_snapshot_request(at, self.store.applied_index())
             .map_err(DurableLedgerError::Adapter)?;
         Ok(ApplicationSnapshot {
             applied_index: at,
-            payload: codec::encode_snapshot(at.0, &self.store.ledger().snapshot())
+            payload: codec::encode_snapshot(at.0, self.store.ledger())
                 .map_err(LedgerAdapterError::from)
                 .map_err(DurableLedgerError::Adapter)?,
             raft_snapshot: None,

@@ -3,15 +3,15 @@
 mod input;
 mod read;
 mod snapshot;
+mod write;
+pub(crate) use write::{encode_snapshot, encode_snapshot_stream, SnapshotEncodingError};
 
 use read::Cursor;
 pub(crate) use snapshot::{decode_snapshot, decode_snapshot_stream, snapshot_payload_limit};
 
 use std::{error::Error, fmt};
 
-use crate::{
-    BusinessRejection, ClientId, Command, LedgerSnapshot, Mutation, MutationResult, RequestIdentity,
-};
+use crate::{Command, RequestIdentity};
 
 /// Version byte of the replicated command frame.
 const COMMAND_FORMAT_VERSION: u8 = 1;
@@ -146,24 +146,8 @@ impl Error for LedgerCodecError {}
 
 /// Encodes one replicated command into its versioned byte frame.
 pub fn encode_command(command: &Command) -> Vec<u8> {
-    let mut bytes = vec![COMMAND_FORMAT_VERSION];
-    match command {
-        Command::OpenSession {
-            client_id,
-            session_epoch,
-        } => {
-            bytes.push(COMMAND_OPEN_SESSION);
-            put_client(&mut bytes, *client_id);
-            put_u64(&mut bytes, session_epoch.get());
-        }
-        Command::Execute { request, mutation } => {
-            bytes.push(COMMAND_EXECUTE);
-            put_client(&mut bytes, request.client_id);
-            put_u64(&mut bytes, request.session_epoch.get());
-            put_u64(&mut bytes, request.sequence.get());
-            put_mutation(&mut bytes, mutation);
-        }
-    }
+    let mut bytes = Vec::new();
+    write::command(&mut bytes, command).unwrap_or_else(|never| match never {});
     bytes
 }
 
@@ -197,119 +181,4 @@ pub fn decode_command(payload: &[u8]) -> Result<Command, LedgerCodecError> {
     };
     cursor.finish()?;
     Ok(command)
-}
-
-/// Encodes an application snapshot, including every session and cached
-/// completion, into its versioned byte frame.
-///
-/// # Errors
-///
-/// Returns a codec error when the snapshot holds more accounts or sessions
-/// than the frame's length fields can represent.
-pub fn encode_snapshot(
-    applied_index: u64,
-    snapshot: &LedgerSnapshot,
-) -> Result<Vec<u8>, LedgerCodecError> {
-    let accounts = snapshot.accounts();
-    let sessions = snapshot.sessions();
-
-    let mut bytes = vec![SNAPSHOT_FORMAT_VERSION];
-    put_u64(&mut bytes, applied_index);
-    bytes.extend_from_slice(&snapshot.successful_deposits().to_be_bytes());
-    put_len(&mut bytes, accounts.len())?;
-    for (account_id, balance) in accounts {
-        put_u64(&mut bytes, account_id.get());
-        put_u64(&mut bytes, *balance);
-    }
-    put_len(&mut bytes, sessions.len())?;
-    for session in &sessions {
-        put_client(&mut bytes, session.client_id);
-        put_u64(&mut bytes, session.session_epoch.get());
-        match &session.cached {
-            None => bytes.push(NO_CACHED_COMPLETION),
-            Some((sequence, mutation, result)) => {
-                bytes.push(CACHED_COMPLETION);
-                put_u64(&mut bytes, sequence.get());
-                put_mutation(&mut bytes, mutation);
-                put_result(&mut bytes, result);
-            }
-        }
-    }
-    Ok(bytes)
-}
-
-fn put_u64(bytes: &mut Vec<u8>, value: u64) {
-    bytes.extend_from_slice(&value.to_be_bytes());
-}
-
-fn put_client(bytes: &mut Vec<u8>, client_id: ClientId) {
-    bytes.extend_from_slice(&client_id.get().to_be_bytes());
-}
-
-fn put_len(bytes: &mut Vec<u8>, length: usize) -> Result<(), LedgerCodecError> {
-    let field = u32::try_from(length).map_err(|_| LedgerCodecError::LengthOutOfRange {
-        length: u64::try_from(length).unwrap_or(u64::MAX),
-    })?;
-    bytes.extend_from_slice(&field.to_be_bytes());
-    Ok(())
-}
-
-fn put_mutation(bytes: &mut Vec<u8>, mutation: &Mutation) {
-    match *mutation {
-        Mutation::OpenAccount { account_id } => {
-            bytes.push(MUTATION_OPEN_ACCOUNT);
-            put_u64(bytes, account_id.get());
-        }
-        Mutation::Deposit { account_id, amount } => {
-            bytes.push(MUTATION_DEPOSIT);
-            put_u64(bytes, account_id.get());
-            put_u64(bytes, amount.get());
-        }
-        Mutation::Transfer { from, to, amount } => {
-            bytes.push(MUTATION_TRANSFER);
-            put_u64(bytes, from.get());
-            put_u64(bytes, to.get());
-            put_u64(bytes, amount.get());
-        }
-        Mutation::CloseAccount { account_id } => {
-            bytes.push(MUTATION_CLOSE_ACCOUNT);
-            put_u64(bytes, account_id.get());
-        }
-    }
-}
-
-fn put_result(bytes: &mut Vec<u8>, result: &MutationResult) {
-    match *result {
-        MutationResult::AccountOpened => bytes.push(RESULT_ACCOUNT_OPENED),
-        MutationResult::Deposited { balance } => {
-            bytes.push(RESULT_DEPOSITED);
-            put_u64(bytes, balance);
-        }
-        MutationResult::Transferred {
-            from_balance,
-            to_balance,
-        } => {
-            bytes.push(RESULT_TRANSFERRED);
-            put_u64(bytes, from_balance);
-            put_u64(bytes, to_balance);
-        }
-        MutationResult::AccountClosed => bytes.push(RESULT_ACCOUNT_CLOSED),
-        MutationResult::Rejected(rejection) => {
-            bytes.push(RESULT_REJECTED);
-            bytes.push(rejection_tag(rejection));
-        }
-    }
-}
-
-const fn rejection_tag(rejection: BusinessRejection) -> u8 {
-    match rejection {
-        BusinessRejection::AccountAlreadyExists => REJECTION_ACCOUNT_ALREADY_EXISTS,
-        BusinessRejection::AccountCapacityExceeded => REJECTION_ACCOUNT_CAPACITY_EXCEEDED,
-        BusinessRejection::AccountNotFound => REJECTION_ACCOUNT_NOT_FOUND,
-        BusinessRejection::SameAccount => REJECTION_SAME_ACCOUNT,
-        BusinessRejection::InsufficientFunds => REJECTION_INSUFFICIENT_FUNDS,
-        BusinessRejection::BalanceOverflow => REJECTION_BALANCE_OVERFLOW,
-        BusinessRejection::SupplyOverflow => REJECTION_SUPPLY_OVERFLOW,
-        BusinessRejection::AccountNotEmpty => REJECTION_ACCOUNT_NOT_EMPTY,
-    }
 }
