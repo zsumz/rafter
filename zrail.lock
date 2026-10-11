@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "18ebb0ce868f089a9eab9d35aef4d7a0afc824be2e0ef230458a83c8ed5ef3ff"
+sha256 = "0c61046539929917621077dc4d585327f95cf3d74f93f85fccb05758e6f3da19"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"

@@ -66,13 +66,15 @@ jobs:
       - name: Public API coverage and source identity controls
         run: python3 -m unittest scripts/tests/test_public_api_check.py
       - name: Compare every public crate with the published alpha
-        run: python3 scripts/check-public-api --artifacts target/public-api-ci
+        # Cargo cache restoration may recreate old evidence directories, even
+        # empty ones. Each attempt owns fresh evidence outside the cached target.
+        run: python3 scripts/check-public-api --artifacts "$RUNNER_TEMP/public-api-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
       - name: Upload source API evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: public-api-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/public-api-ci/
+          path: ${{ runner.temp }}/public-api-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: error
           retention-days: 30
 
