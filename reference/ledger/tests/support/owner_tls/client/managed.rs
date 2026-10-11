@@ -1,23 +1,26 @@
 //! Existing `RaftHandle` exercised over the durable owner and authenticated TLS.
 use super::super::{application::Application, config, link};
-use super::{cluster::Cluster, poll};
-use rafter::{Input, LogIndex, Message, NodeId, Role};
+use super::{cluster::Cluster, poll, ConfigurationCommit};
+use rafter::{Input, LogIndex, Message, NodeId, Output, Role};
 use rafter_app::state_machine::ReplicatedStateMachine;
 use rafter_reference_ledger::{
     LedgerApplicationEntry, LedgerQueryResult, LedgerStateMachine, Mutation,
 };
 use rafter_runtime::service::{ServiceEvent, ServicePoll, ServiceState};
 use rafter_service::{
-    durable::DurableRaftDriver, DriverCommandSender, ReadConsistency, ReadError, ReadErrorKind,
-    ReadOptions, WriteError, WriteErrorKind, WriteFate, WriteOptions,
+    durable::{DurableMembershipLimits, DurableRaftDriver},
+    DriverCommandSender, ReadConsistency, ReadError, ReadErrorKind, ReadOptions, WriteError,
+    WriteErrorKind, WriteFate, WriteOptions,
 };
 use rafter_storage::{FileRaftHardStateStore, FileRaftLogSegment, FileRaftSnapshotStore};
 use std::{
+    num::NonZeroUsize,
     path::Path,
     task::Poll,
     time::{Duration, Instant},
 };
 mod compaction;
+mod membership;
 mod mixed_load;
 mod snapshot;
 
@@ -36,21 +39,31 @@ struct Managed {
     nodes: Vec<(Driver, link::Link)>,
     installs: Vec<(NodeId, LogIndex)>,
     chunks: Vec<(NodeId, u64)>,
+    commits: Vec<ConfigurationCommit>,
 }
 impl Managed {
     fn open(root: &Path, fresh: bool, leader: usize) -> Self {
         let cluster = Cluster::open(root, fresh, None);
+        let mut commits = Vec::new();
         let mut managed = Self {
             nodes: cluster
                 .0
                 .into_iter()
                 .map(|n| {
+                    commits.extend(n.commits);
                     (
-                        Driver::attach(link::GROUP, n.owner, n.link.sender()).unwrap(),
+                        Driver::attach_with_membership(
+                            link::GROUP,
+                            n.owner,
+                            n.link.sender(),
+                            DurableMembershipLimits::new(NonZeroUsize::new(64).unwrap()),
+                        )
+                        .unwrap(),
                         n.link,
                     )
                 })
                 .collect(),
+            commits,
             ..Self::default()
         };
         // Route every election output through the managed driver, including
@@ -107,6 +120,17 @@ impl Managed {
                         snapshot::install(driver, snapshot, application);
                         self.installs.push((id, floor));
                     }
+                    ServicePoll::Event(ServiceEvent::Output(Output::ConfigurationCommitted {
+                        index,
+                        term,
+                        configuration,
+                        ..
+                    })) => self.commits.push(ConfigurationCommit {
+                        node: driver.handle().metrics().unwrap().current().node_id,
+                        index,
+                        term,
+                        configuration: configuration.membership_config(),
+                    }),
                     ServicePoll::Event(ServiceEvent::ApplicationFailed(failure)) => {
                         panic!("managed application failed: {failure:?}")
                     }

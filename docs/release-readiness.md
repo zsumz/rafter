@@ -820,6 +820,19 @@ callback failures, and progress under client/control backlog. Full plan
 execution, committed-change tracking, peer authorization and retirement
 remain the embedding's responsibility.
 
+The independent ledger consumer now exercises opt-in membership admission over
+the existing TLS transport, file-backed Raft stores and application journal.
+Voter-to-learner demotion and promotion each require matching index/term
+configuration commits for both joint and stable phases. Cold reopens under
+different leaders preserve membership, ledger writes and quorum reads. Recovery
+observations cover configurations above the application's durable applied
+floor; they do not imply a complete retirement history. A separate case obtains
+an uncommitted proposal receipt while withholding follower owner turns, reopens
+the WAL to verify the exact durable entry, and then observes another leader
+replace it without a matching configuration commit. These are clean cold-reopen
+cases with the same three authorized identities, not physical power-loss or
+peer-retirement qualification.
+
 **Acceptance:** an external consumer composes the supported fast durable path
 without copying an owner loop from the benchmark/example, with the same
 behavior in source and exact-package tests.

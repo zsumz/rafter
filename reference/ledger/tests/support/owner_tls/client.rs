@@ -1,9 +1,11 @@
 //! Managed client adoption through only public package APIs and real TLS.
 mod cluster;
+mod configuration;
 mod managed;
 mod replica;
 use super::config;
 use cluster::Cluster;
+use configuration::ConfigurationCommit;
 use rafter::LogIndex;
 use rafter_app::{read::ReadConsistency, state_machine::ReplicatedStateMachine};
 use rafter_reference_ledger::{ApplyDisposition, LedgerQueryResult, LedgerStateMachine, Mutation};

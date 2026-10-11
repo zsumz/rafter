@@ -3,6 +3,7 @@ use super::super::{
     application::{adapt, Application, Gate},
     config, link,
 };
+use super::ConfigurationCommit;
 use rafter::{Input, NodeConfig, NodeId, Output};
 use rafter_app::state_machine::{ReadBarrier, ReplicatedStateMachine};
 use rafter_reference_ledger::{
@@ -40,6 +41,7 @@ pub(super) struct Replica {
     pub(super) link: link::Link,
     pub(super) endpoints: EndpointBook,
     pub(super) id: u64,
+    pub(super) commits: Vec<ConfigurationCommit>,
 }
 impl Replica {
     pub(super) fn open(root: &Path, id: u64, fresh: bool, gate: Option<Gate>) -> Self {
@@ -106,6 +108,7 @@ impl Replica {
             link,
             endpoints,
             id,
+            commits: Vec::new(),
         }
     }
     pub(super) fn ready(&self) -> bool {
@@ -125,6 +128,17 @@ impl Replica {
                         other => panic!("transport admission: {other:?}"),
                     }
                 }
+                ServicePoll::Event(ServiceEvent::Output(Output::ConfigurationCommitted {
+                    index,
+                    term,
+                    configuration,
+                    ..
+                })) => self.commits.push(ConfigurationCommit {
+                    node: NodeId(self.id),
+                    index,
+                    term,
+                    configuration: configuration.membership_config(),
+                }),
                 ServicePoll::Progress
                 | ServicePoll::Event(
                     ServiceEvent::Applied(_)
