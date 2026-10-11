@@ -96,15 +96,18 @@ the deterministic invariant verdict.
   descriptor/chunk path before application publication. Its companion
   `SnapshotPayloadWriter` computes a descriptor while encoding into private
   staging without retaining the payload. Both live in the runtime layer.
-  Application schema integration and crash/publication qualification remain
-  open; see [release readiness](release-readiness.md#4-decide-the-application-snapshot-boundary-before-freezing-the-api).
+  The ledger integrates both paths with its application schema and recovery
+  tests. Other applications supply their own schema and publication policy;
+  physical power-loss qualification remains open. See
+  [release readiness](release-readiness.md#4-decide-the-application-snapshot-boundary-before-freezing-the-api).
 - C2 replication pipelining is now an opt-in additive runtime interface. Its
   bounded persistence worker removes the benchmark's private executor, and a
   complete public-API reference composition now exercises WAL storage, bounded
   transport, durable application, snapshots, and recovery from an exact
-  package archive. A general managed service remains future additive work; no
-  compatibility promise is inferred for the example's application or transport
-  policy.
+  package archive. The default-off `rafter-service/durable` feature now adds a
+  bounded client owner and a driver attached to the existing TLS transport.
+  Automatic membership-plan execution, persistent retirement policy, and
+  deployment management remain embedding responsibilities.
 - `rafter-sim` no longer depends on a hidden core-crate feature. The kernel
   self-check it needed is the documented public `Node::validate_derived_state`,
   and `internal-test-hooks` is deleted from `rafter`. The crate stays

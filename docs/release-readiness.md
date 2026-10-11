@@ -23,7 +23,7 @@ burden for durable applications. More throughput work should follow those.
 ## Current code checkpoint
 
 The release work is on `codex/stable-release-slices`, with code through
-[`552616c2`](https://github.com/zsumz/rafter/commit/552616c2254694a88ac5bafca49559e800bf2d39)
+[`fa2c3bf2`](https://github.com/zsumz/rafter/commit/fa2c3bf294e2b96663762e1b5dd1ec7b84f6b990)
 in draft [PR #23](https://github.com/zsumz/rafter/pull/23). The transport already
 exists: durable composition reuses its authenticated TLS sender and inbound
 validation. No transport replacement, version bump, tag, or publication is part
@@ -40,6 +40,8 @@ persists peer retirement and authorization policy. The feature remains default-o
 | --- | --- |
 | Integrated workspace with durable feature | `b62f8464`: all-target build, 3,339 tests (zero failed, 58 ignored), strict all-target Clippy and strict rustdoc pass on Rust 1.88; tracked source hashes remain unchanged. |
 | Ready-query fairness | `9c08dd5a`: 440 service tests, 47 guards, strict lint/docs and all nine canonical file/TLS cases pass. The identical public production sources also pass nine isolated TLS cases with 96 mixed-load/compaction/cold-recovery cycles. The original scheduler and a partial fix fail deterministic regressions. |
+| Permanent owner-soak lane | `b540a714`: the exact ignored inventory is checked on PRs and runs in Nightly and `zcheck run full`. Locally, all 96 cycles, 543 normal reference tests, six runner checks and 47 guards pass, with strict lint/docs and source/staging preservation. Its Linux nightly execution is pending. |
+| Retained-log short reads | `fa2c3bf2`: all 317 storage tests, nine normal file/TLS cases, 47 guards, strict lint/docs and architecture checks pass. The original reader fails the allocation regression; a five-byte source with a 64 MiB claim retains 64 KiB with the fix. Error/prefix behavior and source/staging preservation pass. |
 | Durable benchmark report integrity | `552616c2`: 16 Python tests and four Rust configuration tests pass. Four malformed reports accepted by the previous checker are rejected; seven synthetic reports emitted by the actual Rust formatter pass. No new performance result is claimed. |
 | Storage recovery, corruption and publication | `2717e88e`: all 315 storage tests pass; the allocation gate rejects the previous checkpoint reader and passes the fix. |
 | Public API compatibility | `2717e88e`: all 22 default/all-feature comparisons against `0.0.2-alpha.1` pass. |

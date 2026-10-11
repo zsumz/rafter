@@ -607,12 +607,13 @@ exercises it is a path nobody has run. What a *removal* costs across a restart i
 proven where a driver can be destroyed and rebuilt at all,
 `crates/rafter-service/tests/transport_service_state.rs`.
 
-**A consumer that drives `rafter-app` directly has no control plane to persist.**
-The ledger is deliberately built on `rafter`, `rafter-app`, `rafter-runtime`, and
-`rafter-storage` and not on `rafter-service`, which is what makes it independent
-acceptance evidence for the app layer. Peer authorization policy and identity
-retirement are the managed driver's, so none of this section's driver-level obligations
-reach it; its process composition owns the equivalent decisions itself.
+**A direct `rafter-app` consumer owns its control-plane policy.**
+The ledger library and `ledger-node` process composition use `rafter`,
+`rafter-app`, `rafter-runtime`, and `rafter-storage` directly, providing independent
+acceptance evidence for the app layer. `rafter-service` and the TLS transport are
+separate dev-dependencies for the durable-owner acceptance cases. The direct
+process composition owns its equivalent authorization and retirement decisions;
+it does not inherit the managed transport driver's checkpoint implementation.
 
 ## Verification Lanes
 
@@ -622,7 +623,7 @@ reach it; its process composition owns the equivalent decisions itself.
 | Main | All reviewed process tests in source mode and against exact archives | `reference-process` and `reference-package-process` in `ci.yml` |
 | Nightly | All reviewed source process tests, 96 file/TLS owner load and recovery cycles, burn-in, real pinned Maelstrom, randomized/replayable invariant evidence, bounded multi-gigabyte snapshot streaming, and the 1,024-group counter profile | `reference-process`, `reference-owner-soak`, `burn-in`, `invariants-maelstrom`, `invariants-nightly`, `multi-gigabyte-test`, and `counter-reference-nightly` in `nightly.yml` |
 | Weekly | Deep tests/model checking, storage and snapshot histories, three-trial pinned Maelstrom, and the 4,096-group randomized counter profile with slow groups, snapshot/bulk pressure, poison, and lifecycle churn | `invariants-weekly`, `invariants-maelstrom`, and `counter-reference-weekly` in `weekly.yml` |
-| Release | Exact package archives, full same-version process suite, published-shape MSRV, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md`'s pre-publish block runs the source, exact-package, process, and MSRV lanes by hand; there is no release workflow, no mixed-version coverage, and no pinned downstream canary |
+| Release | Exact package archives, full same-version process suite, published-shape MSRV, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md` runs source, exact-package, process, and MSRV lanes, including published-baseline storage, wire, and rolling TLS upgrades. The pinned-Git counter guide has its own checked lane. A tag-gating release workflow and independent production-consumer canary remain open |
 
 The third column is the whole point of the table. Until the two lanes were
 wired, the "required work" column described work that nothing performed:
@@ -631,10 +632,13 @@ wired, the "required work" column described work that nothing performed:
 `.github/`. A row here is a claim about a job that exists, or it says which
 jobs do not exist yet.
 
-The release row remains intentionally incomplete. Mixed-version package
-coverage, a pinned downstream canary, and a tag-gating release workflow are
-separate release-integration slices and are not inferred from the same-version
-exact-package lanes.
+The release row remains intentionally incomplete. Mixed-version package coverage
+now executes the stated [storage](storage-upgrades.md),
+[wire](wire-compatibility.md), and [rolling TLS](rolling-upgrades.md) scenarios
+against the pinned published alpha. Those scenarios define the tested upgrade
+matrix. The pinned counter guide checks a teaching consumer; qualification of an
+independent production consumer and a tag-gating release workflow remain separate
+release-integration work.
 
 Both process dependency modes read
 `verification/reference-process-suites.txt` and run each `#[ignore]`d selection
