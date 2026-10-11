@@ -161,6 +161,8 @@ fn submitted_transfer_drains_real_peer_effects_before_request_success() {
 
 #[path = "durable_group/control.rs"]
 mod control;
+#[path = "durable_group/control_load.rs"]
+mod control_load;
 #[path = "durable_group/lifecycle.rs"]
 mod lifecycle;
 #[path = "durable_group/mixed_load.rs"]

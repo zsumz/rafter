@@ -28,6 +28,8 @@ where
     /// `Progress` includes a routed send, so callers must continue polling before
     /// waiting. Transport refusals are counted as Raft message loss. A transfer
     /// resolves after its immediate effects drain, not after another election.
+    /// Queued clients receive an admission turn after each completed transfer,
+    /// even when another transfer is already queued.
     /// Requested shutdown drains work and releases the backend before completing
     /// shutdown futures or closing metrics; duplicate shutdown calls also wait.
     /// # Errors
@@ -70,7 +72,32 @@ where
         let Some(owner) = self.owner.as_mut() else {
             return Err(ServiceError::Failed);
         };
-        let polled = owner.poll_next()?;
+        let transfer_pending = lock(&self.shared.state)
+            .transfer
+            .as_ref()
+            .is_some_and(|transfer| transfer.submitted);
+        let mut polled = if transfer_pending {
+            owner.poll_backend()?
+        } else {
+            owner.poll_next()?
+        };
+        let finished_transfer = !shutdown
+            && matches!(polled, ServicePoll::Pending)
+            && self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.state() == ServiceState::Ready)
+            && self.finish_transfer();
+        if finished_transfer {
+            // The transfer's immediate effects are drained. Give clients one
+            // bounded turn before dispatching another request, including one queued
+            // by a completion callback. Route events through the same path below.
+            polled = self
+                .owner
+                .as_mut()
+                .ok_or(ServiceError::Failed)?
+                .poll_next()?;
+        }
         match polled {
             ServicePoll::Event(ServiceEvent::Output(Output::Send { to, message })) => {
                 let from = self.shared.metrics.current().node_id;
@@ -118,37 +145,30 @@ where
                 )))
             }
             ServicePoll::Pending if shutdown => self.drain_shutdown(),
-            ServicePoll::Pending => {
-                if self
-                    .owner
-                    .as_ref()
-                    .is_some_and(|o| o.state() == ServiceState::Ready)
-                {
-                    let transfer = {
-                        let mut state = lock(&self.shared.state);
-                        if state.transfer.as_ref().is_some_and(|t| t.submitted) {
-                            state.transfer.take()
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(transfer) = transfer {
-                        let result = transfer.rejection.map_or(Ok(()), |reason| {
-                            Err(TransferLeadershipError::Rejected {
-                                reason,
-                                leader_hint: self
-                                    .ready_node()
-                                    .and_then(DurableRaftNode::leader_hint),
-                            })
-                        });
-                        transfer.reply.finish(result);
-                        return Ok(ServicePoll::Progress);
-                    }
-                }
-                Ok(ServicePoll::Pending)
-            }
+            ServicePoll::Pending if finished_transfer => Ok(ServicePoll::Progress),
             other => Ok(other),
         }
+    }
+    fn finish_transfer(&mut self) -> bool {
+        let transfer = {
+            let mut state = lock(&self.shared.state);
+            if state.transfer.as_ref().is_some_and(|t| t.submitted) {
+                state.transfer.take()
+            } else {
+                None
+            }
+        };
+        let Some(transfer) = transfer else {
+            return false;
+        };
+        let result = transfer.rejection.map_or(Ok(()), |reason| {
+            Err(TransferLeadershipError::Rejected {
+                reason,
+                leader_hint: self.ready_node().and_then(DurableRaftNode::leader_hint),
+            })
+        });
+        transfer.reply.finish(result);
+        true
     }
     fn start_transfer(&mut self) -> Result<bool, ServiceError> {
         let (target, canceled) = {
@@ -164,10 +184,11 @@ where
                 (None, None)
             }
         };
-        let removed = canceled.is_some();
         drop(canceled);
         let Some(target) = target else {
-            return Ok(removed);
+            // Discarding a queued cancellation must still give clients a turn;
+            // a stream of canceled controls performs no backend work to drain.
+            return Ok(false);
         };
         let owner = self.owner.as_mut().ok_or(ServiceError::Failed)?;
         match owner.try_step(Input::TransferLeadership { target }) {

@@ -921,6 +921,17 @@ either fixed scheduling priority fails with the corresponding starvation
 verdict. This is a bounded regression with real workers and in-memory stores
 and links; physical disk/TLS soak and latency qualification remain separate.
 
+The same backlog review reproduced a control-plane liveness defect: a full
+local-read stream could indefinitely postpone an accepted or rejected leadership
+transfer reply. The driver now drains the transfer's already-admitted effects
+before taking fresh client work, then grants clients one bounded turn before
+another control request can start. Discarding a queued cancellation also leaves
+that client turn available. Four regressions cover progress in both directions,
+completion of queued reads and release of their credits. A successful transfer
+still requires its immediate sends to be routed; it does not promise that the
+target has already been elected. Existing cancellation, failure and backend
+release contracts remain covered by the grouped-driver suite.
+
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and
 TLS enabled. Publish throughput alongside p99/p99.9 latency, retained memory,

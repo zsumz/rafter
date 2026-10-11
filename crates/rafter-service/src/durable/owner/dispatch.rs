@@ -37,6 +37,17 @@ where
     /// panic. Even if caught, the owner and both client endpoints are then
     /// fenced and the backend must be discarded before recovery.
     pub fn poll_next(&mut self) -> Result<ServicePoll<T, A>, ServiceError> {
+        self.poll_admitting(true)
+    }
+
+    // A managed control request needs to observe the end of its immediate
+    // effects before a replenished client queue can start another operation.
+    // Already-admitted backend work still completes through the same fences.
+    pub(in crate::durable) fn poll_backend(&mut self) -> Result<ServicePoll<T, A>, ServiceError> {
+        self.poll_admitting(false)
+    }
+
+    fn poll_admitting(&mut self, admit_clients: bool) -> Result<ServicePoll<T, A>, ServiceError> {
         if self.failed {
             return Err(ServiceError::Failed);
         }
@@ -56,7 +67,10 @@ where
         }
         fence.armed = false;
         self.failed = false;
-        if !matches!(polled, ServicePoll::Pending) || self.state() != ServiceState::Ready {
+        if !admit_clients
+            || !matches!(polled, ServicePoll::Pending)
+            || self.state() != ServiceState::Ready
+        {
             return Ok(polled);
         }
         self.prefer_reads = !self.prefer_reads;
