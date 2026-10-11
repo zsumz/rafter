@@ -932,6 +932,14 @@ still requires its immediate sends to be routed; it does not promise that the
 target has already been elected. Existing cancellation, failure and backend
 release contracts remain covered by the grouped-driver suite.
 
+Recovery of the shared WAL now bounds its fixed 36-byte authority manifest
+read to 37 bytes, enough to refuse an oversized file. Previously the whole file
+was read and allocated before its length was checked. Reader-budget, interrupted
+I/O, truncation, checksum and trailing-byte cases preserve strict rejection;
+a real oversized-manifest case leaves the selected WAL files intact and refuses
+an obsolete fallback. Other metadata readers and whole-host memory limits remain
+separate qualification work.
+
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and
 TLS enabled. Publish throughput alongside p99/p99.9 latency, retained memory,

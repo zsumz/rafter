@@ -3,6 +3,9 @@
 use super::*;
 use crate::{storage_failpoint_test::arm, storage_failpoint_test::DurabilityPoint};
 
+#[path = "manifest_bounds.rs"]
+mod manifest_bounds;
+
 const CHECKPOINT_PREFIX: &str = "raft-wal-checkpoint-";
 const SEGMENT_PREFIX: &str = "raft-wal-segment-";
 

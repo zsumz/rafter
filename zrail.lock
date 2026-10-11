@@ -5,7 +5,7 @@ producer = "0.0.3-rc.8"
 contract_sha256 = "9efa271a43e0647d7963e9b3f40ead54acfc0590de18beecaeb48f8a229d0dd5"
 
 [analysis]
-inventory_sha256 = "80dfcfd1db42a8547bc82529f5aab5ace328af7eac979d932d3af59e2db04b93"
+inventory_sha256 = "3ac239e231efc5b4c8f3bcbec3b2379f99488dc246191cc7d0c4e0f26b34d61e"
 exclusions_sha256 = "938ddad6868e3a6a928a0720de503d2c6745c1ed05522321fd81e0d2a9f4c6ca"
 cargo_lock_sha256 = "aebbcd6c51e01fb77b97c69e2304f3ad34c66cdf6f3b2cc4e0fdc89829a9581f"
 cargo_features_sha256 = "47c0921024bfff9f3940814f4bb24aefa991504628f7da720988c1c30e253694"
@@ -13,11 +13,11 @@ feature_worlds_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991
 feature_worlds = 0
 packages = 16
 targets = 161
-physical_rust_files = 2134
-base_source_contexts = 3645
+physical_rust_files = 2136
+base_source_contexts = 3647
 derived_source_contexts = 0
-source_facts = 802581
-projection_queries = 3081744
+source_facts = 803269
+projection_queries = 3083252
 projected_facts = 2538
 unresolved_bindings = 0
 analyzer_semantics = 6
@@ -1345,7 +1345,7 @@ inputs_sha256 = "3bdf57e6f8b2c253de15e7d9eadc66a0664fd8ab44e945bab72895b013e2d7e
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "053eaf544d4a156f807115652b6a7ddfd01d5e0cf7fb6a41990605650a704c15"
+inputs_sha256 = "86df94aec85e923cca14971190b3d3831877b3a64dea738c647cf0c6b9ded2f5"
 
 [[macro_source]]
 allowance = "clap::Parser"

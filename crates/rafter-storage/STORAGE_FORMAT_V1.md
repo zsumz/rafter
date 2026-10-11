@@ -371,6 +371,9 @@ The fixed-size, checksummed `RFWM 00 00 00 01` manifest names the selected
 generation, operation, and compacted boundary. A selected checkpoint and segment
 must agree with all three fields. Recovery never falls back from a corrupt or
 missing manifest-selected file to an older generation or to `hard-state`.
+Opening the 36-byte manifest reads at most 37 bytes, including the extra byte
+needed to reject a trailing suffix. A malformed file cannot cause an unbounded
+manifest allocation or scan before the length check.
 
 ```text
 magic                    [8]   "RFWM 00 00 00 01"
