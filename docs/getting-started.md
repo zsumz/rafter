@@ -284,8 +284,10 @@ stop.store(true, Ordering::Release);
 
 The owner keeps polling until `Stopped`, even while the HTTP thread is waiting.
 On fatal error, the main thread drops the owner before joining HTTP so retained
-clients receive terminal outcomes after storage is released. It then joins the
-transport workers. A client handle cannot keep the file locks alive.
+clients receive terminal outcomes after storage is released. A drop guard also
+requests the drain if the HTTP worker panics before returning. The main thread
+then joins the transport workers and reports the worker failure. A client handle
+cannot keep the file locks alive.
 
 ## Follow one write through the stack
 
@@ -526,6 +528,13 @@ use std::{
     thread,
 };
 
+struct StopOnExit<'a>(&'a AtomicBool);
+impl Drop for StopOnExit<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub const GROUP: u64 = 1;
 pub const MEMBERS: [u64; 3] = [1, 2, 3];
@@ -650,9 +659,9 @@ fn run(id: u64) -> Result<()> {
             connections.clone(),
         );
         thread::spawn(move || {
-            let result = http::serve(server, handle, &stop, &ready, &connections);
-            stop.store(true, Ordering::Release);
-            result
+            // Close the owner even if the HTTP worker unwinds before returning.
+            let _stop_on_exit = StopOnExit(&stop);
+            http::serve(server, handle, &stop, &ready, &connections)
         })
     };
     println!(

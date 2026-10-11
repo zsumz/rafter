@@ -30,6 +30,13 @@ use std::{
     thread,
 };
 
+struct StopOnExit<'a>(&'a AtomicBool);
+impl Drop for StopOnExit<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub const GROUP: u64 = 1;
 pub const MEMBERS: [u64; 3] = [1, 2, 3];
@@ -154,9 +161,9 @@ fn run(id: u64) -> Result<()> {
             connections.clone(),
         );
         thread::spawn(move || {
-            let result = http::serve(server, handle, &stop, &ready, &connections);
-            stop.store(true, Ordering::Release);
-            result
+            // Close the owner even if the HTTP worker unwinds before returning.
+            let _stop_on_exit = StopOnExit(&stop);
+            http::serve(server, handle, &stop, &ready, &connections)
         })
     };
     println!(

@@ -137,7 +137,11 @@ all three processes from the synchronous counter at `e2280e3a`, runs mixed
 processes, then cold-reopens the whole cluster with its state, checkpoints, and
 TLS sessions intact. Another deterministic probe requests shutdown between a
 Ready observation and tick admission: handling `Unavailable(Draining)` exits
-cleanly, while the unhandled version exits with that lifecycle error. The
+cleanly, while the unhandled version exits with that lifecycle error. A second
+lifecycle probe showed that an HTTP worker panic could leave the owner running
+without its client endpoint. A worker-scope drop guard now requests shutdown
+on both return and unwind: the prior process stays alive after the controlled
+panic, while the guarded process drains the owner and reports failure. The
 original PR remains unmerged. Final qualification also caught a leader-status
 fixture race after cold reopen: status can precede a usable quorum read. The
 leader helper now waits for a successful read barrier, with a regression that
