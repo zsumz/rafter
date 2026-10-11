@@ -764,6 +764,13 @@ the voters and other learners. Voter removal keeps its joint-consensus path;
 unknown-node and last-voter refusals are unchanged. This repairs that existing
 API; it does not add a managed membership executor to the durable owner.
 
+The promotion planner also includes the final `LeaveJoint` obligation. Executing
+its former two-step plan left both replicas in a committed joint configuration.
+The caller must observe that joint commit before submitting the final step, then
+observe the stable commit before completing the flow. A two-node protocol test
+executes the returned obligations, requires stable membership on both replicas,
+and successfully commits a subsequent learner addition.
+
 **Acceptance:** an external consumer composes the supported fast durable path
 without copying an owner loop from the benchmark/example, with the same
 behavior in source and exact-package tests.

@@ -36,6 +36,9 @@ pub enum MembershipChange {
         info: NodeInfo,
     },
     /// Promote a caught-up learner into the voter set.
+    ///
+    /// This enters joint consensus. After that configuration commits, submit
+    /// [`Self::LeaveJoint`] to commit the stable target.
     PromoteLearner {
         /// Learner identity to promote.
         node_id: NodeId,
@@ -78,7 +81,7 @@ pub enum MembershipStep {
     AddLearner(NodeId),
     /// Wait until the named learner reaches its promotion barrier.
     WaitForCatchUp(NodeId),
-    /// Make the caught-up learner a voter.
+    /// Enter joint consensus that promotes the caught-up learner.
     PromoteLearner(NodeId),
     /// Submit the joint configuration.
     EnterJoint(MembershipSet),

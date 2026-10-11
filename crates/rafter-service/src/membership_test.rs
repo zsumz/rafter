@@ -54,6 +54,7 @@ fn promote_learner_plan_uses_barrier() {
         vec![
             MembershipStep::WaitForCatchUp(NodeId(4)),
             MembershipStep::PromoteLearner(NodeId(4)),
+            MembershipStep::LeaveJoint,
         ]
     );
 }

@@ -54,7 +54,12 @@ impl<G: Clone> MembershipController<G> {
         }
     }
 
-    /// Plans learner promotion using the caller-supplied promotion barrier.
+    /// Plans learner promotion through joint consensus into stable membership.
+    ///
+    /// Uses the caller-supplied promotion barrier. The caller must wait for the
+    /// joint configuration to commit before executing the final `LeaveJoint`
+    /// step, and for the stable configuration to commit before completing the
+    /// flow.
     #[must_use]
     pub fn promote_learner(&self, barrier: PromotionBarrier) -> PlannedMembershipChange<G> {
         let node_id = barrier.learner_id;
@@ -63,6 +68,7 @@ impl<G: Clone> MembershipController<G> {
             plan: self.plan(vec![
                 MembershipStep::WaitForCatchUp(node_id),
                 MembershipStep::PromoteLearner(node_id),
+                MembershipStep::LeaveJoint,
             ]),
         }
     }
