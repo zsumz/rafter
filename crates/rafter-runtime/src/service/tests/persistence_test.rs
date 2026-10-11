@@ -18,8 +18,8 @@ use std::{
 };
 
 type Gate = (mpsc::SyncSender<()>, mpsc::Receiver<()>, bool);
-#[derive(Debug, Default)]
-struct GatedLog {
+#[derive(Clone, Debug, Default)]
+pub(super) struct GatedLog {
     inner: InMemoryRaftLogSegment,
     gate: Arc<Mutex<Option<Gate>>>,
 }
@@ -52,10 +52,10 @@ impl RaftLogSegment for GatedLog {
         self.inner.replay_entries()
     }
 }
-type Owner =
+pub(super) type Owner =
     DurableService<InMemoryRaftHardStateStore, GatedLog, InMemoryRaftSnapshotStore, Entry, Store>;
-struct Cluster {
-    owner: Owner,
+pub(super) struct Cluster {
+    pub(super) owner: Owner,
     follower: DurableRaftNode,
     responses: VecDeque<Input>,
     gate: Arc<Mutex<Option<Gate>>>,
@@ -65,6 +65,12 @@ impl Cluster {
         Self::with_wake(|| {})
     }
     fn with_wake(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self::with_wake_options(wake, ServiceOptions::new())
+    }
+    pub(super) fn with_options(options: ServiceOptions) -> Self {
+        Self::with_wake_options(|| {}, options)
+    }
+    fn with_wake_options(wake: impl Fn() + Send + Sync + 'static, options: ServiceOptions) -> Self {
         let config = |id| {
             NodeConfig::new(
                 NodeId(id),
@@ -83,7 +89,7 @@ impl Cluster {
                 snapshot_store: InMemoryRaftSnapshotStore::new(),
             },
             Store::default(),
-            ServiceOptions::new(),
+            options,
             adapt,
             wake,
         )
@@ -135,7 +141,7 @@ impl Cluster {
             }
         }
     }
-    fn drive(&mut self) -> Vec<LogIndex> {
+    pub(super) fn drive(&mut self) -> Vec<LogIndex> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut applied = Vec::new();
         while !self.owner.idle() || !self.responses.is_empty() {
@@ -157,13 +163,13 @@ impl Cluster {
         }
         applied
     }
-    fn delay(&mut self, panic: bool) -> (mpsc::Receiver<()>, Release) {
+    pub(super) fn delay(&mut self, panic: bool) -> (mpsc::Receiver<()>, Release) {
         let (started, wait) = mpsc::sync_channel(1);
         let (release, resume) = mpsc::sync_channel(1);
         *self.gate.lock().unwrap() = Some((started, resume, panic));
         (wait, Release(Some(release)))
     }
-    fn propose(&mut self) {
+    pub(super) fn propose(&mut self) {
         self.owner
             .try_step(ServiceInput::Proposals(vec![ClientProposalInput {
                 proposal_id: None,

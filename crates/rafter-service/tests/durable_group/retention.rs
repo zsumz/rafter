@@ -79,6 +79,7 @@ fn retained_observation_does_not_drive_queued_or_busy_work() {
 #[test]
 fn uncollected_client_and_membership_results_remain_visible_after_shutdown() {
     let mut node = membership_admission::single(false, 64);
+    assert!(node.driver.persistence_telemetry().unwrap().is_empty());
     let tx = node.driver.sender();
     let mut write = tx.write(GROUP, buffer(7, 16), WriteOptions::default());
     let mut read = tx.read(
@@ -102,6 +103,7 @@ fn uncollected_client_and_membership_results_remain_visible_after_shutdown() {
     let mut shutdown = tx.shutdown(GROUP);
     node.until(|n| n.driver.state() == ServiceState::Stopped);
     assert!(node.dropped.load(Ordering::Acquire));
+    assert!(node.driver.persistence_telemetry().is_none());
     assert!(matches!(poll(&mut shutdown), Poll::Ready(Ok(()))));
     assert_eq!(counts(&tx.retained()), charged);
     assert!(matches!(poll(&mut change), Poll::Ready(Ok(_))));

@@ -74,7 +74,7 @@ where
         if self.outputs.is_empty() {
             match self.node.try_complete() {
                 Ok(Some(completed)) => {
-                    self.outputs = completed.into_outputs().into();
+                    self.consume_persistence(completed);
                     progressed = true;
                 }
                 Err(error) => return self.poison(ServiceError::Persistence(error)),
@@ -150,6 +150,12 @@ where
             }
             output => Ok(ServicePoll::Event(ServiceEvent::Output(output))),
         }
+    }
+
+    fn consume_persistence(&mut self, completed: crate::pipelined::ThreadedPersistenceCompletion) {
+        let (outputs, telemetry) = completed.into_parts();
+        self.outputs = outputs.into();
+        self.persistence_telemetry = telemetry;
     }
 
     fn submit_pending(&mut self) -> Result<ServicePoll<T, A>, ServiceError> {

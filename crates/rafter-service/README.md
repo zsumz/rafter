@@ -126,6 +126,17 @@ at attachment. Counts saturate at `usize::MAX`, remain readable after backend
 release, and reset with new owners after recovery. Sampling drives no work and
 does not reserve capacity or provide an atomic snapshot across counters.
 
+`DurableRaftDriver::persistence_telemetry()` and the underlying owner expose a
+borrowed view of the latest consumed persistence-worker diagnostics. Enable
+collection by setting `options.persistence = options.persistence.with_storage_telemetry(true)`
+on the `ServiceOptions` supplied at construction.
+An empty slice means disabled collection or no consumed worker completion;
+`None` means the backend has been released. These cumulative counters cover
+the current persistence thread, excluding recovery and synchronous owner-thread
+work. Pending or failed work can leave the sample stale. Sampling drives no
+work, and application snapshot maintenance preserves the same worker's sample.
+Keep diagnostics disabled for timing runs, as the worker options recommend.
+
 Use `DurableRaftDriver::attach_with_membership` with `DurableMembershipLimits`
 constructed from a `NonZeroUsize` byte budget to enable bounded membership
 proposal admission. Submit an app-layer `MembershipChange` through

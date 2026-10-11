@@ -15,6 +15,7 @@ use std::{collections::VecDeque, sync::Arc};
 /// synchronous `PersistedRaftRuntime` contract while work can be pending.
 pub struct DurableService<H, L, S, T: ApplicationEntry, A: DurableApplication<T>> {
     pub(super) node: ThreadedPipelinedRaftNode<H, L, S>,
+    pub(super) persistence_telemetry: crate::pipelined::PersistenceWorkerTelemetry,
     pub(super) application: Option<ApplicationWorker<T, A>>,
     pub(super) adapter: Box<dyn FnMut(CommittedCommand) -> Result<T, ServiceAdapterError> + Send>,
     pub(super) outputs: VecDeque<Output>,
@@ -121,6 +122,7 @@ where
         .map_err(ServiceError::Start)?;
         Ok(Self {
             node,
+            persistence_telemetry: Vec::new(),
             application: Some(application),
             adapter: Box::new(adapter),
             outputs,
@@ -173,6 +175,21 @@ where
     #[must_use]
     pub const fn progress(&self) -> PipelineProgress {
         self.node.progress()
+    }
+
+    /// Borrows diagnostics from the last consumed successful worker completion.
+    ///
+    /// Enable collection through [`crate::pipelined::PersistenceWorkerOptions`].
+    /// Empty when disabled or before a completion is consumed. Counters are
+    /// cumulative for this persistence thread and reset with a recovered service.
+    /// They exclude recovery and synchronous owner-thread work. A pending or
+    /// failed operation may leave this sample stale; it establishes no durability
+    /// or health guarantee. Observation polls no work and invokes no callbacks.
+    /// The last sample remains available after shutdown. Disable diagnostics for
+    /// timing runs, as specified by the worker options.
+    #[must_use]
+    pub fn persistence_telemetry(&self) -> &[(&'static str, rafter_storage::telemetry::Metric)] {
+        &self.persistence_telemetry
     }
 
     /// Returns the last dispatched application position (not its durable floor).

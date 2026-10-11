@@ -1023,6 +1023,17 @@ them drives no work. Concurrent caller tests check exact quiescent totals,
 unchanged admission state, error classification and pre-attachment history.
 The independent TLS consumer verifies count and byte-budget refusal totals.
 
+The durable service now retains the existing optional persistence-worker
+diagnostics that completion consumption previously discarded. Borrowed access
+through the service, client owner and grouped driver exposes the last consumed
+sample without extra polling, callbacks or event reordering. Counters cover
+the persistence thread's lifetime and exclude recovery and synchronous work on
+the owner thread; pending or failed work can leave them stale. Collection stays
+opt-in and should be disabled for timing runs. Runtime tests cover disabled
+collection, passive observation during blocked persistence, shutdown and
+fresh recovery. The file/TLS consumer checks actual write-stage counters and
+preservation through local application snapshot maintenance.
+
 The counter pressure lane above establishes one bounded overload/recovery case
 with real processes and TLS. It does not establish latency distributions, memory
 ceilings for the whole host, or sustained throughput.

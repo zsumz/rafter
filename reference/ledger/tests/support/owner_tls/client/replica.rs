@@ -60,6 +60,7 @@ impl Replica {
         };
         let mut options = ServiceOptions::new();
         options.max_proposals = 1;
+        options.persistence = options.persistence.with_storage_telemetry(true);
         options.application = options.application.with_limits(1, 4096, 1, 4096);
         let owner = Owner::recover_with_reads(
             NodeConfig::new(

@@ -21,6 +21,15 @@ fn poll<T>(future: &mut DriverFuture<T>) -> Poll<T> {
         .poll(&mut Context::from_waker(Waker::noop()))
 }
 
+fn assert_persistence_work(metrics: &[(&str, rafter_storage::telemetry::Metric)]) {
+    assert!(
+        metrics.iter().any(|(name, metric)| {
+            matches!(*name, "log_write" | "batch_write") && metric.calls > 0
+        }),
+        "no file persistence observed: {metrics:?}"
+    );
+}
+
 #[test]
 fn managed_write_waits_for_tls_quorum_and_application_durability_then_reopens() {
     let scratch = crate::scratch::ScratchDir::new("managed-owner-tls");
@@ -60,6 +69,7 @@ fn managed_write_waits_for_tls_quorum_and_application_durability_then_reopens() 
     assert_eq!(stalled.commit_index, LogIndex(2));
     assert_eq!(stalled.applied_index, LogIndex::ZERO);
     assert_eq!(stalled.pending_proposals, 1);
+    assert_persistence_work(cluster.0[0].owner.persistence_telemetry().unwrap());
     let reader = cluster.0[0].owner.read_sender().unwrap();
     let mut read = reader.read(
         vec![0],

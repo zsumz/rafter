@@ -1,7 +1,7 @@
 //! Read-only metrics for the same incarnation that owns the client queues.
 use super::{
-    ApplicationEntry, DurableApplication, DurableClientOwner, RaftHardStateStore, RaftLogSegment,
-    RaftSnapshotStore, ServiceState, SnapshotChunkSource,
+    ApplicationEntry, DurableApplication, DurableClientOwner, DurableService, RaftHardStateStore,
+    RaftLogSegment, RaftSnapshotStore, ServiceState, SnapshotChunkSource,
 };
 use crate::durable::lock;
 use rafter_app::{group::GroupFatalState, metrics::RaftGroupMetrics};
@@ -14,6 +14,22 @@ where
     T: ApplicationEntry,
     A: DurableApplication<T>,
 {
+    /// Borrows the backend's latest consumed persistence-worker diagnostics.
+    ///
+    /// Returns `None` after backend release; an empty slice means collection was
+    /// disabled or no worker completion has been consumed. The cumulative sample
+    /// may be stale while work is pending or after failure, and excludes recovery
+    /// and synchronous owner-thread work. Observation drives no work or callbacks.
+    /// See [`DurableService::persistence_telemetry`] for collection and reset scope.
+    #[must_use]
+    pub fn persistence_telemetry(
+        &self,
+    ) -> Option<&[(&'static str, rafter_storage::telemetry::Metric)]> {
+        self.service
+            .as_ref()
+            .map(DurableService::persistence_telemetry)
+    }
+
     /// Observes protocol state, actual application durability, and client phases.
     ///
     /// Returns `None` while persistence owns the node, the application is handed

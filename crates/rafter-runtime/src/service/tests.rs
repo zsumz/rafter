@@ -9,5 +9,6 @@ mod read_test;
 mod snapshot_panic_test;
 mod streamed_compaction_test;
 mod support;
+mod telemetry_test;
 mod wake_lifecycle_test;
 mod wake_test;

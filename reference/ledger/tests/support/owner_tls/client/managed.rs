@@ -273,7 +273,8 @@ impl Managed {
         for stop in &mut stops {
             assert!(matches!(poll(stop), Poll::Ready(Ok(()))));
         }
-        for (_, link) in self.nodes {
+        for (driver, link) in self.nodes {
+            assert!(driver.persistence_telemetry().is_none());
             let diagnostics = link.diagnostics();
             assert!(
                 diagnostics.tls_handshakes > 0
@@ -350,7 +351,13 @@ fn durable_raft_handle_routes_tls_writes_reads_transfer_and_shutdown_across_reop
             .iter()
             .all(|(d, _)| d.durable_through().is_some_and(|i| i >= floor))
     });
+    super::assert_persistence_work(cluster.nodes[0].0.persistence_telemetry().unwrap());
+    let diagnostics = format!("{:?}", cluster.nodes[0].0.persistence_telemetry());
     cluster.compact_all(floor);
+    assert_eq!(
+        format!("{:?}", cluster.nodes[0].0.persistence_telemetry()),
+        diagnostics
+    );
     cluster
         .complete(async move { handle.transfer_leadership(NodeId(2)).await })
         .unwrap();
