@@ -13735,3 +13735,17 @@ any one of the three lands alone.
     The durable reference uses it to recover a backlog larger than the worker's
     credit limit without a queue-pressure panic. Full asynchronous owner-loop
     scheduling and admission remain separate composition work.
+
+32. **Poll-driven durable owner with independent ledger adoption.**
+    `rafter-runtime::service::DurableService` composes the existing threaded
+    pipeline and ordered application worker. It derives recovery from the
+    application store, retains ordered outputs through backpressure, and owns
+    application/read completion fences, descriptor handoff, and draining
+    shutdown. Refused admission returns the unchanged input; fatal steps expose
+    an unknown durable disposition. A fallible, range-checked adapter preserves
+    application schema ownership. Snapshot bytes and atomic installation remain
+    application responsibilities. This is an additive public module, with no
+    storage/wire-format change and no new transport. The ledger independently
+    adopts it over file-backed Raft and its transactional journal. This first
+    composition uses periodic polling, leaves ordinary consensus I/O synchronous,
+    and does not yet wrap local compaction or manage bounded client waiters.

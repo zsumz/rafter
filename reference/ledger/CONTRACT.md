@@ -980,3 +980,19 @@ Three limits stay, and none of them is an oversight:
    failover rather than the shortest.
 3. The ledger journal still has no lock of its own. One process per replica
    directory is enforced by the Raft store's lock and by opening it first.
+
+### Poll-driven durable owner adoption
+
+`tests/service_owner.rs` exercises `rafter-runtime::service::DurableService`
+without copying its persistence/application scheduling loop into the consumer.
+The ledger supplies only its command codec, range-aware application entry,
+transactional store, and descriptor installation policy. Three committed
+commands recover through a single application credit; a tracked write's result
+is consumed after its transaction becomes durable; shutdown preserves that
+completion. Real Raft files and the ledger journal then reopen, and a separate
+blank application installs the exact promoted snapshot before admission opens.
+The same source is built against extracted archives in the package lane.
+
+This proves the owner/application boundary, not network deployment or latency.
+Authenticated transport, client waiter limits, local snapshot scheduling,
+completion wakes, and multi-host qualification remain separate work.

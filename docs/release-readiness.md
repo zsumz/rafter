@@ -190,7 +190,8 @@ API diffs are reviewed for every coordinated release.
 [`ApplicationWorker`](../crates/rafter-runtime/src/application/worker.rs),
 bounded TLS transport, and the
 [`pipelined_durable_service` example](../crates/rafter-runtime/examples/pipelined_durable_service.rs).
-The owner loop still has to coordinate all of them itself.
+The new `service::DurableService` coordinates the two workers and hands peer
+sends to the caller's existing authenticated transport.
 
 The application worker now accepts validated contiguous ranges through
 `ApplicationEntry::first_log_index`. The durable reference service uses this
@@ -204,13 +205,22 @@ regression exceeds the default 4,096 credits and verifies durable restart;
 the previous reference loop panicked on `Full`. The library dispatch operation
 is nonblocking; the reference scheduler waits for a completion under pressure.
 
-Extract a small supported driver/composition that owns bounded admission,
-persistence completion, ordered application completion, client outcomes,
-snapshot maintenance, and shutdown. Keep application schemas, authentication
-policy, and scheduling/runtime selection in the embedding. Do not force the
-pipeline into the synchronous
-[`PersistedRaftRuntime`](../crates/rafter-runtime-api/src/contract.rs)
-trait without representing its pending state and durability fences.
+The first supported owner now derives recovery from the application floor,
+retains ordered output work through backpressure, checks read/application
+completion fences, hands off the idle store for descriptor installation, and
+drains owned work before shutdown. Channel-gated tests hold fsync and application
+work to verify no early success. The independent ledger adopts the public API
+over real Raft files and its transactional journal, including a backlog larger
+than credits, durable tracked completion, snapshot installation, and reopen.
+
+Remaining composition work includes local snapshot creation/compaction,
+completion wake integration, and bounded client/read waiter ownership. The
+current owner polls workers and ordinary consensus inputs retain synchronous
+I/O. Its memory claim covers one existing output batch, one converted command,
+and worker credits; it does not bound the kernel log or an entire recovery
+output batch. Keep application schemas, authentication policy, and scheduling
+selection in the embedding. Do not force pending pipeline states into the
+synchronous `PersistedRaftRuntime` trait.
 
 Use PR #13's counter as an independent adopter, after updating it. Test actual
 TLS processes with restart, full queues, stalled fsync, leadership changes,

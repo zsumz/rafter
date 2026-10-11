@@ -64,6 +64,36 @@ application store after an idle join, so maintenance can take exclusive
 ownership without a side channel; a prior application failure still requires
 application-defined recovery before the store is reused.
 
+`service::DurableService` now coordinates both workers through a poll-driven
+owner. `recover` takes the actual application store, derives its durable floor,
+and retains replay outputs until application recovery finishes. `try_step`
+returns the original input if admission is closed; proposal batches have entry
+and payload limits. `poll` dispatches at most one application command or event,
+retains a refused command under credit pressure, and exposes client-eligible
+`Applied` completions only after both durability fences. Read grants wait for
+the corresponding application prefix, including barriers at protocol-only
+positions. Peer sends use the embedding's existing authenticated transport.
+
+An `InstallSnapshot` event transfers the quiescent application store and the
+exact durable descriptor. The embedding installs its bytes and floor atomically,
+then calls `resume_snapshot`; later outputs and new input remain fenced until
+the floor matches. `begin_shutdown` closes admission while polling continues;
+`finish_shutdown` joins only idle workers and returns the application store.
+Unresolved proposals remain unknown outcomes, since draining does not create a
+quorum decision. Worker failures, adapter errors, and invalid completion floors
+terminally fence the incarnation for recovery.
+
+This first owner has no input mailbox. Its retained work is one existing runtime
+output batch, one converted command, and bounded worker credits; a runtime or
+recovery batch itself can be large. The caller still bounds input frames,
+client/read waiters, transport queues, and consumed events. Ordinary consensus
+steps remain synchronous, and the caller provides periodic completion polling.
+Local snapshot creation/compaction and executor wake integration remain on the
+lower-level APIs pending their own composition slices. The independent ledger's
+`tests/service_owner.rs` uses this API over real Raft files and its transactional
+journal, exercising backlog recovery, tracked durable completion, shutdown,
+descriptor installation, and reopen in source and exact-package lanes.
+
 `LogRetirementWorker` optionally releases entries retired by a successfully
 published local snapshot away from the consensus-owner thread. Entry and
 payload-byte credits include queued and currently dropping work. Submission
