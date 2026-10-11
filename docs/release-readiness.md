@@ -504,13 +504,18 @@ immediate output routing, and backend release preserves uncertainty through
 backend release. Disposal catches each callback panic separately so all clients
 and watchers are notified before the first panic resumes.
 
-Seventeen public group tests exercise real workers and quorum traffic, including
+Eighteen public group tests exercise real workers and quorum traffic, including
 snapshot installation during shutdown, attachment refusal preserving resources,
 cancellation and credits, transport loss followed by a durable write, and
 backend/transport/metrics/terminal callback failures. Seven deliberately weakened
 variants fail their regressions: wrong-group admission, early transfer success,
 an enlarged control slot, early duplicate shutdown, terminal notification before
 backend release, lost transfer uncertainty, and a lowered proof floor.
+A late snapshot return after shutdown previously reported `NotReady(Stopped)`
+but changed the wrapper to `Failed`. The new regression reproduces that mismatch
+on the prior code. The guard now preserves `Stopped`, closed clients and metrics,
+idempotent polling, and duplicate shutdown behavior; live-owner snapshot errors
+still fence the incarnation.
 The independent ledger consumer adopts the full handle over TLS through writes,
 reads, leadership transfer, shutdown, and cold reopen. Inbound authentication, membership policy,
 snapshot installation, and link lifecycle remain explicit embedding duties.
@@ -526,10 +531,12 @@ TLS consumer compacts all three file-backed replicas through the grouped driver,
 retires old entries with the bounded worker, transfers leadership, and reopens
 the same application state. This maintenance remains synchronous; source staging,
 chunks, and retired-entry disposal still require explicit budgets.
-The feature lane requires exactly 392 tests in both CI and zcheck.
+The feature lane requires exactly 393 tests in both CI and zcheck.
 
-Local qualification passes 327 default service tests, 392 with `durable`, 539
-source-consumer tests, and 544 archive/MSRV consumer tests on Rust 1.88.0.
+Local qualification passes 327 default service tests, 393 with `durable`, and
+544 archive/MSRV consumer tests on Rust 1.88.0. The latest full source lane passed
+539 tests at the managed-compaction checkpoint; all five TLS owner cases were
+rerun after the late-snapshot state correction.
 The 23 managed write/read tests also pass 64 repetitions across four concurrent
 runners (1,472 executions). Consumer lanes retain their 57 explicitly ignored
 cases for dedicated qualification. Strict docs and Clippy, 105 source/API/CI

@@ -192,12 +192,17 @@ where
     }
     /// Returns a durably installed application after a snapshot handoff.
     /// # Errors
-    /// Preserves exact owner floor checks; failure requires discarding the driver.
+    /// Preserves exact owner floor checks; errors from a live owner require
+    /// discarding the driver. A late return after backend release reports
+    /// `NotReady(Stopped)` and preserves the completed shutdown state.
     /// # Panics
     /// A caught application or metrics callback panic fences admission.
     pub fn resume_snapshot(&mut self, application: A) -> Result<(), ServiceError> {
         if self.failed {
             return Err(ServiceError::Failed);
+        }
+        if self.owner.is_none() {
+            return Err(ServiceError::NotReady(ServiceState::Stopped));
         }
         let mut fence = lifecycle::Fence::new(&self.shared);
         self.failed = true;

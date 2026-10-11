@@ -273,7 +273,7 @@ jobs:
       - name: workspace tests
         run: scripts/ci-run-diagnosed workspace-tests target/rafter-invariants/ci-diagnostics/workspace-tests.log cargo test --workspace
       - name: durable client tests
-        run: scripts/cargo-test-exact 392 - --locked -p rafter-service --features durable
+        run: scripts/cargo-test-exact 393 - --locked -p rafter-service --features durable
       - name: insecure TCP transport loopback tests
         # Two #[ignore]d tests in a publishable crate that no lane ran. They
         # are ignored because they bind loopback, which every runner here has.

@@ -116,6 +116,8 @@ Outstanding snapshot installation must still be completed. Metrics watches
 retain the last genuine observation across worker/snapshot handoff and after
 closure. A caught transport or subscriber panic fences admission, and discarding
 the driver resolves the remaining clients even when several wakeups panic.
+A snapshot returned after completed shutdown is refused with `NotReady(Stopped)`
+and leaves the driver stopped, its clients closed, and its final metrics intact.
 
 Both the client owner and grouped driver expose `compact_snapshot_with` for
 local snapshot maintenance. Once prior outputs and application completions are

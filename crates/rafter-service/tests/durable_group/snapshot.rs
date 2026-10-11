@@ -113,3 +113,45 @@ fn shutdown_waits_for_snapshot_handoff_and_preserves_the_installed_metrics_floor
         Poll::Ready(Err(ReadError::ShuttingDown))
     ));
 }
+
+#[test]
+fn late_snapshot_return_preserves_completed_shutdown() {
+    let mut node = Replica::single(false);
+    let tx = node.driver.sender();
+    let mut watch = tx.metrics(GROUP).unwrap();
+    let mut stop = tx.shutdown(GROUP);
+    node.until(|n| n.driver.state() == ServiceState::Stopped);
+    assert!(matches!(poll(&mut stop), Poll::Ready(Ok(()))));
+    assert!(node.dropped.load(Ordering::Acquire));
+    let last_observation = watch.current();
+
+    for _ in 0..2 {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let late = App {
+            floor: LogIndex(2),
+            value: 9,
+            gate: None,
+            dropped: Arc::clone(&dropped),
+        };
+        assert!(matches!(
+            node.driver.resume_snapshot(late),
+            Err(rafter_runtime::service::ServiceError::NotReady(
+                ServiceState::Stopped
+            ))
+        ));
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(node.driver.state(), ServiceState::Stopped);
+        assert!(matches!(node.driver.poll_next(), Ok(ServicePoll::Pending)));
+        assert_eq!(watch.current(), last_observation);
+    }
+    assert!(matches!(
+        poll(&mut tx.shutdown(GROUP)),
+        Poll::Ready(Err(ShutdownError::AlreadyShutDown))
+    ));
+    assert!(matches!(
+        poll(&mut tx.write(GROUP, vec![8], WriteOptions::default())),
+        Poll::Ready(Err(WriteError::ShuttingDown))
+    ));
+    let mut closed = Box::pin(watch.changed());
+    assert!(matches!(poll(&mut closed), Poll::Ready(None)));
+}
