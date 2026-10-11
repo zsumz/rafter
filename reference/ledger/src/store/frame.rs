@@ -7,9 +7,12 @@
 //! section on which residue an opening may truncate, and pinned as a table by
 //! `the_recognition_order_matches_the_sibling_lock_store`.
 
+#[cfg(test)]
 use rafter::LogIndex;
 
-use crate::{adapter::codec::encode_snapshot, Ledger, LedgerConfig};
+use crate::LedgerConfig;
+#[cfg(test)]
+use crate::{adapter::codec::encode_snapshot, Ledger};
 
 use super::{
     damage::TornTail,
@@ -18,8 +21,10 @@ use super::{
         crc32, read_u32, read_u64, BEGIN_LEN, BEGIN_MAGIC, COMMIT_LEN, COMMIT_MAGIC, HEADER_LEN,
         JOURNAL_FORMAT_VERSION, JOURNAL_MAGIC, SEALED_FRAME_MARK, UNSEALED_FRAME_MARK,
     },
-    frame_output::{begin_record, commit_record},
 };
+
+#[cfg(test)]
+use super::frame_output::{begin_record, commit_record};
 
 /// One committed frame's image and total length.
 pub(super) struct Frame<'a> {
@@ -302,6 +307,7 @@ pub(super) fn encode_header(config: LedgerConfig) -> Vec<u8> {
 }
 
 /// Encodes one whole transaction frame.
+#[cfg(test)]
 pub(super) fn encode_frame(
     ledger: &Ledger,
     applied_index: LogIndex,

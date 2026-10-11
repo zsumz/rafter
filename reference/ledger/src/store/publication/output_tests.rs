@@ -10,7 +10,7 @@ use crate::{
     SessionEpoch,
 };
 
-use super::write_staged;
+use super::{write_staged, write_unsealed};
 
 fn ledger(accounts: usize) -> Ledger {
     let mut ledger = Ledger::new(LedgerConfig::new(1, accounts).unwrap());
@@ -70,6 +70,20 @@ fn a_two_mebibyte_journal_uses_bounded_staging_without_an_encoded_image() {
     assert_eq!(sink.checksum.unwrap().value(), 0x5a1b_cc02);
     assert!(sink.max <= 16 * 1024);
     assert!((129..=130).contains(&sink.calls));
+}
+
+#[test]
+fn a_two_mebibyte_append_uses_bounded_writes_with_the_mark_unsealed() {
+    let ledger = ledger(131_072);
+    let frame = FramePlan::new(&ledger, LogIndex(131_073)).unwrap();
+    let sink = write_unsealed(Counting::default(), &frame).unwrap();
+    assert_eq!(sink.len, 2_097_246);
+    assert_eq!(sink.len, frame.len());
+    // Independent Python struct/zlib v1 frame, with its first byte changed to
+    // zero after computing the sealed begin/image/commit checksums.
+    assert_eq!(sink.checksum.unwrap().value(), 0x598a_cad0);
+    assert!(sink.max <= 16 * 1024);
+    assert!((130..=131).contains(&sink.calls));
 }
 
 #[test]
@@ -138,5 +152,47 @@ fn failed_encoding_and_final_buffer_drain_do_not_retry_on_drop() {
         let mut sink = Failure { calls: 0 };
         assert!(write_staged(&mut sink, LedgerConfig::new(1, count).unwrap(), &frame).is_err());
         assert_eq!(sink.calls, 1);
+        let mut sink = Failure { calls: 0 };
+        assert!(write_unsealed(&mut sink, &frame).is_err());
+        assert_eq!(sink.calls, 1);
     }
+}
+
+#[test]
+fn unsealed_append_masks_only_the_mark_and_preserves_sealed_checksums() {
+    let ledger = ledger(2);
+    let plan = FramePlan::new(&ledger, LogIndex(3)).unwrap();
+    let mut expected = encode_frame(&ledger, LogIndex(3)).unwrap();
+    expected[0] = 0;
+    let sink = Partial {
+        bytes: Vec::new(),
+        interrupted: false,
+    };
+    let sink = write_unsealed(sink, &plan).unwrap();
+    assert_eq!(sink.bytes, expected);
+}
+
+#[test]
+fn an_unaccepted_mark_is_not_skipped_or_retried_after_a_zero_write() {
+    struct Zero {
+        calls: usize,
+    }
+    impl Write for Zero {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            assert_eq!(bytes, [0]);
+            Ok(0)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            panic!("a refused mark cannot be flushed")
+        }
+    }
+    let ledger = ledger(1);
+    let plan = FramePlan::new(&ledger, LogIndex(2)).unwrap();
+    let mut sink = Zero { calls: 0 };
+    let result = write_unsealed(&mut sink, &plan);
+    assert!(
+        matches!(result, Err(crate::adapter::codec::SnapshotEncodingError::Sink(error)) if error.kind() == io::ErrorKind::WriteZero)
+    );
+    assert_eq!(sink.calls, 1);
 }

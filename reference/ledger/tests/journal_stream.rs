@@ -1,4 +1,4 @@
-//! Streamed replacement preserves exact byte cuts, atomic floors, and v1 recovery.
+//! Streamed publication preserves exact byte cuts, atomic floors, and v1 recovery.
 
 #[path = "support/scratch.rs"]
 mod scratch;
@@ -11,7 +11,9 @@ mod support;
 use rafter::LogIndex;
 use rafter_app::state_machine::ReplicatedStateMachine;
 use rafter_reference_ledger::{
-    store::{raw_journal, FaultPlan, LedgerStore, LedgerStoreError, WriteFault, HEADER_LEN},
+    store::{
+        raw_journal, FaultPlan, LedgerStore, LedgerStoreError, TornTail, WriteFault, HEADER_LEN,
+    },
     AccountId, Ledger, LedgerStateMachine, Mutation,
 };
 use scratch::ScratchDir;
@@ -196,6 +198,138 @@ fn a_byte_limit_at_or_after_completion_does_not_fire_and_next_append_uses_the_ne
         assert_eq!(reopened.applied_index(), LogIndex(at.0 + 1));
         assert_eq!(reopened.ledger(), app.ledger());
         assert_eq!(reopened.journal_len(), length);
+        assert_eq!(reopened.recovery().committed_frames(), 2);
+    }
+}
+
+fn append_cut(app: &LedgerStateMachine, frame: &[u8], fault: WriteFault) {
+    let accounts = app.ledger().view().accounts.len();
+    let scratch = ScratchDir::new("journal-stream-append-cut");
+    let mut store =
+        LedgerStore::open_with_faults(scratch.path(), config(1, accounts), FaultPlan::at(2, fault))
+            .unwrap();
+    let old = prior(accounts);
+    store.commit(&old, LogIndex(3)).unwrap();
+    let before = raw_journal::read(scratch.path()).unwrap();
+    let at = app.applied_index().unwrap();
+    assert!(matches!(store.commit(app.ledger(), at),
+        Err(LedgerStoreError::InjectedFault { fault: found, plan: 2 }) if found == fault));
+    assert_eq!(store.fired_fault(), Some(fault));
+    assert!(store.requires_reopen());
+    assert_eq!(store.applied_index(), LogIndex(3));
+    assert_eq!(store.ledger(), &old);
+    assert_eq!(store.journal_len(), before.len() as u64);
+    assert!(matches!(
+        store.commit(app.ledger(), at),
+        Err(LedgerStoreError::StoreRequiresReopen)
+    ));
+    let length = match fault {
+        WriteFault::BeforeFirstByte => 0,
+        WriteFault::AfterBytes(stop) => usize::try_from(stop).unwrap(),
+        WriteFault::AtFileSync | WriteFault::BeforeSeal | WriteFault::AtSealSync => frame.len(),
+        other => panic!("not an append fault: {other:?}"),
+    };
+    let mut tail = frame[..length].to_vec();
+    if length != 0 && fault != WriteFault::AtSealSync {
+        tail[0] = 0;
+    }
+    let mut bytes = before.clone();
+    bytes.extend_from_slice(&tail);
+    assert_eq!(raw_journal::read(scratch.path()).unwrap(), bytes);
+    drop(store);
+    let recovered = LedgerStore::open(scratch.path(), config(1, accounts));
+    if matches!(fault, WriteFault::AtFileSync | WriteFault::BeforeSeal) {
+        assert!(matches!(recovered, Err(LedgerStoreError::UnreadableFrame {
+            corruption: TornTail::UnsealedCompleteFrame { len }, ..
+        }) if len == frame.len() as u64));
+        // A complete unsealed frame is ambiguous; a read cannot repair it.
+        assert_eq!(raw_journal::read(scratch.path()).unwrap(), bytes);
+    } else {
+        let mut recovered = recovered.unwrap();
+        let sealed = fault == WriteFault::AtSealSync;
+        assert_eq!(recovered.ledger(), if sealed { app.ledger() } else { &old });
+        assert_eq!(
+            recovered.applied_index(),
+            if sealed { at } else { LogIndex(3) }
+        );
+        assert_eq!(
+            recovered.recovery().discarded_bytes(),
+            if sealed { 0 } else { length as u64 }
+        );
+        assert_eq!(
+            raw_journal::read(scratch.path()).unwrap(),
+            if sealed { bytes } else { before }
+        );
+        // Subsequent publication uses the recovered end, after any truncation.
+        recovered.commit(app.ledger(), LogIndex(at.0 + 1)).unwrap();
+        let end = recovered.journal_len();
+        drop(recovered);
+        let reopened = LedgerStore::open(scratch.path(), config(1, accounts)).unwrap();
+        assert_eq!(reopened.ledger(), app.ledger());
+        assert_eq!(reopened.applied_index(), LogIndex(at.0 + 1));
+        assert_eq!(reopened.journal_len(), end);
+    }
+}
+
+#[test]
+fn append_fault_offsets_span_buffers_and_preserve_the_sync_then_seal_boundary() {
+    let app = replacement(4096);
+    let bytes = expected(4096, &app);
+    let frame = &bytes[HEADER_LEN..];
+    for stop in [
+        0,
+        1,
+        2,
+        16_383,
+        16_384,
+        16_385,
+        32_767,
+        32_768,
+        32_769,
+        65_535,
+        65_536,
+        65_537,
+        frame.len() as u64 - 13,
+        frame.len() as u64 - 1,
+    ] {
+        append_cut(&app, frame, WriteFault::AfterBytes(stop));
+    }
+    for fault in [
+        WriteFault::BeforeFirstByte,
+        WriteFault::AtFileSync,
+        WriteFault::BeforeSeal,
+        WriteFault::AtSealSync,
+    ] {
+        append_cut(&app, frame, fault);
+    }
+}
+
+#[test]
+fn a_completed_append_seals_once_and_preserves_exact_frame_bytes_and_offsets() {
+    let app = replacement(2048);
+    let at = app.applied_index().unwrap();
+    let bytes = expected(2048, &app);
+    let frame = &bytes[HEADER_LEN..];
+    for stop in [frame.len() as u64, frame.len() as u64 + 1] {
+        let scratch = ScratchDir::new("journal-stream-append-complete");
+        let mut store = LedgerStore::open_with_faults(
+            scratch.path(),
+            config(1, 2048),
+            FaultPlan::at(2, WriteFault::AfterBytes(stop)),
+        )
+        .unwrap();
+        store.commit(&prior(2048), LogIndex(3)).unwrap();
+        let mut expected = raw_journal::read(scratch.path()).unwrap();
+        expected.extend_from_slice(frame);
+        store.commit(app.ledger(), at).unwrap();
+        assert_eq!(store.fired_fault(), None);
+        assert!(!store.requires_reopen());
+        assert_eq!(raw_journal::read(scratch.path()).unwrap(), expected);
+        assert_eq!(store.journal_len(), expected.len() as u64);
+        drop(store);
+        let reopened = LedgerStore::open(scratch.path(), config(1, 2048)).unwrap();
+        assert_eq!(reopened.ledger(), app.ledger());
+        assert_eq!(reopened.applied_index(), at);
         assert_eq!(reopened.recovery().committed_frames(), 2);
     }
 }

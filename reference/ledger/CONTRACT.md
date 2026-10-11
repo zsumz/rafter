@@ -236,8 +236,20 @@ pre-fix case acknowledged a foreign client slot, then could not reopen the
 journal. Refusal now preserves the file, floor, health, and next write-plan
 ordinal. Existing format/configuration errors remain the public taxonomy.
 
-The inline snapshot builder and journal append still construct complete encoded
-buffers, and journal opening still reads the whole journal. Model adoption and
+Journal append now uses the same measured frame and 16 KiB buffer, without a
+complete encoded image, frame, or unsealed copy. A sink beneath the checksumming
+encoder changes only the first byte to the unsealed mark. The buffer drains and
+the file syncs before the existing one-byte seal and second sync; the model and
+floor are adopted only after success. The append fault budget counts frame bytes
+across all writes. Multi-buffer cuts preserve exact prefixes and reopening at
+the previous committed end, while a complete unsealed frame remains a refusal
+without modifying the journal. Zero/partial/interrupted sink writes and failure
+without drop-time retries are covered alongside the original exhaustive crash
+sweep. A 2 MiB frame has an independent expected length and checksum, with every
+sink call bounded by 16 KiB.
+
+The inline snapshot builder still constructs a complete encoded buffer, and
+journal opening still reads the whole journal. Model adoption and
 compaction retain state clones proportional to configured bounds. Streaming
 those remaining paths and broader crash qualification remain separate work.
 

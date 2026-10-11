@@ -8,6 +8,7 @@
 //! that made every other byte durable. The `# Crash contract` section of the
 //! [module documentation](super) is what that order buys.
 
+mod output;
 mod rewrite;
 
 use std::{
@@ -18,14 +19,15 @@ use std::{
 
 use rafter::LogIndex;
 
-use crate::Ledger;
+use crate::{adapter::codec::SnapshotEncodingError, Ledger};
+
+use output::{write_unsealed, FileSink};
 
 use super::{
     domination::{deduplication_progress_of, verify_deduplication_dominates},
     error::LedgerStoreError,
-    fault::{WriteFault, WriteFaultSite},
-    format::{SEALED_FRAME_MARK, UNSEALED_FRAME_MARK},
-    frame::encode_frame,
+    fault::WriteFaultSite,
+    format::SEALED_FRAME_MARK,
     frame_output::FramePlan,
     Health, LedgerStore,
 };
@@ -79,11 +81,11 @@ impl LedgerStore {
             });
         }
         self.check_model_config(ledger)?;
-        let frame = encode_frame(ledger, applied_index)?;
+        let frame = FramePlan::new(ledger, applied_index)?;
         let plan = self.begin_plan();
         self.append(&frame, plan)?;
 
-        self.journal_len += frame.len() as u64;
+        self.journal_len += frame.len();
         self.adopt(ledger.clone(), applied_index);
         Ok(())
     }
@@ -227,7 +229,7 @@ impl LedgerStore {
     /// append mode, because the seal goes back to the frame's own first byte.
     /// Recovery leaves the journal exactly its committed length, so that offset
     /// is the end of the file.
-    fn append(&mut self, frame: &[u8], plan: u64) -> Result<(), LedgerStoreError> {
+    fn append(&mut self, frame: &FramePlan<'_>, plan: u64) -> Result<(), LedgerStoreError> {
         if let Some(error) = self.take_fault(plan, WriteFaultSite::BeforeFirstByte) {
             return Err(self.publication_failed(error));
         }
@@ -245,13 +247,25 @@ impl LedgerStore {
         let offset = self.journal_len;
         self.seek(&mut file, offset, &journal_path)?;
 
-        let mut unsealed = frame.to_vec();
-        unsealed[0] = UNSEALED_FRAME_MARK;
-        let emitted = self.emit(&mut file, &unsealed, plan, &journal_path)?;
-        if emitted < frame.len() {
-            let error = self
-                .take_fault(plan, WriteFaultSite::AfterBytes)
-                .expect("a short emit only happens when a byte-boundary fault fired");
+        let mut sink = FileSink::new(
+            &mut file,
+            self.faults.fault_for(plan),
+            "write the ledger journal",
+        );
+        if let Err(error) = write_unsealed(&mut sink, frame) {
+            let error = if sink.injected {
+                self.take_fault(plan, WriteFaultSite::AfterBytes)
+                    .expect("only an armed byte boundary can interrupt append")
+            } else {
+                match error {
+                    SnapshotEncodingError::Codec(error) => LedgerStoreError::Image(error),
+                    SnapshotEncodingError::Sink(source) => LedgerStoreError::Io {
+                        operation: sink.operation,
+                        path: journal_path.clone(),
+                        source,
+                    },
+                }
+            };
             return Err(self.publication_failed(error));
         }
 
@@ -315,43 +329,5 @@ impl LedgerStore {
                     source,
                 })
             })
-    }
-
-    /// Writes `bytes` to `file`, honoring a byte-boundary fault.
-    ///
-    /// Returns how many bytes were emitted; a short return means a fault
-    /// stopped the plan, and the prefix was synced so recovery meets the worst
-    /// case where it reached the medium.
-    fn emit(
-        &mut self,
-        file: &mut File,
-        bytes: &[u8],
-        plan: u64,
-        path: &Path,
-    ) -> Result<usize, LedgerStoreError> {
-        let limit = match self.faults.fault_for(plan) {
-            Some(WriteFault::AfterBytes(stop)) => {
-                usize::try_from(stop).unwrap_or(usize::MAX).min(bytes.len())
-            }
-            _ => bytes.len(),
-        };
-
-        file.write_all(&bytes[..limit]).map_err(|source| {
-            self.publication_failed(LedgerStoreError::Io {
-                operation: "write the ledger journal",
-                path: path.to_path_buf(),
-                source,
-            })
-        })?;
-        if limit < bytes.len() {
-            file.sync_data().map_err(|source| {
-                self.publication_failed(LedgerStoreError::Io {
-                    operation: "sync an interrupted ledger write",
-                    path: path.to_path_buf(),
-                    source,
-                })
-            })?;
-        }
-        Ok(limit)
     }
 }

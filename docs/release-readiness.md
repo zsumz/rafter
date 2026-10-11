@@ -383,9 +383,24 @@ exact-package/MSRV phases pass with 521 tests (57 ignored profiles each), plus
 storage, wire, and mixed-version TLS compatibility on Rust 1.88.0. Strict
 consumer lint/docs, formatting, size checks, and zrail pass without a lock change.
 
-Still required before freezing this API: streamed journal append and recovery,
-and broader interrupted/crash-safe publication qualification. The inline
-snapshot builder, journal append, and journal opening still materialize buffers.
+Journal append now shares the measured frame and 16 KiB publication buffer,
+removing its full image, frame, and unsealed-copy allocations. The first-byte
+mask sits beneath checksumming and buffering; checksums retain the sealed value,
+while the file receives the unsealed mark first. Full frame sync still precedes
+the seal and its sync. New regressions cover a 2 MiB frame's independent CRC32,
+partial/interrupted/zero writes, exact multi-buffer fault prefixes, both sync
+boundaries, and subsequent append offsets after recovery. A complete unsealed
+frame remains an explicit refusal without shortening the journal.
+Five new tests and the existing crash suite pass; deliberate early sealing,
+sealed-first emission, missing byte accounting, and drop-time retry mutations
+fail their regressions. Source qualification passes 521 tests and all seven
+archive/MSRV phases pass with 526 tests (57 ignored profiles each), including
+storage, wire, and mixed-version TLS compatibility on Rust 1.88.0. Strict consumer
+lint/docs, formatting, size checks, and zrail pass without a lock change.
+
+Still required before freezing this API: streamed journal recovery and broader
+interrupted/crash-safe publication qualification. The inline snapshot builder
+and journal opening still materialize buffers.
 Current/restored models, adoption, and compaction remain proportional to
 configured state bounds. Deterministic file-fault tests do not establish physical
 power-loss behavior or qualify these remaining paths.
