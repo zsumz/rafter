@@ -16,7 +16,7 @@ impl Managed {
     pub(super) fn compact_all(&mut self, floor: LogIndex) {
         let mut retirement =
             LogRetirementWorker::start(LogRetirementWorkerOptions::new(64, 256 * 1024)).unwrap();
-        for (driver, _) in &mut self.0 {
+        for (driver, _) in &mut self.nodes {
             let metrics = driver.handle().metrics().unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
             let retired = loop {

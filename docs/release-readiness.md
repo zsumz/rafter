@@ -605,6 +605,19 @@ TLS consumer compacts all three file-backed replicas through the grouped driver,
 retires old entries with the bounded worker, transfers leadership, and reopens
 the same application state. This maintenance remains synchronous; source staging,
 chunks, and retired-entry disposal still require explicit budgets.
+The managed TLS fixture now also routes elections through the grouped driver and
+handles actual application snapshot handoff. A lagging replica recovers through
+multiple authenticated chunks after the majority compacts and all links reopen,
+so pre-compaction transport queues cannot satisfy catch-up. Its managed local
+read remains pending while the application is handed out and metrics retain the
+previous durable floor. Streamed atomic installation and resumption release the
+query at the new floor. After another full reopen, that replica becomes leader,
+serves a quorum read, and replays a cached write without changing the balance.
+Skipping application installation makes the new case fail at its required read
+floor. This extends independent source/archive consumer coverage; it does not
+add a transport or change production code. Same-process TLS checks do not claim
+OS-process fault isolation or physical power-loss coverage.
+
 The feature lane requires exactly 393 tests in both CI and zcheck.
 
 Managed write/read budget exhaustion now reports public `Backpressure` variants
@@ -621,13 +634,15 @@ The external TLS ledger scenario exercises count and byte refusal through public
 senders, cancellation/re-admission, then its usual durable writes, reads,
 compaction, transfer, shutdown, and reopen sequence.
 
-Local qualification passes 327 default service tests, 393 with `durable`, and
-539 source-consumer tests and 544 archive/MSRV consumer tests on Rust 1.88.0
-at the typed-backpressure slice. Both consumer lanes retain 57 explicitly ignored
-profiles. The real counter pressure sequence also passes with the new category.
-Default workspace and durable-feature Clippy, strict docs, 45 source/API/CI
-guards, and architecture checks pass. This slice adds no architecture grants or
-debt and tightens one file-size ratchet; the PR's maintainer review remains open.
+The library checkpoint `9893ac18` passes 327 default service tests and 393 with
+`durable`, plus the real counter pressure sequence, default-workspace and
+feature Clippy, strict docs, and 45 source/API/CI guards. Its architecture change
+tightens one file-size ratchet without grants or debt. The subsequent managed
+snapshot fixture changes no library code and passes all six TLS owner cases,
+540 complete source-consumer tests, and 545 archive/MSRV consumer tests on Rust
+1.88.0. Both consumer lanes retain 57 explicitly ignored profiles. Strict consumer
+lint/docs/formatting/size checks and zrail pass; this fixture slice needs no
+architecture lock change. The PR's maintainer review remains open.
 Earlier managed-client qualification also ran the 23 write/read tests for 64
 repetitions across four concurrent runners (1,472 executions), with 105
 source/API/CI guards and no new architecture grants or adoption debt. The current

@@ -1,12 +1,12 @@
 //! Existing `RaftHandle` exercised over the durable owner and authenticated TLS.
 use super::super::{application::Application, config, link};
 use super::{cluster::Cluster, poll};
-use rafter::{Input, LogIndex, NodeId, Role};
+use rafter::{Input, LogIndex, Message, NodeId, Role};
 use rafter_app::state_machine::ReplicatedStateMachine;
 use rafter_reference_ledger::{
     LedgerApplicationEntry, LedgerQueryResult, LedgerStateMachine, Mutation,
 };
-use rafter_runtime::service::{ServicePoll, ServiceState};
+use rafter_runtime::service::{ServiceEvent, ServicePoll, ServiceState};
 use rafter_service::{
     durable::DurableRaftDriver, DriverCommandSender, ReadConsistency, ReadError, ReadErrorKind,
     ReadOptions, WriteError, WriteErrorKind, WriteFate, WriteOptions,
@@ -18,6 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod compaction;
+mod snapshot;
 
 type Driver = DurableRaftDriver<
     u64,
@@ -29,13 +30,17 @@ type Driver = DurableRaftDriver<
     rafter_transport_tls::TlsSender<u64, link::Codec>,
     LedgerQueryResult,
 >;
-struct Managed(Vec<(Driver, link::Link)>);
+#[derive(Default)]
+struct Managed {
+    nodes: Vec<(Driver, link::Link)>,
+    installs: Vec<(NodeId, LogIndex)>,
+    chunks: Vec<(NodeId, u64)>,
+}
 impl Managed {
     fn open(root: &Path, fresh: bool, leader: usize) -> Self {
-        let mut cluster = Cluster::open(root, fresh, None);
-        cluster.elect(leader);
-        Self(
-            cluster
+        let cluster = Cluster::open(root, fresh, None);
+        let mut managed = Self {
+            nodes: cluster
                 .0
                 .into_iter()
                 .map(|n| {
@@ -45,15 +50,68 @@ impl Managed {
                     )
                 })
                 .collect(),
-        )
+            ..Self::default()
+        };
+        // Route every election output through the managed driver, including
+        // snapshot chunks sent to a replica behind the compacted majority.
+        managed.elect(leader);
+        managed
+    }
+    fn elect(&mut self, leader: usize) {
+        for _ in 0..20 {
+            self.until(|c| c.nodes[leader].0.state() == ServiceState::Ready);
+            if self.nodes[leader].0.ready_node().unwrap().role() == Role::Leader {
+                break;
+            }
+            self.nodes[leader].0.try_step(Input::Tick).unwrap();
+        }
+        self.until(|c| {
+            c.nodes[leader].0.ready_node().is_some_and(|node| {
+                node.role() == Role::Leader
+                    && node.term_at_index(node.commit_index()) == Some(node.current_term())
+            })
+        });
+    }
+    fn converge(&mut self, leader: usize, floor: LogIndex) {
+        for _ in 0..10 {
+            self.until(|c| c.nodes[leader].0.state() == ServiceState::Ready);
+            self.nodes[leader].0.try_step(Input::Tick).unwrap();
+        }
+        self.until(|c| {
+            c.nodes.iter().all(|(d, _)| {
+                d.state() == ServiceState::Ready && d.durable_through() == Some(floor)
+            })
+        });
+    }
+    fn stop_last(&mut self) {
+        assert_eq!(self.nodes.len(), 3);
+        let node = self.nodes.pop().unwrap();
+        Self {
+            nodes: vec![node],
+            ..Self::default()
+        }
+        .close();
     }
     fn until(&mut self, mut done: impl FnMut(&Self) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(15);
         while !done(self) {
-            for (driver, link) in &mut self.0 {
+            for (driver, link) in &mut self.nodes {
                 for _ in 0..64 {
-                    if matches!(driver.poll_next().unwrap(), ServicePoll::Pending) {
-                        break;
+                    match driver.poll_next().unwrap() {
+                        ServicePoll::Pending => break,
+                        ServicePoll::Event(ServiceEvent::InstallSnapshot {
+                            snapshot,
+                            application,
+                        }) => {
+                            let id = driver.handle().metrics().unwrap().current().node_id;
+                            let floor = snapshot.metadata.last_included_index;
+                            snapshot::install(driver, snapshot, application);
+                            self.installs.push((id, floor));
+                        }
+                        ServicePoll::Event(ServiceEvent::ApplicationFailed(failure)) => {
+                            panic!("managed application failed: {failure:?}")
+                        }
+                        _ => {}
                     }
                 }
                 if driver.state() == ServiceState::Ready {
@@ -61,6 +119,10 @@ impl Managed {
                         assert_eq!(frame.group_id, link::GROUP);
                         assert_eq!(frame.raft_to, driver.ready_node().unwrap().id());
                         assert_eq!(frame.authenticated_peer, link::peer(frame.raft_from.0));
+                        if let Message::InstallSnapshotChunk(chunk) = &frame.message {
+                            assert!(chunk.chunk.len() <= 64 * 1024);
+                            self.chunks.push((frame.raft_to, chunk.offset));
+                        }
                         driver
                             .try_step(Input::Message {
                                 from: frame.raft_from,
@@ -91,7 +153,7 @@ impl Managed {
         outcome.unwrap()
     }
     fn check_admission(&mut self) {
-        let driver = &self.0[0].0;
+        let driver = &self.nodes[0].0;
         let before = driver.ready_node().unwrap().commit_index();
         let sender = driver.sender();
         let payload = LedgerStateMachine::new(config())
@@ -131,14 +193,14 @@ impl Managed {
         // None reached the backend: cancellation releases queued work on the
         // next owner turn, after which the same incarnation serves real work.
         drop((writes, reads));
-        self.0[0].0.poll_next().unwrap();
+        self.nodes[0].0.poll_next().unwrap();
         self.until(|c| {
-            let observed = c.0[0].0.handle().metrics().unwrap().current();
-            c.0[0].0.state() == ServiceState::Ready
+            let observed = c.nodes[0].0.handle().metrics().unwrap().current();
+            c.nodes[0].0.state() == ServiceState::Ready
                 && observed.pending_proposals == 0
                 && observed.pending_query_reads == 0
         });
-        assert_eq!(self.0[0].0.ready_node().unwrap().commit_index(), before);
+        assert_eq!(self.nodes[0].0.ready_node().unwrap().commit_index(), before);
         for consistency in [ReadConsistency::Local, ReadConsistency::Linearizable] {
             let mut oversized = Vec::with_capacity(8193);
             oversized.push(0);
@@ -157,15 +219,19 @@ impl Managed {
 
     fn close(mut self) {
         let mut stops: Vec<_> = self
-            .0
+            .nodes
             .iter()
             .map(|(d, _)| d.sender().shutdown(link::GROUP))
             .collect();
-        self.until(|c| c.0.iter().all(|(d, _)| d.state() == ServiceState::Stopped));
+        self.until(|c| {
+            c.nodes
+                .iter()
+                .all(|(d, _)| d.state() == ServiceState::Stopped)
+        });
         for stop in &mut stops {
             assert!(matches!(poll(stop), Poll::Ready(Ok(()))));
         }
-        for (_, link) in self.0 {
+        for (_, link) in self.nodes {
             let diagnostics = link.diagnostics();
             assert!(
                 diagnostics.tls_handshakes > 0
@@ -184,7 +250,7 @@ fn durable_raft_handle_routes_tls_writes_reads_transfer_and_shutdown_across_reop
     let scratch = crate::scratch::ScratchDir::new("durable-handle-tls");
     let mut cluster = Managed::open(scratch.path(), true, 0);
     cluster.check_admission();
-    let handle = cluster.0[0].0.handle();
+    let handle = cluster.nodes[0].0.handle();
     let mut floor = LogIndex::ZERO;
     let commands = [
         crate::support::open_session(0, 1),
@@ -238,7 +304,8 @@ fn durable_raft_handle_routes_tls_writes_reads_transfer_and_shutdown_across_reop
     assert_eq!(summary.total_balance, 61);
     assert_eq!(handle.metrics().unwrap().current().group_id, link::GROUP);
     cluster.until(|c| {
-        c.0.iter()
+        c.nodes
+            .iter()
             .all(|(d, _)| d.durable_through().is_some_and(|i| i >= floor))
     });
     cluster.compact_all(floor);
@@ -246,7 +313,7 @@ fn durable_raft_handle_routes_tls_writes_reads_transfer_and_shutdown_across_reop
         .complete(async move { handle.transfer_leadership(NodeId(2)).await })
         .unwrap();
     cluster.until(|c| {
-        c.0[1]
+        c.nodes[1]
             .0
             .ready_node()
             .is_some_and(|n| n.role() == Role::Leader)
@@ -254,7 +321,7 @@ fn durable_raft_handle_routes_tls_writes_reads_transfer_and_shutdown_across_reop
     cluster.close();
 
     let mut cluster = Managed::open(scratch.path(), false, 1);
-    let handle = cluster.0[1].0.handle();
+    let handle = cluster.nodes[1].0.handle();
     let queried = cluster
         .complete(async move {
             handle
