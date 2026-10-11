@@ -586,10 +586,9 @@ fn restart_escalates_only_after_a_journal_requests_repair() {
 #[test]
 #[ignore = "spawns real processes; run with --ignored (see the module docs)"]
 fn readiness_refuses_service_until_recovery_completes() {
-    // There is no kill window to reason about until the last step, because the
-    // refusal being tested is reached without any kill: a second process for an
-    // owned directory cannot recover, so it cannot serve. That makes the
-    // negative assertion deterministic rather than a race against recovery.
+    // A second process for an owned directory cannot recover, so it cannot
+    // serve. Orderly ownership handoff later isolates this readiness assertion
+    // from the abrupt-crash and operator-repair cases elsewhere in this suite.
     let mut cluster = ProcessCluster::start("readiness-gates", process_config());
     cluster.submit_to_leader(&open_session(0, 1));
     cluster.submit_to_leader(&execute(0, 1, 1, open_account(7)));
@@ -626,10 +625,17 @@ fn readiness_refuses_service_until_recovery_completes() {
     // checker would discharge it without searching; asserting the exact refusal
     // is the stronger statement.
 
-    // Only now is the incumbent killed, which is what lets the contender finish
-    // recovering. The gate opens because recovery completed, not because time
-    // passed.
-    cluster.kill(NodeId(2));
+    // A leader acknowledgement does not prove this follower has finished its
+    // application journal append. Establish the durable account baseline, then
+    // release ownership cleanly: SIGKILL here could legitimately leave a whole
+    // unsealed frame that requires an operator decision instead of readiness.
+    let leader = cluster.wait_for_leader();
+    let baseline = cluster
+        .status(leader)
+        .expect("the leader answers STATUS")
+        .applied;
+    cluster.wait_applied_through(NodeId(2), LogIndex(baseline));
+    cluster.node_mut(NodeId(2)).shutdown();
     let recovered_floor = contender.wait_ready();
     assert!(
         recovered_floor > LogIndex::ZERO,

@@ -417,8 +417,8 @@ impl NodeProcess {
     /// Kills this replica with `SIGKILL` and reaps it.
     ///
     /// `SIGKILL` is the harshest exit available and runs no cleanup path, which
-    /// is the point: every recovery this suite asserts is recovery from a
-    /// process that was given no chance to tidy up.
+    /// is the point of the abrupt-crash cases. Readiness-only ownership handoff
+    /// uses [`Self::shutdown`] so it cannot interrupt a journal append.
     pub fn kill(&mut self) {
         self.client.disconnect();
         drop(self.child.kill_and_reap());
@@ -426,11 +426,19 @@ impl NodeProcess {
 
     /// Asks this replica to stop cleanly and waits for it to exit.
     pub fn shutdown(&mut self) {
+        // The main loop can exit before the detached client thread sends BYE.
+        // Its successful exit and STOPPED marker establish orderly shutdown.
         drop(self.ask("SHUTDOWN"));
         self.client.disconnect();
-        self.child
+        let status = self
+            .child
             .wait_for_exit(PROCESS_WAIT)
             .unwrap_or_else(|error| panic!("{error}"));
+        assert!(status.success(), "clean shutdown failed: {status}");
+        assert!(
+            self.has_announced("STOPPED"),
+            "missing clean shutdown marker"
+        );
     }
 }
 
