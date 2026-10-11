@@ -1,4 +1,4 @@
-//! An external opaque-blob application installs through the public reader.
+//! An external opaque-blob application creates and installs through public streams.
 //!
 //! Real snapshot files feed a private staging file; only a verified receipt
 //! permits publication of bytes and applied floor together. This tests normal
@@ -9,9 +9,10 @@ mod scratch;
 
 use std::{
     cell::Cell,
-    fs::{self, File},
-    io::{self, Read, Write},
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
+    sync::Mutex,
 };
 
 use rafter::{
@@ -20,7 +21,8 @@ use rafter::{
     SnapshotGroupId, Term,
 };
 use rafter_runtime::snapshot_io::{
-    SnapshotCancellation, SnapshotPayloadReader, SnapshotReadOptions,
+    SnapshotCancellation, SnapshotPayloadReader, SnapshotPayloadWriter, SnapshotReadOptions,
+    SnapshotWriteOptions,
 };
 use rafter_storage::{FileRaftSnapshotStore, RaftSnapshotStore};
 use scratch::ScratchDir;
@@ -30,16 +32,26 @@ const LENGTH: u64 = 2 * 1024 * 1024 + 17;
 const CRC32: u32 = 0xed60_5685;
 const CHUNK: u32 = 4096;
 
-struct Pattern(RaftSnapshot);
-impl SnapshotChunkSource for Pattern {
+struct StagedFile {
+    snapshot: RaftSnapshot,
+    file: Mutex<File>,
+}
+impl SnapshotChunkSource for StagedFile {
     fn snapshot_chunk(&self, request: SnapshotChunkRequest<'_>) -> Option<Vec<u8>> {
-        assert_eq!(request.transfer_id, self.0.transfer_id());
-        assert_eq!(request.metadata, &self.0.metadata);
-        assert_eq!(request.total_payload_len, LENGTH);
-        assert_eq!(request.application_payload_crc32, CRC32);
-        assert!(request.offset + u64::from(request.len) <= LENGTH);
-        assert!(request.len <= 256 * 1024);
-        Some(vec![0x5a; request.len as usize])
+        if request.transfer_id != self.snapshot.transfer_id()
+            || request.metadata != &self.snapshot.metadata
+            || request.total_payload_len != self.snapshot.application_payload_len
+            || request.application_payload_crc32 != self.snapshot.application_payload_crc32
+            || request.offset.checked_add(u64::from(request.len))? > request.total_payload_len
+            || request.len > 256 * 1024
+        {
+            return None;
+        }
+        let mut file = self.file.lock().ok()?;
+        file.seek(SeekFrom::Start(request.offset)).ok()?;
+        let mut bytes = vec![0; request.len as usize];
+        file.read_exact(&mut bytes).ok()?;
+        Some(bytes)
     }
 }
 
@@ -56,11 +68,42 @@ fn source(path: &Path) -> (FileRaftSnapshotStore, RaftSnapshot) {
         ),
     )
     .unwrap();
-    let snapshot = RaftSnapshot::new(metadata, LENGTH, CRC32);
+    let staging_path = path.with_extension("staging");
+    let staging = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging_path)
+        .unwrap();
+    let mut writer = SnapshotPayloadWriter::new(
+        staging,
+        metadata,
+        LogIndex(42),
+        SnapshotWriteOptions::new(LENGTH).with_chunk_bytes(CHUNK),
+        SnapshotCancellation::new(),
+    )
+    .unwrap();
+    let encoded = [0x5a; 113];
+    let mut remaining = LENGTH;
+    while remaining != 0 {
+        let count = usize::try_from(remaining.min(encoded.len() as u64)).unwrap();
+        writer.write_all(&encoded[..count]).unwrap();
+        remaining -= count as u64;
+    }
+    let (staging, snapshot) = writer.finish().unwrap();
+    assert_eq!(snapshot.application_payload_len, LENGTH);
+    assert_eq!(snapshot.application_payload_crc32, CRC32);
+    staging.sync_all().unwrap(); // Explicit caller obligation, not writer.finish.
+    drop(staging);
+    let source = StagedFile {
+        snapshot: snapshot.clone(),
+        file: Mutex::new(File::open(&staging_path).unwrap()),
+    };
     let mut store = FileRaftSnapshotStore::open(path).unwrap();
     store
-        .write_snapshot_from_source(&snapshot, &Pattern(snapshot.clone()))
+        .write_snapshot_from_source(&snapshot, &source)
         .unwrap();
+    drop(source);
+    fs::remove_file(staging_path).unwrap();
     drop(store);
     let reopened = FileRaftSnapshotStore::open(path).unwrap();
     assert_eq!(reopened.current_snapshot(), Some(snapshot.clone()));

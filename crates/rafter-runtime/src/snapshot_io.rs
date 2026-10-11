@@ -1,4 +1,10 @@
-//! Bounded payload reads for application-owned snapshot installation.
+//! Bounded payload streams for application-owned snapshot creation and installation.
+//!
+//! Encode into private staging through [`crate::snapshot_io::SnapshotPayloadWriter`].
+//! Its `finish` flushes the sink and returns the length/checksum descriptor;
+//! the application makes those bytes available as an immutable chunk source to
+//! the existing storage or compaction API. No payload buffer is retained by the
+//! writer. The caller owns staging cleanup, schema validation, and publication.
 //!
 //! Decode into temporary application state through [`crate::snapshot_io::SnapshotPayloadReader`],
 //! then call [`crate::snapshot_io::SnapshotPayloadReader::finish`] before publishing it. Successful
@@ -43,7 +49,12 @@
 mod contract;
 mod error;
 mod reader;
+mod write_error;
+mod writer;
 
+pub use contract::SnapshotWriteOptions;
 pub use contract::{SnapshotCancellation, SnapshotReadOptions, VerifiedSnapshotPayload};
 pub use error::SnapshotReadError;
 pub use reader::SnapshotPayloadReader;
+pub use write_error::SnapshotWriteError;
+pub use writer::SnapshotPayloadWriter;

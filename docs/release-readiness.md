@@ -274,16 +274,28 @@ The application must decode into temporary state, validate its schema, and
 atomically publish state plus floor after verification. This helper does not
 own a database, destination allocation, or filesystem publication policy.
 
-An independent archive consumer reads 2 MiB + 17 bytes from a reopened file
-snapshot store through 4 KiB source chunks and a 113-byte application buffer.
+The companion `SnapshotPayloadWriter` computes length and CRC32 while an encoder
+writes into private staging, retaining no payload buffer. It requires an exact
+application floor, enforces total and per-sink-call budgets, handles partial
+writes and retryable interruptions, and refuses completion after cancellation,
+terminal sink errors, invalid counts, zero progress, or a caught sink panic.
+Completion flushes the sink and returns its descriptor; fsync, immutable source
+construction, and publication remain the embedding's responsibility. Encoder
+errors must propagate before completion, since byte accounting cannot validate
+an application format.
+
+An independent archive consumer creates 2 MiB + 17 bytes through the writer
+with a 113-byte encoder buffer, explicitly syncs its staging file, publishes via
+the existing file-store chunk-source API, and reopens the descriptor. It reads
+the payload through 4 KiB source chunks and a 113-byte application buffer.
 Cancellation and checksum failure preserve the old installed file/floor; a
 fresh attempt publishes and reopens the complete new state/floor. This is normal
 reopen evidence, not a power-loss sweep. Source/reader failure tests also cover
 early completion, wrong lengths, oversized allocations, empty payloads, and
 regressing or excessive descriptors before I/O.
 
-Still required before freezing this API: streaming creation, an application
-schema integration with bounded decoding, and interrupted/crash-safe publication
+Still required before freezing this API: an application schema integration with
+bounded encoding/decoding and interrupted/crash-safe publication
 and restart qualification beyond the opaque-file fixture. Complete those paths
 without materializing the whole application state in a snapshot buffer.
 

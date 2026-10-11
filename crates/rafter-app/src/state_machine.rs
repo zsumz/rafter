@@ -206,6 +206,10 @@ pub trait ReplicatedStateMachine {
     /// one. `at` must be the state machine's own applied index; compacting above it
     /// raises the group's committed application index past a value the state
     /// machine will ever report.
+    /// Large snapshots can instead use caller-driven streamed creation with
+    /// the runtime's `SnapshotPayloadWriter` and an immutable
+    /// chunk source for the runtime's streamed compaction API, without building
+    /// this inline payload. The same exact applied-floor obligation applies.
     ///
     /// # Errors
     ///
@@ -232,7 +236,7 @@ pub trait ReplicatedStateMachine {
     /// [`ApplicationSnapshot::raft_snapshot`] is present, the snapshot payload
     /// may be managed by the runtime snapshot store instead of carried inline
     /// in [`ApplicationSnapshot::payload`].
-    /// `rafter_runtime::snapshot_io::SnapshotPayloadReader` reads that descriptor from
+    /// The runtime's `SnapshotPayloadReader` reads that descriptor from
     /// an existing chunk source with explicit payload/chunk limits. Decode into
     /// temporary state, finish checksum verification, then atomically publish
     /// the application state and applied floor; the reader does not publish them.

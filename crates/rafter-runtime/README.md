@@ -161,6 +161,22 @@ through installation. CRC32 detects corruption; it does not authenticate peers.
 The source must bound its own allocations, and a caller using `read_to_end`
 still allocates the complete payload.
 
-The existing inline `ApplicationSnapshot` remains available. Streaming creation
-and general application publication/recovery qualification are separate work;
-this reader owns no filesystem, database transaction, or background worker.
+The companion `SnapshotPayloadWriter` implements `std::io::Write` over private
+staging storage. Supply metadata naming exactly the quiescent application's
+durable floor and explicit `SnapshotWriteOptions` for total bytes and per-call
+chunk size. The writer retains no payload buffer; encoder and sink allocations
+remain caller-owned. It handles partial writes and retryable interruptions,
+computes CRC32 and length over accepted bytes, and fences other errors, no-progress
+writes, invalid sink counts, cancellation, or caught sink panics. `finish()`
+flushes the sink and returns it with the descriptor. It does not fsync, validate
+the application's encoding, or publish a snapshot. Propagate encoder errors
+before finishing, discard failed staging, and expose only completed immutable
+payload bytes as the chunk source to the existing storage/compaction APIs.
+
+The external file-backed consumer now encodes 2 MiB + 17 bytes through the writer
+with a 113-byte encoder buffer, explicitly syncs its staging file, and publishes
+through `FileRaftSnapshotStore::write_snapshot_from_source`. It then exercises
+verified reads, refused installation, retry, and reopen through small buffers.
+The existing inline `ApplicationSnapshot` remains available. General application
+schema and crash/publication qualification remain open; these adapters own no
+filesystem, database transaction, or background worker.

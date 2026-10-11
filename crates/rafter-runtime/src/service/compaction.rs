@@ -31,6 +31,9 @@ where
     /// store determines its streaming memory behavior; the file-backed store uses
     /// bounded chunks, while an in-memory store retains the complete payload.
     /// The application must bound its own source creation and chunk allocations.
+    /// [`crate::snapshot_io::SnapshotPayloadWriter`] can encode private staging
+    /// with bounded sink calls and return its length/checksum descriptor. The
+    /// callback must expose those immutable bytes as its returned chunk source.
     /// Retired entries are returned for the existing bounded `LogRetirementWorker`.
     /// Successful publication restarts the application worker at the same floor.
     ///

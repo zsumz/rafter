@@ -34,10 +34,38 @@ impl SnapshotReadOptions {
     }
 }
 
+/// Limits for encoding a snapshot into an application-owned staging sink.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct SnapshotWriteOptions {
+    pub(super) max_payload_bytes: u64,
+    pub(super) chunk_bytes: u32,
+}
+
+impl SnapshotWriteOptions {
+    /// Allows at most `max_payload_bytes`, offering at most 64 KiB per sink call.
+    /// Zero total bytes permits only an empty payload.
+    #[must_use]
+    pub const fn new(max_payload_bytes: u64) -> Self {
+        Self {
+            max_payload_bytes,
+            chunk_bytes: 64 * 1024,
+        }
+    }
+
+    /// Sets the maximum bytes offered to one underlying `Write::write` call.
+    /// Zero is refused when the writer is constructed.
+    #[must_use]
+    pub const fn with_chunk_bytes(mut self, chunk_bytes: u32) -> Self {
+        self.chunk_bytes = chunk_bytes;
+        self
+    }
+}
+
 /// A cloneable, monotonic cancellation signal for snapshot payload work.
 ///
-/// Cancellation is checked before and after source calls and before accepting
-/// completion. It cannot interrupt a blocking source call or undo publication
+/// Cancellation is checked before and after source/sink calls and before accepting
+/// completion. It cannot interrupt a blocking call or undo publication
 /// that the application has already started. A verified receipt is not revoked
 /// by a later cancellation; the application owns its publication decision.
 #[derive(Clone, Debug, Default)]
