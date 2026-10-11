@@ -151,6 +151,14 @@ The failed PR-tier logs confirm runner drift: the TLA producer used Ubuntu image
 evidence rows belong to the rejected TLA layer. Runtime qualification remains
 open until the candidate's producer and aggregate receipts authenticate together.
 
+The completed [October 11 aggregate at `5b1d4e3f`](https://github.com/zsumz/rafter/actions/runs/38103501529/job/114399595770)
+narrows that blocker: it authenticates the tests, simulator, and Maelstrom
+evidence and reports 36/44 green invariants. All thirteen remaining evidence
+issues belong to TLA: two `invariant_violation` rows and eleven
+`coverage_not_reached` rows from the same counterexample below. The aggregate
+report contains no non-TLA issues. This establishes the pinned runtime path for
+that checkpoint; it does not qualify the corrected model or a later candidate.
+
 **Qualification blocker and local correction (October 11):** the retained
 [nightly run at `5b1d4e3f`](https://github.com/zsumz/rafter/actions/runs/38103501529)
 reports `CommittedEntriesHaveQuorum` violations for CM-02.a and CM-02.b; the
@@ -379,6 +387,18 @@ and worker credits; it does not bound the kernel log or an entire recovery
 output batch. Keep application schemas, authentication policy, and scheduling
 selection in the embedding. Do not force pending pipeline states into the
 synchronous `PersistedRaftRuntime` trait.
+
+The next implementation should be an opt-in durable adapter in `rafter-service`
+that owns `DurableService` for the entire lifetime of its client requests. Keep
+the default service dependency boundary unchanged; review the optional runtime
+edge through the existing architecture policy gate. Command encoding must stay
+independent of the busy application worker so admission does not serialize on
+application I/O. The adapter owns request IDs, read cancellation, freshness-floor
+translation, and terminal outcomes. Its credits cover queued work, in-flight
+work, completed results awaiting collection, and canceled work still held by the
+owner. Shutdown closes admission, drains or releases the owned backend, then
+resolves remaining waiters. Validate this through the existing TLS consumer and
+exact-package lane before treating the composition gap as closed.
 
 Use PR #13's counter as an independent adopter, after updating it. Test actual
 TLS processes with restart, full queues, stalled fsync, leadership changes,
