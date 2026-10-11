@@ -151,17 +151,32 @@ The failed PR-tier logs confirm runner drift: the TLA producer used Ubuntu image
 evidence rows belong to the rejected TLA layer. Runtime qualification remains
 open until the candidate's producer and aggregate receipts authenticate together.
 
-**New blocking evidence (October 11):** the retained
+**Qualification blocker and local correction (October 11):** the retained
 [nightly run at `5b1d4e3f`](https://github.com/zsumz/rafter/actions/runs/38103501529)
 reports `CommittedEntriesHaveQuorum` violations for CM-02.a and CM-02.b; the
 other eleven TLA rows are incomplete because checking stopped at that
 counterexample. The primary TLC process exited 12, without a timeout. Its
 21-state trace has leader `n1` enter joint membership, append a final configuration
 removing itself at index 2, append a command at index 3, and advance directly to
-`Commit(n1,3)`. The captured `Raft.tla` hash matches the current file exactly.
-Whether this is a model/certificate defect or a corresponding Rust defect remains
-unresolved. Minimize and replay the trace against both before claiming release
-qualification; successful package or process tests do not discharge this finding.
+`Commit(n1,3)`. The captured `Raft.tla` matches the model before this correction.
+Two-state replays reproduce the failure with a command after removal and with
+commands on both sides. The per-entry certificate incorrectly required every
+newly committed entry to be the final configuration, even though `Commit`
+advances the whole prefix atomically. The corrected certificate binds every
+entry to that advancement, its current-term final configuration, and its actual
+prior joint membership. It retains the new-membership quorum requirement and
+rejects reuse of the removed leader's authority in a later advancement.
+
+Both corresponding three-node Rust regressions pass without changing production
+code: actual follower responses commit the batch only after both new voters
+acknowledge it; the leader steps down and rejects subsequent proposals. All 34
+TLA regression/mutation controls pass, including nonvacuous removal-only,
+suffix, and prefix-plus-suffix cases. Independent mutations restoring the old
+certificate or removing the new boundary, prior-membership, or term checks fail
+as expected. See [the certificate explanation](model-checking.md#self-removal-commit-certificates).
+The failed nightly remains retained evidence. A fresh source-bound producer and
+aggregate run must qualify the corrected model before a release claim; these
+focused checks do not replace the full tier.
 
 **Acceptance:** all required jobs pass in one attempt at the candidate SHA;
 all 44 verdicts have current evidence; the process failure test repeatedly

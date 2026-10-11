@@ -538,6 +538,8 @@ CommitCertificatesFor(
     node, oldFloor, newFloor, context, configIndex) ==
   {[index |-> index,
     entry |-> LogicalEntry(node, index),
+    commitFrom |-> oldFloor,
+    commitThrough |-> newFloor,
     leader |-> node,
     leaderRole |-> context.leaderRole,
     leaderTerm |-> context.leaderTerm,
@@ -546,6 +548,13 @@ CommitCertificatesFor(
     derivedMembership |-> ConfigurationMembershipAt(
       log, snapshotIndex, node, configIndex),
     configIndex |-> configIndex,
+    configurationEntries |->
+      IF configIndex \in 1..Len(log[node])
+      THEN {LogicalEntry(node, configIndex)} ELSE {},
+    priorMembership |->
+      IF configIndex \in 1..Len(log[node])
+      THEN PriorConfigurationFor(node, configIndex).config
+      ELSE StableMembership(Nodes),
     replicas |-> MatchingReplicas(node, index)] :
       index \in (oldFloor + 1)..newFloor}
 
@@ -602,15 +611,24 @@ MembershipQuorum(config, ns) ==
 
 CommitWitnessOK(witness) ==
   /\ witness.leaderRole = Leader
+  /\ witness.index \in (witness.commitFrom + 1)..witness.commitThrough
   /\ witness.entry.term <= witness.leaderTerm
   /\ witness.membership = witness.derivedMembership
   /\ MembershipQuorum(witness.membership, witness.replicas)
   /\ IF witness.leader \in ActiveVoters(witness.membership)
      THEN witness.authorityMembership = witness.membership
-     ELSE /\ witness.index = witness.configIndex
-          /\ witness.entry.kind = ConfigurationEntryKind
-          /\ witness.entry.input = witness.membership
+     \* Removal is one atomic commit-index advancement, followed by step-down.
+     \* Its frozen authority covers the entire newly committed prefix, not
+     \* only the configuration entry. It cannot authorize a later advancement.
+     ELSE /\ witness.configIndex \in
+               (witness.commitFrom + 1)..witness.commitThrough
+          /\ witness.membership.phase = StableConfig
+          /\ \E configuration \in witness.configurationEntries :
+               /\ configuration.kind = ConfigurationEntryKind
+               /\ configuration.term = witness.leaderTerm
+               /\ configuration.input = witness.membership
           /\ witness.authorityMembership.phase = JointConfig
+          /\ witness.authorityMembership = witness.priorMembership
           /\ witness.authorityMembership.new = witness.membership.old
           /\ witness.leader \in ActiveVoters(witness.authorityMembership)
 

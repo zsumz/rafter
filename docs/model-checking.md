@@ -845,6 +845,59 @@ conjunct removed, `TypeOK`, `ElectionSafety`, `LogMatching`,
 spec. So the reading a green tier supports is narrow but real: the wired tiers
 do not check this property, and the mutation suite does.
 
+### Self-removal commit certificates
+
+The [October 11 nightly at `5b1d4e3f`](https://github.com/zsumz/rafter/actions/runs/38103501529)
+found a `CommittedEntriesHaveQuorum` counterexample when a leader committed its
+final configuration and a following command in one advancement. TLC exited 12
+after 21 states in the trace, without timing out. The old certificate accepted a
+self-removing leader only for the configuration entry itself; it incorrectly
+rejected other entries in the same newly committed prefix.
+
+`Commit` freezes authority before advancing the commit index and stepping down.
+The Rust kernel does the same: it selects the quorum-replicated candidate using
+effective membership, advances the index, then emits committed entries and steps
+down when it emits the removal. A command admitted while removal is pending can
+therefore share that final advancement. The two Rust regressions in
+`crates/rafter/src/node/tests/membership/self_removal_batch.rs` use actual follower
+responses, require both new voters, check commands before and after the removal,
+and verify that subsequent proposals are rejected.
+
+`CommitCertificatesFor` now records the advancement's old and new floors, the
+actual configuration entry, and its prior membership. `CommitWitnessOK` permits
+the frozen joint authority across that entire advancement only when the final
+configuration is inside it, belongs to the leader's current term, and names the
+effective stable membership. Every entry still needs a quorum in that membership.
+Changing the old floor to the removal boundary must invalidate the certificate:
+the authority cannot be reused for a later advancement. Neither protocol actions
+nor the Rust kernel's commit behavior were changed by this correction.
+
+The focused TLA fixture checks removal alone, a following command, and commands
+on both sides; its runner requires at least two states and depth two, so an empty
+initial-state set cannot pass. `SelfRemovalCertificateBounds` independently
+rejects a missing quorum, an ordinary command in place of the configuration, a
+wrong configuration term, an unrelated prior joint membership, and authority
+reused after the boundary. The existing step-down and frozen-authority mutations
+remain active. All 34 TLC regression/mutation tests pass locally. Separate
+mutations restoring the old witness rule or removing the new advancement bound,
+prior-membership equality, or configuration-term check fail their expected
+invariants, while the restored fixture exhausts its two-state frontier.
+The complete bounded membership obligation also exhausts its frontier with all
+nine invariants passing: 1,054,317 generated states, 162,938 distinct states, and
+depth 37. Its relation excludes client commands; the focused cases above cover
+the command/removal batches that exposed this defect.
+
+Adding the Rust regression module changes the kernel test source graph. The
+reviewed detector-replay fingerprint is refreshed with the same 77 fixtures,
+79 evidence bindings, and two targets in all three profiles. No replay admission
+rules, fixture counts, or resource bounds are relaxed.
+
+This correction changes model identity. Retain the failed nightly receipt and
+qualify a fresh source-bound run; an earlier green tier or checkpoint cannot
+authenticate the corrected model. Nightly and weekly now restore only the
+current model/profile cache prefix; their one-time v1 migration fallbacks were
+removed because those checkpoints cannot qualify the corrected model.
+
 ## State Counts
 
 Each exhaustive check reports two distinct cardinalities:

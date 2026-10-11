@@ -390,6 +390,7 @@ CONSTANTS
 INVARIANT TypeOK
 INVARIANT SelfRemovalCommitInvariant
 INVARIANT CommittedEntriesHaveQuorum
+INVARIANT SelfRemovalCertificateBounds
 
 PROPERTY SelfRemovalCommitCompletes
 

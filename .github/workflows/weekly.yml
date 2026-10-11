@@ -157,10 +157,9 @@ jobs:
         with:
           path: target/rafter-invariants/tla-checkpoint/weekly
           key: tla-weekly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          # The final key is an exact one-time bridge from the last compatible v1 checkpoint.
+          # Restore only checkpoints bound to the current model and profile.
           restore-keys: |
             tla-weekly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-
-            tla-weekly-checkpoint-v1-29a3f0314bb9f76fd5b185b22bc614eeb0823ab58c4bae4ff7fe8e60eade1d79-31246803259-1
       # TLC writes its successor checkpoint beside the recovered one before
       # retiring it, so peak disk is the restored bytes plus a full successor
       # plus that successor's growth. A restore that already fills the runner
