@@ -12,6 +12,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod checkpoint_reader;
+use checkpoint_reader::read_tracked_into;
+
 const MANIFEST_NAME: &str = "raft-wal-current";
 const MANIFEST_MAGIC: &[u8; 8] = b"RFWM\0\0\0\x01";
 const MANIFEST_BYTES: usize = 36;
@@ -266,18 +269,6 @@ fn read_tracked<const N: usize>(
     file.read_exact(&mut bytes)?;
     crc.update(&bytes);
     Ok(bytes)
-}
-
-fn read_tracked_into(
-    file: &mut impl Read,
-    crc: &mut RunningCrc32,
-    size: usize,
-    bytes: &mut Vec<u8>,
-) -> io::Result<()> {
-    bytes.resize(size, 0);
-    file.read_exact(bytes)?;
-    crc.update(bytes);
-    Ok(())
 }
 
 fn read_u64(bytes: &[u8]) -> io::Result<u64> {

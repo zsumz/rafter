@@ -1129,6 +1129,20 @@ while requiring the nested-entry error and unchanged WAL contents. This measures
 allocation requests rather than live heap or RSS; unrelated benchmark comparator
 features stay disabled.
 
+The selected WAL checkpoint reader also grows encoded-entry buffers from bytes
+actually delivered by its bounded reader. A 123-byte truncated checkpoint
+previously requested a 64 MiB allocation from its forged entry length before
+returning `UnexpectedEof`. The same probe now makes no allocation larger than
+the existing 256 KiB read buffer. Geometric growth is capped at the complete
+entry size; short reads and interruptions remain supported, unrelated I/O errors
+propagate, and the running checksum advances only after a complete entry.
+Five reader regressions cover these boundaries and buffer reuse. The existing
+allocation gate additionally publishes and reopens a real checkpoint, tests six
+truncation cases with 8/64 MiB claims, preserves the selected checkpoint, manifest
+and segment bytes, and reopens the original state after restoration. Its bounds
+follow actual supplied bytes plus fixed recovery buffers. Valid entry decoding,
+the 64 MiB size limit and on-disk formats are unchanged.
+
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and
 TLS enabled. Publish throughput alongside p99/p99.9 latency, retained memory,

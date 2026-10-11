@@ -1,4 +1,4 @@
-//! Allocation-counted rejection of malformed shared-WAL entry counts.
+//! Allocation-counted rejection of malformed WAL counts and checkpoint lengths.
 //!
 //! Counts stay modest so this gate also runs safely against the prior eager
 //! reservation. Measurements cover Rust allocation requests during open, not
@@ -16,6 +16,9 @@ use rafter_storage::{
     crc32, decode_raft_log_entry, durable_batch::WalRaftNodeStores, encode_raft_log_entry,
     PersistedRaftLogEntry,
 };
+
+#[path = "check-wal-recovery-memory/checkpoint.rs"]
+mod checkpoint;
 
 struct CountingAllocator;
 static COUNTING: AtomicBool = AtomicBool::new(false);
@@ -79,6 +82,7 @@ fn main() {
             check(count, valid_prefix);
         }
     }
+    checkpoint::check();
 }
 
 fn check(count: u32, valid_prefix: u32) {
