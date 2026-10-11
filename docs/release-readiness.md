@@ -637,6 +637,24 @@ The external TLS ledger scenario exercises count and byte refusal through public
 senders, cancellation/re-admission, then its usual durable writes, reads,
 compaction, transfer, shutdown, and reopen sequence.
 
+Two additional managed-write regressions partition a leader after two local
+appends, elect the connected majority, and commit a different command at one
+of the same log indices. They heal through ordinary replication and through
+actual snapshot installation from the receiver's store. Both original callers
+retain their local/application identities and receive `UnknownOutcome`; neither
+can receive the replacement command's success. Uncollected terminal results
+retain admission credits, collection releases them, and the former leader can
+query the replacement state and admit a fresh request. Real persistence and
+application workers drive genuine generated peer messages. Both cases reject a
+mutation that omits managed proposal-drop handling. This adds qualification of
+existing behavior, with no library change; the exact durable-service inventory
+is now 395 passing tests. Strict durable-service Clippy and source/CI guards
+pass, as do 128 replacement cases across 64 repetitions with four concurrent
+runners. Architecture analysis passes with no new grants or debt; its candidate
+inventory and qualification-input refresh still requires maintainer review.
+The in-memory partition fixture does not qualify physical disk stalls or
+snapshot publication under power loss.
+
 The library checkpoint `9893ac18` passes 327 default service tests and 393 with
 `durable`, plus the real counter pressure sequence, default-workspace and
 feature Clippy, strict docs, and 45 source/API/CI guards. Its architecture change
