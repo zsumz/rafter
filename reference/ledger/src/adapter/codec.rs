@@ -63,7 +63,7 @@ pub enum LedgerCodecError {
     TruncatedFrame { required: usize, available: usize },
     /// The frame carried bytes after its last declared field.
     TrailingBytes { remaining: usize },
-    /// A collection length does not fit this platform's index type.
+    /// A collection length or its minimum byte extent is not addressable here.
     LengthOutOfRange { length: u64 },
 }
 
@@ -237,6 +237,7 @@ pub fn encode_snapshot(
 ///
 /// Returns a codec error when the frame is truncated, carries trailing bytes,
 /// names an unknown kind, or violates a nonzero field of the contract.
+/// Collection counts must fit the remaining frame before they may reserve memory.
 pub fn decode_snapshot(payload: &[u8]) -> Result<(u64, LedgerSnapshot), LedgerCodecError> {
     let mut cursor = Cursor::new(payload);
     let version = cursor.take_u8()?;
@@ -248,12 +249,16 @@ pub fn decode_snapshot(payload: &[u8]) -> Result<(u64, LedgerSnapshot), LedgerCo
     let successful_deposits = cursor.take_u128()?;
 
     let account_count = cursor.take_len()?;
+    // Each account has two u64 fields; the session-count field must still fit.
+    cursor.require_records(account_count, 16, 4)?;
     let mut accounts = Vec::with_capacity(account_count);
     for _ in 0..account_count {
         accounts.push((AccountId::new(cursor.take_u64()?), cursor.take_u64()?));
     }
 
     let session_count = cursor.take_len()?;
+    // Even an uncached session needs a u32 id, u64 epoch, and one marker byte.
+    cursor.require_records(session_count, 13, 0)?;
     let mut sessions = Vec::with_capacity(session_count);
     for _ in 0..session_count {
         sessions.push(SessionView {
@@ -396,6 +401,27 @@ impl<'a> Cursor<'a> {
         usize::try_from(length).map_err(|_| LedgerCodecError::LengthOutOfRange {
             length: u64::from(length),
         })
+    }
+
+    fn require_records(
+        &self,
+        count: usize,
+        minimum_record_bytes: usize,
+        following_bytes: usize,
+    ) -> Result<(), LedgerCodecError> {
+        let required = count
+            .checked_mul(minimum_record_bytes)
+            .and_then(|bytes| bytes.checked_add(following_bytes))
+            .ok_or(LedgerCodecError::LengthOutOfRange {
+                length: u64::try_from(count).unwrap_or(u64::MAX),
+            })?;
+        if required > self.bytes.len() {
+            return Err(LedgerCodecError::TruncatedFrame {
+                required,
+                available: self.bytes.len(),
+            });
+        }
+        Ok(())
     }
 
     fn take_client(&mut self) -> Result<ClientId, LedgerCodecError> {

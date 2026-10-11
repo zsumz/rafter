@@ -177,6 +177,16 @@ model's validating restore path. An install whose payload index disagrees with
 the declared index is refused, as is an install that would move the applied
 index backwards.
 
+Collection counts are untrusted. Before reserving an account or session vector,
+the decoder verifies that the remaining payload can contain every declared
+record: at least 16 bytes per account plus the following four-byte session
+count, and at least 13 bytes per session. Checked arithmetic refuses a minimum
+extent that is not addressable. This prevents a tiny malformed frame from
+driving a large reservation; it does not replace configured model bounds or
+make the current whole-payload decoder a streaming implementation. The same
+decoder protects inline installation, promoted snapshot files, and journal
+images. A refusal publishes neither application state nor a new applied floor.
+
 The durable adapter's application transaction must atomically persist:
 
 ```text

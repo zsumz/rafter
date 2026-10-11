@@ -311,6 +311,22 @@ bounded encoding/decoding and interrupted/crash-safe publication
 and restart qualification beyond the opaque-file fixture. Complete those paths
 without materializing the whole application state in a snapshot buffer.
 
+One prerequisite is now fixed in the ledger consumer's existing schema decoder:
+untrusted account/session counts previously reached `Vec::with_capacity` before
+the decoder checked whether the payload could contain those records. Checked
+minimum-byte admission now runs before both reservations, including space for
+the field following the account records. Regressions cover impossible and
+maximum counts, every truncated prefix of a valid frame, unchanged v1 bytes,
+and refused promoted files preserving the journal and applied floor after
+reopen. Removing either admission check fails the modest-count regression.
+This bounds allocation amplification from malformed counts; full application
+streaming and publication crash qualification remain open.
+Validation passes 487 source-consumer tests and 492 archive/MSRV tests, with
+57 existing ignored profiles in each lane. All seven exact-package phases,
+including storage, wire, and mixed-version TLS compatibility, pass on Rust
+1.88.0. Strict consumer lint/documentation checks and zrail also pass; this
+reference-only slice requires no architecture-lock changes.
+
 ### 5. Qualify operational bounds and performance together
 
 **Before a production-stability claim.** Expose the existing progress and credit
