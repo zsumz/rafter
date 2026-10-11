@@ -41,12 +41,6 @@ runs:
         EOF
         # The dated archive remains signature-checked. Its historical metadata
         # must not expire; neither host sources nor host apt lists participate.
-        apt_options=(
-          -o "Dir::Etc::sourcelist=$state/ubuntu.sources"
-          -o "Dir::Etc::sourceparts=-"
-          -o "Dir::State::lists=$state/lists"
-          -o Acquire::Retries=3
-        )
         packages=(
           bash=5.2.21-2ubuntu4
           perl=5.38.2-3.2ubuntu0.6
@@ -64,14 +58,10 @@ runs:
             gnuplot-data=6.0.0+dfsg1-1ubuntu3
           )
         fi
-        sudo apt-get "${apt_options[@]}" update
-        sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" \
-          install -y --no-install-recommends --no-remove --allow-downgrades \
-          --reinstall "${packages[@]}"
-        for package in "${packages[@]}"; do
-          actual="$(dpkg-query -W -f='${Version}' "${package%%=*}")"
-          test "$actual" = "${package#*=}"
-        done
+        # Bound all attempts and installation, including child processes. A
+        # cancelled/failed setup must never reach evidence production.
+        timeout --signal=TERM --kill-after=10s 8m \
+          bash "$GITHUB_ACTION_PATH/install-packages.sh" "$state" "${packages[@]}"
         sha256sum /usr/bin/bash /usr/bin/perl /usr/bin/ps /usr/bin/time
         if [[ "$ANALYSIS_TOOLS" = true ]]; then
           sha256sum "$(readlink -f "$(command -v dot)")" \

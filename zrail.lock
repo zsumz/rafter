@@ -2,7 +2,7 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "8c1dfca7c66d593e4af7f4fe63372f806a4014bb6a87f18bd06fa415c0e75e87"
+contract_sha256 = "2facaaefc0a2a4282646f93e63956b00a4753d48f3452fc01adecbbda396dce1"
 
 [analysis]
 inventory_sha256 = "30254fefbc8f537a5ca8e9964fb1b52a1e9198182d4016ffb7a5d14e68784a5c"
@@ -28,7 +28,7 @@ sha256 = "9259ae9e9f531ebd96eb0f449385e3dd80c795aef987588b244eb06b2bb5bb0e"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "0976ded4d83e84568611f2c0ddccaae503eb3683716e46f51882589469cba49a"
+sha256 = "9004fe5223a6a791cd298031e4725fc22166b0747c10004e443712f90857bde8"
 
 [[package]]
 name = "rafter"
@@ -1217,7 +1217,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "f823f836fbc0bf35bc1d2e629593b65d991bdc2e86990d9b24fb2ed3878a9684"
+sha256 = "16c6b110b49fd7fa119a41e1603874e5007fb4c8b21af138803facbefb1c27a8"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1225,7 +1225,11 @@ sha256 = "d0bd42b67da87cd2aafabb4df2c3dc9a26bad783968911c44dc73b3aa7931559"
 
 [[gate.input]]
 path = ".github/actions/setup-invariant-runtime/action.yml"
-sha256 = "7208815d77bf956c8937750225138b90610ae810642d2a04a599516e1314399b"
+sha256 = "e816816d622c3bab74e3dbc1115530ac208a7264aa819795556c66d9819b676d"
+
+[[gate.input]]
+path = ".github/actions/setup-invariant-runtime/install-packages.sh"
+sha256 = "d92a9d14de5780c1cb4771a55f77a765f46a4fe14f8c2ab7191ddadde703a2a2"
 
 [[gate.input]]
 path = ".github/actions/setup-rust/action.yml"
@@ -1236,8 +1240,16 @@ path = "scripts/invariants-pr-preflight"
 sha256 = "a5f1d1036378a673269addb26223ee593eb340bd11a36e0aff4a177cabc996c5"
 
 [[gate.input]]
+path = "scripts/tests/invariant_runtime_fixture.py"
+sha256 = "4cd9ecb4c6de558fa3e0e169d971cd02ad9cbbdb53191b5403e4995affc68956"
+
+[[gate.input]]
 path = "scripts/tests/review_policy_test.py"
 sha256 = "e82fc776949cd198e04885c066a33565fb1182f0e20b2aeac133b88175ea28e3"
+
+[[gate.input]]
+path = "scripts/tests/test_invariant_runtime_setup.py"
+sha256 = "30e199304ad5cddd4f832d8ae4467d2cad6325653cbe9532dcbab95eebf31b72"
 
 [[gate.input]]
 path = "scripts/zrail-reconcile"
@@ -1249,7 +1261,7 @@ sha256 = "d9cdce68c892ba18e227f77106f64df324df02ace62c727d02de89a6453a3561"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "0b9b701ae0829d4e8041ef3a8c19275d9cc05cf95c90b258212f15333dfe42ec"
+sha256 = "d9a36f53e0fe84ee231409c20cd7277faeff698221b0ce45a8d470d9108fc3c7"
 
 [[gate]]
 name = "rustdoc"

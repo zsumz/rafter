@@ -93,6 +93,11 @@ description = "Exercise fail-closed macro reconciliation and complete-profile bu
 run = ["python3", "scripts/tests/review_policy_test.py"]
 tools = ["python3"]
 
+[tasks.runtime-setup-tests]
+description = "Exercise bounded runtime retrieval, cached installation, and fail-closed setup."
+run = ["python3", "-m", "unittest", "scripts/tests/test_invariant_runtime_setup.py"]
+tools = ["python3"]
+
 [tasks.lint]
 description = "Validate formatting, lints, documentation, and proof references."
 needs = [
@@ -108,6 +113,7 @@ needs = [
   "tla-telemetry",
   "durable-bench-tests",
   "policy-tools",
+  "runtime-setup-tests",
 ]
 
 [tasks.durable-bench-tests]

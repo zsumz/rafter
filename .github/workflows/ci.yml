@@ -79,6 +79,8 @@ jobs:
         # can check it, so it is checked here against stubbed process and
         # filesystem tools: no TLC, no JVM, seconds instead of hours.
         run: scripts/tests/tla_continuation_telemetry_test.sh
+      - name: invariant runtime retrieval and failure checks
+        run: python3 -m unittest scripts/tests/test_invariant_runtime_setup.py
       - name: out-of-workspace manifests
         # `cargo fmt --all` and `cargo clippy --workspace` above stop at the
         # workspace members. fuzz/ and bench-compare/ keep their own manifests

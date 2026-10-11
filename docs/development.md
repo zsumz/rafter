@@ -56,6 +56,15 @@ after tool installation. It selects exact runtime packages from a dated, signed
 [Ubuntu archive snapshot](https://snapshot.ubuntu.com/), using isolated APT lists
 and leaving the host's configured repositories unchanged. This keeps producer
 and aggregate executable identities equal across hosted runner image updates.
+Metadata and package retrieval each get four attempts with 10/20/40-second
+backoffs, under one eight-minute deadline. APT requires every index update to
+succeed and retains downloaded archives in the action's private directory.
+Installation runs once with downloads disabled, followed by exact installed
+version checks; unsuccessful retrieval or installation stops evidence production.
+The helper's execution, cancellation, and refusal paths are exercised by
+`python3 -m unittest scripts/tests/test_invariant_runtime_setup.py`, in both
+CI lint and `zcheck run lint`. These use fake package tools locally; real APT
+signature/hash verification and executable identity remain hosted checks.
 When refreshing the snapshot, review all package versions together, update the
 candidate architecture lock, and rerun every producer and aggregate in the same
 workflow attempt. Preserve exact receipt authentication; a version label alone

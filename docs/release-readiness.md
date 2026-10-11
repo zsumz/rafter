@@ -114,6 +114,18 @@ the host kernel or every system library. A digest-pinned complete environment
 remains a broader reproducibility option. Full hosted qualification is still
 required; do not assume fixing Perl makes the complete aggregate green.
 
+CI at `0ad8dc2f` exposed another setup failure: four invariant jobs received
+HTTP 503 responses while retrieving the pinned snapshot packages, before their
+producers could start. The shared setup now retries metadata and package
+retrieval separately, retaining its private archive cache, with four attempts
+per phase, 10/20/40-second backoffs, and an eight-minute overall deadline.
+Installation runs once with downloads disabled and verifies every installed
+version. Signed sources, exact package pins, and executable authentication remain
+enforced. Eleven shell execution tests cover recovery, persistent failures,
+cancellation, and version refusals; four deliberate bypasses fail those tests.
+The tests use fake package tools. Real package verification and the resulting
+producer/aggregate identities still require hosted qualification.
+
 The October 4
 [nightly failure](https://github.com/zsumz/rafter/actions/runs/37197270717)
 was `a_stored_control_plane_failure_refuses_the_requests_queued_behind_it` in
