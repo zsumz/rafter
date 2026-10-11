@@ -946,6 +946,16 @@ raw reports, package counts and database identities. A clean public graph cannot
 mask a workspace advisory, checker failure or a changed audit input. Fourteen
 controls exercise those boundaries; neither graph uses advisory exclusions.
 
+The reference workspace's sole advisory warning was the unmaintained
+`rustls-pemfile` dev dependency ([RUSTSEC-2025-0134](https://rustsec.org/advisories/RUSTSEC-2025-0134.html)).
+Its frozen TLS client's certificate/key fixture loading now uses the maintained
+`PemObject` API already re-exported by rustls, removing the wrapper without a new
+dependency or changes to its wire encoder. The reference lock now audits cleanly
+with 55 packages and 40 registry dependencies. The standalone fuzz and counter
+locks also audit cleanly. Benchmark comparator dependencies remain a separate
+assessment: their lock reports protobuf and rkyv advisories, unmaintained fxhash,
+and yanked validit; these packages are outside the shipped library graph.
+
 ## Suggested sequence
 
 1. Finish hosted evidence for the repaired CI and reconcile PR #13 with the

@@ -24,7 +24,6 @@ rafter-transport-tls = "=0.0.2-alpha.1"
 
 [dev-dependencies]
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
-rustls-pemfile = "2.2.0"
 
 [lints]
 workspace = true
