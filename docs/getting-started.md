@@ -104,66 +104,57 @@ in order. Rafter uses those results to complete the corresponding requests.
 For a richer application, put ordinary rejections such as "job already finished"
 in `CommandResult`; an `apply_batch` error means the group cannot safely continue.
 
-The counter also includes an adapter for the bounded application worker in
-`src/application.rs`. It decodes committed bytes to a fixed-size entry, preserves
-the runtime-verified protocol-only prefix, and delegates durability to the same
-`apply_batch`. Its worker tests cover retained credits, durable results, and failed
-publication. The process below still uses the synchronous driver; switching its
-owner loop is a separate integration step.
+The counter uses `src/application.rs` to adapt committed bytes to the bounded
+application worker. It decodes to a fixed-size entry, preserves the runtime-verified
+protocol-only prefix, and delegates durability to the same `apply_batch`. Worker
+tests cover retained credits, durable results, and failed publication.
 
-## 3. Add durable Raft storage and connect your state machine
+## 3. Add durable storage and an application owner
 
-There are **two kinds of saved state** in this application:
-
-| State | Who saves it? |
-| --- | --- |
-| Raft's votes, command log, and snapshot records | `rafter-storage`, driven by `rafter-runtime` |
-| The counter value and which commands it includes | Your `Counter` implementation |
-
-**`rafter-storage` supplies the file stores.** Open the bundle for this server:
+There are two kinds of saved state: Rafter's votes, log, and snapshots, and your
+application's value plus applied index. Open the supplied file-store bundle before
+opening application files; the bundle also locks the Raft directory against a
+second live writer:
 
 <!-- counter-snippet: src/main.rs -->
 ```rust
-let (hard_state, log, snapshots) =
+let (hard_state_store, log_segment, snapshot_store) =
     FileRaftNodeStores::open(directory.join("raft"))?.into_parts();
 let app = Counter::open(&directory)?;
-let applied = app.applied_index()?;
 ```
 
-`FileRaftNodeStores` also locks the directory against another live writer.
-`Counter::open` is our code loading the saved application state. Each server has
-its own directory; the example's separate `init` command creates it once.
+The example enables `rafter-service`'s optional `durable` feature. Its
+`DurableClientOwner` recovers Raft from the application's saved floor, then starts
+bounded persistence and application workers. Recovery outputs stay with that
+owner until replay or snapshot installation finishes. Already saved increments
+are not applied again.
 
-**`rafter-runtime` decides when Raft's storage must be written.** Its
-`DurableRaftNode` saves required changes before releasing messages or commands
-for the next layer to act on. You do not need to implement that ordering yourself.
-Here, "runtime" refers to that durability work; your host still chooses the
-threads or async runtime that execute it.
+Our `owner::recover` helper creates it through this public constructor:
 
-On startup, recover it using the counter's saved progress:
-
-<!-- counter-snippet: src/main.rs -->
+<!-- counter-snippet: src/owner.rs -->
 ```rust
-let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
-    config, hard_state, log, snapshots, applied,
+let owner = DurableClientOwner::recover_with_reads(
+    config,
+    storage,
+    app,
+    options,
+    Entry::try_from,
+    |counter, _query| counter.value(),
+    move || wake.unpark(),
 )?;
-let (raft, outputs) = recovered.into_parts();
-let group = RaftGroup::with_applied_index(GROUP, NodeId(id), raft, app, applied);
 ```
 
-`config` contains this server's node ID, its peers, and timing settings.
-`GROUP` identifies the one shared counter; `id` identifies this replica.
+`options` bounds the work queues; `Entry::try_from` decodes one committed command.
+The query callback borrows a verified immutable counter and returns an owned
+number. `wake` unparks the owner thread after worker or client activity. The
+example reserves eight writes and eight reads independently; dropping an accepted
+write's waiter does not prematurely release its admission credit.
 
-The last line is **`rafter-app` joining the durable node to your state machine**.
-`RaftGroup` delivers committed commands to `apply_batch`, coordinates reads, and
-matches application results to proposals. It uses the same `applied` value as
-recovery so commands already saved by your application are not applied twice.
-Keep `outputs`: recovery can produce work too. We'll give it to the service
-when we connect the group in step 5.
-
-At this point, you have a durable application group. If you already have a
-network and execution loop, you can drive `RaftGroup` directly and route its
-outgoing messages yourself. The next two crates provide another way to do that.
+This is one way to compose the layers. A host wanting synchronous application
+execution can instead combine `DurableRaftNode`, `RaftGroup`, and
+`TransportRaftDriver`. The durable owner keeps application execution on its own
+worker; ordinary consensus inputs and local snapshot maintenance can still do
+synchronous storage I/O on the owner thread.
 
 ## 4. Use Rafter's TLS transport
 
@@ -204,117 +195,108 @@ Rafter checks certificates, but your deployment issues and rotates them.
 group's peer policy before starting it. These are **server-to-server connections**;
 your HTTP or other client-facing API remains a separate choice.
 
-## 5. Connect the service and submit requests
+## 5. Attach the service and submit requests
 
-**`rafter-service` connects the group to a transport and gives callers futures
-for write and read results.** It lets request handling wait for a result while
-the server continues driving Raft.
+`DurableRaftDriver` connects the unique owner to the existing TLS sender and
+exposes a cloneable `RaftHandle`. Cloning a handle does not retain the backend.
+The main thread owns the driver; the HTTP thread receives only its handle.
 
-In our example, `Driver` is a type alias for `TransportRaftDriver` using our
-counter, durable runtime, TLS sender, and peer validator. We connect them here:
+The example recovers and checks its fixed membership before publishing peer
+policy or starting traffic. `policy.rs` accepts only the original voters 1, 2,
+and 3, with no learners or joint configuration. Its saved checkpoint must agree:
+a larger retirement floor, removed voter, contradictory record, or record ahead
+of Raft causes startup to fail. An empty checkpoint is valid only beside pristine
+Raft storage. Every later configuration crossing and snapshot boundary is checked.
+This is an application restriction, not a replacement for the library's dynamic
+membership machinery.
 
-<!-- counter-snippet: src/main.rs -->
-```rust
-let (transport, validator) = peers::open(id, &directory)?;
-let driver = Driver::with_control_plane_checkpoint(
-    group,
-    outputs,
-    transport.sender(),
-    validator,
-    TransportDriverOptions::default(),
-    checkpoint::load(&directory.join("checkpoint"), id)?,
-)?;
-```
-
-This passes on the recovery outputs from step 3 and connects the sender and
-validator from step 4. The checkpoint is the service's saved membership record.
-`checkpoint::load` and `checkpoint::save` are application helpers: Rafter defines
-the record and its rules, while we choose how to keep it on disk.
-
-Save the resulting record, then start peer traffic:
+After recovery, the application saves the validated observation, then activates
+its peer policy and transport:
 
 <!-- counter-snippet: src/main.rs -->
 ```rust
-checkpoint::save(
-    &directory.join("checkpoint"),
-    id,
-    driver.control_plane_checkpoint(),
-)?;
+peers::authorize(id, &transport)?;
 transport.start()?;
 ```
 
-Our HTTP handler parses `/add/5` into an increment and submits it on the leader:
+A write encodes the increment before entering the client queue:
 
 <!-- counter-snippet: src/http.rs -->
 ```rust
-let (id, future) = driver.begin_write(increment.unwrap(), WriteOptions::default())?;
-let result = wait(future).map(|receipt| receipt.result);
+let command = increment.unwrap().to_be_bytes().to_vec();
+wait(handle.write(command)).map(|receipt| receipt.result.result)
 ```
 
-`begin_write` returns a request ID and a future. A successful receipt contains
-the result from your `apply_batch`. The `wait` here is our helper for polling a
-future on the HTTP thread; an async caller can await it instead. **The Raft loop
-must keep running elsewhere while the request waits.** We'll cover that next.
+The receipt contains the durable application result. `wait` is our helper for
+polling a future on the HTTP thread; an async caller can await it instead. The
+owner must keep running while the request waits.
 
-Reads have a corresponding API:
+A linearizable read obtains a real quorum grant and waits for its application
+floor before the query callback runs:
 
 <!-- counter-snippet: src/http.rs -->
 ```rust
-let (id, future) = driver.begin_read((), ReadOptions::default())?;
-let result = wait(future).map(|receipt| receipt.result);
+wait(handle.read(Vec::new(), ReadConsistency::Linearizable)).map(|receipt| receipt.result)
 ```
 
-The default read checks leadership and waits for the necessary commands to be
-applied before calling your `read` method. This is a *linearizable read*: it
-accounts for writes completed before the read began. Reading the counter's
-local value directly may return stale data on a follower.
+The diagnostic `/status` endpoint uses a local read, which may be stale on a
+follower. Its `ready` field describes admission after recovery, not a quorum
+proof or a promise that the replica has caught up to the leader.
 
-**Your API handles client concerns.** This example chooses HTTP, redirects
-followers to the leader, and sets a request timeout. On timeout it abandons the
-waiter, not the command: a submitted increment may still commit. Safe retries
-need application request IDs and remembered results; Raft alone does not make
-repeating `/add/5` harmless.
+The HTTP API redirects followers and bounds request waiting. On timeout, dropping
+the future abandons the waiter; a submitted increment may still commit. Safe
+write retries need application request IDs and remembered outcomes. Raft alone
+does not make repeating `/add/5` harmless.
 
-## 6. Keep the server moving
+## 6. Keep the server moving and drain it on shutdown
 
-**You own the execution loop.** Rafter's TLS transport runs its connection
-workers, but your host still delivers incoming envelopes to the driver, supplies
-ticks, and advances pending reads. Our loop's central work is:
+The main loop calls `poll_next` through a budget of 64 events per turn. It handles
+snapshot installation atomically, consumes application completions, and checks
+configuration events. The driver routes outbound messages through the existing
+TLS sender. The host still delivers authenticated inbound messages and supplies
+clock ticks:
 
-<!-- counter-snippet: src/main.rs -->
+<!-- counter-snippet: src/owner.rs -->
 ```rust
-for envelope in inbound.drain(64)? {
-    if let Err(InboundEnvelopeError::Driver { source }) = driver.deliver(envelope) {
-        return Err(source.into());
-    }
-}
-if Instant::now() >= next_tick {
-    driver.tick()?;
+if driver.state() == ServiceState::Ready && Instant::now() >= next_tick {
+    step(driver, Input::Tick)?;
     next_tick = Instant::now() + Duration::from_millis(20);
 }
-driver.drive_pending_reads()?;
 ```
 
-`inbound` comes from `transport.inbound()`. Delivering an envelope or ticking the
-driver steps the group, performs required persistence, applies committed work,
-and routes outgoing messages through the configured sender. The example chooses
-a 20 ms tick interval; the core itself never reads a clock.
+Only take an inbound envelope when the owner can accept it. Check the group,
+then use `validate_inbound_peer_envelope` to verify the destination, authenticated
+principal, sender identity, and current directory authorization before stepping
+Raft. A refused input caused by concurrent shutdown is an ordinary lifecycle
+transition; other errors stop the process and require recovery.
 
-The complete loop also saves checkpoint changes and stops on terminal failures.
-Startup checks saved state before serving. The HTTP handler waits on a separate
-thread so a waiting client cannot prevent the replicas from reaching agreement.
-You can organize those tasks differently in your own host.
+Worker wakeups are retained by `unpark`; a bounded park also lets the loop check
+incoming transport work and the next tick. When the event budget is exhausted,
+it schedules another turn immediately.
+
+Shutdown closes admission and waits for actual backend release:
+
+<!-- counter-snippet: src/http.rs -->
+```rust
+wait(handle.shutdown())?;
+stop.store(true, Ordering::Release);
+```
+
+The owner keeps polling until `Stopped`, even while the HTTP thread is waiting.
+On fatal error, the main thread drops the owner before joining HTTP so retained
+clients receive terminal outcomes after storage is released. It then joins the
+transport workers. A client handle cannot keep the file locks alive.
 
 ## Follow one write through the stack
 
 With all the pieces connected, `/add/5` follows this path:
 
-1. **Your HTTP handler** parses the amount and calls `begin_write` on the leader.
+1. **Your HTTP handler** parses the amount and calls `handle.write` on the leader.
 2. **`rafter`** orders the command and replicates it. **`rafter-runtime`** saves
    required Raft state through **`rafter-storage`** before releasing outputs;
    the service routes peer traffic through **`rafter-transport-tls`**.
-3. Once a majority has durably accepted the command, **`rafter-app`** calls your
-   `apply_batch` when that command is ready to be applied in order.
+3. Once a majority has durably accepted the command, the **application worker**
+   uses your adapter to call `apply_batch` in committed order.
 4. **Your counter** updates its value and saves it together with the applied index.
 5. **`rafter-service`** completes the write's future with the application result.
    **Your HTTP handler** turns it into `{"value":5}`.
@@ -346,7 +328,9 @@ A **snapshot** is a saved application image at a particular applied index.
 Your implementation defines that image and restores it; you also decide when
 to create one and compact old log entries. The counter implements snapshot
 methods, but this small starter keeps its log and does not schedule compaction
-or configure outbound snapshot transfer. Its three members are fixed.
+or configure outbound snapshot transfer. Its three members are fixed, and
+configuration changes are refused. The owner handles a recovered snapshot by
+installing its exact saved bytes before resuming admission.
 
 You also own deployment choices: peer addresses, certificates, membership
 changes, client authentication, and when a recovered server may accept requests.
@@ -420,7 +404,7 @@ rafter = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363b
 rafter-app = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
 rafter-storage = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
 rafter-runtime = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
-rafter-service = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
+rafter-service = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a", features = ["durable"] }
 rafter-transport-tls = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
 rafter-crc32 = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
 serde = { version = "1", features = ["derive"] }
@@ -516,31 +500,30 @@ mod checkpoint;
 mod counter;
 mod disk;
 mod http;
+mod owner;
 mod peers;
+mod policy;
 
 use counter::Counter;
 use rafter::{NodeConfig, NodeId};
-use rafter_app::{group::RaftGroup, state_machine::ReplicatedStateMachine};
-use rafter_runtime::DurableRaftNode;
+use rafter_app::state_machine::ApplyResult;
+use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage};
 use rafter_service::{
-    DriverServiceState, InboundEnvelopeError, PeerControlPlaneCheckpoint, TransportDriverOptions,
-    TransportRaftDriver,
+    durable::{DurableRaftDriver, DurableRaftHandle},
+    PeerControlPlaneCheckpoint,
 };
 use rafter_storage::{
     FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
 };
-use rafter_transport_tls::{
-    FileTransportSessionStore, SessionStoreLimits, TlsPeerDirectory, TlsSender,
-};
+use rafter_transport_tls::{FileTransportSessionStore, SessionStoreLimits, TlsSender};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     thread,
-    time::{Duration, Instant},
 };
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -548,13 +531,17 @@ pub const GROUP: u64 = 1;
 pub const MEMBERS: [u64; 3] = [1, 2, 3];
 pub type Runtime =
     DurableRaftNode<FileRaftHardStateStore, FileRaftLogSegment, FileRaftSnapshotStore>;
-pub type Driver = TransportRaftDriver<
+pub type Driver = DurableRaftDriver<
     u64,
+    FileRaftHardStateStore,
+    FileRaftLogSegment,
+    FileRaftSnapshotStore,
+    application::Entry,
     Counter,
-    Runtime,
     TlsSender<u64, peers::GroupCodec>,
-    TlsPeerDirectory<u64>,
+    u64,
 >;
+pub type Handle = DurableRaftHandle<u64, ApplyResult<u64>, u64>;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -611,10 +598,10 @@ fn run(id: u64) -> Result<()> {
         return Err("data directory belongs to another node".into());
     }
     // Acquire exclusive directory ownership before opening any application files.
-    let (hard_state, log, snapshots) =
+    let (hard_state_store, log_segment, snapshot_store) =
         FileRaftNodeStores::open(directory.join("raft"))?.into_parts();
     let app = Counter::open(&directory)?;
-    let applied = app.applied_index()?;
+    let checkpoint = checkpoint::load(&directory.join("checkpoint"), id)?;
     let config = NodeConfig::new(
         NodeId(id),
         MEMBERS
@@ -625,86 +612,286 @@ fn run(id: u64) -> Result<()> {
         15 + id * 5,
     )?
     .with_heartbeat_interval_ticks(3);
-    let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
-        config, hard_state, log, snapshots, applied,
-    )?;
-    let (raft, outputs) = recovered.into_parts();
-    let group = RaftGroup::with_applied_index(GROUP, NodeId(id), raft, app, applied);
     let (transport, validator) = peers::open(id, &directory)?;
-    let driver = Driver::with_control_plane_checkpoint(
-        group,
-        outputs,
+    let mut driver = owner::recover(
+        config,
+        DurableRaftNodeStorage {
+            hard_state_store,
+            log_segment,
+            snapshot_store,
+        },
+        app,
         transport.sender(),
-        validator,
-        TransportDriverOptions::default(),
-        checkpoint::load(&directory.join("checkpoint"), id)?,
+        checkpoint,
     )?;
     checkpoint::save(
         &directory.join("checkpoint"),
         id,
-        driver.control_plane_checkpoint(),
+        policy::observed(
+            driver
+                .ready_node()
+                .ok_or("recovery lost node ownership")?
+                .commit_index(),
+        ),
     )?;
+    peers::authorize(id, &transport)?;
     transport.start()?;
 
     let address = peers::address("COUNTER_HTTP_BASE", 8000, id)?;
     let server = tiny_http::Server::http(address)?;
     let stop = Arc::new(AtomicBool::new(false));
+    let ready = Arc::new(AtomicBool::new(true));
     let connections = Arc::new(AtomicUsize::new(0));
     let worker = {
-        let (driver, stop, connections) = (driver.clone(), stop.clone(), connections.clone());
-        thread::spawn(move || http::serve(server, driver, stop, connections))
+        let (handle, stop, ready, connections) = (
+            driver.handle(),
+            stop.clone(),
+            ready.clone(),
+            connections.clone(),
+        );
+        thread::spawn(move || {
+            let result = http::serve(server, handle, &stop, &ready, &connections);
+            stop.store(true, Ordering::Release);
+            result
+        })
     };
     println!(
         "Node {id}: http://{address} (peer TLS on {})",
         transport.local_addr()
     );
-    let outcome = drive(&directory, id, &driver, &transport, &stop, &connections);
+    let outcome = owner::drive(
+        &mut driver,
+        &transport,
+        &validator,
+        &stop,
+        &ready,
+        &connections,
+    );
+    ready.store(false, Ordering::Release);
     stop.store(true, Ordering::Release);
-    let http_outcome = worker.join().map_err(|_| "HTTP worker panicked")?;
-    transport.join()?;
+    // Release storage before joining an HTTP worker that may still await a result.
+    drop(driver);
+    let http_outcome = worker.join().map_err(|_| "HTTP worker panicked");
+    let transport_outcome = transport.join();
     outcome?;
-    http_outcome
+    http_outcome??;
+    transport_outcome?;
+    Ok(())
+}
+```
+
+</details>
+
+<details>
+<summary><strong>src/owner.rs</strong> — Own and drive the durable backend</summary>
+
+<!-- counter-file: src/owner.rs -->
+```rust
+//! The main thread uniquely owns both durable workers and drives bounded turns.
+use crate::{
+    application::Entry, counter::Counter, disk, peers, policy, Driver, Result, Runtime, GROUP,
+};
+use rafter::{Input, NodeConfig, Output};
+use rafter_app::state_machine::{ApplicationSnapshot, ReplicatedStateMachine};
+use rafter_runtime::{
+    application::ApplicationWorkerOptions,
+    service::{ServiceEvent, ServiceOptions, ServicePoll, ServiceState, ServiceStepError},
+    DurableRaftNodeStorage,
+};
+use rafter_service::{
+    durable::{
+        DurableClientOptions, DurableClientOwner, DurableClientStepError, DurableReadLimits,
+        DurableWriteLimits,
+    },
+    validate_inbound_peer_envelope, DriverCommandSender, PeerControlPlaneCheckpoint,
+};
+use rafter_storage::{FileRaftHardStateStore, FileRaftLogSegment, FileRaftSnapshotStore};
+use rafter_transport_tls::{TlsPeerDirectory, TlsSender};
+use std::{
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    thread,
+    time::{Duration, Instant},
+};
+
+pub fn recover(
+    config: NodeConfig,
+    storage: DurableRaftNodeStorage<
+        FileRaftHardStateStore,
+        FileRaftLogSegment,
+        FileRaftSnapshotStore,
+    >,
+    app: Counter,
+    sender: TlsSender<u64, peers::GroupCodec>,
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
+) -> Result<Driver> {
+    let mut service = ServiceOptions::new();
+    service.application = ApplicationWorkerOptions::new().with_limits(64, 16_384, 16, 4096);
+    service.max_proposals = 8;
+    service.max_proposal_bytes = 64;
+    let options = DurableClientOptions::new(
+        service,
+        DurableWriteLimits {
+            writes: 8.try_into()?,
+            payload_bytes: 64.try_into()?,
+        },
+        DurableReadLimits {
+            reads: 8.try_into()?,
+            payload_bytes: 8.try_into()?,
+        },
+    );
+    let wake = thread::current();
+    let owner = DurableClientOwner::recover_with_reads(
+        config,
+        storage,
+        app,
+        options,
+        Entry::try_from,
+        |counter, _query| counter.value(),
+        move || wake.unpark(),
+    )?;
+    let node = owner
+        .ready_node()
+        .ok_or("recovery has no observable node")?;
+    validate_node(node)?;
+    policy::restore(
+        &checkpoint,
+        node.commit_index(),
+        node.last_log_index(),
+        node.current_term(),
+    )?;
+    let mut driver =
+        Driver::attach(GROUP, owner, sender).map_err(|error| disk::invalid(&error.to_string()))?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while driver.state() != ServiceState::Ready {
+        turn(&mut driver)?;
+        if Instant::now() >= deadline {
+            return Err("counter recovery timed out".into());
+        }
+        thread::park_timeout(Duration::from_millis(1));
+    }
+    Ok(driver)
 }
 
-fn drive(
-    directory: &Path,
-    id: u64,
-    driver: &Driver,
+fn validate_node(node: &Runtime) -> Result<()> {
+    policy::membership(&node.effective_membership())?;
+    policy::membership(&node.committed_membership())?;
+    if let Some(membership) = node.snapshot_committed_membership() {
+        policy::membership(&membership)?;
+    }
+    Ok(())
+}
+
+fn turn(driver: &mut Driver) -> Result<bool> {
+    for _ in 0..64 {
+        if let Some(node) = driver.ready_node() {
+            validate_node(node)?;
+        }
+        match driver.poll_next()? {
+            ServicePoll::Pending => return Ok(false),
+            ServicePoll::Event(ServiceEvent::InstallSnapshot {
+                snapshot,
+                mut application,
+            }) => {
+                policy::membership(
+                    snapshot
+                        .metadata
+                        .committed_membership()
+                        .ok_or("counter snapshot has no committed membership")?,
+                )?;
+                application.install_snapshot(ApplicationSnapshot {
+                    applied_index: snapshot.metadata.last_included_index,
+                    payload: Vec::new(),
+                    raft_snapshot: Some(snapshot),
+                })?;
+                driver.resume_snapshot(application)?;
+            }
+            ServicePoll::Event(ServiceEvent::Output(Output::ConfigurationCommitted {
+                previous,
+                configuration,
+                ..
+            })) => {
+                // Check every crossing, including an intermediate removal that
+                // a later endpoint in the same Raft step would otherwise hide.
+                policy::membership(&previous)?;
+                policy::membership(&configuration.membership_config())?;
+            }
+            ServicePoll::Event(ServiceEvent::ApplicationFailed(failure)) => {
+                return Err(format!("counter application failed: {:?}", failure.kind()).into());
+            }
+            ServicePoll::Progress | ServicePoll::Event(_) => {}
+            _ => return Err("unsupported durable service poll state".into()),
+        }
+    }
+    Ok(true)
+}
+
+fn step(driver: &mut Driver, input: Input) -> Result<()> {
+    match driver.try_step(input) {
+        Ok(()) => Ok(()),
+        // HTTP may close admission between the owner's Ready check and input.
+        // A refused tick/peer message during shutdown needs no further delivery.
+        Err(DurableClientStepError::Service(ServiceStepError::Unavailable {
+            state: ServiceState::Draining,
+            ..
+        })) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn drive(
+    driver: &mut Driver,
     transport: &peers::Transport,
+    validator: &TlsPeerDirectory<u64>,
     stop: &AtomicBool,
+    ready: &AtomicBool,
     connections: &AtomicUsize,
 ) -> Result<()> {
     let inbound = transport.inbound();
     let mut next_tick = Instant::now();
-    let mut checkpoint_epoch = driver.control_plane_checkpoint_epoch();
-    while !stop.load(Ordering::Acquire) {
-        let stepped = (|| -> Result<()> {
-            for envelope in inbound.drain(64)? {
-                if let Err(InboundEnvelopeError::Driver { source }) = driver.deliver(envelope) {
-                    return Err(source.into());
-                }
-            }
-            if Instant::now() >= next_tick {
-                driver.tick()?;
-                next_tick = Instant::now() + Duration::from_millis(20);
-            }
-            driver.drive_pending_reads()?;
-            Ok(())
-        })();
-        // Also save a terminal checkpoint if stepping discovered a contradiction.
-        let epoch = driver.control_plane_checkpoint_epoch();
-        if epoch != checkpoint_epoch {
-            checkpoint::save(
-                &directory.join("checkpoint"),
-                id,
-                driver.control_plane_checkpoint(),
-            )?;
-            checkpoint_epoch = epoch;
+    let mut shutdown_requested = false;
+    loop {
+        if stop.load(Ordering::Acquire) && !shutdown_requested {
+            // The sender requests shutdown immediately; canceling its waiter
+            // does not cancel the drain. Continue driving until Stopped.
+            drop(driver.sender().shutdown(GROUP));
+            shutdown_requested = true;
         }
-        stepped?;
-        if driver.service_state() != DriverServiceState::Serving {
-            return Err(format!("driver stopped serving: {:?}", driver.service_state()).into());
+        let reschedule = turn(driver)?;
+        if driver.state() == ServiceState::Stopped {
+            return Ok(());
         }
+        if driver.state() == ServiceState::Ready && Instant::now() >= next_tick {
+            step(driver, Input::Tick)?;
+            next_tick = Instant::now() + Duration::from_millis(20);
+        }
+        for _ in 0..64 {
+            if driver.state() != ServiceState::Ready {
+                break;
+            }
+            let Some(envelope) = inbound.drain(1)?.pop() else {
+                break;
+            };
+            if envelope.group_id != GROUP {
+                continue;
+            }
+            let id = driver
+                .ready_node()
+                .ok_or("ready driver lost node ownership")?
+                .id();
+            if let Ok(envelope) = validate_inbound_peer_envelope(envelope, id, validator) {
+                step(
+                    driver,
+                    Input::Message {
+                        from: envelope.from,
+                        message: envelope.message,
+                    },
+                )?;
+            }
+        }
+        ready.store(
+            matches!(driver.state(), ServiceState::Ready | ServiceState::Busy),
+            Ordering::Release,
+        );
         if let Some(error) = transport.terminal_failure() {
             return Err(error.into());
         }
@@ -713,9 +900,75 @@ fn drive(
             diagnostics.active_inbound_connections + diagnostics.active_outbound_connections,
             Ordering::Release,
         );
-        thread::sleep(Duration::from_millis(2));
+        if !reschedule {
+            thread::park_timeout(Duration::from_millis(2));
+        }
     }
-    Ok(())
+}
+```
+
+</details>
+
+<details>
+<summary><strong>src/policy.rs</strong> — Enforce the fixed membership across recovery</summary>
+
+<!-- counter-file: src/policy.rs -->
+```rust
+//! This example accepts only its original three voters, with no learners.
+use crate::{disk, GROUP, MEMBERS};
+use rafter::{LogIndex, MembershipConfig, NodeId, Term};
+use rafter_service::{CurrentCommittedState, PeerControlPlaneCheckpoint};
+use std::io;
+
+pub fn membership(configuration: &MembershipConfig) -> io::Result<()> {
+    match configuration {
+        MembershipConfig::Stable(set)
+            if set.voters() == MEMBERS.map(NodeId) && set.learners().is_empty() =>
+        {
+            Ok(())
+        }
+        _ => Err(disk::invalid(
+            "counter requires the original three voters; membership changes are unsupported",
+        )),
+    }
+}
+
+pub fn restore(
+    checkpoint: &PeerControlPlaneCheckpoint<u64>,
+    commit: LogIndex,
+    last: LogIndex,
+    term: Term,
+) -> io::Result<()> {
+    if checkpoint.group != GROUP || checkpoint.contradicted_at.is_some() {
+        return Err(disk::invalid("foreign or contradictory counter checkpoint"));
+    }
+    match (
+        &checkpoint.current_committed,
+        checkpoint.committed_id_high_water,
+    ) {
+        (None, None) if commit == LogIndex::ZERO && last == LogIndex::ZERO && term == Term(0) => {
+            Ok(())
+        }
+        (Some(current), Some(NodeId(3)))
+            if current.through <= commit
+                && current.membership == MEMBERS.into_iter().map(NodeId).collect() =>
+        {
+            Ok(())
+        }
+        _ => Err(disk::invalid(
+            "counter checkpoint would forget membership or retirement history",
+        )),
+    }
+}
+
+pub fn observed(through: LogIndex) -> PeerControlPlaneCheckpoint<u64> {
+    let mut checkpoint = PeerControlPlaneCheckpoint::empty(GROUP);
+    checkpoint.committed_id_high_water = Some(NodeId(3));
+    checkpoint.current_committed = Some(CurrentCommittedState::new(
+        through,
+        MEMBERS.into_iter().map(NodeId).collect(),
+    ));
+    checkpoint
 }
 ```
 
@@ -963,6 +1216,7 @@ impl ReplicatedStateMachine for Counter {
 //! Three fixed peers, each with its own TLS identity and on-disk sessions.
 use crate::{disk, Result, GROUP, MEMBERS};
 use rafter::NodeId;
+use rafter_service::{PeerPolicy, RaftTransport};
 use rafter_transport_tls::{
     CertificateDirectory, ClusterId, EndpointBook, FileTransportSessionStore, GroupIdCodec,
     PeerEndpoint, PeerId, TlsIdentity, TlsPeerDirectory, TlsPeerTransport, TlsServerName,
@@ -971,6 +1225,21 @@ use rafter_transport_tls::{
 use std::{io, path::Path};
 
 pub type Transport = TlsPeerTransport<u64, GroupCodec>;
+
+pub fn authorize(id: u64, transport: &Transport) -> Result<()> {
+    transport.sender().update_peers(
+        &GROUP,
+        PeerPolicy::new(
+            MEMBERS
+                .into_iter()
+                .filter(|peer| *peer != id)
+                .map(principal)
+                .collect(),
+            Some(NodeId(3)),
+        ),
+    )?;
+    Ok(())
+}
 
 pub fn cluster() -> ClusterId {
     ClusterId::new("rafter-counter-v1").unwrap()
@@ -1068,9 +1337,9 @@ impl GroupIdCodec<u64> for GroupCodec {
 <!-- counter-file: src/http.rs -->
 ```rust
 //! A small loopback-only client API, independent of the TLS peer connections.
-use crate::{peers, Driver, Result};
+use crate::{peers, Handle, Result};
 use rafter::Role;
-use rafter_service::{DriverServiceState, ReadOptions, WriteOptions};
+use rafter_service::ReadConsistency;
 use serde_json::json;
 use std::{
     future::Future,
@@ -1087,33 +1356,45 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 pub fn serve(
     server: Server,
-    driver: Driver,
-    stop: Arc<AtomicBool>,
-    connections: Arc<AtomicUsize>,
+    handle: Handle,
+    stop: &AtomicBool,
+    ready: &AtomicBool,
+    connections: &AtomicUsize,
 ) -> Result<()> {
     while !stop.load(Ordering::Acquire) {
         let Some(request) = server.recv_timeout(Duration::from_millis(50))? else {
             continue;
         };
         // One request at a time keeps the tutorial's client work bounded.
-        if let Err(error) = respond(request, &driver, &stop, connections.load(Ordering::Acquire)) {
+        if let Err(error) = respond(
+            request,
+            &handle,
+            stop,
+            ready.load(Ordering::Acquire),
+            connections.load(Ordering::Acquire),
+        ) {
             eprintln!("client connection closed: {error}");
         }
     }
     Ok(())
 }
 
-fn respond(request: Request, driver: &Driver, stop: &AtomicBool, connections: usize) -> Result<()> {
-    let (metrics, value, caught_up) = driver.with_group(|group| {
-        let metrics = group.metrics();
-        let caught_up = metrics.applied_index >= group.committed_application_index()
-            && metrics.fatal_state == rafter_app::group::GroupFatalState::Healthy;
-        (metrics, group.state_machine().value(), caught_up)
-    })?;
-    let ready = caught_up
-        && !driver.peer_policy_is_stale()
-        && driver.service_state() == DriverServiceState::Serving;
+fn respond(
+    request: Request,
+    handle: &Handle,
+    stop: &AtomicBool,
+    ready: bool,
+    connections: usize,
+) -> Result<()> {
+    let metrics = handle.metrics()?.current();
+    if request.method() == &Method::Post && request.url() == "/stop" {
+        // The owner keeps driving while this waits for actual backend release.
+        wait(handle.shutdown())?;
+        stop.store(true, Ordering::Release);
+        return send(request, 200, json!({"stopping": metrics.node_id.0}));
+    }
     if request.method() == &Method::Get && request.url() == "/status" {
+        let value = wait(handle.read(Vec::new(), ReadConsistency::Local))?.result;
         return send(
             request,
             200,
@@ -1122,10 +1403,6 @@ fn respond(request: Request, driver: &Driver, stop: &AtomicBool, connections: us
             "ready": ready, "local_value": value, "applied": metrics.applied_index.0,
             "tls_connections": connections}),
         );
-    }
-    if request.method() == &Method::Post && request.url() == "/stop" {
-        stop.store(true, Ordering::Release);
-        return send(request, 200, json!({"stopping": metrics.node_id.0}));
     }
     let increment = request
         .url()
@@ -1165,23 +1442,10 @@ fn respond(request: Request, driver: &Driver, stop: &AtomicBool, connections: us
         );
     }
     let result = if writing {
-        (|| -> Result<u64> {
-            let (id, future) = driver.begin_write(increment.unwrap(), WriteOptions::default())?;
-            let result = wait(future).map(|receipt| receipt.result);
-            if result.is_err() {
-                let _ = driver.abandon_write(id);
-            }
-            result
-        })()
+        let command = increment.unwrap().to_be_bytes().to_vec();
+        wait(handle.write(command)).map(|receipt| receipt.result.result)
     } else {
-        (|| -> Result<u64> {
-            let (id, future) = driver.begin_read((), ReadOptions::default())?;
-            let result = wait(future).map(|receipt| receipt.result);
-            if result.is_err() {
-                let _ = driver.abandon_read(id);
-            }
-            result
-        })()
+        wait(handle.read(Vec::new(), ReadConsistency::Linearizable)).map(|receipt| receipt.result)
     };
     match result {
         Ok(value) => send(request, 200, json!({"value": value})),
@@ -1293,7 +1557,7 @@ use crate::{disk, GROUP};
 use rafter::{LogIndex, NodeId};
 use rafter_service::{CurrentCommittedState, PeerControlPlaneCheckpoint};
 use serde::{Deserialize, Serialize};
-use std::{io, path::Path};
+use std::{collections::BTreeSet, io, path::Path};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1332,9 +1596,15 @@ pub fn load(path: &Path, node: u64) -> io::Result<PeerControlPlaneCheckpoint<u64
     }
     let mut checkpoint = PeerControlPlaneCheckpoint::empty(GROUP);
     checkpoint.committed_id_high_water = record.high_water.map(NodeId);
-    checkpoint.current_committed = record.current.map(|(through, members)| {
-        CurrentCommittedState::new(LogIndex(through), members.into_iter().map(NodeId).collect())
-    });
+    checkpoint.current_committed = if let Some((through, members)) = record.current {
+        let membership: BTreeSet<_> = members.iter().copied().map(NodeId).collect();
+        if membership.len() != members.len() {
+            return Err(disk::invalid("duplicate checkpoint member"));
+        }
+        Some(CurrentCommittedState::new(LogIndex(through), membership))
+    } else {
+        None
+    };
     checkpoint.contradicted_at = record.contradicted.map(LogIndex);
     Ok(checkpoint)
 }

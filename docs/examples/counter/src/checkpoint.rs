@@ -3,7 +3,7 @@ use crate::{disk, GROUP};
 use rafter::{LogIndex, NodeId};
 use rafter_service::{CurrentCommittedState, PeerControlPlaneCheckpoint};
 use serde::{Deserialize, Serialize};
-use std::{io, path::Path};
+use std::{collections::BTreeSet, io, path::Path};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,9 +42,15 @@ pub fn load(path: &Path, node: u64) -> io::Result<PeerControlPlaneCheckpoint<u64
     }
     let mut checkpoint = PeerControlPlaneCheckpoint::empty(GROUP);
     checkpoint.committed_id_high_water = record.high_water.map(NodeId);
-    checkpoint.current_committed = record.current.map(|(through, members)| {
-        CurrentCommittedState::new(LogIndex(through), members.into_iter().map(NodeId).collect())
-    });
+    checkpoint.current_committed = if let Some((through, members)) = record.current {
+        let membership: BTreeSet<_> = members.iter().copied().map(NodeId).collect();
+        if membership.len() != members.len() {
+            return Err(disk::invalid("duplicate checkpoint member"));
+        }
+        Some(CurrentCommittedState::new(LogIndex(through), membership))
+    } else {
+        None
+    };
     checkpoint.contradicted_at = record.contradicted.map(LogIndex);
     Ok(checkpoint)
 }

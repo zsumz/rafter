@@ -251,7 +251,9 @@ source = "git+https://github.com/zsumz/rafter?rev=c2924ca1508f05f30363bb495ffa76
 dependencies = [
  "rafter",
  "rafter-app",
+ "rafter-runtime",
  "rafter-runtime-api",
+ "rafter-storage",
 ]
 
 [[package]]

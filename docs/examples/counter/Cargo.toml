@@ -12,7 +12,7 @@ rafter = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363b
 rafter-app = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
 rafter-storage = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
 rafter-runtime = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
-rafter-service = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
+rafter-service = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a", features = ["durable"] }
 rafter-transport-tls = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
 rafter-crc32 = { git = "https://github.com/zsumz/rafter", rev = "c2924ca1508f05f30363bb495ffa760f21e7c76a" }
 serde = { version = "1", features = ["derive"] }

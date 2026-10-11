@@ -1,7 +1,7 @@
 //! A small loopback-only client API, independent of the TLS peer connections.
-use crate::{peers, Driver, Result};
+use crate::{peers, Handle, Result};
 use rafter::Role;
-use rafter_service::{DriverServiceState, ReadOptions, WriteOptions};
+use rafter_service::ReadConsistency;
 use serde_json::json;
 use std::{
     future::Future,
@@ -18,33 +18,45 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 pub fn serve(
     server: Server,
-    driver: Driver,
-    stop: Arc<AtomicBool>,
-    connections: Arc<AtomicUsize>,
+    handle: Handle,
+    stop: &AtomicBool,
+    ready: &AtomicBool,
+    connections: &AtomicUsize,
 ) -> Result<()> {
     while !stop.load(Ordering::Acquire) {
         let Some(request) = server.recv_timeout(Duration::from_millis(50))? else {
             continue;
         };
         // One request at a time keeps the tutorial's client work bounded.
-        if let Err(error) = respond(request, &driver, &stop, connections.load(Ordering::Acquire)) {
+        if let Err(error) = respond(
+            request,
+            &handle,
+            stop,
+            ready.load(Ordering::Acquire),
+            connections.load(Ordering::Acquire),
+        ) {
             eprintln!("client connection closed: {error}");
         }
     }
     Ok(())
 }
 
-fn respond(request: Request, driver: &Driver, stop: &AtomicBool, connections: usize) -> Result<()> {
-    let (metrics, value, caught_up) = driver.with_group(|group| {
-        let metrics = group.metrics();
-        let caught_up = metrics.applied_index >= group.committed_application_index()
-            && metrics.fatal_state == rafter_app::group::GroupFatalState::Healthy;
-        (metrics, group.state_machine().value(), caught_up)
-    })?;
-    let ready = caught_up
-        && !driver.peer_policy_is_stale()
-        && driver.service_state() == DriverServiceState::Serving;
+fn respond(
+    request: Request,
+    handle: &Handle,
+    stop: &AtomicBool,
+    ready: bool,
+    connections: usize,
+) -> Result<()> {
+    let metrics = handle.metrics()?.current();
+    if request.method() == &Method::Post && request.url() == "/stop" {
+        // The owner keeps driving while this waits for actual backend release.
+        wait(handle.shutdown())?;
+        stop.store(true, Ordering::Release);
+        return send(request, 200, json!({"stopping": metrics.node_id.0}));
+    }
     if request.method() == &Method::Get && request.url() == "/status" {
+        let value = wait(handle.read(Vec::new(), ReadConsistency::Local))?.result;
         return send(
             request,
             200,
@@ -53,10 +65,6 @@ fn respond(request: Request, driver: &Driver, stop: &AtomicBool, connections: us
             "ready": ready, "local_value": value, "applied": metrics.applied_index.0,
             "tls_connections": connections}),
         );
-    }
-    if request.method() == &Method::Post && request.url() == "/stop" {
-        stop.store(true, Ordering::Release);
-        return send(request, 200, json!({"stopping": metrics.node_id.0}));
     }
     let increment = request
         .url()
@@ -96,23 +104,10 @@ fn respond(request: Request, driver: &Driver, stop: &AtomicBool, connections: us
         );
     }
     let result = if writing {
-        (|| -> Result<u64> {
-            let (id, future) = driver.begin_write(increment.unwrap(), WriteOptions::default())?;
-            let result = wait(future).map(|receipt| receipt.result);
-            if result.is_err() {
-                let _ = driver.abandon_write(id);
-            }
-            result
-        })()
+        let command = increment.unwrap().to_be_bytes().to_vec();
+        wait(handle.write(command)).map(|receipt| receipt.result.result)
     } else {
-        (|| -> Result<u64> {
-            let (id, future) = driver.begin_read((), ReadOptions::default())?;
-            let result = wait(future).map(|receipt| receipt.result);
-            if result.is_err() {
-                let _ = driver.abandon_read(id);
-            }
-            result
-        })()
+        wait(handle.read(Vec::new(), ReadConsistency::Linearizable)).map(|receipt| receipt.result)
     };
     match result {
         Ok(value) => send(request, 200, json!({"value": value})),

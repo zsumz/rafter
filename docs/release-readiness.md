@@ -78,7 +78,7 @@ is September 22's qualified-performance documentation update.
 
 | Branch | Finding | Recommended action |
 | --- | --- | --- |
-| `docs/layered-stack-readme` (`3790e23a`) | Pre-existing open PR [#13](https://github.com/zsumz/rafter/pull/13); six unique commits and four main commits behind its merge base. Adds a standalone TLS counter, guide, and smoke check. | The counter, guide, and checker are now ported and qualified on this release branch. Finish durable-owner adoption and reconcile the overlapping PR before merging. |
+| `docs/layered-stack-readme` (`3790e23a`) | Pre-existing open PR [#13](https://github.com/zsumz/rafter/pull/13); six unique commits and four main commits behind its merge base. Adds a standalone TLS counter, guide, and smoke check. | The counter, guide, and checker are now ported and qualified on this release branch. The fixed-membership counter now uses the durable owner; reconcile the overlapping PR before merging. |
 | `perf/raft-performance` (`66a7d719`) | [#19](https://github.com/zsumz/rafter/pull/19) and [#20](https://github.com/zsumz/rafter/pull/20) are merged. Its tip tree exactly matches merged main commit `ae951379`; raw ahead counts reflect separate history. | Start new performance work from main; do not merge the historical branch again. |
 | `fix/nightly-coverage-contract` / `docs/sync-qualified-performance` | [#21](https://github.com/zsumz/rafter/pull/21) / [#22](https://github.com/zsumz/rafter/pull/22) are merged. | Treat them as historical branches. |
 | `codex/snapshot-log-recovery-main` / `refactor/protocol-reading-paths` | [#11](https://github.com/zsumz/rafter/pull/11) / [#12](https://github.com/zsumz/rafter/pull/12) are merged and their tips are ancestors of main. | Keep the recovered snapshot/configuration behavior and walkthroughs already on main. |
@@ -97,26 +97,54 @@ Its nine Rafter packages changed revision while third-party locks stayed fixed.
 The checker has separate checkout and pinned modes: the first validates every
 resolved Rafter path against this checkout, and the second requires the exact
 Git source and canonical lock. Both extract the checked guide into a temporary
-project before building. Fourteen controls reject stale/mixed/missing/private
+project before building. Fifteen controls reject stale/mixed/missing/private
 graphs and preserve cleanup ownership when a smoke-test shutdown request or wait
 fails. Both cleanup regressions fail the original harness; deliberately omitting
 all checkout overrides is rejected before compilation.
 
-Both modes pass Rust 1.88 formatting, strict Clippy, six application tests,
+Both modes pass Rust 1.88 formatting, strict Clippy, ten application/policy tests,
 and the real three-process TLS smoke sequence: acknowledged writes, redirected
 reads, leader loss and catch-up, missing/corrupt state refusal, complete cluster
-crash recovery, quorum loss with an uncertain write, and clean shutdown. Python
+crash recovery, quorum loss with an uncertain write, application-save failure
+and committed replay after repair, and clean shutdown. Python
 3.13 initially refused the generated server certificates for missing authority
 key identifiers. The fixture now emits CA/leaf subject identifiers and leaf
 authority identifiers; the peer probe explicitly enables strict X.509 checks
 before verifying client-certificate refusal. CI and zcheck run both modes and
-the controls; the repository checker requires Python 3.11 or newer. This counter
-still uses the existing synchronous `TransportRaftDriver`; adopting the optional
-durable owner is the next slice. Its application adapter is now qualified against
-the existing bounded worker: fixed-size decoded entries preserve protocol prefixes
-and result correlation; accepted work retains its credit until completion is
-consumed; failed atomic publication returns a failure and preserves the old floor
-and value across reopen. The original PR remains unmerged.
+the controls; the repository checker requires Python 3.11 or newer.
+
+The counter now explicitly enables `rafter-service/durable`, retains the existing
+TLS sender and inbound validator, and gives HTTP only a managed handle. The main
+thread uniquely owns the driver and uses bounded event turns. Eight writes and
+eight reads have independent admission budgets; writes enter as encoded bytes,
+linearizable reads use the real quorum/application fence, and local status reads
+are explicitly diagnostic. Shutdown continues driving until storage is released
+before HTTP and transport workers are joined.
+
+Fixed-size application entries preserve protocol prefixes and result correlation;
+accepted work retains its credit until completion is consumed. The existing
+checksummed checkpoint format is retained. Adoption refuses contradictory,
+removed-member, enlarged/erased retirement, duplicate-member, and future-position
+records instead of reconstructing a weaker policy. Empty checkpoints require
+pristine Raft state. The example refuses any configuration outside its original
+three voters, including intermediate crossings and snapshot boundaries; this
+restricted policy does not implement general managed membership.
+
+Real-process checks reject seven valid-checksum unsafe checkpoint variants.
+A failed application save returns an uncertain client error, exits, and replays
+the committed increment after repair/restart. A temporary-copy probe upgrades
+all three processes from the synchronous counter at `e2280e3a`, runs mixed
+processes, then cold-reopens the whole cluster with its state, checkpoints, and
+TLS sessions intact. Another deterministic probe requests shutdown between a
+Ready observation and tick admission: handling `Unavailable(Draining)` exits
+cleanly, while the unhandled version exits with that lifecycle error. The
+original PR remains unmerged. Final qualification also caught a leader-status
+fixture race after cold reopen: status can precede a usable quorum read. The
+leader helper now waits for a successful read barrier, with a regression that
+fails the prior predicate; no uncertain writes are retried. Snapshot transfer,
+stalled I/O, and sustained
+queue-pressure qualification remain separate operational work.
+
 
 ## Prioritized code work
 
@@ -577,10 +605,12 @@ packages. Nineteen runner controls and strict lint/docs, source/dependency/size,
 workflow/profile, and architecture checks pass. Hosted qualification of this
 new candidate remains required.
 
-Use the now-qualified PR #13 counter as the next durable-owner adopter. Test actual
-TLS processes with restart, full queues, stalled fsync, leadership changes,
-canceled callers, snapshot install, and shutdown during outstanding work.
-An acknowledged write must survive recovery; an ambiguous write must retain
+The PR #13 counter now adopts the durable owner in real TLS processes, including
+leader loss, crash recovery, uncertain writes, application-publication failure,
+and graceful shutdown. Next qualify full queues, stalled fsync, sustained canceled
+callers, snapshot install, and shutdown during outstanding work. General managed
+membership remains open; the counter deliberately supports only its fixed voter
+set. An acknowledged write must survive recovery; an ambiguous write must retain
 its identity and report an unknown outcome. Application idempotency must remain
 explicit—the existing request ID is correlation, not deduplication.
 
@@ -770,8 +800,8 @@ with shipped dependencies.
 
 ## Suggested sequence
 
-1. Repair reproducible CI evidence and the process fixture; update and qualify
-   PR #13. This is the next concrete change set.
+1. Finish hosted evidence for the repaired CI and reconcile PR #13 with the
+   qualified guide/counter port on this release branch.
 2. Establish the API/format/upgrade contract and implement the durable service
    composition against independent consumers. Decide snapshot API scope here.
 3. Run the full Linux candidate qualification and realistic operational soak

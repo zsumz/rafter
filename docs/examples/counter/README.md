@@ -21,12 +21,19 @@ python3 smoke.py target/debug/rafter-counter
 
 Application tests also qualify `src/application.rs` with the bounded worker:
 protocol-only prefixes, result correlation, retained credits, and failed durable
-publication. The process currently uses `TransportRaftDriver`; the adapter is the
-prerequisite for migrating its owner loop.
+publication. The main thread owns `DurableRaftDriver`; HTTP callers use bounded
+client handles. Shutdown waits for storage release while that owner keeps driving.
+The optional `rafter-service/durable` feature is enabled explicitly.
+
+This example supports only the original three voters. Its checkpoint preserves
+the existing retirement facts across restart, and membership changes, contradictory
+records, or lost checkpoint history refuse startup. It does not implement dynamic
+membership administration or exactly-once increment retries.
 
 The smoke test uses temporary directories and its own local ports. It checks
 TLS client authentication, writes and reads, leader loss, full-cluster crash
-recovery, missing or corrupt state, quorum loss, and clean shutdown. It only
+recovery, missing/corrupt or unsafe checkpoint state, quorum loss, failed
+application publication with committed replay after restart, and clean shutdown. It only
 stops processes it started.
 
 From the Rafter repository root, use Python 3.11 or newer for

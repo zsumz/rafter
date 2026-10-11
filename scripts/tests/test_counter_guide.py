@@ -117,6 +117,19 @@ class SmokeOwnership(unittest.TestCase):
         cluster.request = Mock(return_value={"stopping": 1})
         return cluster, child
 
+    def test_leader_status_waits_for_a_usable_read_barrier(self):
+        cluster, _ = self.cluster()
+        cluster.statuses = Mock(return_value={
+            1: {"role": "Leader", "ready": True, "tls_connections": 2},
+        })
+        cluster.request.side_effect = [
+            SMOKE.urllib.error.HTTPError("/value", 503, "election still settling", {}, None),
+            {"value": 8},
+        ]
+        self.assertEqual(cluster.leader(), 1)
+        self.assertEqual(cluster.request.call_count, 2)
+        self.assertTrue(all(call.args == (1, "/value") for call in cluster.request.call_args_list))
+
     def test_failed_stop_request_keeps_the_child_for_cleanup(self):
         cluster, child = self.cluster()
         cluster.request.side_effect = OSError("HTTP stop failed")

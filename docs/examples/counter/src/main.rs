@@ -4,31 +4,30 @@ mod checkpoint;
 mod counter;
 mod disk;
 mod http;
+mod owner;
 mod peers;
+mod policy;
 
 use counter::Counter;
 use rafter::{NodeConfig, NodeId};
-use rafter_app::{group::RaftGroup, state_machine::ReplicatedStateMachine};
-use rafter_runtime::DurableRaftNode;
+use rafter_app::state_machine::ApplyResult;
+use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage};
 use rafter_service::{
-    DriverServiceState, InboundEnvelopeError, PeerControlPlaneCheckpoint, TransportDriverOptions,
-    TransportRaftDriver,
+    durable::{DurableRaftDriver, DurableRaftHandle},
+    PeerControlPlaneCheckpoint,
 };
 use rafter_storage::{
     FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
 };
-use rafter_transport_tls::{
-    FileTransportSessionStore, SessionStoreLimits, TlsPeerDirectory, TlsSender,
-};
+use rafter_transport_tls::{FileTransportSessionStore, SessionStoreLimits, TlsSender};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     thread,
-    time::{Duration, Instant},
 };
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -36,13 +35,17 @@ pub const GROUP: u64 = 1;
 pub const MEMBERS: [u64; 3] = [1, 2, 3];
 pub type Runtime =
     DurableRaftNode<FileRaftHardStateStore, FileRaftLogSegment, FileRaftSnapshotStore>;
-pub type Driver = TransportRaftDriver<
+pub type Driver = DurableRaftDriver<
     u64,
+    FileRaftHardStateStore,
+    FileRaftLogSegment,
+    FileRaftSnapshotStore,
+    application::Entry,
     Counter,
-    Runtime,
     TlsSender<u64, peers::GroupCodec>,
-    TlsPeerDirectory<u64>,
+    u64,
 >;
+pub type Handle = DurableRaftHandle<u64, ApplyResult<u64>, u64>;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -99,10 +102,10 @@ fn run(id: u64) -> Result<()> {
         return Err("data directory belongs to another node".into());
     }
     // Acquire exclusive directory ownership before opening any application files.
-    let (hard_state, log, snapshots) =
+    let (hard_state_store, log_segment, snapshot_store) =
         FileRaftNodeStores::open(directory.join("raft"))?.into_parts();
     let app = Counter::open(&directory)?;
-    let applied = app.applied_index()?;
+    let checkpoint = checkpoint::load(&directory.join("checkpoint"), id)?;
     let config = NodeConfig::new(
         NodeId(id),
         MEMBERS
@@ -113,95 +116,69 @@ fn run(id: u64) -> Result<()> {
         15 + id * 5,
     )?
     .with_heartbeat_interval_ticks(3);
-    let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
-        config, hard_state, log, snapshots, applied,
-    )?;
-    let (raft, outputs) = recovered.into_parts();
-    let group = RaftGroup::with_applied_index(GROUP, NodeId(id), raft, app, applied);
     let (transport, validator) = peers::open(id, &directory)?;
-    let driver = Driver::with_control_plane_checkpoint(
-        group,
-        outputs,
+    let mut driver = owner::recover(
+        config,
+        DurableRaftNodeStorage {
+            hard_state_store,
+            log_segment,
+            snapshot_store,
+        },
+        app,
         transport.sender(),
-        validator,
-        TransportDriverOptions::default(),
-        checkpoint::load(&directory.join("checkpoint"), id)?,
+        checkpoint,
     )?;
     checkpoint::save(
         &directory.join("checkpoint"),
         id,
-        driver.control_plane_checkpoint(),
+        policy::observed(
+            driver
+                .ready_node()
+                .ok_or("recovery lost node ownership")?
+                .commit_index(),
+        ),
     )?;
+    peers::authorize(id, &transport)?;
     transport.start()?;
 
     let address = peers::address("COUNTER_HTTP_BASE", 8000, id)?;
     let server = tiny_http::Server::http(address)?;
     let stop = Arc::new(AtomicBool::new(false));
+    let ready = Arc::new(AtomicBool::new(true));
     let connections = Arc::new(AtomicUsize::new(0));
     let worker = {
-        let (driver, stop, connections) = (driver.clone(), stop.clone(), connections.clone());
-        thread::spawn(move || http::serve(server, driver, stop, connections))
+        let (handle, stop, ready, connections) = (
+            driver.handle(),
+            stop.clone(),
+            ready.clone(),
+            connections.clone(),
+        );
+        thread::spawn(move || {
+            let result = http::serve(server, handle, &stop, &ready, &connections);
+            stop.store(true, Ordering::Release);
+            result
+        })
     };
     println!(
         "Node {id}: http://{address} (peer TLS on {})",
         transport.local_addr()
     );
-    let outcome = drive(&directory, id, &driver, &transport, &stop, &connections);
+    let outcome = owner::drive(
+        &mut driver,
+        &transport,
+        &validator,
+        &stop,
+        &ready,
+        &connections,
+    );
+    ready.store(false, Ordering::Release);
     stop.store(true, Ordering::Release);
-    let http_outcome = worker.join().map_err(|_| "HTTP worker panicked")?;
-    transport.join()?;
+    // Release storage before joining an HTTP worker that may still await a result.
+    drop(driver);
+    let http_outcome = worker.join().map_err(|_| "HTTP worker panicked");
+    let transport_outcome = transport.join();
     outcome?;
-    http_outcome
-}
-
-fn drive(
-    directory: &Path,
-    id: u64,
-    driver: &Driver,
-    transport: &peers::Transport,
-    stop: &AtomicBool,
-    connections: &AtomicUsize,
-) -> Result<()> {
-    let inbound = transport.inbound();
-    let mut next_tick = Instant::now();
-    let mut checkpoint_epoch = driver.control_plane_checkpoint_epoch();
-    while !stop.load(Ordering::Acquire) {
-        let stepped = (|| -> Result<()> {
-            for envelope in inbound.drain(64)? {
-                if let Err(InboundEnvelopeError::Driver { source }) = driver.deliver(envelope) {
-                    return Err(source.into());
-                }
-            }
-            if Instant::now() >= next_tick {
-                driver.tick()?;
-                next_tick = Instant::now() + Duration::from_millis(20);
-            }
-            driver.drive_pending_reads()?;
-            Ok(())
-        })();
-        // Also save a terminal checkpoint if stepping discovered a contradiction.
-        let epoch = driver.control_plane_checkpoint_epoch();
-        if epoch != checkpoint_epoch {
-            checkpoint::save(
-                &directory.join("checkpoint"),
-                id,
-                driver.control_plane_checkpoint(),
-            )?;
-            checkpoint_epoch = epoch;
-        }
-        stepped?;
-        if driver.service_state() != DriverServiceState::Serving {
-            return Err(format!("driver stopped serving: {:?}", driver.service_state()).into());
-        }
-        if let Some(error) = transport.terminal_failure() {
-            return Err(error.into());
-        }
-        let diagnostics = transport.diagnostics();
-        connections.store(
-            diagnostics.active_inbound_connections + diagnostics.active_outbound_connections,
-            Ordering::Release,
-        );
-        thread::sleep(Duration::from_millis(2));
-    }
+    http_outcome??;
+    transport_outcome?;
     Ok(())
 }

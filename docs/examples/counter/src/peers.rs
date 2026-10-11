@@ -1,6 +1,7 @@
 //! Three fixed peers, each with its own TLS identity and on-disk sessions.
 use crate::{disk, Result, GROUP, MEMBERS};
 use rafter::NodeId;
+use rafter_service::{PeerPolicy, RaftTransport};
 use rafter_transport_tls::{
     CertificateDirectory, ClusterId, EndpointBook, FileTransportSessionStore, GroupIdCodec,
     PeerEndpoint, PeerId, TlsIdentity, TlsPeerDirectory, TlsPeerTransport, TlsServerName,
@@ -9,6 +10,21 @@ use rafter_transport_tls::{
 use std::{io, path::Path};
 
 pub type Transport = TlsPeerTransport<u64, GroupCodec>;
+
+pub fn authorize(id: u64, transport: &Transport) -> Result<()> {
+    transport.sender().update_peers(
+        &GROUP,
+        PeerPolicy::new(
+            MEMBERS
+                .into_iter()
+                .filter(|peer| *peer != id)
+                .map(principal)
+                .collect(),
+            Some(NodeId(3)),
+        ),
+    )?;
+    Ok(())
+}
 
 pub fn cluster() -> ClusterId {
     ClusterId::new("rafter-counter-v1").unwrap()

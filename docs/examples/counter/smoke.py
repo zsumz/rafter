@@ -13,6 +13,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zlib
 
 
 def free_base(exclude=None):
@@ -97,6 +98,9 @@ class Cluster:
             leaders = [node for node, state in states.items() if state["role"] == "Leader"]
             if len(leaders) == 1 and all(s["ready"] and s["tls_connections"] > 0
                                          for s in states.values()):
+                # Election status can precede the leader's usable read barrier.
+                # Retry this read in wait(); never retry an uncertain increment.
+                self.request(leaders[0], "/value")
                 return leaders[0]
         return self.wait("one leader and authenticated connections", ready_leader)
 
@@ -133,6 +137,46 @@ class Cluster:
             assert corrupt.returncode != 0, f"accepted corrupt {name}"
         finally:
             path.write_bytes(original)
+
+    def reject_checkpoint_policy(self, node):
+        path = self.root / f"data/node-{node}/checkpoint"
+        original = path.read_bytes()
+        saved = json.loads(original[8:])
+        variants = [
+            dict(saved, high_water=None, current=None),
+            dict(saved, high_water=2),
+            dict(saved, high_water=4),
+            dict(saved, current=[0, [1, 2]]),
+            dict(saved, current=[0, [1, 2, 3, 3]]),
+            dict(saved, current=[2**64 - 1, [1, 2, 3]]),
+            dict(saved, contradicted=0),
+        ]
+        try:
+            for record in variants:
+                payload = json.dumps(record).encode()
+                path.write_bytes(b"RCT1" + zlib.crc32(payload).to_bytes(4, "big") + payload)
+                rejected = self.command("node", str(node))
+                assert rejected.returncode != 0, f"accepted unsafe checkpoint: {record}"
+                assert "checkpoint" in rejected.stderr, rejected.stderr
+        finally:
+            path.write_bytes(original)
+
+    def fail_application_save(self, node):
+        obstacle = self.root / f"data/node-{node}/counter.tmp"
+        obstacle.mkdir()
+        try:
+            try:
+                self.request(node, "/add/1", "POST", timeout=8)
+                raise AssertionError("acknowledged a failed application save")
+            except urllib.error.HTTPError as error:
+                assert error.code == 503
+                assert json.load(error)["write_may_have_committed"]
+            child = self.children[node]
+            child.wait(timeout=15)
+            assert child.returncode != 0, "failed application owner kept serving"
+            del self.children[node]
+        finally:
+            obstacle.rmdir()
 
     def close(self):
         for child in self.children.values():
@@ -178,9 +222,10 @@ def exercise(binary, root):
         cluster.stop(victim, graceful=True)
         for artifact in ("counter", "checkpoint", "sessions", "identity"):
             cluster.reject_missing_or_corrupt(victim, artifact)
+        cluster.reject_checkpoint_policy(victim)
         cluster.start(victim)
         cluster.converged(8)
-        print("PASS: missing or corrupt state refuses startup", flush=True)
+        print("PASS: missing, corrupt, or unsafe membership state refuses startup", flush=True)
 
         for node in list(cluster.children):
             cluster.stop(node)
@@ -211,6 +256,11 @@ def exercise(binary, root):
         assert value in (10, 11), value
         cluster.converged(value)
         print("PASS: quorum loss returns an error without claiming a write was undone", flush=True)
+        leader = cluster.leader()
+        cluster.fail_application_save(leader)
+        cluster.start(leader)
+        cluster.converged(value + 1)
+        print("PASS: failed application save closes clients; restart replays the committed write", flush=True)
         for node in list(cluster.children):
             cluster.stop(node, graceful=True)
         print("PASS: clean shutdown; standalone counter smoke passed", flush=True)
