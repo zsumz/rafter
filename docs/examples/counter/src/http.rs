@@ -1,7 +1,7 @@
 //! A small loopback-only client API, independent of the TLS peer connections.
 use crate::{peers, Handle, Result};
 use rafter::Role;
-use rafter_service::ReadConsistency;
+use rafter_service::{ReadConsistency, WriteError};
 use serde_json::json;
 use std::{
     future::Future,
@@ -54,6 +54,23 @@ fn respond(
         wait(handle.shutdown())?;
         stop.store(true, Ordering::Release);
         return send(request, 200, json!({"stopping": metrics.node_id.0}));
+    }
+    if request.method() == &Method::Get && request.url() == "/metrics" {
+        // Observe the owner without waiting for a busy application store.
+        return send(
+            request,
+            200,
+            json!({
+                "node": metrics.node_id.0, "role": format!("{:?}", metrics.role),
+                "term": metrics.term.0, "ready": ready,
+                "commit": metrics.commit_index.0, "applied": metrics.applied_index.0,
+                "snapshot": metrics.snapshot_index.0,
+                "pending_writes": metrics.pending_proposals,
+                "pending_reads": metrics.pending_query_reads,
+                "reserved_reads": metrics.reserved_reads,
+                "tls_connections": connections,
+            }),
+        );
     }
     if request.method() == &Method::Get && request.url() == "/status" {
         let value = wait(handle.read(Vec::new(), ReadConsistency::Local))?.result;
@@ -111,12 +128,20 @@ fn respond(
     };
     match result {
         Ok(value) => send(request, 200, json!({"value": value})),
-        Err(error) => send(
-            request,
-            503,
-            json!({"error": error.to_string(),
-            "write_may_have_committed": writing}),
-        ),
+        Err(error) => {
+            // A deadline alone proves nothing about a submitted command.
+            // Only the managed write error can prove a pre-append refusal.
+            let uncertain = writing
+                && error
+                    .downcast_ref::<WriteError>()
+                    .is_none_or(|write| write.fate().may_commit());
+            send(
+                request,
+                503,
+                json!({"error": error.to_string(),
+                "write_may_have_committed": uncertain}),
+            )
+        }
     }
 }
 

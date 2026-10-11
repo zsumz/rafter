@@ -52,6 +52,8 @@ def main():
     parser.add_argument("--update", action="store_true", help="refresh inline files without running Cargo")
     parser.add_argument("--mode", choices=("checkout", "pinned"), default="checkout",
                         help="qualify checkout libraries (default) or the standalone Git pin")
+    parser.add_argument("--pressure", action="store_true",
+                        help="run blocked-publication and full-client-queue qualification (POSIX)")
     args = parser.parse_args()
     text = GUIDE.read_text()
     matches = list(BLOCK.finditer(text))
@@ -83,6 +85,7 @@ def main():
             destination.write_text(match[3])
         shutil.copyfile(PROJECT / "Cargo.lock", copied / "Cargo.lock")
         shutil.copyfile(PROJECT / "smoke.py", copied / "smoke.py")
+        shutil.copyfile(PROJECT / "pressure.py", copied / "pressure.py")
         shutil.copytree(PROJECT / "tests", copied / "tests")
         env = dict(os.environ)
         target = Path(env.get("CARGO_TARGET_DIR", ROOT / "target/counter-guide")).resolve() / args.mode
@@ -101,7 +104,8 @@ def main():
             ["cargo", "clippy", *config_args, "--locked", "--all-targets", "--", "-D", "warnings"],
             ["cargo", "test", *config_args, "--locked"],
             ["cargo", "build", *config_args, "--locked"],
-            [sys.executable, "smoke.py", str(target / "debug/rafter-counter")],
+            [sys.executable, "pressure.py" if args.pressure else "smoke.py",
+             str(target / "debug/rafter-counter")],
         ]
         for command in commands:
             print("Running:", " ".join(command), flush=True)

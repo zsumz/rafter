@@ -160,6 +160,7 @@ pub fn drive(
     let inbound = transport.inbound();
     let mut next_tick = Instant::now();
     let mut shutdown_requested = false;
+    let mut draining_reported = false;
     loop {
         if stop.load(Ordering::Acquire) && !shutdown_requested {
             // The sender requests shutdown immediately; canceling its waiter
@@ -168,6 +169,13 @@ pub fn drive(
             shutdown_requested = true;
         }
         let reschedule = turn(driver)?;
+        if driver.state() == ServiceState::Draining && !draining_reported {
+            eprintln!(
+                "Node {}: draining durable work",
+                driver.handle().metrics()?.current().node_id.0
+            );
+            draining_reported = true;
+        }
         if driver.state() == ServiceState::Stopped {
             return Ok(());
         }

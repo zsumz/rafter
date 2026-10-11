@@ -123,6 +123,13 @@ run = ["python3", "scripts/check-counter-guide", "--mode", "pinned"]
 tools = ["python3", "cargo", "openssl"]
 resources = ["counter-guide-target"]
 
+[tasks.counter-pressure]
+description = "Qualify bounded client admission and shutdown during blocked application publication. Requires Python 3.11+ and POSIX FIFOs."
+needs = ["counter-guide-tests"]
+run = ["python3", "scripts/check-counter-guide", "--mode", "checkout", "--pressure"]
+tools = ["python3", "cargo", "openssl"]
+resources = ["counter-guide-target"]
+
 [tasks.lint]
 description = "Validate formatting, lints, documentation, and proof references."
 needs = [
@@ -142,6 +149,7 @@ needs = [
   "runtime-setup-tests",
   "counter-guide",
   "counter-guide-pinned",
+  "counter-pressure",
 ]
 
 [tasks.durable-bench-tests]

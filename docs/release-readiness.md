@@ -145,9 +145,23 @@ panic, while the guarded process drains the owner and reports failure. The
 original PR remains unmerged. Final qualification also caught a leader-status
 fixture race after cold reopen: status can precede a usable quorum read. The
 leader helper now waits for a successful read barrier, with a regression that
-fails the prior predicate; no uncertain writes are retried. Snapshot transfer,
-stalled I/O, and sustained
-queue-pressure qualification remain separate operational work.
+fails the prior predicate; no uncertain writes are retried.
+
+The separate POSIX pressure lane now blocks the leader's application publication
+on a FIFO while real TLS peers keep committing/applying in the same leader term.
+Eight timed-out clients retain all eight write slots; a ninth write refuses within
+two seconds. HTTP derives uncertainty from the public `WriteError::fate()` contract,
+so this proven pre-append refusal reports false while deadlines remain uncertain.
+A quorum read stays behind the blocked application floor. `/metrics` stays live
+without borrowing the application. Shutdown is observed in `Draining` before the
+fixture unblocks the writer into a forced rename failure; the prior counter file
+is byte-for-byte unchanged, the process releases the backend and exits failed,
+and restart replays all eight committed writes before fresh admission succeeds.
+The fixture explicitly forces rename failure because macOS can accept FIFO fsync.
+CI and default zcheck lint require `counter-pressure`; checkout and pinned-Git
+modes can both run it. This is a controlled blocked-publication and failure test,
+not a physical slow-disk/power-loss qualification or a bound on HTTP connection
+queues. Snapshot transfer and sustained multi-host/disk soak remain open.
 
 
 ## Prioritized code work
@@ -611,8 +625,10 @@ new candidate remains required.
 
 The PR #13 counter now adopts the durable owner in real TLS processes, including
 leader loss, crash recovery, uncertain writes, application-publication failure,
-and graceful shutdown. Next qualify full queues, stalled fsync, sustained canceled
-callers, snapshot install, and shutdown during outstanding work. General managed
+and graceful shutdown. A blocked-publication lane also fills the write budget
+with canceled callers and verifies the read fence and shutdown during outstanding
+work. Next qualify physical stalled fsync, sustained mixed client loads, and
+snapshot installation/transfer. General managed
 membership remains open; the counter deliberately supports only its fixed voter
 set. An acknowledged write must survive recovery; an ambiguous write must retain
 its identity and report an unknown outcome. Application idempotency must remain
@@ -787,6 +803,10 @@ counters through a cohesive observation surface: durable/apply lag, available
 queue credits, admission refusals, WAL/replay bytes, snapshot bytes, and
 persistence/application latency. Keep metrics out of consensus decisions and
 avoid requiring a telemetry framework in the kernel.
+
+The counter pressure lane above establishes one bounded overload/recovery case
+with real processes and TLS. It does not establish latency distributions, memory
+ceilings for the whole host, or sustained throughput.
 
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and

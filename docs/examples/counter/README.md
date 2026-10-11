@@ -28,13 +28,29 @@ The optional `rafter-service/durable` feature is enabled explicitly.
 This example supports only the original three voters. Its checkpoint preserves
 the existing retirement facts across restart, and membership changes, contradictory
 records, or lost checkpoint history refuse startup. It does not implement dynamic
-membership administration or exactly-once increment retries.
+membership administration or exactly-once increment retries. A write error
+reports `write_may_have_committed: false` only for a proven pre-append refusal;
+timeouts and unresolved outcomes remain uncertain.
 
 The smoke test uses temporary directories and its own local ports. It checks
 TLS client authentication, writes and reads, leader loss, full-cluster crash
 recovery, missing/corrupt or unsafe checkpoint state, quorum loss, failed
 application publication with committed replay after restart, and clean shutdown. It only
 stops processes it started.
+
+`GET /metrics` reads the managed observation without borrowing the application.
+It remains available while application I/O is blocked; `GET /status` also reads
+the local value and can wait for that store. Metrics are observations, not read
+proofs. Commit and applied indexes include different kinds of work, so their
+numerical difference is not an application backlog count.
+
+On POSIX hosts, `python3 pressure.py target/debug/rafter-counter` deliberately
+blocks the leader's application publication on a FIFO. It takes about a minute:
+eight client timeouts must retain their write slots while followers keep applying,
+a ninth write must refuse promptly, and a read must wait for application durability.
+It then requests shutdown, releases the blocked operation into an I/O error, and
+checks replay and fresh admission after restart. This exercises blocked publication
+and failure cleanup, not physical disk latency or power-loss behavior.
 
 From the Rafter repository root, use Python 3.11 or newer for
 `python3 scripts/check-counter-guide`. It checks that the teaching excerpts
@@ -43,7 +59,8 @@ qualifies it against the current checkout with temporary dependency overrides.
 `python3 scripts/check-counter-guide --mode pinned` separately builds that copy
 using its canonical lock and exact Git revision, without checkout dependencies.
 Both modes verify the resolved graph before building and run the process smoke
-test. Only the temporary checkout-mode lock may change. After editing
+test. Add `--pressure` to run the separate blocked-publication qualification; CI
+and `zcheck run counter-pressure` require it against the checkout. Only the temporary checkout-mode lock may change. After editing
 application files, update the explanations and excerpts as needed;
 `python3 scripts/check-counter-guide --update` refreshes the complete source
 reference and checks the excerpts without running Cargo.
