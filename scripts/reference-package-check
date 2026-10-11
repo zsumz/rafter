@@ -17,7 +17,8 @@
 # into the checkout, pulls an unpublished crate, or turns on an internal test
 # hook. It tests the artifact users receive, not the source tree that produced
 # it. Deterministic and MSRV modes also recover published storage and exchange
-# peer frames in both directions, using the same candidate archives. Fast source
+# peer frames in both directions, then run mixed-version TLS processes, using
+# the same candidate archives. Fast source
 # mode lives in scripts/reference-source-check; this script never builds a
 # consumer against `crates/`.
 #
@@ -121,7 +122,7 @@ for tool in "${required_tools[@]}"; do
     fi
 done
 if [[ "$mode" != process ]]; then
-    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "error: storage upgrade qualification requires Python 3.11+")'
+    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "error: archive compatibility qualification requires Python 3.11+")'
 fi
 if [[ "$mode" == msrv || "$mode" == process-msrv ]]; then
     if ! command -v rustup > /dev/null 2>&1; then
@@ -166,7 +167,7 @@ esac
 phase_status=(pending pending pending pending pending pending)
 if [[ "$mode" != process ]]; then
     phase_count=7
-    phase_name+=("qualify published storage and bidirectional peer wire")
+    phase_name+=("qualify published storage, peer wire, and rolling upgrades")
     phase_status+=(pending)
 fi
 current_phase=-1
@@ -902,7 +903,7 @@ if [[ "$mode" != process ]]; then
     if [[ "$mode" == msrv || "$mode" == process-msrv ]]; then
         compatibility_args+=(--toolchain "$msrv_toolchain")
     fi
-    for check in storage-upgrade wire-compatibility; do
+    for check in storage-upgrade wire-compatibility rolling-upgrade; do
         check_args=("${compatibility_args[@]}")
         if [[ -n "$artifact_dir" ]]; then
             check_args+=(--artifacts "$artifact_dir/$check")

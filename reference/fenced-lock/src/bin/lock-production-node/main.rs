@@ -44,6 +44,12 @@
 //! and worker startup have succeeded. Client connections, client lines, pending jobs,
 //! peer connections, frame bytes, outbound queues, per-peer inbound queues, and
 //! the global inbound queue all have explicit limits.
+//!
+//! `CHECKPOINT` performs synchronous snapshot maintenance at the durable applied
+//! floor and compacts the matching log prefix. It requires readiness and no
+//! outstanding client waiters; local ID watermarks and retired-peer policy
+//! survive re-adoption. Success is `OK CHECKPOINT <index>`; refusal is
+//! `ERR CHECKPOINT <detail>`. This fixture command uses public decomposition APIs.
 
 mod control_plane;
 mod peer_link;
@@ -1085,6 +1091,12 @@ fn handle_job(
             Disposition::Answered(match replica.local_lock(*resource) {
                 Ok(status) => render_lock(status),
                 Err(detail) => format!("ABANDONED {detail}"),
+            })
+        }
+        (Request::Checkpoint, State::Serving(replica)) => {
+            Disposition::Answered(match replica.checkpoint() {
+                Ok(index) => format!("OK CHECKPOINT {}", index.0),
+                Err(detail) => format!("ERR CHECKPOINT {detail}"),
             })
         }
         (Request::Membership(change), State::Serving(replica)) => Disposition::Answered(

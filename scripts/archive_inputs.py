@@ -90,16 +90,17 @@ def unpack(archive, destination, name):
     return root, package["version"]
 
 
-def audit_graph(metadata, checkout, roots, consumer, probe_name):
+def audit_graph(metadata, checkout, roots, consumer, probe_name, *, workspace=None):
     """Prove both builds resolve Rafter only from their respective archive set."""
     packages = {package["id"]: package for package in metadata["packages"]}
+    expected = workspace or {probe_name: consumer / "Cargo.toml"}
     members = {
             package_id for package_id, package in packages.items()
-            if Path(package["manifest_path"]).resolve() == consumer / "Cargo.toml"}
-    if len(members) != 1 or set(metadata["workspace_members"]) != members:
-        raise ValueError("probe must be the only workspace member")
+            if Path(package["manifest_path"]).resolve() == expected.get(package["name"])}
+    if len(members) != len(expected) or set(metadata["workspace_members"]) != members:
+        raise ValueError("consumer must have exactly the expected workspace members")
     found = set()
-    allowed_paths = {root / "Cargo.toml" for root in roots.values()} | {consumer / "Cargo.toml"}
+    allowed_paths = {root / "Cargo.toml" for root in roots.values()} | set(expected.values())
     for package in packages.values():
         manifest = Path(package["manifest_path"]).resolve()
         if manifest.is_relative_to(checkout):
@@ -108,7 +109,7 @@ def audit_graph(metadata, checkout, roots, consumer, probe_name):
             raise ValueError(f"unpublished path dependency: {manifest}")
         name = package["name"]
         if name == "rafter" or name.startswith("rafter-"):
-            if name == probe_name and manifest == consumer / "Cargo.toml":
+            if manifest == expected.get(name):
                 continue
             if name not in roots or name in found or manifest != roots[name] / "Cargo.toml":
                 raise ValueError(f"unexpected Rafter dependency: {name} at {manifest}")

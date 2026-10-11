@@ -171,7 +171,13 @@ encodable top-level message, stable/joint membership, snapshot chunks and wide
 replication sequence numbers. Both archive-built binaries decode each other's
 frames to exact expected values and retain identical canonical bytes. Both
 refuse seven malformed inputs and the unsupported whole-snapshot form. This
-is codec evidence; a mixed-version cluster test is still required.
+is codec evidence. The [mixed-version TLS scenario](rolling-upgrades.md) now
+builds the full public consumer from both archive sets and checks rolling
+replacements, bidirectional snapshot installation, joint membership changes,
+cached command replay, retirement recovery, and a nonempty independently checked
+history. Its forced snapshot phases cold-restart the senders and temporarily
+remove quorum availability. Historical application binaries, crash-during-upgrade
+qualification, and broader supported-version/downgrade policies remain open.
 
 **Acceptance:** the advertised upgrade matrix passes from real package
 archives, each durable layout has a stated support/migration policy, and public

@@ -60,7 +60,8 @@ command logs, every emitted frame and malformed-frame inputs. Defaults are
 `--artifacts`, `--baseline-cache`, `--toolchain` and `--keep` follow the storage
 runner's conventions. Offline mode requires warmed archive and Cargo caches.
 
-The deterministic and MSRV exact-package lanes run both matrices as their
+The deterministic and MSRV exact-package lanes run both matrices and the
+[mixed-version TLS scenario](rolling-upgrades.md) as their
 final phase, using the same archives already tested by the reference consumers.
 Hosted package jobs retain the compatibility receipts with their other evidence.
 

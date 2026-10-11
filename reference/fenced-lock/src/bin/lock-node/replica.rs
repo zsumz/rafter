@@ -104,6 +104,9 @@ use rafter_app::group::RaftGroup;
 
 use super::peer_link::{PeerDirectory, PeerPrincipal, TcpPeerTransport};
 
+#[path = "replica/checkpoint.rs"]
+mod checkpoint;
+
 /// Caller-defined identity of the single lock group each replica serves.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct LockGroupId(pub u64);

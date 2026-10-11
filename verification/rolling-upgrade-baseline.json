@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "version": "0.0.2-alpha.1",
+  "packages": {
+    "rafter": "becf4e9c723d630842bb348399b09d99de1acd6c423efe4d0727d0e1b12d977c",
+    "rafter-runtime-api": "d085acdec6946c35c766e304b5286a6847db7d51061e174ea7db4a2a90cf5073",
+    "rafter-crc32": "a5141c0fc58a99a7815ff968382fe9b540ac596e6fea904f0630a08b9456db36",
+    "rafter-storage": "e3e7ed2cab9ebf1298d1a1fb7704da4c839aac5858d4db1d781ebe026b74b377",
+    "rafter-codec": "8b31ee12c264823e1cf68f49bff7374dab1386e43411b8e8caa7cff83e891fc7",
+    "rafter-transport-tcp-insecure": "ac3c19fffb4a3a71fef5c360c9efe95a31ee51b645a3bd22eca35e4ee147592c",
+    "rafter-runtime": "2a72d7ebbc12662a2e8edcdc0f90b15b6d0df299d26cb70bd2a8565927be8cc9",
+    "rafter-app": "1dc624cff4d45196684627ac07b98813105180c7f80b82cbbe00b8081056943f",
+    "rafter-service": "fe24e6bd15a986ce467cd06e939f9514eccdecab8fffd072874fcf4ab551574e",
+    "rafter-multiraft": "3beebdcf14ad995fe83cda92c97c344b24c51da1319b9cf291226b0ddc7f9da6",
+    "rafter-transport-tls": "febf63f6547c798842d630c230dc3c1dc16cf1a287a9113087ef49d252abe2f6"
+  }
+}

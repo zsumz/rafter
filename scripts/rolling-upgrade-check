@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Qualify published/candidate Raft libraries in real authenticated processes."""
+
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import sys
+
+from archive_compatibility import ArchiveRun, ROOT, run_matrix
+from archive_inputs import audit_graph, sha256, tree_inventory
+
+TEST = "published_nodes_roll_to_candidate_with_tls_snapshots_and_membership"
+STAGES = ("all-published", "candidate-received-published-snapshot", "leader-upgraded",
+          "published-received-candidate-snapshot", "all-candidate", "candidate-restarts-complete")
+MEMBERS = ("fenced-lock", "harness", "ledger", "sharded-counter")
+PACKAGES = frozenset(("rafter", "rafter-app", "rafter-codec", "rafter-crc32", "rafter-runtime",
+                      "rafter-runtime-api", "rafter-service", "rafter-storage", "rafter-multiraft",
+                      "rafter-transport-tcp-insecure", "rafter-transport-tls"))
+
+
+def observations(transcript):
+    """Refuse empty, incomplete, duplicated, or unready process evidence."""
+    result = []
+    seen = set()
+    for match in re.finditer(r"UPGRADE_OBSERVATION stage=(\S+) node=(\d+) (\{[^\n]+\})", transcript):
+        stage, node, raw = match.groups()
+        key = (stage, int(node))
+        data = json.loads(raw)
+        if key in seen or key[0] not in STAGES or key[1] not in (1, 2, 3):
+            raise ValueError("duplicate or unexpected rolling-upgrade observation")
+        if data.get("node") != key[1] or data.get("ready") is not True:
+            raise ValueError("rolling-upgrade observation is unready or has wrong identity")
+        seen.add(key)
+        result.append({"stage": stage, "node": key[1], "observation": data})
+    if seen != {(stage, node) for stage in STAGES for node in (1, 2, 3)}:
+        raise ValueError("rolling-upgrade transcript is missing a required stage or node")
+    history = re.findall(r"UPGRADE_HISTORY searched=(\d+) discharged=(\d+) events=", transcript)
+    if len(history) != 1 or int(history[0][0]) == 0:
+        raise ValueError("rolling-upgrade transcript lacks nonempty checked history")
+    for marker in ("UPGRADE_MEMBERSHIP mixed-versions learner-promoted-and-retired",
+                   "UPGRADE_COMPLETE published-to-candidate tls snapshots-both-directions membership durable-restarts",
+                   "test result: ok. 1 passed; 0 failed;"):
+        if transcript.count(marker) != 1:
+            raise ValueError(f"rolling-upgrade transcript lacks unique completion: {marker}")
+    return result
+
+
+class Run(ArchiveRun):
+    label = "rolling-upgrade"
+    scope = "published/candidate libraries; same current public consumer; real TLS, snapshots, membership, restart"
+    packages = PACKAGES
+    fixture = ROOT / "reference"
+    baseline = ROOT / "verification/rolling-upgrade-baseline.json"
+    script = "rolling-upgrade-check"
+
+    def runner_files(self):
+        return [*super().runner_files(), "reference-package-boundary-check"]
+
+    def fixture_files(self):
+        for directory, children, files in os.walk(self.fixture):
+            children[:] = sorted(name for name in children if name not in ("target", ".cargo"))
+            for name in sorted(files):
+                path = Path(directory) / name
+                if path.suffix in (".rs", ".toml", ".pem"):
+                    yield path
+
+    def build(self, role, archives, work):
+        directory, roots, version, archive_records = self.archive_set(role, archives, work)
+        consumer = directory / "consumer" / "reference"
+        shutil.copytree(self.fixture, consumer,
+                        ignore=shutil.ignore_patterns("target", "Cargo.lock", ".cargo"))
+        # This identical public consumer is compiled against each version set.
+        # Only dependency versions change; no source or behavior is substituted.
+        for manifest in consumer.rglob("Cargo.toml"):
+            contents = manifest.read_text()
+            for name in sorted(self.packages):
+                contents = re.sub(r'(?m)^(' + re.escape(name) + r'\s*=\s*")=[^"]+("\s*)$',
+                                  lambda match: match[1] + "=" + version + match[2], contents)
+            manifest.write_text(contents)
+        (consumer / ".cargo").mkdir()
+        (consumer / ".cargo/config.toml").write_text("[patch.crates-io]\n" + "".join(
+            f"{name} = {{ path = {json.dumps(str(path))} }}\n" for name, path in sorted(roots.items())))
+        target = directory / "target"
+        self.cargo(f"{role}-lock", ["generate-lockfile"], consumer, target)
+        metadata_path = self.cargo(f"{role}-metadata", ["metadata", "--locked", "--format-version=1"],
+                                   consumer, target)
+        metadata = json.loads(metadata_path.read_text())
+        workspace = {"rafter-reference-" + name: consumer / name / "Cargo.toml" for name in MEMBERS}
+        audit_graph(metadata, ROOT, roots, consumer, "", workspace=workspace)
+        never_publish = directory / "never-publish.txt"
+        # The strict graph audit already limits every local package to these
+        # four public consumers and the exact archive set. Keep the existing
+        # manifest scanner too: it catches dormant forbidden declarations.
+        never_publish.write_text("rafter-sim\nrafter-maelstrom\nrafter-invariants\nrafter-invariant-test\nrafter-invariant-test-macros\nrafter-fuzz\n")
+        self.command(f"{role}-boundary", [ROOT / "scripts/reference-package-boundary-check",
+            "--metadata", metadata_path, "--checkout-root", ROOT, "--unpack-root", directory,
+            "--consumer-workspace", consumer, "--harness-path", consumer / "harness",
+            "--never-publish-file", never_publish], consumer)
+        self.cargo(f"{role}-build", ["build", "--locked", "-p", "rafter-reference-fenced-lock",
+                                   "--bin", "lock-production-node"], consumer, target)
+        binary = target / "debug" / "lock-production-node"
+        if role == "candidate":
+            output = self.cargo("candidate-test-build", ["test", "--no-run", "--locked", "-p",
+                "rafter-reference-fenced-lock", "--test", "process_rolling_upgrade",
+                "--message-format=json"], consumer, target)
+            tests = [Path(item["executable"]) for line in output.read_text().splitlines()
+                     if (item := json.loads(line)).get("reason") == "compiler-artifact"
+                     and item["target"]["name"] == "process_rolling_upgrade"
+                     and item.get("executable") and item["profile"]["test"]]
+            if len(tests) != 1 or not tests[0].resolve().is_relative_to(target):
+                raise ValueError("expected one isolated candidate rolling-upgrade test binary")
+            self.test_binary = tests[0]
+            self.receipt["test_binary_sha256"] = sha256(self.test_binary)
+        lock = self.artifacts / f"{role}-Cargo.lock"
+        shutil.copyfile(consumer / "Cargo.lock", lock)
+        self.receipt[role] = {"archives": archive_records, "binary_sha256": sha256(binary),
+                             "lock_sha256": sha256(lock), "metadata_sha256": sha256(metadata_path)}
+        return binary
+
+    def matrix(self, baseline, candidate):
+        listing = self.command("test-inventory", [self.test_binary, "--list", "--format=terse"], ROOT)
+        if listing.read_text().strip() != f"{TEST}: test":
+            raise ValueError("rolling-upgrade test inventory is not the expected singleton")
+        env = os.environ.copy()
+        env.update(RAFTER_BASELINE_NODE=str(baseline), RAFTER_CANDIDATE_NODE=str(candidate),
+                   RAFTER_UPGRADE_STATE=str(self.artifacts / "durable-state"))
+        output = self.command("rolling-processes", [self.test_binary, "--exact", TEST, "--ignored",
+                              "--nocapture", "--test-threads=1"], ROOT, env)
+        self.receipt["cases"] = observations(output.read_text())
+        inventory = tree_inventory(self.artifacts / "durable-state")
+        if not inventory:
+            raise ValueError("rolling-upgrade durable state was not retained")
+        self.receipt["durable_state"] = inventory
+
+
+if __name__ == "__main__":
+    sys.exit(run_matrix(Run, __doc__))

@@ -2,6 +2,7 @@
 
 import copy
 import io
+import json
 from pathlib import Path
 import runpy
 import sys
@@ -168,6 +169,21 @@ class DependencyBoundary(unittest.TestCase):
 
 
 class RunnerFailure(unittest.TestCase):
+    def test_changed_source_invalidates_the_qualification(self):
+        from archive_compatibility import ArchiveRun
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "main.rs"
+            source.write_text("fn main() {}")
+            run = ArchiveRun(root, "unused", True)
+            run.fixture = root
+            run.script = "storage-upgrade-check"
+            run.receipt.update(run.fingerprints())
+            run.verify_inputs()
+            source.write_text("fn main() { panic!(); }")
+            with self.assertRaisesRegex(ValueError, "inputs changed"):
+                run.verify_inputs()
+
     def test_failed_child_cannot_be_counted_as_a_pass_and_retains_diagnostics(self):
         runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "storage-upgrade-check"))["Run"]
         with tempfile.TemporaryDirectory() as temporary:
@@ -179,6 +195,49 @@ class RunnerFailure(unittest.TestCase):
             self.assertNotEqual(run.receipt["status"], "pass")
             self.assertEqual(run.receipt["commands"][0]["exit_code"], 9)
             self.assertIn("failure detail", (root / "failed-case.stderr").read_text())
+
+
+class RollingBoundary(unittest.TestCase):
+    def setUp(self):
+        self.runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "rolling-upgrade-check"))
+        self.lines = [f'UPGRADE_OBSERVATION stage={stage} node={node} '
+                      + json.dumps({"node": node, "ready": True})
+                      for stage in self.runner["STAGES"] for node in (1, 2, 3)]
+        self.lines += ["UPGRADE_MEMBERSHIP mixed-versions learner-promoted-and-retired",
+                       "UPGRADE_HISTORY searched=24 discharged=0 events=[]",
+                       "UPGRADE_COMPLETE published-to-candidate tls snapshots-both-directions membership durable-restarts",
+                       "test result: ok. 1 passed; 0 failed;"]
+
+    def test_complete_rolling_transcript_and_baseline_set(self):
+        self.assertEqual(len(self.runner["observations"]("\n".join(self.lines))), 18)
+        root = Path(__file__).resolve().parents[2]
+        baseline_lock(root / "verification/rolling-upgrade-baseline.json", self.runner["PACKAGES"])
+
+    def test_empty_missing_duplicate_unready_and_zero_test_evidence_is_refused(self):
+        cases = [[], self.lines[1:], self.lines + self.lines[:1], self.lines[:-1],
+                 [line for line in self.lines if not line.startswith("UPGRADE_HISTORY")],
+                 [line.replace("searched=24", "searched=0") for line in self.lines],
+                 [self.lines[0].replace('"ready": true', '"ready": false'), *self.lines[1:]],
+                 [self.lines[0].replace('"node": 1', '"node": 9'), *self.lines[1:]]]
+        for lines in cases:
+            with self.subTest(lines=lines[:1]), self.assertRaises(ValueError):
+                self.runner["observations"]("\n".join(lines))
+
+    def test_multi_consumer_workspace_cannot_hide_an_extra_private_member(self):
+        case = DependencyBoundary()
+        case.setUp()
+        workspace = {"rafter-storage-upgrade-probe": case.consumer / "Cargo.toml",
+                     "rafter-reference-harness": case.consumer / "harness/Cargo.toml"}
+        metadata = case.metadata
+        metadata["packages"].append({"id": "harness", "name": "rafter-reference-harness", "source": None,
+                                      "manifest_path": str(workspace["rafter-reference-harness"])})
+        metadata["workspace_members"].append("harness")
+        audit_graph(metadata, case.checkout, case.roots, case.consumer, "", workspace=workspace)
+        metadata["packages"].append({"id": "private", "name": "rafter-sim", "source": None,
+                                      "manifest_path": str(case.consumer / "private/Cargo.toml")})
+        metadata["workspace_members"].append("private")
+        with self.assertRaisesRegex(ValueError, "expected workspace"):
+            audit_graph(metadata, case.checkout, case.roots, case.consumer, "", workspace=workspace)
 
 
 if __name__ == "__main__":

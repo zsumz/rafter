@@ -59,7 +59,7 @@ class ArchiveRun:
             argv.append("--offline")
         return self.command(name, argv, cwd, env)
 
-    def build(self, role, archives, work):
+    def archive_set(self, role, archives, work):
         directory = work / role
         directory.mkdir()
         roots = {}
@@ -74,7 +74,26 @@ class ArchiveRun:
             archive_records[name] = {"version": version, "sha256": sha256(archive)}
         if len(versions) != 1:
             raise ValueError(f"{role} archives are not a coordinated version set")
-        version = versions.pop()
+        return directory, roots, versions.pop(), archive_records
+
+    def fixture_files(self):
+        return self.fixture.rglob("*.rs")
+
+    def runner_files(self):
+        return [self.script, "archive_compatibility.py", "archive_inputs.py"]
+
+    def fingerprints(self):
+        return {"fixture_sha256": {str(path.relative_to(self.fixture)): sha256(path)
+                                   for path in self.fixture_files()},
+                "runner_sha256": {name: sha256(ROOT / "scripts" / name)
+                                  for name in self.runner_files()}}
+
+    def verify_inputs(self):
+        if any(self.receipt.get(key) != value for key, value in self.fingerprints().items()):
+            raise ValueError("compatibility source inputs changed during qualification")
+
+    def build(self, role, archives, work):
+        directory, roots, version, archive_records = self.archive_set(role, archives, work)
         consumer = directory / "probe"
         shutil.copytree(self.fixture, consumer / "src")
         manifest = (
@@ -129,11 +148,7 @@ def run_matrix(run_type, description):
     try:
         if work.is_relative_to(ROOT):
             raise ValueError("temporary consumer workspace must be outside the checkout; change TMPDIR")
-        run.receipt.update({"toolchain": toolchain, "scope": run.scope,
-                            "fixture_sha256": {str(path.relative_to(run.fixture)): sha256(path)
-                                               for path in run.fixture.rglob("*.rs")},
-                            "runner_sha256": {name: sha256(ROOT / "scripts" / name) for name in
-                                              [run.script, "archive_compatibility.py", "archive_inputs.py"]}})
+        run.receipt.update({"toolchain": toolchain, "scope": run.scope, **run.fingerprints()})
         version = run.command("rustc-version", ["rustup", "run", toolchain, "rustc", "-Vv"], ROOT)
         run.receipt["rustc"] = version.read_text()
         lock = baseline_lock(run.baseline, run.packages)
@@ -157,7 +172,9 @@ def run_matrix(run_type, description):
             candidate_archives = package_target / "package"
         baseline = run.build("baseline", baseline_archives, work)
         candidate = run.build("candidate", candidate_archives.resolve(), work)
+        run.verify_inputs()
         run.matrix(baseline, candidate)
+        run.verify_inputs()
         run.receipt["status"] = "pass"
     except Exception as error:
         run.receipt.update(status="fail", error=str(error))

@@ -209,7 +209,7 @@ tools = ["cargo"]
 resources = ["reference-target"]
 
 [tasks.reference-package]
-description = "Run exact-package consumers, storage recovery, and bidirectional peer-wire compatibility."
+description = "Run exact-package consumers, storage/wire compatibility, and mixed-version TLS rolling upgrades."
 needs = ["archive-compatibility-runner-tests"]
 run = ["scripts/reference-package-check"]
 timeout = "60m"
