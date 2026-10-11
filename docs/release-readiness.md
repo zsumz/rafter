@@ -957,6 +957,14 @@ real file is refused without mutation. The full checksum still requires a
 linear scan; other metadata readers and whole-host memory limits remain separate
 qualification work.
 
+The RFLC compaction marker uses the same bounded checksum reader with a 13-byte
+body prefix. Its strict decoder remains the oracle for truncated, corrupt,
+re-signed and oversized inputs, including the maximum log-index boundary.
+An oversized real marker refuses both strict open and uncommitted-tail repair
+without changing either file. Restoring a valid marker explicitly permits the
+eligible tail repair while preserving the retained suffix. This removes another
+whole-file allocation, while retaining a full linear checksum scan.
+
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and
 TLS enabled. Publish throughput alongside p99/p99.9 latency, retained memory,

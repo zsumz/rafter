@@ -167,6 +167,12 @@ crc32                u32
 During replay, entries at or below this boundary are ignored even if their old
 frames remain in the log file after an interrupted reclamation rewrite.
 
+File-backed opening verifies the full checksum with a 4 KiB read buffer and
+retains only the 13-byte body prefix. Oversized markers preserve checksum,
+schema and trailing-byte error precedence without a file-sized allocation.
+Invalid markers are refused before any uncommitted-tail repair can mutate the
+log. Checksum verification still scans the complete marker file.
+
 ## Snapshot envelope (`RFSN`)
 
 ```text
