@@ -15,6 +15,8 @@ mod process;
 )]
 #[path = "support/production_process.rs"]
 mod production_process;
+#[path = "support/rolling_client.rs"]
+mod rolling_client;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[allow(
@@ -27,13 +29,15 @@ use std::path::PathBuf;
 
 use rafter::{LogIndex, NodeId};
 use rafter_reference_fenced_lock::{
-    check_evidence,
+    check_linearizable_with_budget,
     production::{allocate_replica, retire_replica, AllocationCrashPoint, ReplicaIdentity},
-    ApplyDisposition, Command, FencingToken, OperationResult,
+    ApplyDisposition, Command, FencingToken, OperationResult, SearchBudget,
+    MAX_SEARCH_CONFIGURATIONS,
 };
 
 use process::SubmitOutcome;
 use production_process::{wait_until, ProductionCluster, ProductionNode, NODE_IDS};
+use rolling_client::{UpgradeClient, HISTORY_LIMIT};
 use support::{acquire, config, open_session, renew, resource, submit};
 
 #[test]
@@ -65,12 +69,13 @@ fn published_nodes_roll_to_candidate_with_tls_snapshots_and_membership() {
         .submit_to_leader(submit(0, 1, 1, acquire("vault", 1000)))
         .acquired_token();
     let mut sequence = 1;
+    let mut client = UpgradeClient::default();
     observe(&mut cluster, "all-published", token);
 
     // The old leader publishes and compacts while replica 3 is absent. A new
     // binary must fetch that snapshot, not recover by replaying the removed log.
     cluster.stop_checked(NodeId(3));
-    let old_floor = advance(&mut cluster, token, &mut sequence);
+    let old_floor = advance(&mut cluster, &mut client, token, &mut sequence);
     let old_boundary = cold_checkpoint(&mut cluster, &baseline);
     assert!(old_boundary > old_floor);
     cluster.restart_with_binary(NodeId(3), &NODE_IDS, &candidate);
@@ -80,16 +85,16 @@ fn published_nodes_roll_to_candidate_with_tls_snapshots_and_membership() {
     // Stop the old leader and keep serving with an old/new quorum before its
     // replacement reopens exactly the durable directory it left behind.
     cluster.stop_checked(NodeId(1));
-    let last = write(&mut cluster, token, &mut sequence);
+    let last = write(&mut cluster, &mut client, token, &mut sequence);
     cluster.restart_with_binary(NodeId(1), &NODE_IDS, &candidate);
-    require_replay(&mut cluster, last);
+    require_replay(&mut cluster, &mut client, last);
     observe(&mut cluster, "leader-upgraded", token);
 
     // Now require the reverse direction: the remaining published replica is
     // behind a snapshot emitted by a candidate leader.
     cluster.stop_checked(NodeId(2));
     assert_ne!(cluster.wait_for_leader(), NodeId(2));
-    let candidate_floor = advance(&mut cluster, token, &mut sequence);
+    let candidate_floor = advance(&mut cluster, &mut client, token, &mut sequence);
     let candidate_boundary = cold_checkpoint(&mut cluster, &candidate);
     assert!(candidate_boundary > candidate_floor);
     cluster.restart_with_binary(NodeId(2), &NODE_IDS, &baseline);
@@ -97,19 +102,22 @@ fn published_nodes_roll_to_candidate_with_tls_snapshots_and_membership() {
     observe(&mut cluster, "published-received-candidate-snapshot", token);
 
     change_membership_while_mixed(&mut cluster, &candidate);
-    let last = write(&mut cluster, token, &mut sequence);
+    let last = write(&mut cluster, &mut client, token, &mut sequence);
     cluster.stop_checked(NodeId(2));
     cluster.restart_with_binary(NodeId(2), &NODE_IDS, &candidate);
-    require_replay(&mut cluster, last);
+    require_replay(&mut cluster, &mut client, last);
     observe(&mut cluster, "all-candidate", token);
 
     // A compacted membership history must keep its retirement policy after
     // each candidate restarts. No repair, reseed, or state copying is allowed.
     checkpoint(&mut cluster);
+    // Exercise uncertain-outcome resolution on every run without inventing an
+    // application result or assuming whether the first attempt committed.
+    client.lose_next_reply();
     for node in NODE_IDS {
         cluster.stop_checked(node);
         cluster.restart_with_binary(node, &NODE_IDS, &candidate);
-        write(&mut cluster, token, &mut sequence);
+        write(&mut cluster, &mut client, token, &mut sequence);
         wait_until("retired identity high-water to survive restart", || {
             (cluster
                 .observe(node)
@@ -119,13 +127,21 @@ fn published_nodes_roll_to_candidate_with_tls_snapshots_and_membership() {
         });
     }
     observe(&mut cluster, "candidate-restarts-complete", token);
-    let report = check_evidence(bounds, cluster.history(), &[])
-        .expect("mixed-version lock history is linearizable");
-    assert!(report.lock.searched_operations() + report.lock.discharged_operations() > 0);
+    assert!(
+        client.unknown_outcomes() >= 1,
+        "the lost reply must be retried"
+    );
+    let budget = SearchBudget::new(MAX_SEARCH_CONFIGURATIONS)
+        .unwrap()
+        .with_operation_limit(HISTORY_LIMIT)
+        .unwrap();
+    let report = check_linearizable_with_budget(bounds, cluster.history(), budget)
+        .expect("mixed-version lock history, including unknown attempts, is linearizable");
+    assert_eq!(report.searched_operations(), 24 + client.unknown_outcomes());
     println!(
         "UPGRADE_HISTORY searched={} discharged={} events={:?}",
-        report.lock.searched_operations(),
-        report.lock.discharged_operations(),
+        report.searched_operations(),
+        report.discharged_operations(),
         cluster.history()
     );
     for node in cluster.live_nodes() {
@@ -148,7 +164,12 @@ fn binary(variable: &str) -> PathBuf {
     path.canonicalize().unwrap()
 }
 
-fn write(cluster: &mut ProductionCluster, token: FencingToken, sequence: &mut u64) -> Command {
+fn write(
+    cluster: &mut ProductionCluster,
+    client: &mut UpgradeClient,
+    token: FencingToken,
+    sequence: &mut u64,
+) -> Command {
     *sequence += 1;
     let command = submit(
         0,
@@ -156,8 +177,13 @@ fn write(cluster: &mut ProductionCluster, token: FencingToken, sequence: &mut u6
         *sequence,
         renew("vault", token.get(), 1000 + *sequence),
     );
+    let outcome = client.submit(cluster, command);
+    assert!(
+        matches!(outcome, SubmitOutcome::Applied { .. }),
+        "renewal sequence {sequence} did not settle: {outcome:?}"
+    );
     assert!(matches!(
-        cluster.submit_to_leader(command).operation(),
+        outcome.operation(),
         OperationResult::Renewed { .. }
     ));
     assert_eq!(
@@ -167,10 +193,15 @@ fn write(cluster: &mut ProductionCluster, token: FencingToken, sequence: &mut u6
     command
 }
 
-fn advance(cluster: &mut ProductionCluster, token: FencingToken, sequence: &mut u64) -> LogIndex {
+fn advance(
+    cluster: &mut ProductionCluster,
+    client: &mut UpgradeClient,
+    token: FencingToken,
+    sequence: &mut u64,
+) -> LogIndex {
     let leader = cluster.wait_for_leader();
     let before = LogIndex(cluster.observe(leader).number("applied_index"));
-    write(cluster, token, sequence);
+    write(cluster, client, token, sequence);
     before
 }
 
@@ -255,9 +286,9 @@ fn require_snapshot(cluster: &mut ProductionCluster, node: NodeId, boundary: Log
     }
 }
 
-fn require_replay(cluster: &mut ProductionCluster, command: Command) {
+fn require_replay(cluster: &mut ProductionCluster, client: &mut UpgradeClient, command: Command) {
     assert!(matches!(
-        cluster.submit_to_leader(command),
+        client.submit(cluster, command),
         SubmitOutcome::Applied {
             disposition: ApplyDisposition::Replayed,
             ..

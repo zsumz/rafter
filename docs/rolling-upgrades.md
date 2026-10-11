@@ -14,10 +14,29 @@ linearizable reads, cached command replay, and local application-state agreement
 are checked across the replacements. With both versions still present, a fourth
 candidate joins as a learner, catches up, is promoted through joint consensus,
 and is removed. After every final candidate restart, the retired identity
-high-water must remain 4. The independent history checker checks the complete
-24-operation client history and must report nonempty evidence.
+high-water must remain 4. The independent history checker checks all 24 ordinary
+client operations plus every uncertain attempt, using an explicit 32-operation
+limit and the unchanged 200,000-configuration limit. The default history limit
+for other callers remains 24. Exhausting either bound fails qualification.
 Every live replica, including the published binary, must observe the joint and
 stable phases before the next membership step can proceed.
+
+Leader turnover can discard local proposal tracking after append. An unknown
+write outcome is therefore legitimate during a restart. This application retries
+the identical command, session, sequence, and fingerprint, under its existing
+deduplication contract. Every attempt receives its own invocation and terminal
+event; uncertain attempts are never removed from the checked history. A shared
+eight-unknown-outcome allowance and a deadline around each retry sequence bound
+the work. Each underlying connection and leader wait also has its own deadline.
+The client does not advance its sequence until the command settles.
+
+Every run also sends one real request and closes that client connection without
+reading its reply. This deliberately creates uncertainty without assuming whether
+the first attempt applied. The receipt requires the lost-reply marker, ordered
+retry markers, and exactly 24 plus the number of unknown attempts in the checked
+history. All existing reads, snapshot, membership, and restart assertions remain.
+These are explicit application retries; the library still reports uncertain
+writes as uncertain and does not deduplicate arbitrary Raft commands.
 
 Snapshot installation is mandatory in both directions: a candidate must install
 a published sender's snapshot, then a published replica must install a candidate

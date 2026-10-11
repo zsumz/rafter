@@ -37,8 +37,13 @@ def observations(transcript):
     if seen != {(stage, node) for stage in STAGES for node in (1, 2, 3)}:
         raise ValueError("rolling-upgrade transcript is missing a required stage or node")
     history = re.findall(r"UPGRADE_HISTORY searched=(\d+) discharged=(\d+) events=", transcript)
-    if len(history) != 1 or int(history[0][0]) == 0:
-        raise ValueError("rolling-upgrade transcript lacks nonempty checked history")
+    retries = list(map(int, re.findall(r"UPGRADE_RETRY attempt=(\d+) ", transcript)))
+    if not 1 <= len(retries) <= 8 or retries != list(range(1, len(retries) + 1)):
+        raise ValueError("rolling-upgrade transcript lacks bounded, ordered unknown-outcome retries")
+    if len(history) != 1 or int(history[0][0]) != 24 + len(retries):
+        raise ValueError("rolling-upgrade checked history must retain every unknown attempt")
+    if transcript.count("UPGRADE_LOST_REPLY node=") != 1:
+        raise ValueError("rolling-upgrade transcript lacks the deliberate lost reply")
     for marker in ("UPGRADE_MEMBERSHIP mixed-versions learner-promoted-and-retired",
                    "UPGRADE_COMPLETE published-to-candidate tls snapshots-both-directions membership durable-restarts",
                    "test result: ok. 1 passed; 0 failed;"):

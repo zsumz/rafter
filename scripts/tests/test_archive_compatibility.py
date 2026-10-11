@@ -204,7 +204,9 @@ class RollingBoundary(unittest.TestCase):
                       + json.dumps({"node": node, "ready": True})
                       for stage in self.runner["STAGES"] for node in (1, 2, 3)]
         self.lines += ["UPGRADE_MEMBERSHIP mixed-versions learner-promoted-and-retired",
-                       "UPGRADE_HISTORY searched=24 discharged=0 events=[]",
+                       "UPGRADE_LOST_REPLY node=1",
+                       "UPGRADE_RETRY attempt=1 command=fixture outcome=unknown",
+                       "UPGRADE_HISTORY searched=25 discharged=0 events=[]",
                        "UPGRADE_COMPLETE published-to-candidate tls snapshots-both-directions membership durable-restarts",
                        "test result: ok. 1 passed; 0 failed;"]
 
@@ -216,12 +218,32 @@ class RollingBoundary(unittest.TestCase):
     def test_empty_missing_duplicate_unready_and_zero_test_evidence_is_refused(self):
         cases = [[], self.lines[1:], self.lines + self.lines[:1], self.lines[:-1],
                  [line for line in self.lines if not line.startswith("UPGRADE_HISTORY")],
-                 [line.replace("searched=24", "searched=0") for line in self.lines],
+                 [line.replace("searched=25", "searched=0") for line in self.lines],
                  [self.lines[0].replace('"ready": true', '"ready": false'), *self.lines[1:]],
                  [self.lines[0].replace('"node": 1', '"node": 9'), *self.lines[1:]]]
         for lines in cases:
             with self.subTest(lines=lines[:1]), self.assertRaises(ValueError):
                 self.runner["observations"]("\n".join(lines))
+
+    def test_lost_reply_and_every_bounded_retry_must_remain_in_the_evidence(self):
+        cases = [
+            [line for line in self.lines if not line.startswith("UPGRADE_LOST_REPLY")],
+            self.lines + ["UPGRADE_LOST_REPLY node=2"],
+            [line for line in self.lines if not line.startswith("UPGRADE_RETRY")],
+            [line.replace("attempt=1 ", "attempt=2 ") for line in self.lines],
+            self.lines + ["UPGRADE_RETRY attempt=1 command=fixture outcome=unknown"],
+            [line.replace("searched=25", "searched=24") for line in self.lines],
+        ]
+        for lines in cases:
+            with self.subTest(lines=lines[-5:]), self.assertRaises(ValueError):
+                self.runner["observations"]("\n".join(lines))
+        full = [line.replace("searched=25", "searched=32") for line in self.lines]
+        full += [f"UPGRADE_RETRY attempt={number} command=fixture outcome=unknown"
+                 for number in range(2, 9)]
+        self.assertEqual(len(self.runner["observations"]("\n".join(full))), 18)
+        full += ["UPGRADE_RETRY attempt=9 command=fixture outcome=unknown"]
+        with self.assertRaises(ValueError):
+            self.runner["observations"]("\n".join(full))
 
     def test_multi_consumer_workspace_cannot_hide_an_extra_private_member(self):
         case = DependencyBoundary()

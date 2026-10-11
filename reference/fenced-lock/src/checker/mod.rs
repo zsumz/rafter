@@ -27,8 +27,8 @@ use crate::{
 
 use parse::Action;
 
-/// Maximum number of operations one checked history may require the search to
-/// place.
+/// Default maximum number of operations one checked history may require the
+/// search to place.
 ///
 /// Provably uncommitted mutations and unanswered queries are discharged before
 /// this bound is applied.
@@ -40,7 +40,7 @@ pub const MAX_SEARCH_CONFIGURATIONS: usize = 200_000;
 /// The unplaced-operation set is a bit set, so the history bound must fit it.
 const _: () = assert!(MAX_HISTORY_OPERATIONS <= u32::BITS as usize);
 
-/// Explicit configuration budget for one bounded search.
+/// Explicit operation and configuration budgets for one bounded search.
 ///
 /// A smaller budget is useful when a caller prefers an early undecided result
 /// to additional search work. Zero is rejected because it would not inspect a
@@ -55,6 +55,20 @@ impl SearchBudget {
     #[must_use]
     pub const fn new(configurations: usize) -> Option<Self> {
         match SearchLimits::new(MAX_HISTORY_OPERATIONS, configurations) {
+            Some(limits) => Some(Self { limits }),
+            None => None,
+        }
+    }
+
+    /// Sets an explicit operation bound, retaining the configuration budget.
+    ///
+    /// The default is [`MAX_HISTORY_OPERATIONS`]. Returns `None` above 32, the
+    /// search engine's predecessor-bit-set limit. Zero admits only histories
+    /// whose operations are all discharged. Increasing this bound does not
+    /// change the specification or turn budget exhaustion into acceptance.
+    #[must_use]
+    pub const fn with_operation_limit(self, operations: usize) -> Option<Self> {
+        match SearchLimits::new(operations, self.configurations()) {
             Some(limits) => Some(Self { limits }),
             None => None,
         }
@@ -92,8 +106,8 @@ pub fn check_linearizable(
 
 /// Checks a history under an explicit search budget.
 ///
-/// This has the same semantics as [`check_linearizable`]. Only the maximum
-/// number of visited configurations differs.
+/// This has the same semantics as [`check_linearizable`]. Only the operation
+/// and configuration limits differ.
 ///
 /// # Errors
 ///

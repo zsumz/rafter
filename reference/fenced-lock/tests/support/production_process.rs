@@ -476,8 +476,13 @@ impl ProductionCluster {
         let line = render_command(command);
         let outcome = wait_until("a production leader to settle a command", || {
             let leader = self.wait_for_leader();
-            let response = self.node_mut(leader).ask(&line).ok()?;
-            let outcome = parse_submit_response(&response);
+            // A connection failure cannot prove that the request was refused.
+            // Preserve it for the caller and history instead of silently
+            // retrying a potentially committed command inside this interval.
+            let outcome = match self.node_mut(leader).ask(&line) {
+                Ok(response) => parse_submit_response(&response),
+                Err(detail) => SubmitOutcome::Unknown { detail },
+            };
             (!matches!(
                 outcome,
                 SubmitOutcome::NotCommitted { .. } | SubmitOutcome::NotReady { .. }
@@ -486,6 +491,38 @@ impl ProductionCluster {
         });
         self.history
             .push(process_history::submit_terminal(operation_id, &outcome));
+        outcome
+    }
+
+    /// Sends one real request, closes its connection without reading a reply,
+    /// and records an unknown outcome. Neither append nor commit is inferred.
+    #[allow(
+        dead_code,
+        reason = "only the rolling-upgrade suite injects a lost reply"
+    )]
+    pub fn submit_losing_reply(&mut self, command: Command) -> SubmitOutcome {
+        use std::{io::Write, net::TcpStream};
+        let operation_id = self.allocate_operation_id();
+        self.history.push(HistoryEvent::Invoked {
+            operation_id,
+            command,
+        });
+        let leader = self.wait_for_leader();
+        let address = self.node_mut(leader).client_addr();
+        let mut connection = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+            .expect("the reply-loss client connects");
+        connection
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        writeln!(connection, "{}", render_command(command))
+            .expect("the request reaches the socket");
+        drop(connection);
+        let outcome = SubmitOutcome::Unknown {
+            detail: String::from("client closed its connection without reading the reply"),
+        };
+        self.history
+            .push(process_history::submit_terminal(operation_id, &outcome));
+        println!("UPGRADE_LOST_REPLY node={}", leader.0);
         outcome
     }
 

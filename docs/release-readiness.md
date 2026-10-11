@@ -151,6 +151,18 @@ The failed PR-tier logs confirm runner drift: the TLA producer used Ubuntu image
 evidence rows belong to the rejected TLA layer. Runtime qualification remains
 open until the candidate's producer and aggregate receipts authenticate together.
 
+**New blocking evidence (October 11):** the retained
+[nightly run at `5b1d4e3f`](https://github.com/zsumz/rafter/actions/runs/38103501529)
+reports `CommittedEntriesHaveQuorum` violations for CM-02.a and CM-02.b; the
+other eleven TLA rows are incomplete because checking stopped at that
+counterexample. The primary TLC process exited 12, without a timeout. Its
+21-state trace has leader `n1` enter joint membership, append a final configuration
+removing itself at index 2, append a command at index 3, and advance directly to
+`Commit(n1,3)`. The captured `Raft.tla` hash matches the current file exactly.
+Whether this is a model/certificate defect or a corresponding Rust defect remains
+unresolved. Minimize and replay the trace against both before claiming release
+qualification; successful package or process tests do not discharge this finding.
+
 **Acceptance:** all required jobs pass in one attempt at the candidate SHA;
 all 44 verdicts have current evidence; the process failure test repeatedly
 establishes its fault ordering under load. Rerun every invariant producer and
@@ -318,11 +330,32 @@ The metrics slice passes 325 service tests, 532 source-consumer tests, and 537
 archive/MSRV tests on Rust 1.88.0, with strict service/consumer lint and docs.
 Its eight new unit cases include reentrant destruction, self-cancellation, and
 publication during waker replacement; three deliberate ownership/locking faults
-fail their regressions. The exact-package runner's final compatibility phase
-remains **failed**: storage and peer-wire matrices pass, but the mixed-version
-TLS case receives an unsettled write during its final replica restarts. The
-current assertion hides that outcome; investigating it is the next release
-blocker. The earlier successful matrix runs do not supersede this failure.
+fail their regressions. Its first exact-package run failed the rolling TLS
+matrix after the other phases passed. A diagnostic reproduction captured the
+cause on run 30: local proposal tracking was dropped during final replica
+restarts, and the client correctly received an unknown outcome. The test had
+incorrectly required that every restart-time write immediately settle.
+
+The rolling client now retries identical idempotent commands with a shared
+eight-unknown-outcome allowance. Every attempt stays in the history, all original
+read checks remain, and one real client reply is deliberately lost on every run.
+The scenario explicitly admits up to 32 history operations; the default remains
+24 and the 200,000-configuration bound is unchanged. Removing an uncertain
+attempt makes a cached-retry history fail validation. Connection failures are
+also returned as unknown, preserving the application's responsibility to retry.
+The receipt refuses missing loss/retry evidence or a history that omits attempts.
+
+This slice passes 535 source-consumer tests and 540 archive/MSRV tests, with 57
+existing profiles ignored in each lane, plus all five authenticated-process
+cases. Three new checker controls preserve the default limit and reject both
+impossible histories and an omitted uncertain attempt; all 18 archive-runner
+tests pass. Disabling retry or hiding the lost request in an isolated consumer
+fails the rolling scenario. Strict consumer lint/docs, formatting, size checks,
+and zrail pass without another policy or lock change. The restored scenario
+passes 32 repetitions across four concurrent processes; every transcript passes
+the loss/retry/history receipt checks. The final Rust 1.88.0 archive run passes
+all seven phases, including all three compatibility matrices. This does not
+resolve the TLA counterexample recorded above.
 
 Remaining composition work includes integrating managed client/read ownership and
 TLS process adoption of the owner. Ordinary consensus inputs retain synchronous

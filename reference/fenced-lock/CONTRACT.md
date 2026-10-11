@@ -1104,8 +1104,11 @@ here does because nothing here removes anything.
   documentation states and its code does — and counts the refusal on the `LINK`
   line so a violation is visible. No test here has made it fire, and none
   claims to have.
-- **Bounded linearizability evidence.** The checker places at most 24
-  operations and visits at most 200,000 configurations per history. A history
+- **Bounded linearizability evidence.** The checker defaults to at most 24
+  operations and visits at most 200,000 configurations per history. An explicit
+  `SearchBudget::with_operation_limit` can select up to 32 operations, within
+  the existing predecessor bit set, without changing the specification or
+  configuration budget. A history
   above either bound is undecided and fails closed; this
   suite does not claim an unbounded proof. Within those limits, the process
   histories are decided solely from the client-visible vocabulary below,
@@ -1358,3 +1361,13 @@ The committed certificates are test-only and protect no external secret; the
 CA signing key is not present. Client authentication, certificate issuance and
 rotation, deployment control, general discovery, and signal management remain
 embedding concerns.
+
+The published-library rolling-upgrade scenario retains all uncertain write
+attempts, including a deliberately lost client reply, in its independent
+history. It resubmits identical application commands under the same request
+identity and caps the total at eight uncertain outcomes. Its explicit
+32-operation history budget covers the 24 ordinary operations plus those
+attempts; every original query and restart assertion remains. Client connection
+failures are returned as unknown outcomes rather than silently retried inside a
+single completed history interval. See [the qualification contract](../../docs/rolling-upgrades.md)
+for the exact archive, snapshot, membership, and receipt boundaries.
