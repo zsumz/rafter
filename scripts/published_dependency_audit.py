@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import tomllib
 
 AUDIT_VERSION = "0.22.2"
@@ -131,3 +132,23 @@ def validate_report(report, returncode, package_count):
     if (vulnerabilities["found"] is not False or vulnerabilities["count"] != 0
             or vulnerabilities["list"] != [] or report["warnings"] != {}):
         raise ValueError("dependency advisories or warnings require review")
+
+
+def audit_lock(lockfile, project, artifacts, role="audit"):
+    """Keep each graph's raw evidence and refuse a successful but narrowed report."""
+    lock_hash = digest(lockfile)
+    packages = tomllib.loads(lockfile.read_text())["package"]
+    result = subprocess.run(
+        ["cargo", "audit", "--file", str(lockfile), "--json", "--deny", "warnings"],
+        cwd=project, capture_output=True)
+    (artifacts / f"{role}.json").write_bytes(result.stdout)
+    (artifacts / f"{role}.stderr").write_bytes(result.stderr)
+    if not result.stdout and result.returncode:
+        raise ValueError(f"{role} failed (exit {result.returncode}); see {role}.stderr")
+    report = json.loads(result.stdout)
+    validate_report(report, result.returncode, len(packages))
+    if digest(lockfile) != lock_hash:
+        raise ValueError(f"{role} lock changed during inspection")
+    return {"lock_sha256": lock_hash, "package_count": len(packages),
+            "registry_count": sum(p.get("source", "").startswith("registry+") for p in packages),
+            "report": report}

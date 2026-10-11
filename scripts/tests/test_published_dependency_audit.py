@@ -4,11 +4,13 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import tomllib
 import unittest
+from unittest.mock import patch
 
 from scripts.published_dependency_audit import (
-    PROBE, REGISTRY, probe_manifest, public_packages, validate_closure, validate_report,
+    PROBE, REGISTRY, audit_lock, probe_manifest, public_packages, validate_closure, validate_report,
 )
 
 
@@ -156,6 +158,58 @@ class AuditEvidence(unittest.TestCase):
             report["warnings"] = {kind: [{}]}
             with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "require review"):
                 validate_report(report, 0, 5)
+
+    def lock(self, root, name, count):
+        path = root / name
+        path.write_text("\n".join(f'[[package]]\nname = "p{n}"\nversion = "1.0.0"'
+                                  for n in range(count)))
+        return path
+
+    def test_clean_public_graph_cannot_mask_a_workspace_advisory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            public = self.lock(root, "public.lock", 5)
+            workspace = self.lock(root, "workspace.lock", 6)
+            bad = copy.deepcopy(self.report)
+            bad["lockfile"]["dependency-count"] = 6
+            bad["vulnerabilities"] = {"found": True, "count": 1,
+                                      "list": [{"advisory": {"id": "RUSTSEC-2026-0194"}}]}
+            results = [subprocess.CompletedProcess([], code, json.dumps(report).encode(), b"")
+                       for code, report in [(0, self.report), (1, bad)]]
+            with patch("scripts.published_dependency_audit.subprocess.run", side_effect=results):
+                self.assertEqual(audit_lock(public, root, root)["package_count"], 5)
+                with self.assertRaisesRegex(ValueError, "exit 1"):
+                    audit_lock(workspace, root, root, "workspace-audit")
+            self.assertEqual(json.loads((root / "audit.json").read_text()), self.report)
+            self.assertEqual(json.loads((root / "workspace-audit.json").read_text()), bad)
+
+    def test_audit_tool_failure_preserves_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = self.lock(root, "workspace.lock", 5)
+            failure = subprocess.CompletedProcess([], 2, b"", b"database unavailable")
+            with patch("scripts.published_dependency_audit.subprocess.run", return_value=failure):
+                with self.assertRaisesRegex(ValueError, "workspace-audit failed.*exit 2"):
+                    audit_lock(lock, root, root, "workspace-audit")
+            self.assertEqual((root / "workspace-audit.stderr").read_bytes(), b"database unavailable")
+
+    def test_report_must_match_the_selected_lock_and_its_unchanged_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = self.lock(root, "workspace.lock", 6)
+            result = subprocess.CompletedProcess([], 0, json.dumps(self.report).encode(), b"")
+            with patch("scripts.published_dependency_audit.subprocess.run", return_value=result):
+                with self.assertRaisesRegex(ValueError, "different package inventory"):
+                    audit_lock(lock, root, root)
+            self.lock(root, "workspace.lock", 5)
+
+            def change_during_audit(*args, **kwargs):
+                lock.write_text(lock.read_text() + "\n# replaced during audit\n")
+                return result
+
+            with patch("scripts.published_dependency_audit.subprocess.run", side_effect=change_during_audit):
+                with self.assertRaisesRegex(ValueError, "lock changed during inspection"):
+                    audit_lock(lock, root, root)
 
 
 if __name__ == "__main__":

@@ -70,8 +70,12 @@ or checksums, missing public roots/features, private paths, and advisory ignores
 or target/severity filters. Vulnerabilities, informational advisories and yanked
 packages fail qualification. Receipts retain the exact audited lock, graph,
 checker/compiler identities and fetched advisory database commit. The root lock
-is never rewritten. Source dependency evidence complements exact-archive tests;
-it does not audit the repository-only verifier tools or establish license policy.
+is never rewritten. CI and zcheck also pass `--include-workspace`, auditing the
+complete root lock (including test/verifier dependencies) with a separate lock,
+report and receipt entry. A clean public graph cannot mask a workspace advisory.
+The script without that option checks only public libraries. Source dependency
+evidence complements exact-archive tests; standalone benchmark/fuzz/reference
+locks and license policy remain separate assessments.
 
 `zcheck run full` adds the deeper local lanes; inspect the plan for platform
 requirements. Invariant evidence execution requires Linux, Python 3.11+, Java

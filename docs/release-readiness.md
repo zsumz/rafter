@@ -922,9 +922,8 @@ lock before auditing. It retains the lock, graph, tool versions, exact manifest
 hashes and freshly fetched database identity. Missing roots/features, unexpected
 paths, changed versions/checksums, narrowed advisory settings, vulnerabilities,
 informational warnings and yanked packages fail. An explicit isolated policy
-prevents inherited developer exclusions. License policy and repository-only
-verifier dependencies still require their own assessments; archive dependency
-auditing above was a separate manual qualification.
+prevents inherited developer exclusions. License policy still requires review;
+archive dependency auditing above was a separate manual qualification.
 Eleven adversarial controls pass, and the real pre-fix rustls lock is rejected
 with RUSTSEC-2026-0285. The existing 28 CI contracts and all ten immutable action
 pin checks pass. The audit gate's three source files are content-addressed by
@@ -941,6 +940,11 @@ The full 272-package workspace lock, including 256 registry packages, now passes
 the same strict audit with no exclusions. All three report tests preserve the
 golden formats, escaping and complete invariant coverage. The separate benchmark,
 fuzz and reference workspaces are outside this root-lock assessment.
+CI and the local `dependency-audit` task now also audit this complete root lock
+through `--include-workspace`. They retain separate public and workspace locks,
+raw reports, package counts and database identities. A clean public graph cannot
+mask a workspace advisory, checker failure or a changed audit input. Fourteen
+controls exercise those boundaries; neither graph uses advisory exclusions.
 
 ## Suggested sequence
 

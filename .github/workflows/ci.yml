@@ -63,8 +63,8 @@ jobs:
         run: cargo install cargo-audit --version 0.22.2 --locked
       - name: Public dependency coverage and advisory controls
         run: python3 -m unittest scripts/tests/test_published_dependency_audit.py
-      - name: Audit every publishable library feature
-        run: python3 scripts/audit-published-dependencies --artifacts artifacts/dependency-audit
+      - name: Audit public libraries and the separate workspace dependency graph
+        run: python3 scripts/audit-published-dependencies --include-workspace --artifacts artifacts/dependency-audit
       - name: Upload dependency and advisory evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

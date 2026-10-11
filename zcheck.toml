@@ -212,9 +212,9 @@ run = ["python3", "-m", "unittest", "scripts/tests/test_published_dependency_aud
 tools = ["python3"]
 
 [tasks.dependency-audit]
-description = "Audit all public features with workspace-locked versions and a fresh RustSec database. Requires cargo-audit 0.22.2, Python 3.11+, and network access."
+description = "Audit all public features and separately the complete workspace lock against fresh RustSec data. Requires cargo-audit 0.22.2, Python 3.11+, and network access."
 needs = ["dependency-audit-tests"]
-run = ["python3", "scripts/audit-published-dependencies"]
+run = ["python3", "scripts/audit-published-dependencies", "--include-workspace"]
 tools = ["cargo", "cargo-audit", "python3"]
 resources = ["advisory-db"]
 
