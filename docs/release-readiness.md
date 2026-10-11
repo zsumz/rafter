@@ -1,8 +1,9 @@
 # Release readiness — 2026-10-10
 
 Assessed source: `021f4f9bb2f6960cb75b24f5a627f1872a12d430` (`origin/main`).
-Remote branches, pull requests, and workflow results were refreshed on October
-10, 2026. The local build changes add a Rust 1.88.0 toolchain pin and setup
+Remote branches, pull requests, and workflow results were initially refreshed on
+October 10, 2026. An October 11 fetch confirms `origin/main` and the other branch
+tips are unchanged; only this release-work branch has advanced. The local build changes add a Rust 1.88.0 toolchain pin and setup
 instructions; they do not change consensus behavior or declare a release.
 CI's shared setup action explicitly selects each job's requested toolchain so
 the local pin does not override newer tool-installation, packaging, or fuzz jobs.
@@ -185,6 +186,16 @@ as expected. See [the certificate explanation](model-checking.md#self-removal-co
 The failed nightly remains retained evidence. A fresh source-bound producer and
 aggregate run must qualify the corrected model before a release claim; these
 focused checks do not replace the full tier.
+
+The corrected checkpoint's [October 11 nightly burn-in](https://github.com/zsumz/rafter/actions/runs/38117336352/job/114404749801)
+found a separate `RD-06 client history linearizability` failure at seed
+`0x5f20b7ca1233fddd`, step 230: read 2 (`start=8`, `end=11`) returned
+`model-proposal-1`. The saved artifact is `burn-in-logs`, ID `11694408322`.
+A local standalone replay using the exact nightly workload bounds and standard
+three-node configuration reproduces that same failure. This is an unresolved
+release blocker, not an infrastructure retry: minimize the history and establish
+whether the kernel or harness is wrong before adding managed reads. The TLA
+producer and remaining jobs in that run are separate, still pending evidence.
 
 **Acceptance:** all required jobs pass in one attempt at the candidate SHA;
 all 44 verdicts have current evidence; the process failure test repeatedly
@@ -388,17 +399,37 @@ output batch. Keep application schemas, authentication policy, and scheduling
 selection in the embedding. Do not force pending pipeline states into the
 synchronous `PersistedRaftRuntime` trait.
 
-The next implementation should be an opt-in durable adapter in `rafter-service`
-that owns `DurableService` for the entire lifetime of its client requests. Keep
-the default service dependency boundary unchanged; review the optional runtime
-edge through the existing architecture policy gate. Command encoding must stay
-independent of the busy application worker so admission does not serialize on
-application I/O. The adapter owns request IDs, read cancellation, freshness-floor
-translation, and terminal outcomes. Its credits cover queued work, in-flight
-work, completed results awaiting collection, and canceled work still held by the
-owner. Shutdown closes admission, drains or releases the owned backend, then
-resolves remaining waiters. Validate this through the existing TLS consumer and
-exact-package lane before treating the composition gap as closed.
+The first managed client slice is now the default-off `rafter-service/durable`
+feature. `DurableClientOwner` uniquely owns `DurableService`; cloned write
+senders cannot extend backend lifetime. Commands arrive already encoded, so a
+busy application worker does not serialize admission. Credits cover queued,
+in-flight, completed-uncollected, and canceled-but-owned writes; encoded `Vec`
+capacity supplies the byte charge. Only durable application outcomes produce
+success. Shutdown closes admission, releases the backend, then resolves remaining
+waiters as proven refusal or unknown outcome. Caught outcome/waker panics fence
+the owner; terminal publication attempts every waiter even when one waker panics.
+
+Nine real-worker tests cover these boundaries, and an independent ledger test
+uses three file-backed owners over existing mutual TLS. It withholds follower
+turns before quorum, pauses application durability after quorum, cancels queued
+work while the application is busy, and cold-reopens the acknowledged state with
+a different leader. Default dependencies stay unchanged; two explicit optional
+runtime/storage edges are recorded in the candidate architecture lock and remain
+subject to maintainer review. CI and zcheck explicitly test and lint the feature;
+strict rustdoc includes its public surface. Managed reads, read cancellation,
+freshness-floor translation, `DriverCommandSender`, and TLS process adoption
+remain unfinished. The reproduced nightly linearizability failure takes priority
+before those follow-ups.
+
+Local qualification passes 325 default service tests, 334 with `durable`, 536
+source-consumer tests, and 541 archive/MSRV consumer tests on Rust 1.88.0. All
+seven package phases pass, including published storage, peer wire, and rolling
+TLS processes. The rolling runner resolves the unchanged process consumer and
+its required workspace members for both versions; candidate-only ledger APIs
+stay in the complete consumer lane rather than being requested from older
+packages. Nineteen runner controls and strict lint/docs, source/dependency/size,
+workflow/profile, and architecture checks pass. Hosted qualification of this
+new candidate remains required.
 
 Use PR #13's counter as an independent adopter, after updating it. Test actual
 TLS processes with restart, full queues, stalled fsync, leadership changes,

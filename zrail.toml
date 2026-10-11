@@ -1028,7 +1028,7 @@ may_depend_on = [
   "durability",
 ]
 profiles = ["no-ambient-services", "sealed-production"]
-reason = "Async service handles and the many-group host; runtime and durability edges are dev-only acceptance harnesses."
+reason = "Async service handles and the many-group host; rafter-service opts into concrete runtime/storage ownership only with its default-off durable feature. Other runtime and durability edges remain dev-only acceptance harnesses."
 
 [layer.dependencies]
 external = "none"

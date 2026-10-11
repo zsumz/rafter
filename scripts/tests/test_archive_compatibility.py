@@ -8,6 +8,7 @@ import runpy
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -209,6 +210,33 @@ class RollingBoundary(unittest.TestCase):
                        "UPGRADE_HISTORY searched=25 discharged=0 events=[]",
                        "UPGRADE_COMPLETE published-to-candidate tls snapshots-both-directions membership durable-restarts",
                        "test result: ok. 1 passed; 0 failed;"]
+
+    def test_process_consumer_keeps_identical_sources_without_unrelated_candidate_features(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "fixture"
+            fixture.mkdir()
+            manifest = '[workspace]\nmembers = ["fenced-lock", "harness", "ledger", "sharded-counter"]\nresolver = "2"\n'
+            (fixture / "Cargo.toml").write_text(manifest)
+            for name in (*self.runner["MEMBERS"], "ledger"):
+                member = fixture / name
+                (member / "src").mkdir(parents=True)
+                (member / "src/main.rs").write_bytes(b"unchanged process source\n")
+                (member / "Cargo.toml").write_text('[package]\nname = "' + name + '"\n')
+            (fixture / "ledger/Cargo.toml").write_text('rafter-service = { features = ["future-api"] }\n')
+            for role in ("baseline", "candidate"):
+                copied = root / role
+                self.runner["copy_consumer"](fixture, copied)
+                self.assertEqual(tomllib.loads((copied / "Cargo.toml").read_text())["workspace"],
+                                 {"members": list(self.runner["MEMBERS"]), "resolver": "2"})
+                self.assertFalse((copied / "ledger").exists())
+                for name in self.runner["MEMBERS"]:
+                    for relative in ("src/main.rs", "Cargo.toml"):
+                        self.assertEqual((copied / name / relative).read_bytes(),
+                                         (fixture / name / relative).read_bytes())
+            (fixture / "Cargo.toml").write_text('[workspace]\nmembers = ["harness"]\n')
+            with self.assertRaisesRegex(ValueError, "missing a required member"):
+                self.runner["copy_consumer"](fixture, root / "incomplete")
 
     def test_complete_rolling_transcript_and_baseline_set(self):
         self.assertEqual(len(self.runner["observations"]("\n".join(self.lines))), 18)

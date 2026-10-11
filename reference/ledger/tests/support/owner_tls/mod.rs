@@ -1,6 +1,7 @@
 //! Same-process replicas with real files, application workers, and TLS sockets.
 //! This is public API/package qualification, not OS-process fault isolation.
 mod application;
+mod client;
 mod link;
 mod node;
 mod snapshot;

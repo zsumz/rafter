@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import tomllib
 
 from archive_compatibility import ArchiveRun, ROOT, run_matrix
 from archive_inputs import audit_graph, sha256, tree_inventory
@@ -14,10 +15,30 @@ from archive_inputs import audit_graph, sha256, tree_inventory
 TEST = "published_nodes_roll_to_candidate_with_tls_snapshots_and_membership"
 STAGES = ("all-published", "candidate-received-published-snapshot", "leader-upgraded",
           "published-received-candidate-snapshot", "all-candidate", "candidate-restarts-complete")
-MEMBERS = ("fenced-lock", "harness", "ledger", "sharded-counter")
+# These consumers resolve all eleven archives and own the unchanged process
+# fixture. Ledger-only candidate APIs are qualified by the exact-package lane;
+# resolving them against historical releases would demand nonexistent features.
+MEMBERS = ("fenced-lock", "harness", "sharded-counter")
 PACKAGES = frozenset(("rafter", "rafter-app", "rafter-codec", "rafter-crc32", "rafter-runtime",
                       "rafter-runtime-api", "rafter-service", "rafter-storage", "rafter-multiraft",
                       "rafter-transport-tcp-insecure", "rafter-transport-tls"))
+
+
+def copy_consumer(fixture, consumer):
+    """Use the same public process consumer bytes against both archive sets."""
+    manifest = (fixture / "Cargo.toml").read_text()
+    members = tomllib.loads(manifest)["workspace"]["members"]
+    if not set(MEMBERS).issubset(members):
+        raise ValueError("rolling consumer workspace is missing a required member")
+    manifest, count = re.subn(r"(?m)^members = \[[^\n]*\]$",
+                              "members = " + json.dumps(MEMBERS), manifest)
+    if count != 1 or tomllib.loads(manifest)["workspace"]["members"] != list(MEMBERS):
+        raise ValueError("rolling consumer workspace member declaration changed shape")
+    consumer.mkdir(parents=True)
+    (consumer / "Cargo.toml").write_text(manifest)
+    for name in MEMBERS:
+        shutil.copytree(fixture / name, consumer / name,
+                        ignore=shutil.ignore_patterns("target", "Cargo.lock", ".cargo"))
 
 
 def observations(transcript):
@@ -65,7 +86,8 @@ class Run(ArchiveRun):
 
     def fixture_files(self):
         for directory, children, files in os.walk(self.fixture):
-            children[:] = sorted(name for name in children if name not in ("target", ".cargo"))
+            children[:] = sorted(name for name in children if name not in ("target", ".cargo")
+                                 and (Path(directory) != self.fixture or name in MEMBERS))
             for name in sorted(files):
                 path = Path(directory) / name
                 if path.suffix in (".rs", ".toml", ".pem"):
@@ -74,8 +96,7 @@ class Run(ArchiveRun):
     def build(self, role, archives, work):
         directory, roots, version, archive_records = self.archive_set(role, archives, work)
         consumer = directory / "consumer" / "reference"
-        shutil.copytree(self.fixture, consumer,
-                        ignore=shutil.ignore_patterns("target", "Cargo.lock", ".cargo"))
+        copy_consumer(self.fixture, consumer)
         # This identical public consumer is compiled against each version set.
         # Only dependency versions change; no source or behavior is substituted.
         for manifest in consumer.rglob("Cargo.toml"):
@@ -96,7 +117,7 @@ class Run(ArchiveRun):
         audit_graph(metadata, ROOT, roots, consumer, "", workspace=workspace)
         never_publish = directory / "never-publish.txt"
         # The strict graph audit already limits every local package to these
-        # four public consumers and the exact archive set. Keep the existing
+        # three public consumers and the exact archive set. Keep the existing
         # manifest scanner too: it catches dormant forbidden declarations.
         never_publish.write_text("rafter-sim\nrafter-maelstrom\nrafter-invariants\nrafter-invariant-test\nrafter-invariant-test-macros\nrafter-fuzz\n")
         self.command(f"{role}-boundary", [ROOT / "scripts/reference-package-boundary-check",
@@ -120,7 +141,7 @@ class Run(ArchiveRun):
             self.receipt["test_binary_sha256"] = sha256(self.test_binary)
         lock = self.artifacts / f"{role}-Cargo.lock"
         shutil.copyfile(consumer / "Cargo.lock", lock)
-        self.receipt[role] = {"archives": archive_records, "binary_sha256": sha256(binary),
+        self.receipt[role] = {"consumer_members": list(MEMBERS), "archives": archive_records, "binary_sha256": sha256(binary),
                              "lock_sha256": sha256(lock), "metadata_sha256": sha256(metadata_path)}
         return binary
 

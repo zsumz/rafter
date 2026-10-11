@@ -17,7 +17,7 @@ rafter-reference-harness.workspace = true
 rafter-storage = "=0.0.2-alpha.1"
 
 [dev-dependencies]
-rafter-service = "=0.0.2-alpha.1"
+rafter-service = { version = "=0.0.2-alpha.1", features = ["durable"] }
 rafter-transport-tls = "=0.0.2-alpha.1"
 
 [lints]

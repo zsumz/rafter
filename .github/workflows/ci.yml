@@ -64,6 +64,8 @@ jobs:
         # Workspace lints set clippy::{all,pedantic} = warn; -D warnings
         # escalates them (and rustc warnings) to errors.
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: durable client Clippy
+        run: cargo clippy --locked -p rafter-service --features durable --all-targets -- -D warnings
       - name: rustdoc
         # The eleven crates in RELEASE.md's publish list reach docs.rs, and until
         # this step nothing built their documentation at all. The script
@@ -270,6 +272,8 @@ jobs:
         run: python3 scripts/render-raft-invariants-doc --check
       - name: workspace tests
         run: scripts/ci-run-diagnosed workspace-tests target/rafter-invariants/ci-diagnostics/workspace-tests.log cargo test --workspace
+      - name: durable client tests
+        run: cargo test --locked -p rafter-service --features durable
       - name: insecure TCP transport loopback tests
         # Two #[ignore]d tests in a publishable crate that no lane ran. They
         # are ignored because they bind loopback, which every runner here has.
@@ -357,6 +361,8 @@ jobs:
         run: cargo fetch --locked
       - name: Strict workspace lint on macOS
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: durable client Clippy
+        run: cargo clippy --locked -p rafter-service --features durable --all-targets -- -D warnings
       - name: Validate managed process launcher on macOS
         id: launcher-validation
         env:

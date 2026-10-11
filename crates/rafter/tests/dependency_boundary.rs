@@ -44,6 +44,9 @@ fn workspace_dependency_boundary_matches_declared_crate_graph() {
     for (crate_name, manifest_path) in &workspace_manifests {
         let manifest = fs::read_to_string(manifest_path)
             .unwrap_or_else(|error| panic!("read {}: {error}", manifest_path.display()));
+        if crate_name == "rafter-service" {
+            policy::check_service_features(&manifest);
+        }
         let dependencies = parse_dependencies(&manifest);
         let normal_workspace_deps = workspace_deps(&dependencies.normal, &actual_workspace_crates);
         let dev_workspace_deps = workspace_deps(&dependencies.dev, &actual_workspace_crates);

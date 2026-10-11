@@ -47,6 +47,12 @@ run = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D"
 tools = ["cargo"]
 resources = ["cargo-target"]
 
+[tasks.clippy-durable]
+description = "Lint the opt-in durable client owner and its tests."
+run = ["cargo", "clippy", "--locked", "-p", "rafter-service", "--features", "durable", "--all-targets", "--", "-D", "warnings"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
 [tasks.clippy-fuzz]
 description = "Run fuzz-workspace Clippy with warnings denied."
 run = ["cargo", "clippy", "--manifest-path", "fuzz/Cargo.toml", "--all-targets", "--", "-D", "warnings"]
@@ -105,6 +111,7 @@ needs = [
   "format-fuzz",
   "clippy",
   "clippy-macos",
+  "clippy-durable",
   "clippy-fuzz",
   "clippy-bench",
   "transport-memory",
@@ -155,9 +162,15 @@ timeout = "45m"
 tools = ["cargo"]
 resources = ["cargo-target"]
 
+[tasks.durable-client]
+description = "Exercise managed writes through the opt-in durable owner."
+run = ["cargo", "test", "--locked", "-p", "rafter-service", "--features", "durable"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
 [tasks.check]
 description = "Qualify the checkout with the pull-request-tier local gates."
-needs = ["lint", "architecture", "test"]
+needs = ["lint", "architecture", "test", "durable-client"]
 
 # --- deeper evidence lanes (not in the default graph) ----------------------
 

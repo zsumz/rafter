@@ -2,22 +2,22 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "2facaaefc0a2a4282646f93e63956b00a4753d48f3452fc01adecbbda396dce1"
+contract_sha256 = "168d0e027e13c5880aa5624b94943e69b52ffabfcb8eb41ef9a3da8bc06e2a2a"
 
 [analysis]
-inventory_sha256 = "ef08120e0c73e3e36a2a07dd186ce9251237a7a8a21797bac1bb41674025977d"
+inventory_sha256 = "13bc8b90394c3725e7e2bcd9be56661deae8fb94a391a96fc2a0d53518b5528f"
 exclusions_sha256 = "938ddad6868e3a6a928a0720de503d2c6745c1ed05522321fd81e0d2a9f4c6ca"
 cargo_lock_sha256 = "152bdfbd5e00e07e78d7d081098c85c8696c429dea8b7b002c32075f21c7cef3"
-cargo_features_sha256 = "24b61d47c1d7b3cd8877a438029133a089a7d479a1f0f5c247da70fa1064d7b2"
+cargo_features_sha256 = "47c0921024bfff9f3940814f4bb24aefa991504628f7da720988c1c30e253694"
 feature_worlds_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 feature_worlds = 0
 packages = 16
-targets = 153
-physical_rust_files = 2073
-base_source_contexts = 3549
+targets = 154
+physical_rust_files = 2081
+base_source_contexts = 3563
 derived_source_contexts = 0
-source_facts = 773982
-projection_queries = 3005390
+source_facts = 778287
+projection_queries = 3014468
 projected_facts = 2530
 unresolved_bindings = 0
 analyzer_semantics = 6
@@ -28,7 +28,7 @@ sha256 = "9259ae9e9f531ebd96eb0f449385e3dd80c795aef987588b244eb06b2bb5bb0e"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "9004fe5223a6a791cd298031e4725fc22166b0747c10004e443712f90857bde8"
+sha256 = "2a442e95035ddef3b795146e69c5850a064bb3044b044e9abe524aab9c5e7b40"
 
 [[package]]
 name = "rafter"
@@ -903,6 +903,20 @@ requirement = "=0.0.2-alpha.1"
 alias = "rafter-runtime"
 name = "rafter-runtime"
 crate_root = "rafter_runtime"
+kind = "normal"
+scope = "internal"
+optional = true
+default_features = true
+
+[package.dependency.source]
+kind = "workspace-member"
+directory = "crates/rafter-runtime"
+requirement = "=0.0.2-alpha.1"
+
+[[package.dependency]]
+alias = "rafter-runtime"
+name = "rafter-runtime"
+crate_root = "rafter_runtime"
 kind = "development"
 scope = "internal"
 optional = false
@@ -925,6 +939,20 @@ default_features = true
 [package.dependency.source]
 kind = "workspace-member"
 directory = "crates/rafter-runtime-api"
+requirement = "=0.0.2-alpha.1"
+
+[[package.dependency]]
+alias = "rafter-storage"
+name = "rafter-storage"
+crate_root = "rafter_storage"
+kind = "normal"
+scope = "internal"
+optional = true
+default_features = true
+
+[package.dependency.source]
+kind = "workspace-member"
+directory = "crates/rafter-storage"
 requirement = "=0.0.2-alpha.1"
 
 [[package.dependency]]
@@ -1217,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "16c6b110b49fd7fa119a41e1603874e5007fb4c8b21af138803facbefb1c27a8"
+sha256 = "c301d01f4c90aef3660d9ad3dcd5c3ee0c3c1f7b7d6218605a5aa12d88322198"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1261,12 +1289,12 @@ sha256 = "d9cdce68c892ba18e227f77106f64df324df02ace62c727d02de89a6453a3561"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "d9a36f53e0fe84ee231409c20cd7277faeff698221b0ce45a8d470d9108fc3c7"
+sha256 = "ad585bd01807ba168ab66a803b64dce12b83411745a399c0317459a54a3d5595"
 
 [[gate]]
 name = "rustdoc"
 path = "scripts/rustdoc-check"
-sha256 = "c45a71ad5c57a10df1d4329debff73612ec80a4f1413ce4d378fe3174bfb90d4"
+sha256 = "f3b8c10805a4942d4beffa293382c5e2da89d915c542981aac82057e27741936"
 
 [[macro_implementation]]
 package = "rafter-invariant-test"
@@ -1276,12 +1304,12 @@ inputs_sha256 = "c6e8a74a9983de5ae3a4c74211e9e5feb4e60b88ac102485166f42c2527cc5c
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "899e7863cb8518ebac92171d479fad0c517cafeb53958fb007f9a276cc8ba460"
+inputs_sha256 = "9b0bf4c83792590b7e4485104c6751285170922e920c3012dceeac73297abfaa"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "b881bbf080bddba0648d42f915658d978dfdbc54c8af65e166a3031e28d3b38b"
+inputs_sha256 = "d94b40f03125612a93e4b477f17a4b1d71452f2614a02ef6e18eaea716078501"
 
 [[macro_source]]
 allowance = "clap::Parser"

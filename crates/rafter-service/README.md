@@ -34,6 +34,35 @@ run outside the watch's locks, so waking or destroying a task can cancel a wait
 or inspect the publisher. Registration storage follows live pending waits;
 embeddings still control how many concurrent watches they open.
 
+## Optional durable write owner
+
+Enable `features = ["durable"]` to use `durable::DurableClientOwner` and its
+cloneable encoded-write sender. It owns the existing asynchronous
+`rafter-runtime::service::DurableService`; the feature is disabled by default.
+Construct it with `recover`, encode commands independently of the busy
+application worker, and drive `poll_next` until `Pending` before waiting on the
+supplied notification. Route authenticated peer inputs and returned transport
+and snapshot events using the existing embedding APIs.
+
+A successful write receipt follows durable application completion. Admission
+bounds cover queued writes, in-flight writes, and completed results clients have
+not collected; the byte bound charges encoded `Vec` capacities. Canceling a
+queued write lets the owner reclaim its credit. Canceling an accepted write does
+not revoke the command or release credit until the owner consumes its outcome.
+Application outcome sizes and the kernel log need separate embedding bounds.
+
+Cloned senders do not retain the backend. Stop admission with `begin_shutdown`,
+poll existing work, then call `finish_shutdown`. Discard and recover the owner
+after fatal errors or caught callback panics. Destruction joins workers and
+releases protocol state before remaining clients receive refusal or uncertainty;
+it can wait for a blocked application transaction. An uncertain result requires
+application-defined retry identities, not a new unconditional mutation.
+
+This initial adapter manages writes. Managed reads, membership operations, and
+`DriverCommandSender` integration remain follow-up work. The independent ledger
+consumer exercises it over real TLS and file stores, including paused durable
+application work, cancellation, shutdown, and cold reopen.
+
 ## Transport Delivery Semantics
 
 Rafter transports are allowed to drop, duplicate, reorder, reconnect, and

@@ -18,7 +18,13 @@ pub(super) fn allowed_normal_workspace_deps(crate_name: &str) -> BTreeSet<String
             "rafter-runtime-api",
             "rafter-storage",
         ],
-        "rafter-service" => &["rafter", "rafter-app", "rafter-runtime-api"],
+        "rafter-service" => &[
+            "rafter",
+            "rafter-app",
+            "rafter-runtime-api",
+            "rafter-runtime",
+            "rafter-storage",
+        ],
         "rafter-transport-tcp-insecure" => &["rafter", "rafter-codec"],
         "rafter-transport-tls" => &["rafter", "rafter-codec", "rafter-crc32", "rafter-service"],
         unexpected => panic!("missing normal dependency policy for `{unexpected}`"),
@@ -130,4 +136,33 @@ pub(super) fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &
         .iter()
         .map(|(dep, reason)| ((*dep).to_owned(), *reason))
         .collect()
+}
+
+/// The concrete service owner is an explicit opt-in; default handles stay sans I/O.
+pub(super) fn check_service_features(manifest: &str) {
+    let features = super::manifest_section(manifest, "features");
+    let compact: String = features.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        compact.contains("default=[]"),
+        "durable service must not be enabled by default"
+    );
+    assert!(
+        compact.contains("durable=[\"dep:rafter-runtime\",\"dep:rafter-storage\"]"),
+        "durable must explicitly own both concrete dependency edges"
+    );
+    let dependencies = super::manifest_section(manifest, "dependencies");
+    for dependency in ["rafter-runtime", "rafter-storage"] {
+        let line = dependencies
+            .lines()
+            .find(|line| {
+                line.split_once('=')
+                    .is_some_and(|(name, _)| name.trim() == dependency)
+            })
+            .expect("explicit durable dependency");
+        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains(",optional=true}"),
+            "{dependency} must stay optional"
+        );
+    }
 }
