@@ -820,6 +820,17 @@ metadata_file="$workdir/consumer-metadata.json"
 cargo_run metadata --format-version 1 --locked > "$metadata_file"
 if [[ -n "$artifact_dir" ]]; then
     cp "$metadata_file" "$artifact_dir/consumer-metadata.json"
+    # process-msrv may replace the phase-4 lock before its MSRV build. Keep
+    # the exact final lock paired with this --locked metadata, rather than
+    # making later dependency checks guess which earlier lock was resolved.
+    cp "$consumer_workspace/Cargo.lock" "$artifact_dir/Cargo.resolved.lock"
+    (
+        cd "$artifact_dir"
+        for resolution_input in consumer-metadata.json Cargo.resolved.lock; do
+            resolution_digest="$(openssl dgst -sha256 "$resolution_input" | awk '{ print $NF }')"
+            printf '%s  %s\n' "$resolution_digest" "$resolution_input"
+        done
+    ) > "$artifact_dir/resolved-inputs.sha256"
 fi
 
 if ! "$tools_root/reference-package-boundary-check" \
