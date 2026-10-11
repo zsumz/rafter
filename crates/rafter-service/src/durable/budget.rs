@@ -9,6 +9,7 @@ use std::sync::{
 pub(super) struct Budget {
     count: AtomicUsize,
     bytes: AtomicUsize,
+    refusals: AtomicUsize,
 }
 
 impl Budget {
@@ -21,6 +22,7 @@ impl Budget {
     ) -> Option<Credit> {
         let (count, retained) = self.stats();
         if count >= max_count || retained.checked_add(bytes).is_none_or(|n| n > max_bytes) {
+            self.record_refusal();
             return None;
         }
         self.count.fetch_add(1, Ordering::AcqRel);
@@ -36,6 +38,18 @@ impl Budget {
             self.count.load(Ordering::Acquire),
             self.bytes.load(Ordering::Acquire),
         )
+    }
+
+    pub(super) fn record_refusal(&self) {
+        let _ = self
+            .refusals
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                Some(count.saturating_add(1))
+            });
+    }
+
+    pub(super) fn refusals(&self) -> usize {
+        self.refusals.load(Ordering::Relaxed)
     }
 }
 

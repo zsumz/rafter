@@ -23,7 +23,7 @@ mod stats;
 pub use attachment::DurableDriverAttachError;
 pub use membership::{DurableMembershipError, DurableMembershipLimits, DurableMembershipReceipt};
 pub use sender::DurableCommandSender;
-pub use stats::DurableCommandStats;
+pub use stats::{DurableBackpressureStats, DurableCommandStats};
 
 /// A managed encoded-command/query handle for one durable group.
 pub type DurableRaftHandle<G, O, R = ()> =

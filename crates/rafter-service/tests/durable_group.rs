@@ -159,6 +159,8 @@ fn submitted_transfer_drains_real_peer_effects_before_request_success() {
     );
 }
 
+#[path = "durable_group/backpressure.rs"]
+mod backpressure;
 #[path = "durable_group/control.rs"]
 mod control;
 #[path = "durable_group/control_load.rs"]

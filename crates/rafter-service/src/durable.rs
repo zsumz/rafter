@@ -37,8 +37,9 @@ mod sender;
 mod shared;
 
 pub use group::{
-    DurableCommandSender, DurableCommandStats, DurableDriverAttachError, DurableMembershipError,
-    DurableMembershipLimits, DurableMembershipReceipt, DurableRaftDriver, DurableRaftHandle,
+    DurableBackpressureStats, DurableCommandSender, DurableCommandStats, DurableDriverAttachError,
+    DurableMembershipError, DurableMembershipLimits, DurableMembershipReceipt, DurableRaftDriver,
+    DurableRaftHandle,
 };
 pub use owner::{DurableClientOwner, DurableClientStepError};
 pub use read::{DurableClientOptions, DurableReadLimits, DurableReadSender, DurableReadStats};

@@ -118,6 +118,10 @@ impl<R> ReadShared<R> {
         }
     }
 
+    pub(in crate::durable) fn backpressure_refusals(&self) -> usize {
+        self.budget.refusals()
+    }
+
     pub(in crate::durable) fn close(&self) {
         lock(&self.state).open = false;
     }

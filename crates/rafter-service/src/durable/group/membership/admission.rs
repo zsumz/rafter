@@ -66,9 +66,15 @@ impl<G: Eq, O, R> super::super::DurableCommandSender<G, O, R> {
             .membership_limits
             .ok_or(DurableMembershipError::NotEnabled)?;
         if self.shared.budget.stats().0 != 0 {
+            self.shared.budget.record_refusal();
             return Err(DurableMembershipError::Backpressure);
         }
-        let (change, bytes) = normalize(change, limits.request_bytes.get())?;
+        let (change, bytes) =
+            normalize(change, limits.request_bytes.get()).inspect_err(|error| {
+                if matches!(error, DurableMembershipError::Backpressure) {
+                    self.shared.budget.record_refusal();
+                }
+            })?;
         let credit = self
             .shared
             .budget

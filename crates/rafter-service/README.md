@@ -118,6 +118,14 @@ during concurrent admission or release; this view does not reserve capacity.
 Submission can still report backpressure. These charges exclude application
 results, kernel logs, transport queues and other embedding-owned memory.
 
+`backpressure_refusals()` reports cumulative write, query and shared-control
+budget refusals through `DurableBackpressureStats`. Only admission errors
+reported as `Backpressure` count. Raw write/query senders expose the same
+underlying totals, which can predate driver attachment; control totals begin
+at attachment. Counts saturate at `usize::MAX`, remain readable after backend
+release, and reset with new owners after recovery. Sampling drives no work and
+does not reserve capacity or provide an atomic snapshot across counters.
+
 Use `DurableRaftDriver::attach_with_membership` with `DurableMembershipLimits`
 constructed from a `NonZeroUsize` byte budget to enable bounded membership
 proposal admission. Submit an app-layer `MembershipChange` through

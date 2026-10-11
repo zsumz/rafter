@@ -121,6 +121,10 @@ impl<O> Shared<O> {
         }
     }
 
+    pub(super) fn backpressure_refusals(&self) -> usize {
+        self.budget.refusals()
+    }
+
     pub(super) fn close(&self) {
         lock(&self.state).open = false;
     }

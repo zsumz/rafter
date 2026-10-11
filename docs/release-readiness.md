@@ -1014,6 +1014,15 @@ tests cover queued cancellation, paused application work and terminal retained
 results; the independent TLS consumer also inspects its filled and drained
 client budgets through this public endpoint.
 
+`backpressure_refusals` adds cumulative observations of actual count and payload
+budget refusals, shared by raw and grouped write/query senders. The control
+counter includes both membership and transfer, including membership payload
+normalization refusals. Other errors are excluded. The counters saturate,
+survive backend release and reset with fresh owners after recovery; reading
+them drives no work. Concurrent caller tests check exact quiescent totals,
+unchanged admission state, error classification and pre-attachment history.
+The independent TLS consumer verifies count and byte-budget refusal totals.
+
 The counter pressure lane above establishes one bounded overload/recovery case
 with real processes and TLS. It does not establish latency distributions, memory
 ceilings for the whole host, or sustained throughput.

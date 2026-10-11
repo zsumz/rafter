@@ -8,6 +8,17 @@ use std::{fmt, sync::Arc};
 pub struct DurableWriteSender<O> {
     pub(super) shared: Arc<Shared<O>>,
 }
+impl<O> DurableWriteSender<O> {
+    /// Counts write count/capacity budget refusals since owner construction.
+    ///
+    /// Only admission `Backpressure` is counted. The observational counter
+    /// saturates at `usize::MAX`, remains available after backend release, and
+    /// is not persisted across recovery. Reading it drives no work or callbacks.
+    #[must_use]
+    pub fn backpressure_refusals(&self) -> usize {
+        self.shared.backpressure_refusals()
+    }
+}
 impl<O> Clone for DurableWriteSender<O> {
     fn clone(&self) -> Self {
         Self {

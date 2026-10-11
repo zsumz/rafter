@@ -184,6 +184,7 @@ impl Managed {
         let driver = &self.nodes[0].0;
         let before = driver.ready_node().unwrap().commit_index();
         let sender = driver.sender();
+        let refusals_before = sender.backpressure_refusals();
         let payload = LedgerStateMachine::new(config())
             .encode_command(&crate::support::open_session(0, 1))
             .unwrap();
@@ -252,6 +253,10 @@ impl Managed {
             poll(&mut sender.write(link::GROUP, oversized, WriteOptions::default())),
             Poll::Ready(Err(WriteError::Backpressure))
         ));
+        let refusals = sender.backpressure_refusals();
+        assert_eq!(refusals.writes, refusals_before.writes + 2);
+        assert_eq!(refusals.reads, Some(refusals_before.reads.unwrap() + 3));
+        assert_eq!(refusals.controls, refusals_before.controls);
     }
 
     fn close(mut self) {

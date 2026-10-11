@@ -1,6 +1,6 @@
 //! Observe retained client credits without borrowing or driving the backend.
 use super::DurableCommandSender;
-use crate::durable::{DurableReadStats, DurableWriteStats};
+use crate::durable::{DurableReadSender, DurableReadStats, DurableWriteStats};
 
 /// Retained admission credits for one grouped durable endpoint.
 ///
@@ -41,6 +41,46 @@ impl<G, O, R> DurableCommandSender<G, O, R> {
             reads: self.shared.reads.as_ref().map(|r| r.shared.stats()),
             controls,
             control_payload_bytes,
+        }
+    }
+}
+
+/// Cumulative admission refusals caused by retained count or payload budgets.
+///
+/// Each counter saturates at `usize::MAX`. These observations do not drive work,
+/// reserve capacity, or form an atomic snapshot across queues. Only admission
+/// errors reported as `Backpressure` count. Foreign groups, closed admission,
+/// unsupported operations, `PayloadTooLarge` validation errors and kernel
+/// refusals are excluded. Counts are not persisted across recovery.
+/// Refusals count at admission even if the returned error future is never polled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct DurableBackpressureStats {
+    /// Write budget refusals since construction of the underlying client owner.
+    pub writes: usize,
+    /// Query budget refusals since owner construction, or `None` without queries.
+    pub reads: Option<usize>,
+    /// Membership/transfer budget refusals since this driver's attachment.
+    pub controls: usize,
+}
+
+impl<G, O, R> DurableCommandSender<G, O, R> {
+    /// Observes cumulative budget refusals, before or after backend release.
+    ///
+    /// Write/query counters share the original owner's raw sender budgets and
+    /// can predate driver attachment. The control counter belongs to this driver.
+    /// Observing them invokes no callbacks. Counts remain available after release
+    /// and saturate rather than wrap; independent counters can race with admission.
+    #[must_use]
+    pub fn backpressure_refusals(&self) -> DurableBackpressureStats {
+        DurableBackpressureStats {
+            writes: self.shared.writes.backpressure_refusals(),
+            reads: self
+                .shared
+                .reads
+                .as_ref()
+                .map(DurableReadSender::backpressure_refusals),
+            controls: self.shared.budget.refusals(),
         }
     }
 }
