@@ -201,6 +201,29 @@ resources = ["cargo-target"]
 description = "Qualify the checkout with the pull-request-tier local gates."
 needs = ["lint", "architecture", "test", "durable-client"]
 
+[tasks.current-stable-identity]
+description = "Record the resolved compiler for the separately installed stable toolchain."
+run = ["rustc", "+stable", "--version", "--verbose"]
+tools = ["rustc"]
+
+[tasks.current-stable-workspace]
+description = "Build every workspace target with current stable Rust and the locked dependencies."
+needs = ["current-stable-identity"]
+run = ["cargo", "+stable", "build", "--locked", "--workspace", "--all-targets"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.current-stable-durable]
+description = "Build the opt-in durable service and its targets with current stable Rust."
+needs = ["current-stable-identity"]
+run = ["cargo", "+stable", "build", "--locked", "-p", "rafter-service", "--features", "durable", "--all-targets"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.current-stable]
+description = "Check forward compiler compatibility without changing the pinned MSRV."
+needs = ["current-stable-workspace", "current-stable-durable"]
+
 # --- deeper evidence lanes (not in the default graph) ----------------------
 
 [tasks.invariants-pr-preflight]
@@ -252,7 +275,7 @@ tools = ["python3"]
 
 [tasks.full]
 description = "Qualify the checkout and every locally runnable deeper evidence lane."
-needs = ["check", "invariants-pr", "model-check", "reference-source", "reference-package"]
+needs = ["check", "current-stable", "invariants-pr", "model-check", "reference-source", "reference-package"]
 
 # Performance evidence stays opt-in, separate from concurrent correctness work.
 [tasks.build-durable-bench]

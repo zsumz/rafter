@@ -881,9 +881,17 @@ write amplification, and restart/catch-up time. Preserve the present clear
 separation between in-memory and durable results. Require bounded overload
 behavior and recovery before pursuing a larger throughput headline.
 
-Keep the Rust 1.88/MSRV and exact-package gates. Add a current-stable compiler
-lane and an explicit OS/filesystem support matrix for the shipped libraries;
-the existing macOS launcher test does not qualify all durable storage behavior.
+The candidate now adds a separate `current-stable` CI build lane and
+`zcheck run current-stable`, also included in the opt-in `full` graph. It builds
+every workspace target and the optional durable-service targets with locked
+dependencies and records the resolved compiler identity. CI retains both Rust
+and Cargo identities. The current stable channel resolves to Rust 1.99.0 on
+October 11, 2026. Rust 1.88 remains the strict test/lint/documentation and
+exact-package baseline; this additive compiler lane does not change the MSRV.
+
+An explicit OS/filesystem support matrix for the shipped libraries remains
+required; the existing macOS launcher test and compiler builds do not qualify
+all durable storage behavior.
 Add dependency/advisory and license checks for the published graph, especially
 its TLS dependency chain, without conflating repository-only verifier tools
 with shipped dependencies.

@@ -6,7 +6,7 @@
 # repository settings, not in this file. Branch protection on `main` must
 # list these required status checks:
 #
-#   lint, zrail, zcheck, test, reference-source, reference-package, reference-package-msrv,
+#   lint, current-stable, zrail, zcheck, test, reference-source, reference-package, reference-package-msrv,
 #   fuzz-smoke, counter-reference-fast, invariants-pr
 #
 # `reference-process` is deliberately absent from that list: it only runs on
@@ -15,9 +15,10 @@
 # durable process tests to the main/nightly lane, and nightly.yml runs the
 # other half.
 #
-# The Rust toolchain is pinned to the workspace rust-version in Cargo.toml
+# The default Rust toolchain is pinned to the workspace rust-version in Cargo.toml
 # (currently 1.88). Keep .github/actions/setup-rust/action.yml's default in
-# sync with Cargo.toml when bumping rust-version.
+# sync with Cargo.toml when bumping rust-version. The independent current-stable
+# lane records its resolved compiler identity and checks forward compatibility.
 
 name: CI
 
@@ -44,6 +45,38 @@ defaults:
     shell: bash
 
 jobs:
+  current-stable:
+    name: current-stable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Record resolved stable compiler
+        run: |
+          mkdir -p artifacts/current-stable
+          rustc +stable --version --verbose | tee artifacts/current-stable/rustc.txt
+          cargo +stable --version --verbose | tee artifacts/current-stable/cargo.txt
+      - name: Build every workspace target on current stable
+        run: cargo +stable build --locked --workspace --all-targets
+      - name: Build optional durable service on current stable
+        run: cargo +stable build --locked -p rafter-service --features durable --all-targets
+      - name: Upload stable compiler identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: current-stable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/current-stable/
+          if-no-files-found: error
+          retention-days: 30
+
   lint:
     name: lint
     runs-on: ubuntu-24.04

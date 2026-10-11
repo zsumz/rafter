@@ -16,9 +16,9 @@ cargo build --locked --workspace --all-targets
 cargo test --locked --workspace
 ```
 
-These commands include the examples and repository tooling. On macOS, the
-Linux-only invariant executor emits dead-code warnings; its authoritative
-execution remains in Linux CI. The reference applications are a separate
+These commands include the examples and repository tooling. The invariant
+executor is also compiled and linted on macOS; its authoritative execution
+remains in Linux CI. The reference applications are a separate
 workspace and need the reference checks below.
 
 Install [zcheck](https://github.com/zsumz/zcheck) and the same
@@ -42,6 +42,20 @@ For an existing Homebrew Python 3.13 installation, select it with
 The default graph in [`zcheck.toml`](../zcheck.toml) runs formatting, Clippy,
 rustdoc, proof-reference checks, the architecture contract, and workspace tests.
 `zcheck plan check` shows the graph. Each run records logs and a receipt.
+CI also builds every workspace target and the optional durable-service targets
+with the current stable Rust compiler. To reproduce that separate build check:
+
+```sh
+rustup toolchain install stable --profile minimal
+zcheck run current-stable
+```
+
+This records the resolved compiler version and uses the locked dependencies.
+It checks compilation; the Rust 1.88 test, lint, documentation, and exact-package
+lanes remain the release baseline. CI retains both Rust and Cargo identities.
+The current-stable task is included in `full`, and requires the additional
+toolchain above; ordinary `zcheck` continues to use the checkout's pinned MSRV.
+
 `zcheck run full` adds the deeper local lanes; inspect the plan for platform
 requirements. Invariant evidence execution requires Linux, Python 3.11+, Java
 21, and the pinned TLC JAR at `tools/cache/tla2tools.jar`. Install the asset from
@@ -74,8 +88,8 @@ The full invariant task allows eight hours: its required layers have sequential
 budgets of 40 minutes for tests, 40 for simulation, and 338 for TLA, plus an hour
 for compilation, aggregation, and finalization. The preflight checks this sum
 against the manifest so a profile change cannot silently outgrow its parent.
-The default `zcheck` graph remains the shorter development check. On macOS, the local
-Clippy task excludes the Linux-specific invariant executor; Linux CI checks it.
+The default `zcheck` graph remains the shorter development check. Both macOS
+and Linux Clippy tasks check the full workspace, including the invariant executor.
 
 The underlying commands remain directly runnable:
 

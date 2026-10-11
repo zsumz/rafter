@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "9b943604650a21ad41711f90b7f79b8dfa85d17064c457d812d127eb340fbac0"
+sha256 = "c0cd78d0c4d0e3d767e76dfe6f258859bf6937f3f2afe19b33a842cc1d8a7b59"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1289,7 +1289,7 @@ sha256 = "d9cdce68c892ba18e227f77106f64df324df02ace62c727d02de89a6453a3561"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "6d5cb0f4363ab38d8c30deee823df0558e8b9fd5e216960b73b5309ec3c394b6"
+sha256 = "e2b35683dd14c7516fe5828fd2e370bb74068419d9a3014fcaec0e437a6b89aa"
 
 [[gate]]
 name = "rustdoc"
