@@ -6,11 +6,14 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     task::{Context, Poll, Waker},
 };
+
+mod counted;
+use counted::Counted;
 
 pub(super) struct Reply<O> {
     state: Mutex<State<O>>,
@@ -23,6 +26,7 @@ pub(super) struct Reply<O> {
 struct State<O> {
     outcome: Option<O>,
     waker: Option<Waker>,
+    counted: Option<Counted>,
 }
 
 impl<O> Reply<O> {
@@ -31,6 +35,7 @@ impl<O> Reply<O> {
             state: Mutex::new(State {
                 outcome: None,
                 waker: None,
+                counted: None,
             }),
             canceled: AtomicBool::new(false),
             wake,
@@ -45,12 +50,23 @@ impl<O> Reply<O> {
     }
 
     pub(super) fn complete(&self, outcome: O) -> Option<Waker> {
+        self.publish(outcome, None)
+    }
+
+    pub(super) fn finish_counted(&self, outcome: O, count: Option<Arc<AtomicUsize>>) {
+        if let Some(waker) = self.publish(outcome, count) {
+            waker.wake();
+        }
+    }
+
+    fn publish(&self, outcome: O, count: Option<Arc<AtomicUsize>>) -> Option<Waker> {
         let mut outcome = Some(outcome);
         let waker = {
             let mut state = lock(&self.state);
             if !self.canceled.load(Ordering::Acquire) {
                 debug_assert!(state.outcome.is_none());
                 state.outcome = outcome.take();
+                state.counted = count.map(Counted::new);
             }
             state.waker.take()
         };
@@ -80,15 +96,19 @@ impl<O> Future for ReplyFuture<O> {
             return Poll::Pending;
         };
         let replacement = cx.waker().clone();
-        let (outcome, old) = {
+        let (outcome, old, counted) = {
             let mut state = lock(&reply.state);
             let outcome = state.outcome.take();
             let old = state.waker.replace(replacement);
-            (outcome, old)
+            let counted = outcome.as_ref().and_then(|_| state.counted.take());
+            (outcome, old, counted)
         };
         drop(old);
+        drop(counted);
         if let Some(outcome) = outcome {
+            let wake = Arc::clone(&reply.wake);
             this.reply.take();
+            wake();
             Poll::Ready(outcome)
         } else {
             Poll::Pending
@@ -99,10 +119,12 @@ impl<O> Future for ReplyFuture<O> {
 impl<O> Drop for ReplyFuture<O> {
     fn drop(&mut self) {
         if let Some(reply) = self.reply.take() {
+            let wake = Arc::clone(&reply.wake);
             reply.canceled.store(true, Ordering::Release);
             let old = lock(&reply.state).waker.take();
             drop(old);
-            (reply.wake)();
+            drop(reply);
+            wake();
         }
     }
 }

@@ -36,6 +36,15 @@ pub(super) struct Replica {
 }
 impl Replica {
     pub fn new(id: u64, peers: Vec<NodeId>, limit: usize, paused: bool) -> Self {
+        Self::new_with_wake(id, peers, limit, paused, || {})
+    }
+    pub fn new_with_wake(
+        id: u64,
+        peers: Vec<NodeId>,
+        limit: usize,
+        paused: bool,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         let (entered, wait) = mpsc::sync_channel(1);
         let (release, resume) = mpsc::sync_channel(1);
         let dropped = Arc::new(AtomicBool::new(false));
@@ -79,7 +88,7 @@ impl Replica {
                 assert_ne!(bytes[0], 255, "injected query panic");
                 app.value
             },
-            || {},
+            wake,
         )
         .unwrap();
         until(&mut owner, |o| o.state() == ServiceState::Ready);

@@ -471,10 +471,24 @@ healthy read and write admission usable. Release-order wakers check that both
 storage and application ownership end before unresolved writes become terminal,
 with the original request identity preserved.
 
-Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
-The feature lane requires exactly 356 tests in both CI and zcheck.
+The durable owner now exposes `RaftGroupMetrics<()>` with its verified application
+durable floor and separate pending proposal, submitted barrier, pending query,
+and uncollected proof counts. Local reads and completed errors are retained
+credits rather than reserved Raft reads. Canceled quorum rounds stay counted
+until their terminal output is consumed and owner cleanup releases them. Metrics
+return `None` during node or application ownership handoff and after backend
+release; no cursor or floor is invented. Future collection and cancellation
+notify after releasing future ownership and any now-unowned credits, supporting
+accurate later watch updates.
+Nine focused cases exercise actual workers, real quorum traffic, failed/stopped
+incarnations, and notification ordering. Snapshot-handoff and independent TLS
+consumer cases also check these observations. Six deliberately incorrect floor,
+proof-count, cancellation, and wake-order variants fail their exact regressions.
 
-Local qualification passes 325 default service tests, 356 with `durable`, 537
+Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
+The feature lane requires exactly 365 tests in both CI and zcheck.
+
+Local qualification passes 325 default service tests, 365 with `durable`, 537
 source-consumer tests, and 542 archive/MSRV consumer tests on Rust 1.88.0.
 The 23 managed write/read tests also pass 64 repetitions across four concurrent
 runners (1,472 executions). Consumer lanes retain their 57 explicitly ignored

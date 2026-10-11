@@ -53,6 +53,10 @@ fn managed_write_waits_for_tls_quorum_and_application_durability_then_reopens() 
     cluster.until(|_| entered.try_recv().is_ok());
     assert!(poll(&mut write).is_pending());
     assert_eq!(cluster.0[0].owner.durable_through(), Some(LogIndex::ZERO));
+    let stalled = cluster.0[0].owner.metrics().unwrap();
+    assert_eq!(stalled.commit_index, LogIndex(2));
+    assert_eq!(stalled.applied_index, LogIndex::ZERO);
+    assert_eq!(stalled.pending_proposals, 1);
     let reader = cluster.0[0].owner.read_sender().unwrap();
     let mut read = reader.read(
         vec![0],
@@ -66,16 +70,7 @@ fn managed_write_waits_for_tls_quorum_and_application_durability_then_reopens() 
     drop(canceled);
     cluster.until(|_| sender.retained().writes == 1);
     release.now();
-    let mut receipt = None;
-    cluster.until(|_| {
-        if let Poll::Ready(result) = poll(&mut write) {
-            receipt = Some(result.unwrap());
-            true
-        } else {
-            false
-        }
-    });
-    let receipt = receipt.unwrap();
+    let receipt = cluster.complete(write).unwrap();
     assert_eq!(receipt.index, LogIndex(2));
     assert_eq!(receipt.result.index, receipt.index);
     assert_eq!(receipt.result.term, receipt.term);
@@ -101,20 +96,11 @@ fn managed_write_waits_for_tls_quorum_and_application_durability_then_reopens() 
         .iter()
         .all(|n| n.owner.durable_through() == Some(LogIndex(2))));
     cluster.elect(1);
-    let mut retry = cluster.0[1]
+    let retry = cluster.0[1]
         .owner
         .sender()
         .write(payload, WriteOptions::default());
-    let mut receipt = None;
-    cluster.until(|_| {
-        if let Poll::Ready(result) = poll(&mut retry) {
-            receipt = Some(result.unwrap());
-            true
-        } else {
-            false
-        }
-    });
-    let receipt = receipt.unwrap();
+    let receipt = cluster.complete(retry).unwrap();
     assert_eq!(
         receipt.result.result.disposition,
         ApplyDisposition::SessionAlreadyOpen
@@ -171,7 +157,22 @@ fn managed_queries_use_tls_quorum_and_preserve_read_your_writes_after_reopen() {
         cluster.0[0].pump();
     }
     assert!(poll(&mut read).is_pending());
+    assert_eq!(
+        cluster.0[0].owner.metrics().unwrap().pending_read_barriers,
+        1
+    );
+    cluster.until(|c| {
+        c.0[0]
+            .owner
+            .metrics()
+            .is_some_and(|m| m.completed_query_reads == 1)
+    });
+    assert_eq!(cluster.0[0].owner.metrics().unwrap().reserved_reads, 1);
     let queried = cluster.complete(read).unwrap();
+    assert_eq!(
+        cluster.0[0].owner.metrics().unwrap().completed_query_reads,
+        0
+    );
     let LedgerQueryResult::Summary(summary) = queried.result else {
         panic!("expected summary");
     };

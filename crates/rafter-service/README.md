@@ -83,6 +83,15 @@ The same admission fence spans storage and command-adapter callbacks during
 consensus input and polling. A caught panic requires recovery; an ordinary busy
 refusal preserves the live owner and its client endpoints.
 
+`metrics()` returns the existing `RaftGroupMetrics<()>` observation type. Its
+applied index is the verified durable application floor. Pending work is distinct
+from completed linearizable proofs that callers have not collected; local reads
+and completed errors remain visible through retained credits. Metrics return
+`None` while persistence owns the node, application snapshot installation owns
+the store, or the backend has been released. Reading metrics drives no work and
+proves no quorum. Collecting or dropping a result notifies the owner after
+releasing the future's ownership; credits still held by the owner remain charged.
+
 Managed membership operations and `DriverCommandSender` integration remain
 follow-up work. The independent ledger consumer exercises writes and reads over
 real TLS and file stores, including withheld quorum, paused durable application

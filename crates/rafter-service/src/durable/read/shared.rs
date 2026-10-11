@@ -10,9 +10,14 @@ use rafter_app::read::{ReadConsistency, ReadProof};
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt,
-    sync::{atomic::Ordering, Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
     task::Waker,
 };
+
+mod observe;
 
 type ResultOf<R> = Result<QueryReceipt<(), R>, ReadError>;
 
@@ -37,6 +42,7 @@ struct State<R> {
 pub(in crate::durable) struct ReadShared<R> {
     state: Mutex<State<R>>,
     budget: Arc<Budget>,
+    completed_proofs: Arc<AtomicUsize>,
     limits: DurableReadLimits,
     pub(in crate::durable) wake: Arc<dyn Fn() + Send + Sync>,
 }
@@ -59,6 +65,7 @@ impl<R> ReadShared<R> {
                 entries: BTreeMap::new(),
             }),
             budget: Arc::new(Budget::default()),
+            completed_proofs: Arc::new(AtomicUsize::new(0)),
             limits,
             wake,
         })
@@ -169,7 +176,12 @@ impl<R> ReadShared<R> {
         };
         if let Some(entry) = entry {
             drop(entry.payload);
-            entry.reply.finish(outcome);
+            let count = outcome
+                .as_ref()
+                .ok()
+                .filter(|receipt| receipt.proof.is_some())
+                .map(|_| Arc::clone(&self.completed_proofs));
+            entry.reply.finish_counted(outcome, count);
         }
     }
 

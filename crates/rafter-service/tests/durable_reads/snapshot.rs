@@ -128,6 +128,7 @@ fn caught_snapshot_floor_panic_fences_owner_and_cannot_resume_again() {
 #[test]
 fn valid_snapshot_resumption_preserves_clients_and_queries_installed_state() {
     let (mut owner, mut application) = handoff();
+    assert!(owner.metrics().is_none());
     let reads = owner.read_sender().unwrap();
     let read = reads.read(vec![0], ReadConsistency::Local, ReadOptions::default());
     application.floor = FLOOR;
@@ -156,4 +157,5 @@ fn valid_snapshot_resumption_preserves_clients_and_queries_installed_state() {
     }
     assert_eq!(owner.state(), ServiceState::Ready);
     assert_eq!(owner.durable_through(), Some(FLOOR));
+    assert_eq!(owner.metrics().unwrap().applied_index, FLOOR);
 }
