@@ -54,14 +54,25 @@ where
         &mut self,
         input: GroupInput<G, A::Command>,
     ) -> Result<(), StepFailure<A::Error, R::Error>> {
+        self.step_group_with(input, |_| ())
+    }
+
+    /// Reads the caller's immediate outcome without losing the report or the
+    /// obligations that also follow a failed group step.
+    fn step_group_with<O>(
+        &mut self,
+        input: GroupInput<G, A::Command>,
+        inspect: impl FnOnce(&DriverStepReport<G, A>) -> O,
+    ) -> Result<O, StepFailure<A::Error, R::Error>> {
         let Some(group) = self.group.as_mut() else {
             return Err(StepFailure::NoGroup);
         };
         let stepped = group.step_with_options(input, StepReportOptions::without_metrics());
         let result = match stepped {
             Ok(report) => {
+                let outcome = inspect(&report);
                 self.route_report(report);
-                Ok(())
+                Ok(outcome)
             }
             Err(error) => Err(StepFailure::Group(error)),
         };
@@ -122,41 +133,57 @@ where
         &mut self,
         target: NodeId,
     ) -> Result<Option<TransferLeadershipError>, StepFailure<A::Error, R::Error>> {
-        let Some(group) = self.group.as_mut() else {
-            return Err(StepFailure::NoGroup);
-        };
-        let stepped = group.step_with_options(
-            GroupInput::TransferLeadership { target },
-            StepReportOptions::without_metrics(),
-        );
-        let result = match stepped {
-            Ok(report) => {
-                let rejection =
-                    report
-                        .leadership_transfer_events
-                        .iter()
-                        .find_map(|event| match event {
-                            LeadershipTransferEvent::Rejected {
-                                target: event_target,
-                                reason,
-                                leader_hint,
-                            } if *event_target == target => {
-                                Some(TransferLeadershipError::Rejected {
-                                    reason: *reason,
-                                    leader_hint: *leader_hint,
-                                })
-                            }
-                            _ => None,
-                        });
-                self.route_report(report);
-                Ok(rejection)
-            }
-            Err(error) => Err(StepFailure::Group(error)),
-        };
-        self.reconcile_membership();
-        self.drain_poisoned_waiters();
-        self.publish_metrics();
-        result
+        self.step_group_with(GroupInput::TransferLeadership { target }, |report| {
+            report
+                .leadership_transfer_events
+                .iter()
+                .find_map(|event| match event {
+                    LeadershipTransferEvent::Rejected {
+                        target: event_target,
+                        reason,
+                        leader_hint,
+                    } if *event_target == target => Some(TransferLeadershipError::Rejected {
+                        reason: *reason,
+                        leader_hint: *leader_hint,
+                    }),
+                    _ => None,
+                })
+        })
+    }
+
+    /// A protocol refusal is carried in a successful group report. Return it
+    /// only after routing that report and satisfying every stepping obligation.
+    pub(super) fn step_membership(
+        &mut self,
+        change: MembershipChange,
+    ) -> Result<(), ManagedDriverError> {
+        let rejection = self
+            .step_group_with(GroupInput::Membership { change }, |report| {
+                report
+                    .membership_events
+                    .iter()
+                    .find_map(|event| match event {
+                        MembershipEvent::Rejected {
+                            reason,
+                            leader_hint,
+                            ..
+                        } => Some(ManagedDriverError::MembershipRejected {
+                            reason: reason.clone(),
+                            leader_hint: *leader_hint,
+                        }),
+                        _ => None,
+                    })
+            })
+            .map_err(|failure| match failure {
+                StepFailure::NoGroup => ManagedDriverError::NoGroup,
+                StepFailure::Group(error) => ManagedDriverError::Group {
+                    cause: ErrorCause::new(error),
+                },
+            })?;
+        match rejection {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     pub(super) fn step(

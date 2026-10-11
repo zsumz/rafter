@@ -771,6 +771,16 @@ observe the stable commit before completing the flow. A two-node protocol test
 executes the returned obligations, requires stable membership on both replicas,
 and successfully commits a subsequent learner addition.
 
+The transport driver's `change_membership` now returns a typed
+`ManagedDriverError::MembershipRejected` for protocol refusals, preserving the
+reason and leader hint. Previously these requests returned `Ok(())` because
+the group carried the refusal inside an otherwise successful step report. The
+driver still routes the full report, reconciles membership, drains poisoned
+waiters, and publishes metrics before returning. Regressions cover invalid and
+last-voter removals, follower redirection, an uncommitted prior configuration,
+successful retry, and other effects emitted alongside a refusal. Admission
+still requires a later committed-membership observation to prove completion.
+
 **Acceptance:** an external consumer composes the supported fast durable path
 without copying an owner loop from the benchmark/example, with the same
 behavior in source and exact-package tests.

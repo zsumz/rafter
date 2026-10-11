@@ -76,13 +76,16 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`ManagedDriverError`] when the driver has released its group,
-    /// is shutting down, or the local group refuses the membership input.
+    /// Returns [`ManagedDriverError::MembershipRejected`] with the protocol
+    /// reason and leader hint when the group refuses the input. This refusal
+    /// does not make the driver unusable, and the step's other effects are
+    /// routed before returning. Also returns an error when the group is
+    /// released, the driver is shutting down, or the group step fails.
     pub fn change_membership(&self, change: MembershipChange) -> Result<(), ManagedDriverError> {
         let mut state = self.inner.lock();
         state.reject_if_shutting_down()?;
         state.flush_peer_policy();
-        state.step(GroupInput::Membership { change })
+        state.step_membership(change)
     }
 
     /// Validates one inbound authenticated envelope and steps the group with
