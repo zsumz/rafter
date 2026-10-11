@@ -109,6 +109,15 @@ encoded bytes; each operation validates its group before admission, and read
 proofs carry that group identity. Polling routes outgoing frames through the
 existing `RaftTransport`; refused sends are counted as Raft message loss.
 
+`DurableCommandSender::retained()` exposes write/query count and byte charges
+plus the shared control count and payload charge through `DurableCommandStats`.
+Queries are `None` when no query adapter was configured. Observation drives no
+work, invokes no callbacks, and remains available after backend release while
+uncollected results still retain credits. The counters can change independently
+during concurrent admission or release; this view does not reserve capacity.
+Submission can still report backpressure. These charges exclude application
+results, kernel logs, transport queues and other embedding-owned memory.
+
 Use `DurableRaftDriver::attach_with_membership` with `DurableMembershipLimits`
 constructed from a `NonZeroUsize` byte budget to enable bounded membership
 proposal admission. Submit an app-layer `MembershipChange` through

@@ -177,6 +177,8 @@ mod membership_lifecycle;
 mod membership_load;
 #[path = "durable_group/mixed_load.rs"]
 mod mixed_load;
+#[path = "durable_group/retention.rs"]
+mod retention;
 
 #[test]
 fn attachment_refusal_returns_busy_backend_and_transport_without_losing_clients() {

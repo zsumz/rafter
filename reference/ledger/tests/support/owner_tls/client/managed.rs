@@ -200,6 +200,11 @@ impl Managed {
                 )
             })
             .collect();
+        let retained = sender.retained();
+        assert_eq!(retained.writes.writes, 2);
+        assert_eq!(retained.writes.payload_bytes, 2 * payload.len());
+        assert_eq!(retained.reads.unwrap().reads, 2);
+        assert_eq!(retained.controls, 0);
         let Poll::Ready(Err(write)) =
             poll(&mut sender.write(link::GROUP, payload, WriteOptions::default()))
         else {
@@ -229,6 +234,10 @@ impl Managed {
                 && observed.pending_query_reads == 0
         });
         assert_eq!(self.nodes[0].0.ready_node().unwrap().commit_index(), before);
+        let retained = sender.retained();
+        assert_eq!(retained.writes.writes, 0);
+        assert_eq!(retained.writes.payload_bytes, 0);
+        assert_eq!(retained.reads.unwrap().reads, 0);
         for consistency in [ReadConsistency::Local, ReadConsistency::Linearizable] {
             let mut oversized = Vec::with_capacity(8193);
             oversized.push(0);

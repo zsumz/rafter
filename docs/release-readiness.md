@@ -1003,6 +1003,17 @@ queue credits, admission refusals, WAL/replay bytes, snapshot bytes, and
 persistence/application latency. Keep metrics out of consensus decisions and
 avoid requiring a telemetry framework in the kernel.
 
+`DurableCommandSender::retained` now exposes the existing write/query count and
+encoded-capacity charges together with the shared membership/transfer credit
+and its normalized payload charge. Observing these counters neither polls the
+backend nor invokes callbacks, and uncollected results stay visible after
+backend release. Disabled query support is distinct from an empty query budget.
+The counters can change independently under concurrent admission/release and
+do not reserve capacity or establish a whole-host memory ceiling. Real-worker
+tests cover queued cancellation, paused application work and terminal retained
+results; the independent TLS consumer also inspects its filled and drained
+client budgets through this public endpoint.
+
 The counter pressure lane above establishes one bounded overload/recovery case
 with real processes and TLS. It does not establish latency distributions, memory
 ceilings for the whole host, or sustained throughput.
