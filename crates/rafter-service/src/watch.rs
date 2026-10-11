@@ -3,10 +3,13 @@
 use std::{
     future::poll_fn,
     sync::{Arc, Mutex, MutexGuard},
-    task::{Context, Poll, Waker},
+    task::{Context, Poll},
 };
 
 use rafter_app::metrics::RaftGroupMetrics;
+
+mod registration;
+use registration::{wake_all, Registration, Waiter};
 
 /// Publisher side for managed-service metrics.
 #[derive(Clone, Debug)]
@@ -26,7 +29,7 @@ struct MetricsState<G> {
     current: RaftGroupMetrics<G>,
     version: u64,
     closed: bool,
-    wakers: Vec<Waker>,
+    waiters: Vec<Arc<Waiter>>,
 }
 
 impl<G> MetricsPublisher<G> {
@@ -38,7 +41,7 @@ impl<G> MetricsPublisher<G> {
                 current,
                 version: 0,
                 closed: false,
-                wakers: Vec::new(),
+                waiters: Vec::new(),
             })),
         }
     }
@@ -62,30 +65,30 @@ impl<G> MetricsPublisher<G> {
     /// which is what both of this crate's own call sites do, and both say so.
     #[must_use = "a closed publisher drops the snapshot instead of publishing it"]
     pub fn publish(&self, metrics: RaftGroupMetrics<G>) -> bool {
-        let wakers = {
+        let waiters = {
             let mut state = lock_state(&self.shared);
             if state.closed {
                 return false;
             }
             state.current = metrics;
             state.version = state.version.saturating_add(1);
-            std::mem::take(&mut state.wakers)
+            std::mem::take(&mut state.waiters)
         };
-        wake_all(wakers);
+        wake_all(waiters);
         true
     }
 
     /// Closes the stream and wakes watchers that are waiting for changes.
     pub fn close(&self) {
-        let wakers = {
+        let waiters = {
             let mut state = lock_state(&self.shared);
             if state.closed {
                 return;
             }
             state.closed = true;
-            std::mem::take(&mut state.wakers)
+            std::mem::take(&mut state.waiters)
         };
-        wake_all(wakers);
+        wake_all(waiters);
     }
 
     /// Creates a watch that observes future metrics changes from this publisher.
@@ -117,18 +120,30 @@ impl<G> MetricsWatch<G> {
     /// Waits for the next metrics change.
     ///
     /// Returns `None` after the publisher closes and no newer snapshot is
-    /// pending for this watcher.
+    /// pending for this watcher. Each pending call retains at most its latest
+    /// task waker. Dropping the future unregisters it immediately, even if this
+    /// watch remains alive and no further metrics are published. Cancellation
+    /// does not consume a later update; another call can observe it.
     pub async fn changed(&mut self) -> Option<RaftGroupMetrics<G>>
     where
         G: Clone,
     {
-        poll_fn(|context| self.poll_changed(context)).await
+        let registration = Registration::new(&self.shared);
+        let result = poll_fn(|context| self.poll_changed(context, &registration.waiter)).await;
+        drop(registration);
+        result
     }
 
-    fn poll_changed(&mut self, context: &mut Context<'_>) -> Poll<Option<RaftGroupMetrics<G>>>
+    fn poll_changed(
+        &mut self,
+        context: &mut Context<'_>,
+        waiter: &Arc<Waiter>,
+    ) -> Poll<Option<RaftGroupMetrics<G>>>
     where
         G: Clone,
     {
+        // Cloning or dropping a custom waker can call user code too.
+        let next = context.waker().clone();
         let mut state = lock_state(&self.shared);
         if state.version != self.seen_version {
             self.seen_version = state.version;
@@ -137,13 +152,16 @@ impl<G> MetricsWatch<G> {
         if state.closed {
             return Poll::Ready(None);
         }
+        let previous = lock_state(&waiter.waker).replace(next);
         if !state
-            .wakers
+            .waiters
             .iter()
-            .any(|waker| waker.will_wake(context.waker()))
+            .any(|registered| Arc::ptr_eq(registered, waiter))
         {
-            state.wakers.push(context.waker().clone());
+            state.waiters.push(Arc::clone(waiter));
         }
+        drop(state);
+        drop(previous);
         Poll::Pending
     }
 }
@@ -156,13 +174,7 @@ impl<G: Clone> MetricsWatch<G> {
     }
 }
 
-fn wake_all(wakers: Vec<Waker>) {
-    for waker in wakers {
-        waker.wake();
-    }
-}
-
-fn lock_state<G>(shared: &Mutex<MetricsState<G>>) -> MutexGuard<'_, MetricsState<G>> {
+fn lock_state<T>(shared: &Mutex<T>) -> MutexGuard<'_, T> {
     shared
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -171,3 +183,7 @@ fn lock_state<G>(shared: &Mutex<MetricsState<G>>) -> MutexGuard<'_, MetricsState
 #[cfg(test)]
 #[path = "watch_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "watch_cancellation_test.rs"]
+mod cancellation_tests;

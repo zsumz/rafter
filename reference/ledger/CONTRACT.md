@@ -1129,3 +1129,10 @@ fixed-membership composition in one OS process, not process crashes, multi-host
 latency, or full-queue liveness. The fixture polls TLS's bounded inbound queue;
 TLS does not currently expose an inbound wake callback. Managed client ownership
 and process fault isolation remain separate qualification work.
+
+`tests/managed_metrics.rs` separately checks the managed watch's cancellation
+contract through public APIs. Replacing a task wakeup releases the old task;
+canceling the future releases the current one while the watch and publisher
+remain open and idle. Repeated cancellation does not consume a subsequent
+published update. Weak task references make retention observable without reading
+private driver state, and the same test runs in the exact-package lane.

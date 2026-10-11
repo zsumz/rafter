@@ -26,6 +26,14 @@ terminal answer and its retained credit until the client consumes or drops it.
 Local reads register no waiter. These are entry-count bounds; embeddings must
 also bound application query/result sizes and receipts they have collected.
 
+Each pending `MetricsWatch::changed` call retains one current task wakeup.
+Repolling replaces that wakeup; canceling the future unregisters it immediately,
+even while the watch stays open and no further metrics are published. Canceled
+waits do not consume later updates. Registered task wakeups and their cleanup
+run outside the watch's locks, so waking or destroying a task can cancel a wait
+or inspect the publisher. Registration storage follows live pending waits;
+embeddings still control how many concurrent watches they open.
+
 ## Transport Delivery Semantics
 
 Rafter transports are allowed to drop, duplicate, reorder, reconnect, and

@@ -303,6 +303,27 @@ their futures are consumed or dropped. Refusal spends no identity or protocol
 step. Abandonment still preserves unknown outcomes for late polls. This is an
 entry-count bound; application query/result bytes still need application limits.
 
+Managed-client review also reproduced a metrics retention bug: canceling a
+`MetricsWatch::changed` future left its executor task retained until another
+publication, and polling with a new task accumulated obsolete wakeups. A pending
+call now owns one registration and replaces its previous waker. Completion or
+cancellation removes the registration without consuming a later update. Cleanup
+and notification run outside both watch locks; reentrant task destruction and
+self-cancellation are covered. An independent ledger consumer checks the same
+ownership contract through public APIs in source and archive modes. This closes
+that existing leak; the asynchronous owner's client handoff remains separate
+integration work.
+
+The metrics slice passes 325 service tests, 532 source-consumer tests, and 537
+archive/MSRV tests on Rust 1.88.0, with strict service/consumer lint and docs.
+Its eight new unit cases include reentrant destruction, self-cancellation, and
+publication during waker replacement; three deliberate ownership/locking faults
+fail their regressions. The exact-package runner's final compatibility phase
+remains **failed**: storage and peer-wire matrices pass, but the mixed-version
+TLS case receives an unsettled write during its final replica restarts. The
+current assertion hides that outcome; investigating it is the next release
+blocker. The earlier successful matrix runs do not supersede this failure.
+
 Remaining composition work includes integrating managed client/read ownership and
 TLS process adoption of the owner. Ordinary consensus inputs retain synchronous
 I/O. Its memory claim covers one existing output batch, one converted command,

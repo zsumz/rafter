@@ -87,7 +87,7 @@ fn changed_returns_none_after_close_without_pending_update() {
     assert!(!publisher.publish(metrics(Role::Follower, Term(2), LogIndex(2))));
 }
 
-fn metrics(role: Role, term: Term, index: LogIndex) -> RaftGroupMetrics<u64> {
+pub(super) fn metrics(role: Role, term: Term, index: LogIndex) -> RaftGroupMetrics<u64> {
     RaftGroupMetrics {
         group_id: 7,
         node_id: NodeId(1),
