@@ -450,10 +450,21 @@ read-your-writes after a cold reopen under another leader. Its new read test als
 withholds follower turns to prove that a read requires live quorum progress.
 The earlier write test now waits for the actual application completion event;
 the durable floor can legitimately become visible before that event is published.
-Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
-The feature lane requires exactly 348 tests in both CI and zcheck.
+Snapshot resumption now fences both the runtime and the managed client owner
+before calling application code. An error or caught panic closes cloned read
+and write endpoints immediately, without needing another owner poll. Existing
+waiters remain owned until backend release. Three managed regressions reproduce
+the earlier admission/panic defects; a fourth verifies successful installation
+still serves the restored state. A direct runtime regression also rejects a
+caught floor-callback panic, later input, and attempted resumption. All four
+managed cases pass with the fix; against the prior implementation, the three
+failure cases fail while successful installation still passes. The full runtime
+suite passes 236 tests, retaining its two existing process-profile ignores.
 
-Local qualification passes 325 default service tests, 348 with `durable`, 537
+Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
+The feature lane requires exactly 352 tests in both CI and zcheck.
+
+Local qualification passes 325 default service tests, 352 with `durable`, 537
 source-consumer tests, and 542 archive/MSRV consumer tests on Rust 1.88.0.
 The 23 managed write/read tests also pass 64 repetitions across four concurrent
 runners (1,472 executions). Consumer lanes retain their 57 explicitly ignored

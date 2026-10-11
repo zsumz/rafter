@@ -47,6 +47,9 @@ where
     /// # Errors
     /// A missing handoff, mismatched floor, or worker-start failure consumes the
     /// supplied store and terminally fences the service; recover from storage.
+    /// # Panics
+    /// A panic while verifying or restarting the application also fences this
+    /// incarnation, even when the caller catches the panic.
     pub fn resume_snapshot(&mut self, application: A) -> Result<(), ServiceError> {
         if self.terminal == Some(Terminal::Failed) {
             return Err(ServiceError::Failed);
@@ -54,6 +57,9 @@ where
         let Some(expected) = self.snapshot_floor else {
             return self.poison(ServiceError::NotReady(self.state()));
         };
+        // Application callbacks can unwind. Restore admission only after the
+        // entire verified replacement and worker restart succeeds.
+        self.terminal = Some(Terminal::Failed);
         let actual = application.applied_through();
         if actual != expected {
             return self.poison(ServiceError::ApplicationFloor { expected, actual });
@@ -67,6 +73,7 @@ where
         self.application = Some(worker);
         self.dispatched = expected;
         self.snapshot_floor = None;
+        self.terminal = None;
         Ok(())
     }
 

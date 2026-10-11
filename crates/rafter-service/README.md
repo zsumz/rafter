@@ -76,6 +76,9 @@ after fatal errors or caught callback panics. Destruction joins workers and
 releases protocol state before remaining clients receive refusal or uncertainty;
 it can wait for a blocked application transaction. An uncertain result requires
 application-defined retry identities, not a new unconditional mutation.
+Snapshot resumption errors and caught floor-validation panics close both client
+endpoints immediately. Outstanding requests retain their ownership until the
+backend is released; correcting the floor cannot revive a failed incarnation.
 
 Managed membership operations and `DriverCommandSender` integration remain
 follow-up work. The independent ledger consumer exercises writes and reads over

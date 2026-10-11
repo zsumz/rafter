@@ -3,4 +3,5 @@
 mod application;
 mod lifetime;
 mod protocol;
+mod snapshot;
 mod support;

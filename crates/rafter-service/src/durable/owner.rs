@@ -137,12 +137,30 @@ where
 
     /// Returns an installed application store after an `InstallSnapshot` event.
     /// # Errors
-    /// Preserves the underlying service's exact snapshot-floor checks.
+    /// Preserves the underlying service's exact snapshot-floor checks. A failure
+    /// closes both client endpoints immediately; discard this incarnation.
+    /// # Panics
+    /// A panic while verifying or restarting the application fences this owner,
+    /// even if caught. Remaining clients resolve only after backend release.
     pub fn resume_snapshot(&mut self, application: A) -> Result<(), ServiceError> {
-        self.service
+        if self.failed {
+            return Err(ServiceError::Failed);
+        }
+        if self.service.is_none() {
+            return Err(ServiceError::NotReady(ServiceState::Stopped));
+        }
+        self.failed = true;
+        let mut fence = self.callback_fence();
+        let result = self
+            .service
             .as_mut()
-            .ok_or(ServiceError::NotReady(ServiceState::Stopped))?
-            .resume_snapshot(application)
+            .ok_or(ServiceError::Failed)?
+            .resume_snapshot(application);
+        if result.is_ok() {
+            self.failed = false;
+            fence.armed = false;
+        }
+        result
     }
 
     /// Closes new client and consensus admission. Poll existing work and finish
