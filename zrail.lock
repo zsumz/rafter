@@ -5,7 +5,7 @@ producer = "0.0.3-rc.8"
 contract_sha256 = "168d0e027e13c5880aa5624b94943e69b52ffabfcb8eb41ef9a3da8bc06e2a2a"
 
 [analysis]
-inventory_sha256 = "0d8a0ada4234d641f5635688f2a2dc90bd4e5091de17746f6a9e58c255d21832"
+inventory_sha256 = "2c3856d18bd3d53c25e3407a1c408e8c054b66ccdf9364ec840e797858f64e08"
 exclusions_sha256 = "938ddad6868e3a6a928a0720de503d2c6745c1ed05522321fd81e0d2a9f4c6ca"
 cargo_lock_sha256 = "152bdfbd5e00e07e78d7d081098c85c8696c429dea8b7b002c32075f21c7cef3"
 cargo_features_sha256 = "47c0921024bfff9f3940814f4bb24aefa991504628f7da720988c1c30e253694"
@@ -13,11 +13,11 @@ feature_worlds_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991
 feature_worlds = 0
 packages = 16
 targets = 159
-physical_rust_files = 2129
-base_source_contexts = 3640
+physical_rust_files = 2130
+base_source_contexts = 3641
 derived_source_contexts = 0
-source_facts = 800463
-projection_queries = 3076111
+source_facts = 800943
+projection_queries = 3077389
 projected_facts = 2538
 unresolved_bindings = 0
 analyzer_semantics = 6
@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "2b3c887e8c5f3aeeea83c6d29106281156bdbebdde6f64de9660ff1c435ccadf"
+sha256 = "9b943604650a21ad41711f90b7f79b8dfa85d17064c457d812d127eb340fbac0"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1289,7 +1289,7 @@ sha256 = "d9cdce68c892ba18e227f77106f64df324df02ace62c727d02de89a6453a3561"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "634d224b33934509bfc2b23c2f2b7982d0151b5f6e42fba199dd2fda26c53455"
+sha256 = "6d5cb0f4363ab38d8c30deee823df0558e8b9fd5e216960b73b5309ec3c394b6"
 
 [[gate]]
 name = "rustdoc"
@@ -1304,12 +1304,12 @@ inputs_sha256 = "c6e8a74a9983de5ae3a4c74211e9e5feb4e60b88ac102485166f42c2527cc5c
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "dd55d8a948e16a7f5ae6adcef165d995f9d26298eae81839fd65f3a4d7ae2058"
+inputs_sha256 = "d88c8a748b19ec8e407c783c82047a7fbbc5baa5327becd0ec3f31807b5aeff8"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "86f453915ad6ffbb61e14fa63e70b849978936a98f7982f13e7f403c72c579e7"
+inputs_sha256 = "30b2ea48837b571b3bd79e0c6461e4afb3ce9114c6eb38abfd6469077edee176"
 
 [[macro_source]]
 allowance = "clap::Parser"

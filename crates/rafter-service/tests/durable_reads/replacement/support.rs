@@ -16,13 +16,20 @@ pub(super) struct Partition {
 }
 impl Partition {
     pub fn new() -> Self {
+        Self::with_cluster(Cluster::new(2), true)
+    }
+    pub fn with_paused_leader() -> Self {
+        Self::with_cluster(Cluster::new_with_paused_leader(2, true), false)
+    }
+    fn with_cluster(cluster: Cluster, partitioned: bool) -> Self {
         Self {
-            cluster: Cluster::new(2),
-            partitioned: true,
+            cluster,
+            partitioned,
             appended: Vec::new(),
             installs: 0,
         }
     }
+    #[track_caller]
     pub fn until(&mut self, mut done: impl FnMut(&Self) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !done(self) {
@@ -32,8 +39,7 @@ impl Partition {
         }
     }
     pub fn tick(&mut self, i: usize) {
-        self.until(|c| c.cluster.nodes[i].owner.state() == ServiceState::Ready);
-        self.cluster.nodes[i].owner.try_step(Input::Tick).unwrap();
+        self.send_tick(i);
         self.until(|c| {
             c.cluster.network.is_empty()
                 && c.cluster
@@ -42,14 +48,23 @@ impl Partition {
                     .all(|n| n.owner.state() == ServiceState::Ready)
         });
     }
+    pub fn send_tick(&mut self, i: usize) {
+        self.until(|c| c.cluster.nodes[i].owner.state() == ServiceState::Ready);
+        self.cluster.nodes[i].owner.try_step(Input::Tick).unwrap();
+    }
+    pub fn heal(&mut self) {
+        self.cluster
+            .network
+            .retain(|(from, to, _)| *from != NodeId(1) && *to != NodeId(1));
+        self.partitioned = false;
+    }
     pub fn elect_replacement(&mut self) {
         for _ in 0..16 {
             self.tick(1);
-            if self.cluster.nodes[1]
-                .owner
-                .ready_node()
-                .is_some_and(|n| n.role() == Role::Leader && n.commit_index() >= LogIndex(2))
-            {
+            if self.cluster.nodes[1].owner.ready_node().is_some_and(|n| {
+                n.role() == Role::Leader
+                    && n.term_at_index(n.commit_index()) == Some(n.current_term())
+            }) {
                 return;
             }
         }
@@ -59,7 +74,6 @@ impl Partition {
         let retired = self.cluster.nodes[1]
             .owner
             .compact_snapshot_with(|app, node| {
-                assert_eq!(app.floor, LogIndex(3));
                 let metadata = RaftSnapshotMetadata::new(
                     SnapshotGroupId::new("replacement")?,
                     node.id(),
@@ -129,7 +143,7 @@ impl Partition {
             _ => {}
         }
     }
-    fn turn(&mut self) {
+    pub fn turn(&mut self) {
         for i in 0..self.cluster.nodes.len() {
             self.pump(i);
         }

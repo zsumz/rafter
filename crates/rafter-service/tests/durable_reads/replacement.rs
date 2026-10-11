@@ -4,6 +4,7 @@ use rafter::{LocalProposalId, Term};
 use rafter_app::proposal::ClientRequestId;
 use rafter_service::{UnknownOutcomeReason, WriteError};
 
+mod committed;
 mod support;
 use support::Partition;
 
@@ -72,11 +73,7 @@ fn replacement(snapshot: bool) {
     if snapshot {
         cluster.compact();
     }
-    cluster
-        .cluster
-        .network
-        .retain(|(from, to, _)| *from != NodeId(1) && *to != NodeId(1));
-    cluster.partitioned = false;
+    cluster.heal();
     cluster.tick(1);
     cluster.until(|c| c.cluster.nodes[0].owner.durable_through() == Some(LogIndex(3)));
     cluster.until(|c| c.cluster.nodes[0].owner.state() == ServiceState::Ready);

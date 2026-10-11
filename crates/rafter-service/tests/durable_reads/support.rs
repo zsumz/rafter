@@ -127,6 +127,9 @@ pub(super) struct Cluster {
 }
 impl Cluster {
     pub fn new(limit: usize) -> Self {
+        Self::new_with_paused_leader(limit, false)
+    }
+    pub fn new_with_paused_leader(limit: usize, paused: bool) -> Self {
         let mut cluster = Self {
             nodes: (1..=3)
                 .map(|id| {
@@ -134,7 +137,7 @@ impl Cluster {
                         id,
                         (1..=3).filter(|n| *n != id).map(NodeId).collect(),
                         limit,
-                        false,
+                        paused && id == 1,
                     )
                 })
                 .collect(),

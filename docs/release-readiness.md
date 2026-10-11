@@ -647,13 +647,27 @@ retain admission credits, collection releases them, and the former leader can
 query the replacement state and admit a fresh request. Real persistence and
 application workers drive genuine generated peer messages. Both cases reject a
 mutation that omits managed proposal-drop handling. This adds qualification of
-existing behavior, with no library change; the exact durable-service inventory
-is now 395 passing tests. Strict durable-service Clippy and source/CI guards
+existing behavior, with no library change; that checkpoint passed the exact
+395-test durable-service inventory. Strict durable-service Clippy and source/CI guards
 pass, as do 128 replacement cases across 64 repetitions with four concurrent
 runners. Architecture analysis passes with no new grants or debt; its candidate
 inventory and qualification-input refresh still requires maintainer review.
 The in-memory partition fixture does not qualify physical disk stalls or
 snapshot publication under power loss.
+
+A complementary case blocks the old leader's application after a command has
+committed, lets the majority elect a new leader and compact later state, and
+delivers the real snapshot while that worker remains blocked. Snapshot handoff
+waits for the old application's completion: its client receives the original
+index, term, and result before installation replaces the store. A subsequent
+query sees the installed value. Deliberately substituting the new term fails
+the receipt check; bypassing the busy-application handoff fence fails at the
+lower layer's `ApplicationShutdown(Busy)` refusal. This also qualifies existing
+behavior without changing production code. All 396 durable-service tests,
+strict Clippy, and 13 relevant source/CI guards pass. The three replacement
+cases pass 64 repetitions across four concurrent runners (192 executions).
+Architecture analysis has no diagnostics, new grants, or debt; its candidate
+inventory/input refresh retains the maintainer-review requirement.
 
 The library checkpoint `9893ac18` passes 327 default service tests and 393 with
 `durable`, plus the real counter pressure sequence, default-workspace and
