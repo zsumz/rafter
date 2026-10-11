@@ -345,7 +345,12 @@ The checker is not a complete compatibility proof. A deliberate removal of
 the handwritten `Default` implementation for `RunningCrc32` passed its API
 comparison, while an ordinary Rust 1.88 downstream `Default::default()` consumer
 failed to compile. Its derived-trait lint does not cover that handwritten case.
-Supplemental compiler contracts are needed for such gaps. The actual enum
+The external `rafter-crc32/tests/published_api.rs` consumer now supplements that
+specific gap with generic default construction, `std::mem::take` reset and the
+independent IEEE check vector. The same consumer passes against the published
+alpha; removing the trait fails compilation and using the wrong default state
+fails its behavior check. Other handwritten trait contracts still need review.
+The actual enum
 regression above is detected by the automated gate, with no success receipt
 written on failure.
 
