@@ -212,6 +212,15 @@ lock for the MSRV build and retain it as `Cargo.msrv.lock`. Retaining the final
 pair performs no new resolution or network request and also works with
 `--offline`.
 
+When artifacts are requested, `public-dependencies/Cargo.lock` projects that
+final resolution onto the normal/build dependency closure of all public archives.
+The check requires every declared public feature, including the service's
+`durable` feature, and preserves the original versions, checksums and dependency
+records. It refuses missing archives, private paths, unexpected sources and
+lock/metadata disagreement. Its receipt binds the retained inputs and archive
+hash inventory. This offline projection does not itself check advisories; it
+provides the exact tested public graph for a separate audit.
+
 This mode tests the artifact users receive, not merely the source tree that
 produced it.
 

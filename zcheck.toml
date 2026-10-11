@@ -281,8 +281,8 @@ tools = ["cargo", "tar", "python3", "rustup"]
 resources = ["reference-target"]
 
 [tasks.archive-compatibility-runner-tests]
-description = "Verify archive and dependency refusal boundaries of the compatibility runners."
-run = ["python3", "-m", "unittest", "scripts/tests/test_archive_compatibility.py"]
+description = "Verify archive compatibility and retained public dependency boundaries."
+run = ["python3", "-m", "unittest", "scripts/tests/test_archive_compatibility.py", "scripts/tests/test_archive_dependencies.py"]
 tools = ["python3"]
 
 [tasks.full]

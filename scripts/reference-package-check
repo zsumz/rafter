@@ -113,7 +113,10 @@ esac
 
 required_tools=(cargo jq openssl tar)
 if [[ "$mode" != process ]]; then
-    required_tools+=(python3 rustup)
+    required_tools+=(rustup)
+fi
+if [[ "$mode" != process || -n "$artifact_dir" ]]; then
+    required_tools+=(python3)
 fi
 for tool in "${required_tools[@]}"; do
     if ! command -v "$tool" > /dev/null 2>&1; then
@@ -121,8 +124,8 @@ for tool in "${required_tools[@]}"; do
         exit 1
     fi
 done
-if [[ "$mode" != process ]]; then
-    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "error: archive compatibility qualification requires Python 3.11+")'
+if [[ "$mode" != process || -n "$artifact_dir" ]]; then
+    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "error: archive qualification requires Python 3.11+")'
 fi
 if [[ "$mode" == msrv || "$mode" == process-msrv ]]; then
     if ! command -v rustup > /dev/null 2>&1; then
@@ -899,6 +902,11 @@ else
     log "note: the consumers declare no Rafter dependency yet, so every [patch]"
     log "      entry is unused. The rejections above still hold, and they bind as"
     log "      soon as a consumer manifest names a versioned Rafter crate."
+fi
+
+if [[ -n "$artifact_dir" ]]; then
+    run python3 "$repo_root/scripts/archive_dependencies.py" \
+        --artifacts "$artifact_dir" --release "$repo_root/RELEASE.md"
 fi
 
 end_phase
