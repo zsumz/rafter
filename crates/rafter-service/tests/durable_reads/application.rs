@@ -9,7 +9,7 @@ fn election_noop_needs_no_phantom_application_update_and_result_retains_credit()
     assert_eq!(replica.sender.retained().reads, 1);
     assert!(matches!(
         poll(&mut replica.read(ReadConsistency::Local)),
-        Poll::Ready(Err(ReadError::Transport { .. }))
+        Poll::Ready(Err(ReadError::Backpressure))
     ));
     let Poll::Ready(Ok(receipt)) = poll(&mut read) else {
         panic!("missing read");
@@ -60,7 +60,7 @@ fn caller_floors_are_never_lowered_and_local_reads_have_no_quorum_proof() {
                 .sender
                 .read(padded, ReadConsistency::Local, ReadOptions::default())
         ),
-        Poll::Ready(Err(ReadError::Transport { .. }))
+        Poll::Ready(Err(ReadError::Backpressure))
     ));
     assert!(matches!(
         poll(&mut replica.read(ReadConsistency::LeaseRead)),

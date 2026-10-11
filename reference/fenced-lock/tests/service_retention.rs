@@ -13,7 +13,9 @@ use rafter::{NodeConfig, NodeId};
 use rafter_app::group::RaftGroup;
 use rafter_reference_fenced_lock::{LockQuery, LockStateMachine};
 use rafter_runtime::DurableRaftNode;
-use rafter_service::{ReadError, ReadOptions, TransportDriverOptions, WriteFate, WriteOptions};
+use rafter_service::{
+    ReadError, ReadOptions, TransportDriverOptions, WriteError, WriteFate, WriteOptions,
+};
 use rafter_storage::InMemoryRaftHardStateStore;
 use std::{
     future::Future,
@@ -72,10 +74,11 @@ fn uncollected_lock_results_share_a_bounded_budget_with_read_results() {
         .begin_write(support::open_session(1, 1), WriteOptions::default())
         .err()
         .unwrap();
+    assert!(matches!(refusal, WriteError::Backpressure));
     assert_eq!(refusal.fate(), WriteFate::NotAppended);
     assert!(matches!(
         driver.begin_read(query, ReadOptions::default()),
-        Err(ReadError::Transport { .. })
+        Err(ReadError::Backpressure)
     ));
     assert_eq!(driver.committed_application_index().unwrap(), before);
     assert!(ready(&mut write).is_ok());

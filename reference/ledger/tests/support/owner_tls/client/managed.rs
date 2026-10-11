@@ -8,7 +8,8 @@ use rafter_reference_ledger::{
 };
 use rafter_runtime::service::{ServicePoll, ServiceState};
 use rafter_service::{
-    durable::DurableRaftDriver, DriverCommandSender, ReadConsistency, ReadOptions,
+    durable::DurableRaftDriver, DriverCommandSender, ReadConsistency, ReadError, ReadErrorKind,
+    ReadOptions, WriteError, WriteErrorKind, WriteFate, WriteOptions,
 };
 use rafter_storage::{FileRaftHardStateStore, FileRaftLogSegment, FileRaftSnapshotStore};
 use std::{
@@ -89,6 +90,71 @@ impl Managed {
         });
         outcome.unwrap()
     }
+    fn check_admission(&mut self) {
+        let driver = &self.0[0].0;
+        let before = driver.ready_node().unwrap().commit_index();
+        let sender = driver.sender();
+        let payload = LedgerStateMachine::new(config())
+            .encode_command(&crate::support::open_session(0, 1))
+            .unwrap();
+        let writes: Vec<_> = (0..2)
+            .map(|_| sender.write(link::GROUP, payload.clone(), WriteOptions::default()))
+            .collect();
+        let reads: Vec<_> = (0..2)
+            .map(|_| {
+                sender.read(
+                    link::GROUP,
+                    vec![0],
+                    ReadConsistency::Local,
+                    ReadOptions::default(),
+                )
+            })
+            .collect();
+        let Poll::Ready(Err(write)) =
+            poll(&mut sender.write(link::GROUP, payload, WriteOptions::default()))
+        else {
+            panic!("full write budget did not refuse");
+        };
+        assert!(matches!(write, WriteError::Backpressure));
+        assert_eq!(write.kind(), WriteErrorKind::Backpressure);
+        assert_eq!(write.fate(), WriteFate::NotAppended);
+        let Poll::Ready(Err(read)) = poll(&mut sender.read(
+            link::GROUP,
+            vec![0],
+            ReadConsistency::Linearizable,
+            ReadOptions::default(),
+        )) else {
+            panic!("full read budget did not refuse");
+        };
+        assert!(matches!(read, ReadError::Backpressure));
+        assert_eq!(read.kind(), ReadErrorKind::Backpressure);
+        // None reached the backend: cancellation releases queued work on the
+        // next owner turn, after which the same incarnation serves real work.
+        drop((writes, reads));
+        self.0[0].0.poll_next().unwrap();
+        self.until(|c| {
+            let observed = c.0[0].0.handle().metrics().unwrap().current();
+            c.0[0].0.state() == ServiceState::Ready
+                && observed.pending_proposals == 0
+                && observed.pending_query_reads == 0
+        });
+        assert_eq!(self.0[0].0.ready_node().unwrap().commit_index(), before);
+        for consistency in [ReadConsistency::Local, ReadConsistency::Linearizable] {
+            let mut oversized = Vec::with_capacity(8193);
+            oversized.push(0);
+            assert!(matches!(
+                poll(&mut sender.read(link::GROUP, oversized, consistency, ReadOptions::default())),
+                Poll::Ready(Err(ReadError::Backpressure))
+            ));
+        }
+        let mut oversized = Vec::with_capacity(8193);
+        oversized.push(0);
+        assert!(matches!(
+            poll(&mut sender.write(link::GROUP, oversized, WriteOptions::default())),
+            Poll::Ready(Err(WriteError::Backpressure))
+        ));
+    }
+
     fn close(mut self) {
         let mut stops: Vec<_> = self
             .0
@@ -117,6 +183,7 @@ impl Managed {
 fn durable_raft_handle_routes_tls_writes_reads_transfer_and_shutdown_across_reopen() {
     let scratch = crate::scratch::ScratchDir::new("durable-handle-tls");
     let mut cluster = Managed::open(scratch.path(), true, 0);
+    cluster.check_admission();
     let handle = cluster.0[0].0.handle();
     let mut floor = LogIndex::ZERO;
     let commands = [

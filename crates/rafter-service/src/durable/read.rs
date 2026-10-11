@@ -40,6 +40,8 @@ impl<R: Send + 'static> DurableReadSender<R> {
     /// # Errors
     /// Refuses exhausted admission, unsupported consistency, unavailable
     /// freshness, protocol rejection/cancellation, or terminal owner state.
+    /// [`ReadError::Backpressure`] means retained request or encoded `Vec`
+    /// capacity would exceed the configured budget; no query or barrier starts.
     #[must_use]
     pub fn read(
         &self,

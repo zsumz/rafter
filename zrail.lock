@@ -16,8 +16,8 @@ targets = 159
 physical_rust_files = 2127
 base_source_contexts = 3638
 derived_source_contexts = 0
-source_facts = 799411
-projection_queries = 3074863
+source_facts = 799380
+projection_queries = 3073800
 projected_facts = 2538
 unresolved_bindings = 0
 analyzer_semantics = 6
@@ -1657,7 +1657,7 @@ value = 745
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/tests/transport_waiters.rs"
-value = 914
+value = 911
 
 [[ratchet]]
 rule = "rust.file-size"

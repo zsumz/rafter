@@ -13,7 +13,7 @@ fn write_waits_for_application_durability_and_retains_uncollected_credit() {
     assert!(poll(&mut write).is_pending());
     assert_eq!(sender.retained().writes, 1);
     assert!(
-        matches!(poll(&mut sender.write(vec![8], WriteOptions::default())), Poll::Ready(Err(ref error)) if error.fate() == WriteFate::NotAppended)
+        matches!(poll(&mut sender.write(vec![8], WriteOptions::default())), Poll::Ready(Err(ref error)) if matches!(error, WriteError::Backpressure) && error.fate() == WriteFate::NotAppended)
     );
     release.now();
     // The durable floor may precede completion publication. Wait for the
@@ -37,7 +37,7 @@ fn canceled_accepted_write_keeps_credit_until_the_owner_consumes_completion() {
     drop(write);
     assert_eq!(sender.retained().writes, 1);
     assert!(
-        matches!(poll(&mut sender.write(vec![10], WriteOptions::default())), Poll::Ready(Err(ref error)) if error.fate() == WriteFate::NotAppended)
+        matches!(poll(&mut sender.write(vec![10], WriteOptions::default())), Poll::Ready(Err(ref error)) if matches!(error, WriteError::Backpressure) && error.fate() == WriteFate::NotAppended)
     );
     release.now();
     until(&mut owner, |_| sender.retained().writes == 0);
@@ -91,7 +91,7 @@ fn queued_cancellation_shutdown_and_capacity_refusal_do_not_append() {
     let mut padded = Vec::with_capacity(1024);
     padded.push(2);
     assert!(
-        matches!(poll(&mut sender.write(padded, WriteOptions::default())), Poll::Ready(Err(ref error)) if error.fate() == WriteFate::NotAppended)
+        matches!(poll(&mut sender.write(padded, WriteOptions::default())), Poll::Ready(Err(ref error)) if matches!(error, WriteError::Backpressure) && error.fate() == WriteFate::NotAppended)
     );
     let mut queued = sender.write(vec![3], WriteOptions::default());
     owner.begin_shutdown();

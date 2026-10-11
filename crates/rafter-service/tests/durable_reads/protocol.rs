@@ -13,7 +13,7 @@ fn canceled_quorum_round_retains_capacity_until_real_kernel_completion() {
     assert_eq!(cluster.nodes[0].sender.retained().reads, 1);
     assert!(matches!(
         poll(&mut cluster.nodes[0].read(ReadConsistency::Local)),
-        Poll::Ready(Err(ReadError::Transport { .. }))
+        Poll::Ready(Err(ReadError::Backpressure))
     ));
     cluster.until(|c| c.nodes[0].sender.retained().reads == 0);
     assert_eq!(cluster.nodes[0].queries.load(Ordering::Acquire), 0);

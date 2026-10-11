@@ -24,6 +24,8 @@ pub enum WriteErrorKind {
     Rejected,
     /// The encoded command exceeded the configured limit.
     PayloadTooLarge,
+    /// Managed write admission is full.
+    Backpressure,
     /// The driver cannot prove whether the command took effect.
     UnknownOutcome,
     /// The request named another group.
@@ -104,6 +106,8 @@ pub enum ReadErrorKind {
     NotLeader,
     /// The Raft runtime rejected the read barrier.
     Rejected,
+    /// Managed read admission is full.
+    Backpressure,
     /// An active read barrier was canceled.
     Canceled,
     /// The requested consistency mode is unsupported.

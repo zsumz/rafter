@@ -107,17 +107,9 @@ where
             .values()
             .filter(|waiter| waiter.outcome.is_none())
             .count();
-        if unresolved >= self.options.max_pending_waiters {
-            return Err(ReadError::Transport {
-                cause: ErrorCause::new(DriverRoutingError::PendingWaiterLimit {
-                    max_pending_waiters: self.options.max_pending_waiters,
-                }),
-            });
+        if unresolved >= self.options.max_pending_waiters || self.retained_waiters_full() {
+            return Err(ReadError::Backpressure);
         }
-        self.check_retained_waiter_capacity()
-            .map_err(|cause| ReadError::Transport {
-                cause: ErrorCause::new(cause),
-            })?;
         let next = self.next_read_id.ok_or(ReadError::ReadIdExhausted)?;
         self.next_read_id = next.checked_add(1);
         let read_id = ReadId(next);

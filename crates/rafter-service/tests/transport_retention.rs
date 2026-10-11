@@ -36,10 +36,7 @@ fn refuse_write(driver: &Driver) {
         )
         .err()
         .unwrap();
-    assert!(
-        matches!(&error, WriteError::Transport { fate: WriteFate::NotAppended, cause } if cause.to_string().contains("retains")),
-        "{error:?}"
-    );
+    assert!(matches!(&error, WriteError::Backpressure), "{error:?}");
 }
 
 fn refuse_read(driver: &Driver) {
@@ -47,10 +44,7 @@ fn refuse_read(driver: &Driver) {
         .begin_read("refused".to_owned(), ReadOptions::default())
         .err()
         .unwrap();
-    assert!(
-        matches!(&error, ReadError::Transport { cause } if cause.to_string().contains("retains")),
-        "{error:?}"
-    );
+    assert!(matches!(&error, ReadError::Backpressure), "{error:?}");
 }
 
 #[test]
@@ -89,13 +83,7 @@ fn default_retention_limit_bounds_completed_unpolled_writes() {
         )
         .err();
     assert!(
-        matches!(
-            refused,
-            Some(WriteError::Transport {
-                fate: WriteFate::NotAppended,
-                ..
-            })
-        ),
+        matches!(refused, Some(WriteError::Backpressure)),
         "resolved results must still consume retention capacity; got {refused:?}"
     );
     assert_eq!(
@@ -150,7 +138,7 @@ fn completed_reads_and_writes_share_capacity_and_polling_releases_it() {
                 .handle()
                 .read("key".to_owned(), ReadConsistency::Linearizable)
         ),
-        Err(ReadError::Transport { .. }),
+        Err(ReadError::Backpressure),
     ));
     assert_eq!(
         driver
@@ -295,6 +283,7 @@ fn simultaneous_resolving_writes_cannot_overbook_retained_slots() {
         match thread.join().unwrap() {
             Ok(result) => held.push(result),
             Err(error) => {
+                assert!(matches!(error, WriteError::Backpressure));
                 assert_eq!(error.fate(), WriteFate::NotAppended);
                 refused += 1;
             }

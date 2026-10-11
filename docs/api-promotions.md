@@ -13801,3 +13801,21 @@ any one of the three lands alone.
     reopens the same state. Creation/publication/restart remain synchronous and
     source staging, chunks, and retired entries require embedding budgets. No
     snapshot schema, storage format, or transport changes are introduced.
+
+36. **Typed managed admission pressure.**
+    `WriteError::Backpressure` and `ReadError::Backpressure`, with matching
+    low-cardinality kinds, distinguish exhausted client budgets from transport
+    failures. The durable owner uses them for request counts and retained
+    encoded-vector capacities; the existing transport driver uses them for
+    unresolved and total retained waiters. Refusal happens before allocating an
+    operation ID, appending, reserving a barrier, or invoking a query. A write
+    therefore proves `NotAppended`, including for an encoded buffer whose
+    capacity exceeds the entire byte budget. Retained results still hold credit
+    until consumed or dropped, and canceled accepted operations retain their
+    existing ownership rules. No automatic retry or retry delay is promised.
+    These are additive variants on non-exhaustive enums. Callers that previously
+    bucketed budget exhaustion as `Transport` must handle the new category;
+    actual transport faults preserve their causes and fate. The independent
+    file-backed TLS consumer matches both errors through public senders, checks
+    slot and byte refusal, then serves writes/reads and reopens the same stores.
+    Storage, peer wire, and application schemas are unchanged.

@@ -36,6 +36,15 @@ pub enum ReadError {
         /// Current leader, when known.
         leader_hint: Option<NodeId>,
     },
+    /// The driver's retained request or byte budget cannot admit this query.
+    ///
+    /// Refused before reserving a read ID or invoking the application query.
+    /// Retained results can keep the budget full until their futures are
+    /// consumed or dropped. This variant promises no retry time.
+    /// An encoded buffer exceeding the entire byte budget cannot fit even
+    /// after other work completes; reduce its retained capacity or raise the
+    /// configured limit.
+    Backpressure,
     /// An active linearizable read barrier was canceled.
     Canceled {
         /// Identifier of the canceled read.
@@ -144,6 +153,7 @@ impl ReadError {
         match self {
             Self::NotLeader { .. } => ReadErrorKind::NotLeader,
             Self::Rejected { .. } => ReadErrorKind::Rejected,
+            Self::Backpressure => ReadErrorKind::Backpressure,
             Self::Canceled { .. } => ReadErrorKind::Canceled,
             Self::UnsupportedConsistency { .. } => ReadErrorKind::UnsupportedConsistency,
             Self::FreshnessUnavailable { .. } => ReadErrorKind::FreshnessUnavailable,
@@ -191,6 +201,7 @@ impl fmt::Display for ReadError {
                 )?;
                 write_leader_hint(formatter, *leader_hint)
             }
+            Self::Backpressure => formatter.write_str("read admission is full"),
             Self::UnsupportedConsistency { consistency } => {
                 write!(formatter, "unsupported read consistency {consistency:?}")
             }
@@ -246,6 +257,7 @@ impl Error for ReadError {
             },
             Self::NotLeader { .. }
             | Self::Rejected { .. }
+            | Self::Backpressure
             | Self::Canceled { .. }
             | Self::UnsupportedConsistency { .. }
             | Self::FreshnessUnavailable { .. }

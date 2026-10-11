@@ -50,17 +50,11 @@ where
     T: RaftTransport<G>,
     V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
 {
-    pub(super) fn check_retained_waiter_capacity(&self) -> Result<(), DriverRoutingError> {
-        let retained = self
-            .write_waiters
+    pub(super) fn retained_waiters_full(&self) -> bool {
+        self.write_waiters
             .len()
-            .saturating_add(self.read_waiters.len());
-        if retained >= self.options.max_retained_waiters {
-            return Err(DriverRoutingError::RetainedWaiterLimit {
-                max_retained_waiters: self.options.max_retained_waiters,
-            });
-        }
-        Ok(())
+            .saturating_add(self.read_waiters.len())
+            >= self.options.max_retained_waiters
     }
 
     pub(super) fn resolve_write(

@@ -31,6 +31,8 @@ impl<O: Send + 'static> DurableWriteSender<O> {
     /// future only abandons observation; an accepted command may still commit.
     /// # Errors
     /// Reports proven refusal before admission, otherwise preserves uncertainty.
+    /// [`WriteError::Backpressure`] means retained request or encoded `Vec`
+    /// capacity would exceed the configured budget; nothing was appended.
     #[must_use]
     pub fn write(
         &self,

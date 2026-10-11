@@ -1,11 +1,10 @@
 //! Admission and retained client state, separate from the owned backend.
 
 use super::{budget::Budget, lock, reply::Reply};
-use crate::{ErrorCause, UnknownOutcomeReason, WriteError, WriteFate, WriteOptions, WriteReceipt};
+use crate::{UnknownOutcomeReason, WriteError, WriteOptions, WriteReceipt};
 use rafter::{LocalProposalId, LogIndex, Term};
 use std::{
     collections::{BTreeMap, VecDeque},
-    fmt,
     num::NonZeroUsize,
     sync::{atomic::Ordering, Arc, Mutex},
 };
@@ -96,10 +95,7 @@ impl<O> Shared<O> {
                 self.limits.writes.get(),
                 self.limits.payload_bytes.get(),
             )
-            .ok_or_else(|| WriteError::Transport {
-                fate: WriteFate::NotAppended,
-                cause: ErrorCause::new(AdmissionFull),
-            })?;
+            .ok_or(WriteError::Backpressure)?;
         let next = state.next.ok_or(WriteError::LocalProposalIdExhausted)?;
         state.next = next.checked_add(1);
         let reply = Reply::new(credit, Arc::clone(&self.wake));
@@ -201,12 +197,3 @@ pub(super) fn unknown(
         reason,
     }
 }
-
-#[derive(Debug)]
-struct AdmissionFull;
-impl fmt::Display for AdmissionFull {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("durable client admission is full")
-    }
-}
-impl std::error::Error for AdmissionFull {}

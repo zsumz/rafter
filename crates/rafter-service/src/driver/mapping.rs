@@ -25,7 +25,7 @@ pub use driver_error::ManagedDriverError;
 pub(super) use super::group_error::{
     read_error_from_group, terminal_read_error, transfer_error_from_group, write_error_from_group,
 };
-pub(super) use super::routing::{DriverRoutingError, ManagedOperationError};
+pub(super) use super::routing::ManagedOperationError;
 
 #[cfg(test)]
 #[path = "mapping_test.rs"]

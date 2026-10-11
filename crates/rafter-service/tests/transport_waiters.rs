@@ -868,10 +868,7 @@ fn a_refused_write_returns_its_error_rather_than_a_future() {
         .err()
         .expect("the second is over the bound");
 
-    assert!(
-        matches!(error, WriteError::Transport { .. }),
-        "got {error:?}"
-    );
+    assert!(matches!(error, WriteError::Backpressure), "got {error:?}");
     assert_eq!(
         driver.pending_writes().len(),
         1,

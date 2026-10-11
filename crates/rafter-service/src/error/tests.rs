@@ -30,6 +30,7 @@ fn every_write_error() -> Vec<WriteError> {
             client_request_id: None,
             reason: UnknownOutcomeReason::EmptyNetwork,
         },
+        WriteError::Backpressure,
         WriteError::WrongGroup,
         WriteError::StateMachine {
             operation: StateMachineOperation::EncodeCommand,
@@ -86,6 +87,7 @@ fn every_read_error() -> Vec<ReadError> {
             read_id: ReadId(1),
             reason: ReadAbandonReason::DriveBoundReached,
         },
+        ReadError::Backpressure,
         ReadError::WrongGroup,
         ReadError::StateMachine {
             operation: StateMachineOperation::Read,
@@ -288,6 +290,7 @@ fn fate_is_not_appended_for_every_refusal_variant() {
             WriteErrorKind::NotLeader
                 | WriteErrorKind::Rejected
                 | WriteErrorKind::PayloadTooLarge
+                | WriteErrorKind::Backpressure
                 | WriteErrorKind::WrongGroup
                 | WriteErrorKind::ShuttingDown
                 | WriteErrorKind::LocalProposalIdExhausted

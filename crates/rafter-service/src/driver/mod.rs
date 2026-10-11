@@ -69,7 +69,7 @@ pub use transport::{
 
 use mapping::{
     read_error_from_group, terminal_read_error, transfer_error_from_group, write_error_from_group,
-    DriverRoutingError, ManagedOperationError,
+    ManagedOperationError,
 };
 use state::{lock_state, InMemoryRaftState};
 use write::{managed_unknown_reason_from_app, write_error_from_rejection};

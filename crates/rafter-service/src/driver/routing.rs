@@ -41,13 +41,6 @@ pub(super) enum DriverRoutingError {
     MissingNode { node_id: NodeId },
     /// The driver stopped routing at its own bound rather than looping forever.
     DriveBoundReached { max_steps: usize },
-    /// The driver already holds its configured maximum of unresolved waiters.
-    ///
-    /// Failing closed rather than growing: the operation was refused before
-    /// anything was proposed, so nothing is in flight to be uncertain about.
-    PendingWaiterLimit { max_pending_waiters: usize },
-    /// Pending and completed-but-unconsumed waiters fill the shared table budget.
-    RetainedWaiterLimit { max_retained_waiters: usize },
 }
 
 impl fmt::Display for DriverRoutingError {
@@ -59,18 +52,6 @@ impl fmt::Display for DriverRoutingError {
             Self::DriveBoundReached { max_steps } => write!(
                 formatter,
                 "managed driver did not drain within {max_steps} drive steps"
-            ),
-            Self::PendingWaiterLimit {
-                max_pending_waiters,
-            } => write!(
-                formatter,
-                "managed driver already holds {max_pending_waiters} unresolved waiters"
-            ),
-            Self::RetainedWaiterLimit {
-                max_retained_waiters,
-            } => write!(
-                formatter,
-                "managed driver already retains {max_retained_waiters} waiters; consume or drop client futures"
             ),
         }
     }

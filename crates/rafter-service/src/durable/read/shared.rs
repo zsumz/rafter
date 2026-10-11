@@ -3,13 +3,12 @@
 use super::{DurableReadLimits, DurableReadStats};
 use crate::{
     durable::{budget::Budget, lock, reply::Reply},
-    ErrorCause, QueryReceipt, ReadError, ReadOptions,
+    QueryReceipt, ReadError, ReadOptions,
 };
 use rafter::ReadId;
 use rafter_app::read::{ReadConsistency, ReadProof};
 use std::{
     collections::{BTreeMap, VecDeque},
-    fmt,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -93,9 +92,7 @@ impl<R> ReadShared<R> {
                 self.limits.reads.get(),
                 self.limits.payload_bytes.get(),
             )
-            .ok_or_else(|| ReadError::Transport {
-                cause: ErrorCause::new(AdmissionFull),
-            })?;
+            .ok_or(ReadError::Backpressure)?;
         let next = state.next.ok_or(ReadError::ReadIdExhausted)?;
         state.next = next.checked_add(1);
         let id = ReadId(next);
@@ -202,12 +199,3 @@ impl<R> ReadShared<R> {
         wakers
     }
 }
-
-#[derive(Debug)]
-struct AdmissionFull;
-impl fmt::Display for AdmissionFull {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("durable read admission is full")
-    }
-}
-impl std::error::Error for AdmissionFull {}

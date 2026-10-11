@@ -607,16 +607,32 @@ the same application state. This maintenance remains synchronous; source staging
 chunks, and retired-entry disposal still require explicit budgets.
 The feature lane requires exactly 393 tests in both CI and zcheck.
 
+Managed write/read budget exhaustion now reports public `Backpressure` variants
+and kinds instead of `Transport` with inaccessible private causes. The durable
+owner counts requests and retained vector capacity; the existing transport
+driver counts unresolved and retained waiters. Refusals allocate no operation ID,
+append no command, and start no read barrier or query. Writes prove `NotAppended`.
+Completed results and canceled in-flight operations keep their existing credit
+lifetimes. A buffer exceeding the total byte budget needs a smaller retained
+capacity or a larger configured budget, not repeated retries. These additive
+non-exhaustive variants change the classification callers should handle for
+budget exhaustion; actual transport errors retain their existing typed causes.
+The external TLS ledger scenario exercises count and byte refusal through public
+senders, cancellation/re-admission, then its usual durable writes, reads,
+compaction, transfer, shutdown, and reopen sequence.
+
 Local qualification passes 327 default service tests, 393 with `durable`, and
-544 archive/MSRV consumer tests on Rust 1.88.0. The latest full source lane passed
-539 tests at the managed-compaction checkpoint; all five TLS owner cases were
-rerun after the late-snapshot state correction.
-The 23 managed write/read tests also pass 64 repetitions across four concurrent
-runners (1,472 executions). Consumer lanes retain their 57 explicitly ignored
-cases for dedicated qualification. Strict docs and Clippy, 105 source/API/CI
-guards, and architecture checks pass without new grants or adoption debt. All
-seven package phases pass, including published storage, peer wire, and rolling
-TLS processes. The rolling runner resolves the unchanged process consumer and
+539 source-consumer tests and 544 archive/MSRV consumer tests on Rust 1.88.0
+at the typed-backpressure slice. Both consumer lanes retain 57 explicitly ignored
+profiles. The real counter pressure sequence also passes with the new category.
+Default workspace and durable-feature Clippy, strict docs, 45 source/API/CI
+guards, and architecture checks pass. This slice adds no architecture grants or
+debt and tightens one file-size ratchet; the PR's maintainer review remains open.
+Earlier managed-client qualification also ran the 23 write/read tests for 64
+repetitions across four concurrent runners (1,472 executions), with 105
+source/API/CI guards and no new architecture grants or adoption debt. The current
+archive lane passes all seven package phases, including published storage, peer
+wire, and rolling TLS processes. The rolling runner resolves the unchanged process consumer and
 its required workspace members for both versions; candidate-only ledger APIs
 stay in the complete consumer lane rather than being requested from older
 packages. Nineteen runner controls and strict lint/docs, source/dependency/size,

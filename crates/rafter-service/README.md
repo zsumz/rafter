@@ -17,8 +17,9 @@ explicit.
 including completed results that clients have not collected. Set it with
 `with_max_retained_waiters`. Both limits must admit a new operation; refusal
 happens before an ID is allocated, a write is proposed, or a read barrier is
-reserved. Refused writes report `NotAppended` through the existing transport
-error surface.
+reserved. Capacity refusals report `WriteError::Backpressure` or
+`ReadError::Backpressure`, with matching error kinds. Refused writes prove
+`NotAppended`; actual transport failures retain their separate category.
 
 Polling a future to completion or dropping it returns its retained credit.
 Abandonment resolves the future and releases its pending slot, but keeps the
@@ -71,6 +72,12 @@ backend is released. Queued and already-granted canceled reads are reclaimed on
 an owner turn. Query-result sizes need an application bound. A local read has no
 quorum proof; the single-owner proof uses `()` as its group identifier, leaving
 authenticated group routing with the embedding.
+
+Durable read/write admission also reports `Backpressure` when either its count
+or encoded-capacity budget cannot fit a request. Consume or drop completed
+futures to return credit. A buffer larger than the entire byte budget needs a
+smaller retained capacity or a larger configured budget; waiting alone cannot
+make it fit. No automatic retry or retry delay is implied by this category.
 
 Cloned senders do not retain the backend. Stop admission with `begin_shutdown`,
 poll existing work, then call `finish_shutdown`. Discard and recover the owner

@@ -42,6 +42,16 @@ pub enum WriteError {
         /// Actual encoded payload size in bytes.
         actual: usize,
     },
+    /// The driver's retained request or byte budget cannot admit this command.
+    ///
+    /// Refused before allocating a proposal ID or appending the command, so
+    /// the request identity remains unused. Retained results can keep this
+    /// budget full until their futures are consumed or dropped. Retry only
+    /// after capacity becomes available; this variant promises no retry time.
+    /// An encoded buffer exceeding the entire byte budget cannot fit even
+    /// after other work completes; reduce its retained capacity or raise the
+    /// configured limit.
+    Backpressure,
     /// The operation may or may not have committed and applied.
     ///
     /// Retry only with application-level idempotency if duplicate effects
@@ -130,7 +140,7 @@ impl WriteError {
     /// Returns what this error proves about the command's fate.
     ///
     /// Variants that describe a refusal — not leader, rejected, payload too
-    /// large, unavailable, shutting down, wrong group, exhausted local IDs —
+    /// large, backpressure, unavailable, shutting down, wrong group, exhausted local IDs —
     /// answer [`WriteFate::NotAppended`] from the variant alone, because
     /// reaching them is the proof. [`WriteError::UnknownOutcome`] answers
     /// [`WriteFate::Unresolved`] for the same reason. The remaining variants
@@ -147,6 +157,7 @@ impl WriteError {
             Self::NotLeader { .. }
             | Self::Rejected { .. }
             | Self::PayloadTooLarge { .. }
+            | Self::Backpressure
             | Self::WrongGroup
             | Self::Unavailable { .. }
             | Self::ShuttingDown
@@ -167,6 +178,7 @@ impl WriteError {
             Self::NotLeader { .. } => WriteErrorKind::NotLeader,
             Self::Rejected { .. } => WriteErrorKind::Rejected,
             Self::PayloadTooLarge { .. } => WriteErrorKind::PayloadTooLarge,
+            Self::Backpressure => WriteErrorKind::Backpressure,
             Self::UnknownOutcome { .. } => WriteErrorKind::UnknownOutcome,
             Self::WrongGroup => WriteErrorKind::WrongGroup,
             Self::StateMachine { .. } => WriteErrorKind::StateMachine,
@@ -196,6 +208,10 @@ impl fmt::Display for WriteError {
                 formatter,
                 "write payload is {actual} bytes, exceeding the {max} byte maximum"
             ),
+            Self::Backpressure => {
+                formatter.write_str("write admission is full")?;
+                write_write_fate(formatter, WriteFate::NotAppended)
+            }
             Self::UnknownOutcome {
                 local_proposal_id,
                 client_request_id,
@@ -264,6 +280,7 @@ impl Error for WriteError {
             Self::NotLeader { .. }
             | Self::Rejected { .. }
             | Self::PayloadTooLarge { .. }
+            | Self::Backpressure
             | Self::UnknownOutcome { .. }
             | Self::WrongGroup
             | Self::Unavailable { .. }

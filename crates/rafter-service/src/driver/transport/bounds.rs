@@ -22,7 +22,9 @@ use super::super::*;
 /// Bounds on one driver's local work.
 ///
 /// Every bound is a refusal rather than an unbounded wait, so a stalled
-/// protocol surfaces as a typed error instead of a hang.
+/// protocol surfaces as a typed error instead of a hang. Client admission
+/// reports [`WriteError::Backpressure`] or [`ReadError::Backpressure`] before
+/// allocating an operation ID.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct TransportDriverOptions {
