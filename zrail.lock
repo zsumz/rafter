@@ -16,8 +16,8 @@ targets = 165
 physical_rust_files = 2169
 base_source_contexts = 3702
 derived_source_contexts = 0
-source_facts = 821069
-projection_queries = 3163860
+source_facts = 821259
+projection_queries = 3164309
 projected_facts = 2538
 unresolved_bindings = 0
 analyzer_semantics = 6
@@ -1369,7 +1369,7 @@ inputs_sha256 = "8c3e4fc64469452606d7f53010deb3f3504f2e0479c1e234fcb9678ff6f8259
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "1c547fd29f108dc89cd3a61c6f817c40811c53eb628943aaa08f987110073646"
+inputs_sha256 = "ba8de0405a8383b2e1105c8f3c49f3605f4e7539bbffabdb30335abb3ed12488"
 
 [[macro_source]]
 allowance = "clap::Parser"

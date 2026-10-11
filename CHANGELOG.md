@@ -32,6 +32,9 @@ release mechanics and exact publish lists live in [RELEASE.md](./RELEASE.md).
   and truncated checkpoint lengths without eager allocations based on their
   claims. Checksums, error precedence and selected-file authority remain intact;
   these changes do not alter the version-1 storage formats.
+- Retained-log replay grows frame buffers incrementally when a source ends
+  before its earlier metadata length, preserving completed entries and the
+  exact partial-frame error without preallocating the full claimed frame.
 - The public transport requires patched rustls `0.23.45`; the invariant
   verifier's test-only quick-xml dependency moves to `0.41.0`. Public API checks
   compare default and all-feature builds of all eleven public crates; dependency

@@ -155,3 +155,50 @@ impl Write for ObservedWriter {
         Ok(())
     }
 }
+
+#[test]
+fn truncated_frame_buffer_grows_from_bytes_reached_not_claimed_length() {
+    let claimed = 64 * 1024 * 1024;
+    for available in [0, 5, STREAM_READ_CHUNK_LEN, STREAM_READ_CHUNK_LEN + 7] {
+        let payload = vec![73; available];
+        let mut reader = ObservedReader::new(payload.clone(), 7000);
+        let actual = read_frame_bytes(&mut reader, claimed).expect("short read is not I/O failure");
+        assert_eq!(actual, payload);
+        assert!(
+            actual.capacity() <= available.saturating_add(STREAM_READ_CHUNK_LEN) * 2,
+            "a short source must not retain the entire announced frame"
+        );
+        assert!(reader.largest_request <= STREAM_READ_CHUNK_LEN);
+    }
+}
+
+#[test]
+fn source_shorter_than_metadata_preserves_completed_prefix_and_partial_error() {
+    let complete = entry(1, b"complete");
+    let mut encoded = Vec::new();
+    append_raft_log_frames(&mut encoded, std::slice::from_ref(&complete)).unwrap();
+    let offset = encoded.len();
+    let claimed = 64 * 1024 * 1024_u32;
+    encoded.extend_from_slice(&claimed.to_be_bytes());
+    encoded.extend_from_slice(&[9; 5]);
+    let reported_length = u64::try_from(offset).unwrap() + 4 + u64::from(claimed);
+    let scan = read_raft_log_frames(ObservedReader::new(encoded, 7), reported_length).unwrap();
+    assert_eq!(
+        scan.frames,
+        vec![ReplayedRaftLogFrame {
+            offset: 0,
+            entry: complete
+        }]
+    );
+    assert_eq!(
+        scan.replay_error,
+        Some((
+            u64::try_from(offset).unwrap(),
+            RaftLogReplayError::PartialEntry {
+                offset,
+                expected: usize::try_from(claimed).unwrap(),
+                remaining: 5,
+            },
+        ))
+    );
+}
