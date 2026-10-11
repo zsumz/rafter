@@ -19,6 +19,9 @@ use super::{
     FINALIZATION_RESERVE_KEY, QUALIFICATION_PHASE_COUNT, TOTAL_TIMEOUT_KEY,
 };
 
+#[path = "tla_exec_checkpoint_contract_test.rs"]
+mod checkpoint_contract;
+
 fn pr_budget() -> BTreeMap<String, String> {
     BTreeMap::from([
         (TOTAL_TIMEOUT_KEY.to_owned(), "338m".to_owned()),
@@ -315,28 +318,6 @@ fn scheduled_tla_jobs_fit_the_github_hosted_six_hour_cap() {
         let job_cap =
             workflow_timeout_after(&workflow, "  invariants-tla:", "    timeout-minutes: ");
         assert!(job_cap <= Duration::from_secs(6 * 60 * 60));
-    }
-}
-
-#[test]
-fn nightly_tla_job_uses_exact_compatible_checkpointing() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let workflow = fs::read_to_string(root.join(".github/workflows/nightly.yml"))
-        .expect("read nightly workflow");
-    let job = workflow_job_block(&workflow, "  invariants-tla:");
-
-    for required in [
-        "Restore exact-compatible nightly TLC checkpoint",
-        "target/rafter-invariants/tla-checkpoint/nightly",
-        "tla-nightly-checkpoint-v1-",
-        "cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla",
-        "Save exact-compatible nightly TLC checkpoint",
-        "specs/tla/raft/RaftNightly.cfg",
-    ] {
-        assert!(
-            job.contains(required),
-            "nightly source-bound TLA job omitted: {required}"
-        );
     }
 }
 

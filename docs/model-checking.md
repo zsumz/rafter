@@ -21,6 +21,24 @@ exact replay actions, per-action state summaries, production transition, and
 existing detector. Traces are not minimized: replay stops at the first observed
 failure and does not claim global minimality.
 
+## Incomplete client writes
+
+RD-06 checks whether the observed history admits a sequential ordering that
+respects real-time precedence. An invoked write may take effect before its
+caller receives a reply. Pending, accepted, and unknown-outcome writes therefore
+remain optional operations with an open response interval. A rejected write is
+absent; completed writes remain mandatory. Once a read requires an optional
+write, that write cannot disappear before a later read. An invocation that
+starts after a read completes cannot explain that read's value.
+
+The October 11 burn-in seed `0x5f20b7ca1233fddd` exposed a verifier defect at
+step 230: it discarded accepted writes and consequently rejected a read of one
+of their committed values. The regression preserves the exact nightly workload.
+A separate three-node scenario replicates a proposal to one follower, withholds
+the response, partitions the original leader, and elects the follower. The new
+leader commits the entry and serves its value while the original caller still
+waits. Both cases fail under the old verifier. No kernel behavior changes.
+
 ## Weekly Simulator Demotion
 
 The weekly invariants lane invokes the `raft-nightly` profile, not

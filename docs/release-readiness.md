@@ -192,10 +192,23 @@ found a separate `RD-06 client history linearizability` failure at seed
 `0x5f20b7ca1233fddd`, step 230: read 2 (`start=8`, `end=11`) returned
 `model-proposal-1`. The saved artifact is `burn-in-logs`, ID `11694408322`.
 A local standalone replay using the exact nightly workload bounds and standard
-three-node configuration reproduces that same failure. This is an unresolved
-release blocker, not an infrastructure retry: minimize the history and establish
-whether the kernel or harness is wrong before adding managed reads. The TLA
-producer and remaining jobs in that run are separate, still pending evidence.
+three-node configuration reproduced that same failure. Captured client state
+identified a checker defect: the value came from an accepted invocation that
+had not returned, and RD-06 discarded that invocation. The checker now retains
+pending and accepted writes as optional operations, alongside unknown outcomes;
+rejected writes remain excluded and completed writes remain mandatory.
+
+The exact 1,024-step seed now completes safety and liveness checks. A separate
+three-node partition/election case demonstrates the same behavior without the
+long restart trace. These and a direct incomplete-invocation case fail under the
+old rule; the corrected checker passes all 15 linearizability tests. Three
+independent mutations that make completed writes optional, admit rejected writes,
+or remove real-time precedence fail the new negative cases. All 393 simulator
+library/binary tests pass. The invariant registry explicitly covers incomplete
+invocations, and its source-bound detector fingerprint is refreshed without
+changing the 77 fixtures, 79 evidence bindings, or two targets. No kernel change
+was needed. Fresh hosted qualification remains required; the earlier failed
+receipt is retained, and its TLA producer is separate evidence.
 
 **Acceptance:** all required jobs pass in one attempt at the candidate SHA;
 all 44 verdicts have current evidence; the process failure test repeatedly
@@ -418,8 +431,9 @@ runtime/storage edges are recorded in the candidate architecture lock and remain
 subject to maintainer review. CI and zcheck explicitly test and lint the feature;
 strict rustdoc includes its public surface. Managed reads, read cancellation,
 freshness-floor translation, `DriverCommandSender`, and TLS process adoption
-remain unfinished. The reproduced nightly linearizability failure takes priority
-before those follow-ups.
+remain unfinished. The nightly linearizability checker correction above is
+qualified separately before those follow-ups. The feature lane requires exactly
+334 tests through the same inventory-checking runner used by CI and zcheck.
 
 Local qualification passes 325 default service tests, 334 with `durable`, 536
 source-consumer tests, and 541 archive/MSRV consumer tests on Rust 1.88.0. All

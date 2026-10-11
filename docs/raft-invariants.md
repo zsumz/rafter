@@ -102,7 +102,7 @@ scheduling properties that are not per-group Raft consensus properties.
 | `RD-03` | Every grant corresponds to a registered request and has read_index at least the cluster-wide committed floor observed at registration. |
 | `RD-04` | The application returns a read result only after the node's dispatch cursor reaches the granted read index and its state machine has applied every committed application entry at or below that index; "local applied index" names two distinct quantities here and each is stated separately. |
 | `RD-05` | Lease reads require pre-vote and check-quorum, a fresh quorum checkpoint, and a bounded lease window; stale acknowledgements cannot renew the lease and an isolated leader cannot use it. |
-| `RD-06` | Completed reads and writes admit a legal real-time-respecting sequential history; unknown write outcomes are not treated as absent. |
+| `RD-06` | Completed reads and writes admit a legal real-time-respecting sequential history; incomplete invocations and unknown write outcomes are not treated as absent. |
 | `PS-01` | Hard state, log, committed configuration, and snapshot mutations are durable before dependent peer sends, apply outputs, or successful client replies escape. |
 | `PS-02` | A failed durable write suppresses dependent outputs and poisons the in-memory runtime until reopen; execution cannot continue from ahead-of-disk state. |
 | `PS-03` | Restart reconstructs the durable term, vote, log, commit/configuration, and snapshot without losing or reindexing an acknowledged entry. |
@@ -283,6 +283,7 @@ named temporal or witness-based verdicts.
 | `RD-06` | `RD-06.a` | simulator | direct | `crates/rafter-sim/src/model_check/linearizability.rs#check_client_history_linearizable`; negative fixture `linearizer_rejects_read_that_misses_completed_write` |
 | `RD-06` | `RD-06.a` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_rejects_read_that_misses_completed_write` |
 | `RD-06` | `RD-06.b` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_can_include_unknown_write_to_explain_later_read` |
+| `RD-06` | `RD-06.b` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability/incomplete.rs#unfinished_write_may_explain_an_observed_value_without_a_reply` |
 | `PS-01` | `PS-01.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
 | `PS-01` | `PS-01.b` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#leader_proposal_log_entry_is_persisted_before_apply_output_escapes` |
 | `PS-01` | `PS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#committed_configuration_write_failure_suppresses_dependent_membership_output`; persistence evidence `failure_injection` |
@@ -466,7 +467,7 @@ named temporal or witness-based verdicts.
 | `RD-05.d` | `RD-05` | Stale acknowledgements cannot establish or renew a lease. |
 | `RD-05.e` | `RD-05` | An isolated leader cannot serve lease reads after the bounded lease expires. |
 | `RD-06.a` | `RD-06` | Completed reads and writes admit a legal real-time-respecting sequential history. |
-| `RD-06.b` | `RD-06` | Unknown write outcomes are retained as possible operations rather than treated as absent. |
+| `RD-06.b` | `RD-06` | Incomplete invocations and unknown write outcomes are retained as possible operations rather than treated as absent. |
 | `PS-01.a` | `PS-01` | Hard-state mutations are durable before dependent outputs escape. |
 | `PS-01.b` | `PS-01` | Log mutations are durable before dependent outputs escape. |
 | `PS-01.c` | `PS-01` | Committed-configuration mutations are durable before dependent outputs escape. |
@@ -1229,7 +1230,7 @@ Next (future_strengthening): Retain prerequisite, fresh-basis, bounded-window, s
 
 Kind: safety. Tier: client.
 
-Statement: Completed reads and writes admit a legal real-time-respecting sequential history; unknown write outcomes are not treated as absent.
+Statement: Completed reads and writes admit a legal real-time-respecting sequential history; incomplete invocations and unknown write outcomes are not treated as absent.
 
 Scope: ReadIndex, lease-read, adapter, and client-history behavior for one Raft group.
 
@@ -1237,7 +1238,7 @@ Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions 
 
 Required clauses:
 - `RD-06.a`: Completed reads and writes admit a legal real-time-respecting sequential history.
-- `RD-06.b`: Unknown write outcomes are retained as possible operations rather than treated as absent.
+- `RD-06.b`: Incomplete invocations and unknown write outcomes are retained as possible operations rather than treated as absent.
 
 Evidence now:
 - TLA+: none (no direct registry evidence in this layer)
