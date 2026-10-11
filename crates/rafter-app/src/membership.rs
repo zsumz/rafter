@@ -87,9 +87,15 @@ pub enum MembershipStep {
     EnterJoint(MembershipSet),
     /// Submit the stable configuration that ends joint consensus.
     LeaveJoint,
-    /// Remove the named replica from membership.
+    /// Complete removal of the named replica from membership.
+    ///
+    /// Removing a voter includes committing joint consensus and then the
+    /// stable target. A planner with the starting membership can instead emit
+    /// explicit `EnterJoint` and `LeaveJoint` obligations. Removing a learner
+    /// requires only the stable configuration change.
     RemoveNode(NodeId),
-    /// Fence the removed identity at the caller's transport boundary.
+    /// Fence the removed identity at the caller's transport boundary after
+    /// observing the stable configuration commit that excludes it.
     FencePeer(NodeId),
 }
 

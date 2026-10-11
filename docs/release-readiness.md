@@ -781,6 +781,17 @@ last-voter removals, follower redirection, an uncommitted prior configuration,
 successful retry, and other effects emitted alongside a refusal. Admission
 still requires a later committed-membership observation to prove completion.
 
+`MembershipController::remove_node_from` expands removal from a known stable
+membership into explicit joint/finalization/fencing steps for voters, while
+learners use the stable removal path. Other members are preserved; joint
+starting configurations, unknown targets and last-voter removal are refused.
+Real protocol/runtime tests execute both paths through the commit required for
+fencing. The caller must serialize changes, recheck the starting configuration
+and observe the required commits. The older `remove_node` plan remains a
+high-level removal obligation: its executor must finish any voter finalization
+inside `RemoveNode` before fencing. Mapping that obligation to just one kernel
+input leaves a joint configuration; the new helper makes this work explicit.
+
 **Acceptance:** an external consumer composes the supported fast durable path
 without copying an owner loop from the benchmark/example, with the same
 behavior in source and exact-package tests.
