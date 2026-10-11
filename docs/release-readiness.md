@@ -267,6 +267,25 @@ same state after compaction and snapshot installation. Managed client ownership
 remains to be integrated; the read operation itself does not establish a Raft
 read grant.
 
+The independent ledger now also composes three durable owners with the existing
+TLS transport over real sockets and files. Its finite transport queues and one
+application credit are checked while a paused transaction holds both write
+completion and a real quorum read behind application durability. Cold reopening
+all replicas preserves acknowledged balances and application deduplication after
+a different leader is elected. The same test runs in source and exact-package
+lanes. This is same-process fixed-membership evidence; process fault isolation,
+snapshot transfer through this composition, managed clients, and full-queue
+liveness remain unqualified. The fixture polls the bounded TLS inbox because it
+has no inbound wake callback.
+
+This slice passes 530 source-consumer tests and 535 exact-package/MSRV tests on
+Rust 1.88.0, with 57 existing profiles ignored in each lane. All seven package
+phases pass, including the published storage, wire, and rolling-TLS matrices.
+The final TLS fixture passes 32 repetitions across four concurrent processes;
+temporarily reversing the owner's read durability fence fails its regression.
+Strict consumer lint, documentation, formatting, and size checks pass. Architecture
+analysis has no findings or policy changes for this reference-only slice.
+
 The existing managed `TransportRaftDriver` now also bounds completed results
 retained for clients. Its original per-kind unresolved limit allowed an
 unbounded sequence of resolved-but-unpolled futures. A shared retained-waiter

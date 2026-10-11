@@ -1086,6 +1086,30 @@ before admission opens.
 The same source is built against extracted archives in the package lane.
 
 This proves the owner/application boundary, not network deployment or latency.
-Authenticated transport, managed client/read ownership, snapshot scheduling
-policy, and multi-host qualification remain separate work. Worker completion
-wakes and bounded application credits are exercised here.
+Worker completion wakes and bounded application credits are exercised here.
+
+`tests/service_owner_tls.rs` adds three same-process replicas using real mutual
+TLS sockets, Raft files, ledger journals, and durable transport session stores.
+It binds the existing transport paused, installs exact certificate/node/group
+mappings and endpoints, then starts its workers. No protocol message is injected
+directly into another replica. The application owner has one entry credit;
+transport admission has finite frame, byte, connection, and weighted decode
+budgets. A turn drains at most 64 owner steps and one authenticated inbound frame,
+and removes that frame only while its owner accepts input.
+
+A channel pauses the leader's first application transaction after a real quorum
+commit. The test observes a successful TLS response in the read's fresh heartbeat
+round and polls the owner until its grant is held behind application durability.
+Neither write completion nor read result is exposed before releasing the channel.
+After writes and reads converge, every owner and transport shuts down. Reopening
+the same files, electing a different leader, and retrying the same application
+request preserves the balance. New volatile correlation IDs do not provide
+deduplication; the persisted ledger request identity does. The new leader's
+protocol-only commit is translated to the application floor before querying.
+
+This same source also runs against extracted package archives. It qualifies
+fixed-membership composition in one OS process, not process crashes, multi-host
+latency, or full-queue liveness. The fixture polls TLS's bounded inbound queue;
+TLS does not currently expose an inbound wake callback. Managed client ownership,
+snapshot transfer through this owner/TLS composition, and process fault isolation
+remain separate qualification work.
