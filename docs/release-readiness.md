@@ -1,10 +1,11 @@
-# Release readiness — 2026-10-10
+# Release readiness — 2026-10-11
 
-Assessed source: `021f4f9bb2f6960cb75b24f5a627f1872a12d430` (`origin/main`).
+Initial review base: `021f4f9bb2f6960cb75b24f5a627f1872a12d430` (`origin/main`).
 Remote branches, pull requests, and workflow results were initially refreshed on
 October 10, 2026. An October 11 fetch confirms `origin/main` and the other branch
-tips are unchanged; only this release-work branch has advanced. The local build changes add a Rust 1.88.0 toolchain pin and setup
-instructions; they do not change consensus behavior or declare a release.
+tips are unchanged; only this release-work branch has advanced. The initial build
+changes added a Rust 1.88.0 toolchain pin and setup instructions, without changing
+consensus behavior or declaring a release.
 CI's shared setup action explicitly selects each job's requested toolchain so
 the local pin does not override newer tool-installation, packaging, or fuzz jobs.
 The initial build slice's `zrail.lock` update changed only that setup action's
@@ -19,7 +20,54 @@ simulation, and TLA+ evidence. The highest-value next work is reproducible
 release qualification, executable upgrade contracts, and a smaller integration
 burden for durable applications. More throughput work should follow those.
 
-## Build and qualification
+## Current code checkpoint
+
+The release work is on `codex/stable-release-slices`, with code through
+[`2717e88e`](https://github.com/zsumz/rafter/commit/2717e88eaec391e5c22c85cd0bb24db3b077d20f)
+in draft [PR #23](https://github.com/zsumz/rafter/pull/23). The transport already
+exists: durable composition reuses its authenticated TLS sender and inbound
+validation. No transport replacement, version bump, tag, or publication is part
+of this checkpoint.
+
+The durable feature now provides bounded managed writes, local/quorum reads,
+leadership transfer, shutdown, snapshot maintenance/handoff, and opt-in membership
+proposal admission. It exposes retained credits, admission refusals, and existing
+persistence-worker diagnostics. Membership receipts identify durable append;
+the embedding still observes exact configuration commits, executes plans, and
+persists peer retirement and authorization policy. The feature remains default-off.
+
+| Qualification | Source checkpoint and result |
+| --- | --- |
+| Storage recovery, corruption and publication | `2717e88e`: all 315 storage tests pass; the allocation gate rejects the previous checkpoint reader and passes the fix. |
+| Public API compatibility | `2717e88e`: all 22 default/all-feature comparisons against `0.0.2-alpha.1` pass. |
+| Exact packages and Rust 1.88 MSRV | `2717e88e`: all seven phases pass, including 548 tests and storage, wire and rolling TLS upgrades; 57 profiles remain assigned to dedicated lanes. |
+| Shipped archive dependency graph | `2717e88e`: all 51 packages, including 40 registry dependencies, pass the strict audit without exclusions. |
+| Durable runtime and service suites | `addc9d78`: 238 runtime and 437 durable-service tests pass. The two ignored runtime process entries have an explicit CI parent-process selection. |
+| Independent file/TLS composition | `1aee0c76`: all nine cases pass; eight concurrent repetitions cover 24 mixed-load/compaction/recovery cycles across all three leaders. The same consumer also passes in the `2717e88e` archive lane. |
+| Architecture and source preservation | `2717e88e`: no diagnostics, new grants or debt; candidate inventory/implementation identities are refreshed. Maintainer architecture approval remains open. |
+
+Stable-release qualification remains open. In priority order:
+
+1. Freeze one final candidate and finish its complete hosted Linux qualification,
+   including dedicated process profiles and the authenticated invariant aggregate.
+   The successful full nightly at `961d621e` is an earlier checkpoint; the preserved
+   `04ce0772` nightly was still running its TLA producer at the October 11 refresh.
+   Obtain the repository's architecture review and reconcile the overlapping PR #13.
+2. Set the supported integration scope explicitly. Automatic membership-plan
+   execution, committed-change tracking, general peer policy and retirement-history
+   recovery remain embedding work; bounded proposal admission is already available.
+3. Qualify physical stalled I/O, process/power-loss snapshot publication, sustained
+   multi-host TLS workloads and whole-host memory/latency bounds. The bounded
+   single-host correctness cases do not supply those measurements. Keep optional
+   diagnostics disabled for timing comparisons.
+4. Record the OS/filesystem support and license policy. Resolve remaining benchmark
+   comparator dependency findings separately from the already-audited public graph.
+
+The sections below retain the initial assessment and subsequent qualification
+history. Their test counts and hosted results belong to the stated checkpoints;
+they are not a combined full-candidate result.
+
+## Initial build and qualification
 
 The initial local blocker was missing Rust, rather than a compilation error in
 Rafter. Rust 1.88.0 now builds the locked workspace and all its targets on Apple
@@ -537,8 +585,9 @@ the loss/retry/history receipt checks. The final Rust 1.88.0 archive run passes
 all seven phases, including all three compatibility matrices. This does not
 resolve the TLA counterexample recorded above.
 
-Remaining composition work includes the full `DriverCommandSender` interface,
-managed membership operations, and TLS process adoption of the owner. Ordinary consensus inputs retain synchronous
+At that checkpoint, remaining composition work included the managed command
+interface, membership operations, and TLS process adoption of the owner; the
+later slices below implement those surfaces and state their limits. Ordinary consensus inputs retain synchronous
 I/O. Its memory claim covers one existing output batch, one converted command,
 and worker credits; it does not bound the kernel log or an entire recovery
 output batch. Keep application schemas, authentication policy, and scheduling
