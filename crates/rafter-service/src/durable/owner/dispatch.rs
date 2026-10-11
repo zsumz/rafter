@@ -16,7 +16,7 @@ use rafter::{ClientProposalInput, LocalProposalId, Output};
 use rafter_runtime::service::ServiceEvent;
 use std::sync::atomic::Ordering;
 
-impl<H, L, S, T, A> DurableClientOwner<H, L, S, T, A>
+impl<H, L, S, T, A, R: Send + 'static> DurableClientOwner<H, L, S, T, A, R>
 where
     H: RaftHardStateStore + Send + 'static,
     L: RaftLogSegment + Send + 'static,
@@ -40,43 +40,52 @@ where
             return Err(ServiceError::Failed);
         }
         self.shared.discard_canceled_queued();
+        if let Some(reads) = &self.reads {
+            reads.shared.discard_canceled();
+        }
         let Some(service) = self.service.as_mut() else {
             return Ok(ServicePoll::Pending);
         };
         let polled = match service.poll_next() {
             Ok(polled) => polled,
             Err(error) => {
-                self.shared.close();
+                self.close_clients();
                 return Err(error);
             }
         };
         if let ServicePoll::Event(event) = &polled {
             self.failed = true;
-            let mut fence = CallbackFence {
-                shared: &self.shared,
-                armed: true,
-            };
+            let mut fence = self.callback_fence();
             self.observe(event);
+            self.observe_reads(event)?;
             fence.armed = false;
             self.failed = false;
         }
         if !matches!(polled, ServicePoll::Pending) || self.state() != ServiceState::Ready {
             return Ok(polled);
         }
+        self.prefer_reads = !self.prefer_reads;
+        if !self.prefer_reads && self.drive_read()? {
+            return Ok(ServicePoll::Progress);
+        }
         let batch = match self.next_batch() {
             Ok(batch) => batch,
             Err(error) => {
                 self.failed = true;
-                self.shared.close();
+                self.close_clients();
                 return Err(error);
             }
         };
         if batch.is_empty() {
-            return Ok(ServicePoll::Pending);
+            return Ok(if self.prefer_reads && self.drive_read()? {
+                ServicePoll::Progress
+            } else {
+                ServicePoll::Pending
+            });
         }
         let Some(service) = self.service.as_mut() else {
             self.failed = true;
-            self.shared.close();
+            self.close_clients();
             return Err(ServiceError::Failed);
         };
         let result = service.try_step(ServiceInput::Proposals(batch));
@@ -88,17 +97,17 @@ where
             ) => {
                 if let Err(error) = self.restore(input) {
                     self.failed = true;
-                    self.shared.close();
+                    self.close_clients();
                     return Err(error);
                 }
                 Ok(ServicePoll::Pending)
             }
             Err(ServiceStepError::Fatal(error)) => {
-                self.shared.close();
+                self.close_clients();
                 Err(error)
             }
             Err(_) => {
-                self.shared.close();
+                self.close_clients();
                 Err(ServiceError::Failed)
             }
         }
@@ -168,7 +177,7 @@ where
                     }
                 }
             }
-            ServiceEvent::ApplicationFailed(_) => self.shared.close(),
+            ServiceEvent::ApplicationFailed(_) => self.close_clients(),
             _ => {}
         }
     }
@@ -227,17 +236,5 @@ where
             state.queue.push_front(id);
         }
         Ok(())
-    }
-}
-
-struct CallbackFence<'a, O> {
-    shared: &'a super::Shared<O>,
-    armed: bool,
-}
-impl<O> Drop for CallbackFence<'_, O> {
-    fn drop(&mut self) {
-        if self.armed {
-            self.shared.close();
-        }
     }
 }

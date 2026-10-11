@@ -404,8 +404,8 @@ the loss/retry/history receipt checks. The final Rust 1.88.0 archive run passes
 all seven phases, including all three compatibility matrices. This does not
 resolve the TLA counterexample recorded above.
 
-Remaining composition work includes integrating managed client/read ownership and
-TLS process adoption of the owner. Ordinary consensus inputs retain synchronous
+Remaining composition work includes the full `DriverCommandSender` interface,
+managed membership operations, and TLS process adoption of the owner. Ordinary consensus inputs retain synchronous
 I/O. Its memory claim covers one existing output batch, one converted command,
 and worker credits; it does not bound the kernel log or an entire recovery
 output batch. Keep application schemas, authentication policy, and scheduling
@@ -429,14 +429,36 @@ work while the application is busy, and cold-reopens the acknowledged state with
 a different leader. Default dependencies stay unchanged; two explicit optional
 runtime/storage edges are recorded in the candidate architecture lock and remain
 subject to maintainer review. CI and zcheck explicitly test and lint the feature;
-strict rustdoc includes its public surface. Managed reads, read cancellation,
-freshness-floor translation, `DriverCommandSender`, and TLS process adoption
-remain unfinished. The nightly linearizability checker correction above is
-qualified separately before those follow-ups. The feature lane requires exactly
-334 tests through the same inventory-checking runner used by CI and zcheck.
+strict rustdoc includes its public surface.
 
-Local qualification passes 325 default service tests, 334 with `durable`, 536
-source-consumer tests, and 541 archive/MSRV consumer tests on Rust 1.88.0. All
+The read-capable constructor now adds bounded encoded local and linearizable
+queries. A grant captures its original term and translated application floor
+before another consensus input; the query preserves any higher caller floor and
+runs only under a verified immutable application borrow. Read cancellation keeps
+credits while the kernel owns the quorum round, and releases them after a grant,
+cancellation, or backend disposal. Raw local read IDs cannot collide with managed
+ones. Local queries refuse committed replica removal; lease reads are unsupported.
+Both queues close after caught query/waker panics, and terminal publication spans
+all queues before invoking any waiter. Application result sizes remain outside
+the encoded byte bound.
+
+Fourteen new real-worker tests cover these boundaries. Four independent mutations
+that lower caller floors, require a phantom application no-op, release canceled
+quorum credit early, or replace a grant's term fail their exact regression cases.
+The independent TLS ledger consumer verifies the write/application fence and
+read-your-writes after a cold reopen under another leader. Its new read test also
+withholds follower turns to prove that a read requires live quorum progress.
+The earlier write test now waits for the actual application completion event;
+the durable floor can legitimately become visible before that event is published.
+Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
+The feature lane requires exactly 348 tests in both CI and zcheck.
+
+Local qualification passes 325 default service tests, 348 with `durable`, 537
+source-consumer tests, and 542 archive/MSRV consumer tests on Rust 1.88.0.
+The 23 managed write/read tests also pass 64 repetitions across four concurrent
+runners (1,472 executions). Consumer lanes retain their 57 explicitly ignored
+cases for dedicated qualification. Strict docs and Clippy, 105 source/API/CI
+guards, and architecture checks pass without new grants or adoption debt. All
 seven package phases pass, including published storage, peer wire, and rolling
 TLS processes. The rolling runner resolves the unchanged process consumer and
 its required workspace members for both versions; candidate-only ledger APIs

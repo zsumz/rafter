@@ -1,223 +1,17 @@
 //! Managed client adoption through only public package APIs and real TLS.
-use super::{
-    application::{adapt, Application, Gate},
-    config, link,
-};
-use rafter::{Input, LogIndex, NodeConfig, NodeId, Output, Role};
-use rafter_app::state_machine::ReplicatedStateMachine;
-use rafter_reference_ledger::{
-    store::LedgerStore, ApplyDisposition, DurableLedgerStateMachine, LedgerApplicationEntry,
-    LedgerStateMachine,
-};
-use rafter_runtime::{
-    service::{ServiceError, ServiceEvent, ServiceOptions, ServicePoll, ServiceState},
-    DurableRaftNodeStorage,
-};
-use rafter_service::{
-    durable::{DurableClientOwner, DurableWriteLimits},
-    DriverFuture, PeerEnvelope, RaftTransport, WriteError, WriteOptions,
-};
-use rafter_storage::{
-    FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
-};
-use rafter_transport_tls::{EndpointBook, TlsTransportError};
+mod cluster;
+mod replica;
+use super::config;
+use cluster::Cluster;
+use rafter::LogIndex;
+use rafter_app::{read::ReadConsistency, state_machine::ReplicatedStateMachine};
+use rafter_reference_ledger::{ApplyDisposition, LedgerQueryResult, LedgerStateMachine, Mutation};
+use rafter_service::{DriverFuture, ReadOptions, WriteError, WriteOptions};
 use std::{
-    num::NonZeroUsize,
-    path::Path,
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
-type Owner = DurableClientOwner<
-    FileRaftHardStateStore,
-    FileRaftLogSegment,
-    FileRaftSnapshotStore,
-    LedgerApplicationEntry,
-    Application,
->;
-struct Replica {
-    owner: Owner,
-    link: link::Link,
-    endpoints: EndpointBook,
-    id: u64,
-}
-impl Replica {
-    fn open(root: &Path, id: u64, fresh: bool, gate: Option<Gate>) -> Self {
-        std::fs::create_dir_all(root.join("raft")).unwrap();
-        std::fs::create_dir_all(root.join("application")).unwrap();
-        let (hard_state_store, log_segment, snapshot_store) =
-            FileRaftNodeStores::open(root.join("raft"))
-                .unwrap()
-                .into_parts();
-        let application = Application {
-            ledger: DurableLedgerStateMachine::new(
-                LedgerStore::open(&root.join("application"), config()).unwrap(),
-                root.join("raft/snapshots"),
-            ),
-            gate,
-        };
-        let mut options = ServiceOptions::new();
-        options.application = options.application.with_limits(1, 4096, 1, 4096);
-        let owner = Owner::recover(
-            NodeConfig::new(
-                NodeId(id),
-                (1..=3).filter(|n| *n != id).map(NodeId).collect(),
-                10,
-            )
-            .unwrap(),
-            DurableRaftNodeStorage {
-                hard_state_store,
-                log_segment,
-                snapshot_store,
-            },
-            application,
-            options,
-            DurableWriteLimits {
-                writes: NonZeroUsize::new(2).unwrap(),
-                payload_bytes: NonZeroUsize::new(8192).unwrap(),
-            },
-            adapt,
-            || {},
-        )
-        .unwrap();
-        let (link, endpoints) = link::bind(root, id, fresh);
-        Self {
-            owner,
-            link,
-            endpoints,
-            id,
-        }
-    }
-    fn ready(&self) -> bool {
-        self.owner.state() == ServiceState::Ready
-    }
-    fn pump(&mut self) {
-        for _ in 0..64 {
-            match self.owner.poll_next().unwrap() {
-                ServicePoll::Event(ServiceEvent::Output(Output::Send { to, message })) => {
-                    match self.link.sender().send(PeerEnvelope {
-                        group_id: link::GROUP,
-                        from: NodeId(self.id),
-                        to,
-                        message,
-                    }) {
-                        Ok(()) | Err(TlsTransportError::QueueFull { .. }) => {}
-                        other => panic!("transport admission: {other:?}"),
-                    }
-                }
-                ServicePoll::Progress
-                | ServicePoll::Event(
-                    ServiceEvent::Applied(_)
-                    | ServiceEvent::Output(Output::LocalProposalAppended { .. }),
-                ) => {}
-                ServicePoll::Pending => break,
-                other => panic!("unexpected managed event: {other:?}"),
-            }
-        }
-        if self.ready() {
-            for frame in self.link.inbound().drain(1).unwrap() {
-                assert_eq!(frame.group_id, link::GROUP);
-                assert_eq!(frame.raft_to, NodeId(self.id));
-                assert_eq!(frame.authenticated_peer, link::peer(frame.raft_from.0));
-                self.owner
-                    .try_step(Input::Message {
-                        from: frame.raft_from,
-                        message: frame.message,
-                    })
-                    .unwrap();
-            }
-        }
-    }
-    fn close(mut self) {
-        let diagnostics = self.link.diagnostics();
-        assert!(
-            diagnostics.tls_handshakes > 0
-                && diagnostics.frames_received > 0
-                && diagnostics.frames_sent > 0
-        );
-        assert_eq!(diagnostics.identity_mismatches, 0);
-        assert_eq!(diagnostics.unknown_certificates, 0);
-        assert_eq!(diagnostics.session_store_failures, 0);
-        self.owner.begin_shutdown();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            self.pump();
-            match self.owner.finish_shutdown() {
-                Ok(app) => {
-                    drop(app);
-                    break;
-                }
-                Err(ServiceError::NotReady(_)) => {}
-                other => panic!("shutdown: {other:?}"),
-            }
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        self.link.join().unwrap();
-    }
-}
-struct Cluster(Vec<Replica>);
-impl Cluster {
-    fn open(root: &Path, fresh: bool, mut gate: Option<Gate>) -> Self {
-        let nodes: Vec<_> = (1..=3)
-            .map(|id| Replica::open(&root.join(format!("node-{id}")), id, fresh, gate.take()))
-            .collect();
-        for node in &nodes {
-            for other in &nodes {
-                if node.id != other.id {
-                    link::endpoint(&node.endpoints, other.id, other.link.local_addr());
-                }
-            }
-            node.link.start().unwrap();
-        }
-        let mut cluster = Self(nodes);
-        cluster.until(|c| c.0.iter().all(Replica::ready));
-        cluster
-    }
-    fn until(&mut self, mut done: impl FnMut(&Self) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while !done(self) {
-            for node in &mut self.0 {
-                node.pump();
-            }
-            assert!(Instant::now() < deadline, "managed TLS cluster stalled");
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-    fn tick(&mut self, leader: usize) {
-        self.until(|c| c.0[leader].ready());
-        self.0[leader].owner.try_step(Input::Tick).unwrap();
-        self.until(|c| c.0[leader].ready());
-    }
-    fn elect(&mut self, leader: usize) {
-        for _ in 0..20 {
-            if self.0[leader].owner.ready_node().unwrap().role() == Role::Leader {
-                break;
-            }
-            self.tick(leader);
-        }
-        self.until(|c| {
-            c.0[leader].owner.ready_node().is_some_and(|n| {
-                n.role() == Role::Leader
-                    && n.term_at_index(n.commit_index()) == Some(n.current_term())
-            })
-        });
-    }
-    fn converge(&mut self, leader: usize, floor: LogIndex) {
-        for _ in 0..10 {
-            self.tick(leader);
-        }
-        self.until(|c| {
-            c.0.iter()
-                .all(|n| n.ready() && n.owner.durable_through() == Some(floor))
-        });
-    }
-    fn close(self) {
-        for node in self.0 {
-            node.close();
-        }
-    }
-}
 fn poll<T>(future: &mut DriverFuture<T>) -> Poll<T> {
     future
         .as_mut()
@@ -259,6 +53,14 @@ fn managed_write_waits_for_tls_quorum_and_application_durability_then_reopens() 
     cluster.until(|_| entered.try_recv().is_ok());
     assert!(poll(&mut write).is_pending());
     assert_eq!(cluster.0[0].owner.durable_through(), Some(LogIndex::ZERO));
+    let reader = cluster.0[0].owner.read_sender().unwrap();
+    let mut read = reader.read(
+        vec![0],
+        ReadConsistency::Linearizable,
+        ReadOptions::default(),
+    );
+    cluster.0[0].pump();
+    assert!(poll(&mut read).is_pending());
     let canceled = sender.write(payload.clone(), WriteOptions::default());
     assert_eq!(sender.retained().writes, 2);
     drop(canceled);
@@ -282,6 +84,10 @@ fn managed_write_waits_for_tls_quorum_and_application_durability_then_reopens() 
         ApplyDisposition::SessionOpened
     );
     assert_eq!(sender.retained().writes, 0);
+    let queried = cluster.complete(read).unwrap();
+    let proof = queried.proof.unwrap();
+    assert!(proof.required_applied_index >= receipt.index);
+    assert!(proof.local_applied_index >= receipt.index);
     cluster.converge(0, receipt.index);
     cluster.close();
     assert!(matches!(
@@ -314,5 +120,79 @@ fn managed_write_waits_for_tls_quorum_and_application_durability_then_reopens() 
         ApplyDisposition::SessionAlreadyOpen
     );
     cluster.converge(1, receipt.index);
+    cluster.close();
+}
+
+#[test]
+fn managed_queries_use_tls_quorum_and_preserve_read_your_writes_after_reopen() {
+    let scratch = crate::scratch::ScratchDir::new("managed-query-tls");
+    let mut cluster = Cluster::open(scratch.path(), true, None);
+    cluster.elect(0);
+    let writer = cluster.0[0].owner.sender();
+    let mut floor = LogIndex::ZERO;
+    let commands = [
+        crate::support::open_session(0, 1),
+        crate::support::execute(
+            0,
+            1,
+            1,
+            Mutation::OpenAccount {
+                account_id: super::ACCOUNT,
+            },
+        ),
+        crate::support::execute(
+            0,
+            1,
+            2,
+            Mutation::Deposit {
+                account_id: super::ACCOUNT,
+                amount: crate::support::amount(77),
+            },
+        ),
+    ];
+    for command in commands {
+        let encoded = LedgerStateMachine::new(config())
+            .encode_command(&command)
+            .unwrap();
+        floor = cluster
+            .complete(writer.write(encoded, WriteOptions::default()))
+            .unwrap()
+            .index;
+    }
+    cluster.converge(0, floor);
+    let reader = cluster.0[0].owner.read_sender().unwrap();
+    let mut read = reader.read(
+        vec![0],
+        ReadConsistency::Linearizable,
+        ReadOptions::default().with_min_applied_index(floor),
+    );
+    // Let the leader submit its barrier, but keep follower owners from turning.
+    for _ in 0..16 {
+        cluster.0[0].pump();
+    }
+    assert!(poll(&mut read).is_pending());
+    let queried = cluster.complete(read).unwrap();
+    let LedgerQueryResult::Summary(summary) = queried.result else {
+        panic!("expected summary");
+    };
+    assert_eq!(summary.open_accounts, 1);
+    assert_eq!(summary.total_balance, 77);
+    assert!(queried.proof.unwrap().required_applied_index >= floor);
+    cluster.close();
+
+    let mut cluster = Cluster::open(scratch.path(), false, None);
+    cluster.elect(1);
+    let reader = cluster.0[1].owner.read_sender().unwrap();
+    let queried = cluster
+        .complete(reader.read(
+            vec![0],
+            ReadConsistency::Linearizable,
+            ReadOptions::default().with_min_applied_index(floor),
+        ))
+        .unwrap();
+    assert_eq!(queried.result, LedgerQueryResult::Summary(summary));
+    let proof = queried.proof.unwrap();
+    assert!(proof.required_applied_index >= floor);
+    assert!(proof.local_applied_index >= floor);
     cluster.close();
 }

@@ -16,11 +16,10 @@ fn write_waits_for_application_durability_and_retains_uncollected_credit() {
         matches!(poll(&mut sender.write(vec![8], WriteOptions::default())), Poll::Ready(Err(ref error)) if error.fate() == WriteFate::NotAppended)
     );
     release.now();
-    until(&mut owner, |owner| {
-        owner.durable_through() == Some(LogIndex(2))
-    });
-    // Consume the completion event, but deliberately leave the future unpolled.
-    drain(&mut owner);
+    // The durable floor may precede completion publication. Wait for the
+    // actual owner event while deliberately leaving the future uncollected.
+    applied(&mut owner);
+    assert_eq!(owner.durable_through(), Some(LogIndex(2)));
     assert_eq!(sender.retained().writes, 1);
     let Poll::Ready(Ok(receipt)) = poll(&mut write) else {
         panic!("missing durable receipt")
@@ -135,10 +134,7 @@ fn caught_outcome_clone_panic_fences_owner_until_backend_is_discarded() {
     let (mut owner, sender, _, _release, dropped) = setup(2, false);
     let mut write = sender.write(vec![255], WriteOptions::default());
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        until(&mut owner, |owner| {
-            owner.durable_through() == Some(LogIndex(2))
-        });
-        drain(&mut owner);
+        until(&mut owner, |_| poll(&mut write).is_ready());
     }));
     assert!(panic.is_err());
     assert_eq!(owner.state(), rafter_runtime::service::ServiceState::Failed);

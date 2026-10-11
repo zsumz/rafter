@@ -1,16 +1,13 @@
 //! Admission and retained client state, separate from the owned backend.
 
-use super::{lock, reply::Reply};
+use super::{budget::Budget, lock, reply::Reply};
 use crate::{ErrorCause, UnknownOutcomeReason, WriteError, WriteFate, WriteOptions, WriteReceipt};
 use rafter::{LocalProposalId, LogIndex, Term};
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt,
     num::NonZeroUsize,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
+    sync::{atomic::Ordering, Arc, Mutex},
 };
 
 /// Bounds spanning queued writes, protocol ownership, and uncollected results.
@@ -32,27 +29,14 @@ pub struct DurableWriteStats {
     pub payload_bytes: usize,
 }
 
-pub(super) struct Budget {
-    count: AtomicUsize,
-    bytes: AtomicUsize,
-}
-pub(super) struct Credit {
-    budget: Arc<Budget>,
-    bytes: usize,
-}
-impl Drop for Credit {
-    fn drop(&mut self) {
-        self.budget.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
-        self.budget.count.fetch_sub(1, Ordering::AcqRel);
-    }
-}
+type WriteResult<O> = Result<WriteReceipt<O>, WriteError>;
 
 pub(super) struct Entry<O> {
     // Payload destruction must precede releasing the reply's credit.
     pub payload: Option<Vec<u8>>,
     pub options: WriteOptions,
     pub appended: Option<(LogIndex, Term)>,
-    pub reply: Arc<Reply<O>>,
+    pub reply: Arc<Reply<WriteResult<O>>>,
 }
 pub(super) struct State<O> {
     pub open: bool,
@@ -83,10 +67,7 @@ impl<O> Shared<O> {
                 entries: BTreeMap::new(),
                 indexes: BTreeMap::new(),
             }),
-            budget: Arc::new(Budget {
-                count: AtomicUsize::new(0),
-                bytes: AtomicUsize::new(0),
-            }),
+            budget: Arc::new(Budget::default()),
             limits,
             max_payload,
             wake,
@@ -97,7 +78,7 @@ impl<O> Shared<O> {
         &self,
         payload: Vec<u8>,
         options: WriteOptions,
-    ) -> Result<Arc<Reply<O>>, WriteError> {
+    ) -> Result<Arc<Reply<WriteResult<O>>>, WriteError> {
         let mut state = lock(&self.state);
         if !state.open {
             return Err(WriteError::ShuttingDown);
@@ -108,30 +89,20 @@ impl<O> Shared<O> {
                 actual: payload.len(),
             });
         }
-        let retained = self.stats();
-        let bytes = payload.capacity();
-        if retained.writes >= self.limits.writes.get()
-            || retained
-                .payload_bytes
-                .checked_add(bytes)
-                .is_none_or(|sum| sum > self.limits.payload_bytes.get())
-        {
-            return Err(WriteError::Transport {
+        let credit = self
+            .budget
+            .reserve(
+                payload.capacity(),
+                self.limits.writes.get(),
+                self.limits.payload_bytes.get(),
+            )
+            .ok_or_else(|| WriteError::Transport {
                 fate: WriteFate::NotAppended,
                 cause: ErrorCause::new(AdmissionFull),
-            });
-        }
+            })?;
         let next = state.next.ok_or(WriteError::LocalProposalIdExhausted)?;
         state.next = next.checked_add(1);
-        self.budget.count.fetch_add(1, Ordering::AcqRel);
-        self.budget.bytes.fetch_add(bytes, Ordering::AcqRel);
-        let reply = Reply::new(
-            Credit {
-                budget: Arc::clone(&self.budget),
-                bytes,
-            },
-            Arc::clone(&self.wake),
-        );
+        let reply = Reply::new(credit, Arc::clone(&self.wake));
         let id = LocalProposalId(next);
         state.entries.insert(
             id,
@@ -147,9 +118,10 @@ impl<O> Shared<O> {
     }
 
     pub(super) fn stats(&self) -> DurableWriteStats {
+        let (writes, payload_bytes) = self.budget.stats();
         DurableWriteStats {
-            writes: self.budget.count.load(Ordering::Acquire),
-            payload_bytes: self.budget.bytes.load(Ordering::Acquire),
+            writes,
+            payload_bytes,
         }
     }
 
@@ -192,7 +164,7 @@ impl<O> Shared<O> {
         }
     }
 
-    pub(super) fn terminate(&self) {
+    pub(super) fn terminate(&self) -> Vec<std::task::Waker> {
         let entries = {
             let mut state = lock(&self.state);
             state.open = false;
@@ -214,19 +186,7 @@ impl<O> Shared<O> {
                 wakers.push(waker);
             }
         }
-        let mut panic = None;
-        for waker in wakers {
-            if let Err(error) =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker.wake()))
-            {
-                if panic.is_none() {
-                    panic = Some(error);
-                }
-            }
-        }
-        if let Some(error) = panic {
-            std::panic::resume_unwind(error);
-        }
+        wakers
     }
 }
 

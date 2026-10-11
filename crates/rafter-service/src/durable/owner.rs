@@ -13,22 +13,42 @@ use rafter_runtime::{
 use rafter_storage::{RaftHardStateStore, RaftLogSegment, RaftSnapshotStore};
 use std::{fmt, sync::Arc};
 
+mod construction;
 mod dispatch;
+mod lifecycle;
+mod reads;
 
-/// Owns the durable backend and its bounded write clients together.
+use super::{read::ReadShared, DurableReadSender};
+
+type Query<A, R> = Box<dyn Fn(&A, &[u8]) -> R + Send>;
+struct Reads<A, R> {
+    shared: Arc<ReadShared<R>>,
+    query: Query<A, R>,
+}
+
+/// Owns the durable backend and its bounded write and optional read clients.
 ///
 /// Construct a fresh incarnation through `recover`; there is no adoption of a
 /// running backend whose local proposal IDs could collide. Cloned senders do
 /// not keep the backend alive. On drop, workers and protocol state are released
 /// before the remaining waiters receive terminal outcomes.
-pub struct DurableClientOwner<H, L, S, T: ApplicationEntry, A: DurableApplication<T>> {
+pub struct DurableClientOwner<
+    H,
+    L,
+    S,
+    T: ApplicationEntry,
+    A: DurableApplication<T>,
+    R: Send + 'static = (),
+> {
     service: Option<DurableService<H, L, S, T, A>>,
     shared: Arc<Shared<A::Outcome>>,
     options: ServiceOptions,
     failed: bool,
+    reads: Option<Reads<A, R>>,
+    prefer_reads: bool,
 }
 
-impl<H, L, S, T, A> DurableClientOwner<H, L, S, T, A>
+impl<H, L, S, T, A, R: Send + 'static> DurableClientOwner<H, L, S, T, A, R>
 where
     H: RaftHardStateStore + Send + 'static,
     L: RaftLogSegment + Send + 'static,
@@ -36,45 +56,20 @@ where
     T: ApplicationEntry,
     A: DurableApplication<T>,
 {
-    /// Recovers a fresh owner and installs the same notification for clients
-    /// and workers. The callback must be bounded, nonblocking, non-panicking,
-    /// and must not reenter this owner. Application adaptation retains the
-    /// underlying service's range, semantics, and memory-estimate obligations.
-    /// # Errors
-    /// Consumes the stores and returns the underlying recovery/start error.
-    pub fn recover(
-        config: NodeConfig,
-        storage: DurableRaftNodeStorage<H, L, S>,
-        application: A,
-        options: ServiceOptions,
-        limits: DurableWriteLimits,
-        adapter: impl FnMut(CommittedCommand) -> Result<T, ServiceAdapterError> + Send + 'static,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> Result<Self, ServiceError> {
-        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
-        let shared = Shared::new(limits, options.max_proposal_bytes, Arc::clone(&wake));
-        let service = DurableService::recover_with_wake(
-            config,
-            storage,
-            application,
-            options,
-            adapter,
-            move || wake(),
-        )?;
-        Ok(Self {
-            service: Some(service),
-            shared,
-            options,
-            failed: false,
-        })
-    }
-
     /// Returns a cloneable encoded-write endpoint for this incarnation.
     #[must_use]
     pub fn sender(&self) -> DurableWriteSender<A::Outcome> {
         DurableWriteSender {
             shared: Arc::clone(&self.shared),
         }
+    }
+
+    /// Returns the read endpoint when configured by `recover_with_reads`.
+    #[must_use]
+    pub fn read_sender(&self) -> Option<DurableReadSender<R>> {
+        self.reads.as_ref().map(|reads| DurableReadSender {
+            shared: Arc::clone(&reads.shared),
+        })
     }
 
     /// Returns current backend readiness, or `Stopped` after shutdown.
@@ -104,9 +99,10 @@ where
 
     /// Admits clock, authenticated peer, and control inputs under the existing
     /// service durability contract. Peer authentication and group routing stay
-    /// with the embedding. Use the sender for all local proposals.
+    /// with the embedding. Use the sender for all local proposals and the read
+    /// sender for all read barriers when managed reads are configured.
     /// # Errors
-    /// Returns unmanaged proposal inputs unchanged, or the service's refusal
+    /// Returns unmanaged proposal/read inputs unchanged, or the service's refusal
     /// or fatal error. On a fatal error, discard this owner and recover.
     pub fn try_step(&mut self, input: Input) -> Result<(), DurableClientStepError> {
         if self.failed {
@@ -120,6 +116,9 @@ where
         ) {
             return Err(DurableClientStepError::UnmanagedProposal(Box::new(input)));
         }
+        if self.reads.is_some() && matches!(input, Input::ReadIndex { .. }) {
+            return Err(DurableClientStepError::UnmanagedRead(Box::new(input)));
+        }
         let input = ServiceInput::from(input);
         let Some(service) = self.service.as_mut() else {
             return Err(DurableClientStepError::Service(
@@ -131,7 +130,7 @@ where
         };
         let result = service.try_step(input);
         if matches!(result, Err(ServiceStepError::Fatal(_))) {
-            self.shared.close();
+            self.close_clients();
         }
         result.map_err(DurableClientStepError::Service)
     }
@@ -149,7 +148,7 @@ where
     /// Closes new client and consensus admission. Poll existing work and finish
     /// any snapshot handoff before attempting `finish_shutdown`.
     pub fn begin_shutdown(&mut self) {
-        self.shared.close();
+        self.close_clients();
         if let Some(service) = self.service.as_mut() {
             service.begin_shutdown();
         }
@@ -169,41 +168,10 @@ where
             .as_mut()
             .ok_or(ServiceError::NotReady(ServiceState::Stopped))?
             .finish_shutdown()?;
-        self.shared.close();
+        self.close_clients();
         drop(self.service.take());
-        self.shared.terminate();
+        self.terminate_clients();
         Ok(application)
-    }
-}
-
-impl<H, L, S, T, A> Drop for DurableClientOwner<H, L, S, T, A>
-where
-    T: ApplicationEntry,
-    A: DurableApplication<T>,
-{
-    fn drop(&mut self) {
-        self.shared.close();
-        let finish = Finish(Arc::clone(&self.shared));
-        drop(self.service.take());
-        drop(finish);
-    }
-}
-struct Finish<O>(Arc<Shared<O>>);
-impl<O> Drop for Finish<O> {
-    fn drop(&mut self) {
-        self.0.terminate();
-    }
-}
-
-impl<H, L, S, T, A> fmt::Debug for DurableClientOwner<H, L, S, T, A>
-where
-    T: ApplicationEntry,
-    A: DurableApplication<T>,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DurableClientOwner")
-            .field("retained", &self.shared.stats())
-            .finish_non_exhaustive()
     }
 }
 
@@ -213,6 +181,8 @@ where
 pub enum DurableClientStepError {
     /// Use the sender; raw proposals could collide with this owner's IDs.
     UnmanagedProposal(Box<Input>),
+    /// Use the read sender; raw read IDs could collide with managed barriers.
+    UnmanagedRead(Box<Input>),
     /// The underlying service's unchanged refusal or fatal failure.
     Service(ServiceStepError),
 }

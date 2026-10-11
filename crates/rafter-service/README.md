@@ -34,10 +34,11 @@ run outside the watch's locks, so waking or destroying a task can cancel a wait
 or inspect the publisher. Registration storage follows live pending waits;
 embeddings still control how many concurrent watches they open.
 
-## Optional durable write owner
+## Optional durable client owner
 
 Enable `features = ["durable"]` to use `durable::DurableClientOwner` and its
-cloneable encoded-write sender. It owns the existing asynchronous
+cloneable encoded-write sender. `recover_with_reads` additionally configures an
+encoded-query adapter and a read sender. It owns the existing asynchronous
 `rafter-runtime::service::DurableService`; the feature is disabled by default.
 Construct it with `recover`, encode commands independently of the busy
 application worker, and drive `poll_next` until `Pending` before waiting on the
@@ -51,6 +52,24 @@ queued write lets the owner reclaim its credit. Canceling an accepted write does
 not revoke the command or release credit until the owner consumes its outcome.
 Application outcome sizes and the kernel log need separate embedding bounds.
 
+`recover_with_reads` accepts `DurableClientOptions` with independent read and
+write limits. The configured query adapter borrows an immutable verified
+application view on the owner thread; it must be bounded, read-only, and
+nonreentrant. Request encoding does not borrow the application. The read sender
+serves local and linearizable queries and refuses lease reads. Linearizable
+queries obtain an actual Raft grant, translate its protocol position to the
+required application floor, and preserve any higher caller `min_applied_index`.
+An unavailable floor is refused; it is never lowered. The proof keeps the term
+captured at the grant, even if leadership changes before the query runs.
+
+Read credits cover queued requests, quorum rounds, and uncollected results,
+charging encoded `Vec` capacity. Canceling a caller cannot free a quorum round's
+credit: the owner retains it until the kernel grants/cancels the round or the
+backend is released. Queued and already-granted canceled reads are reclaimed on
+an owner turn. Query-result sizes need an application bound. A local read has no
+quorum proof; the single-owner proof uses `()` as its group identifier, leaving
+authenticated group routing with the embedding.
+
 Cloned senders do not retain the backend. Stop admission with `begin_shutdown`,
 poll existing work, then call `finish_shutdown`. Discard and recover the owner
 after fatal errors or caught callback panics. Destruction joins workers and
@@ -58,10 +77,10 @@ releases protocol state before remaining clients receive refusal or uncertainty;
 it can wait for a blocked application transaction. An uncertain result requires
 application-defined retry identities, not a new unconditional mutation.
 
-This initial adapter manages writes. Managed reads, membership operations, and
-`DriverCommandSender` integration remain follow-up work. The independent ledger
-consumer exercises it over real TLS and file stores, including paused durable
-application work, cancellation, shutdown, and cold reopen.
+Managed membership operations and `DriverCommandSender` integration remain
+follow-up work. The independent ledger consumer exercises writes and reads over
+real TLS and file stores, including withheld quorum, paused durable application
+work, cancellation, shutdown, and read-your-writes after cold reopen.
 
 ## Transport Delivery Semantics
 

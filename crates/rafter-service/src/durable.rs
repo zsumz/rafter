@@ -13,15 +13,23 @@
 //! I/O contract. After a fatal error, discard the owner and recover both stores;
 //! discarding it joins workers before resolving remaining client outcomes.
 //!
-//! This initial adapter manages writes. Read and membership ownership remain
-//! explicit embedding obligations; it is not a `DriverCommandSender` yet.
+//! `recover_with_reads` adds independently bounded encoded queries. Linearizable
+//! reads obtain a real grant, preserve its term, translate the application floor,
+//! and honor the caller's freshness minimum. Canceled quorum rounds retain their
+//! credits until protocol completion or backend release. Local reads carry no
+//! quorum proof; lease reads are refused. Query results need an application bound.
+//! Membership ownership remains an embedding obligation; this is not yet a
+//! `DriverCommandSender`.
 
+mod budget;
 mod owner;
+mod read;
 mod reply;
 mod sender;
 mod shared;
 
 pub use owner::{DurableClientOwner, DurableClientStepError};
+pub use read::{DurableClientOptions, DurableReadLimits, DurableReadSender, DurableReadStats};
 pub use sender::DurableWriteSender;
 pub use shared::{DurableWriteLimits, DurableWriteStats};
 

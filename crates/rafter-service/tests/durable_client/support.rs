@@ -24,9 +24,9 @@ pub use std::{
 
 #[derive(Debug)]
 pub struct Entry {
-    first: LogIndex,
-    index: LogIndex,
-    value: u8,
+    pub first: LogIndex,
+    pub index: LogIndex,
+    pub value: u8,
 }
 impl ApplicationEntry for Entry {
     fn first_log_index(&self) -> LogIndex {
@@ -52,8 +52,9 @@ impl Clone for Outcome {
 #[derive(Debug)]
 pub struct App {
     pub floor: LogIndex,
-    gate: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
-    dropped: Arc<AtomicBool>,
+    pub value: u8,
+    pub gate: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
+    pub dropped: Arc<AtomicBool>,
 }
 impl DurableApplication<Entry> for App {
     type Outcome = Outcome;
@@ -70,6 +71,7 @@ impl DurableApplication<Entry> for App {
             return Err(io::Error::other("injected application failure"));
         }
         self.floor = entries.last().unwrap().index;
+        self.value = entries.last().unwrap().value;
         Ok(entries
             .iter()
             .map(|entry| Outcome { value: entry.value })
@@ -81,14 +83,15 @@ impl Drop for App {
         self.dropped.store(true, Ordering::Release);
     }
 }
-pub type Owner = DurableClientOwner<
+pub type Owner<R = ()> = DurableClientOwner<
     InMemoryRaftHardStateStore,
     InMemoryRaftLogSegment,
     InMemoryRaftSnapshotStore,
     Entry,
     App,
+    R,
 >;
-pub struct Release(Option<mpsc::SyncSender<()>>);
+pub struct Release(pub Option<mpsc::SyncSender<()>>);
 impl Release {
     pub fn now(&mut self) {
         if let Some(tx) = self.0.take() {
@@ -117,6 +120,7 @@ pub fn setup(
     let dropped = Arc::new(AtomicBool::new(false));
     let application = App {
         floor: LogIndex::ZERO,
+        value: 0,
         gate: paused.then_some((entered, resume)),
         dropped: Arc::clone(&dropped),
     };
@@ -149,7 +153,7 @@ pub fn setup(
     let sender = owner.sender();
     (owner, sender, wait, Release(Some(release)), dropped)
 }
-pub fn until(owner: &mut Owner, mut done: impl FnMut(&Owner) -> bool) {
+pub fn until<R: Send + 'static>(owner: &mut Owner<R>, mut done: impl FnMut(&Owner<R>) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !done(owner) {
         let _ = owner.poll_next().unwrap();
@@ -157,7 +161,24 @@ pub fn until(owner: &mut Owner, mut done: impl FnMut(&Owner) -> bool) {
         std::thread::yield_now();
     }
 }
-pub fn drain(owner: &mut Owner) {
+pub fn applied<R: Send + 'static>(owner: &mut Owner<R>) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(
+            owner.poll_next().unwrap(),
+            ServicePoll::Event(rafter_runtime::service::ServiceEvent::Applied(_))
+        ) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "application completion was not delivered"
+        );
+        std::thread::yield_now();
+    }
+}
+
+pub fn drain<R: Send + 'static>(owner: &mut Owner<R>) {
     while !matches!(owner.poll_next().unwrap(), ServicePoll::Pending) {}
 }
 struct Noop;

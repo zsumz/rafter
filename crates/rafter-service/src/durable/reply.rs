@@ -1,7 +1,7 @@
 //! One result, retaining admission credit until every owner has released it.
 
-use super::{lock, shared::Credit};
-use crate::{DriverFuture, WriteError, WriteReceipt};
+use super::{budget::Credit, lock};
+use crate::DriverFuture;
 use std::{
     future::Future,
     pin::Pin,
@@ -12,8 +12,6 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-type Outcome<O> = Result<WriteReceipt<O>, WriteError>;
-
 pub(super) struct Reply<O> {
     state: Mutex<State<O>>,
     pub canceled: AtomicBool,
@@ -23,7 +21,7 @@ pub(super) struct Reply<O> {
 }
 
 struct State<O> {
-    outcome: Option<Outcome<O>>,
+    outcome: Option<O>,
     waker: Option<Waker>,
 }
 
@@ -40,13 +38,13 @@ impl<O> Reply<O> {
         })
     }
 
-    pub(super) fn finish(&self, outcome: Outcome<O>) {
+    pub(super) fn finish(&self, outcome: O) {
         if let Some(waker) = self.complete(outcome) {
             waker.wake();
         }
     }
 
-    pub(super) fn complete(&self, outcome: Outcome<O>) -> Option<Waker> {
+    pub(super) fn complete(&self, outcome: O) -> Option<Waker> {
         let mut outcome = Some(outcome);
         let waker = {
             let mut state = lock(&self.state);
@@ -62,7 +60,7 @@ impl<O> Reply<O> {
 }
 
 impl<O: Send + 'static> Reply<O> {
-    pub(super) fn future(self: &Arc<Self>) -> DriverFuture<Outcome<O>> {
+    pub(super) fn future(self: &Arc<Self>) -> DriverFuture<O> {
         Box::pin(ReplyFuture {
             reply: Some(Arc::clone(self)),
         })
@@ -74,7 +72,7 @@ struct ReplyFuture<O> {
 }
 
 impl<O> Future for ReplyFuture<O> {
-    type Output = Outcome<O>;
+    type Output = O;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -106,5 +104,21 @@ impl<O> Drop for ReplyFuture<O> {
             drop(old);
             (reply.wake)();
         }
+    }
+}
+
+// Terminal publication for every queue precedes all caller-controlled wakes.
+pub(super) fn wake_all(wakers: Vec<Waker>) {
+    let mut panic = None;
+    for waker in wakers {
+        if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker.wake()))
+        {
+            if panic.is_none() {
+                panic = Some(error);
+            }
+        }
+    }
+    if let Some(error) = panic {
+        std::panic::resume_unwind(error);
     }
 }
