@@ -9,6 +9,7 @@ use super::{
     PersistedRaftRuntime, Proposal, RaftGroup, RaftInput, RaftOutput, ReplicatedStateMachine,
     StepReportOptions, StepReportResult,
 };
+use rafter::{ConfigurationProposalRejection, ProposalRejection};
 
 impl<G, A, R> RaftGroup<G, A, R>
 where
@@ -91,10 +92,15 @@ where
                 Ok(report)
             }
             GroupInput::Membership { change } => {
-                let outputs = self
-                    .raft
-                    .step(Self::membership_change_input(change))
-                    .map_err(GroupError::Runtime)?;
+                let outputs = match self.membership_change_input(change) {
+                    Ok(input) => self.raft.step(input).map_err(GroupError::Runtime)?,
+                    Err(error) => vec![RaftOutput::RejectProposal {
+                        proposal_id: None,
+                        reason: ProposalRejection::Configuration(
+                            ConfigurationProposalRejection::InvalidMembership { error },
+                        ),
+                    }],
+                };
                 self.apply_stepped_outputs(outputs, true, options)
             }
         }

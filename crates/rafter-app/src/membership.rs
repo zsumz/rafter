@@ -43,6 +43,10 @@ pub enum MembershipChange {
         barrier: PromotionBarrier,
     },
     /// Remove a voter or learner from the group.
+    ///
+    /// A learner in a stable configuration is removed without changing voters.
+    /// Removing a voter enters joint consensus; the caller must subsequently
+    /// submit [`Self::LeaveJoint`] after the joint configuration commits.
     RemoveNode {
         /// Replica identity to remove.
         node_id: NodeId,

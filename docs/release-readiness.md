@@ -287,6 +287,14 @@ changing the 77 fixtures, 79 evidence bindings, or two targets. No kernel change
 was needed. Fresh hosted qualification remains required; the earlier failed
 receipt is retained, and its TLA producer is separate evidence.
 
+The follow-up [nightly at `961d621e`](https://github.com/zsumz/rafter/actions/runs/38121179596)
+now passes in full: every producer, authenticated aggregate evidence readback,
+and the final 44-of-44 invariant gate. Its downloaded report contains 44 distinct
+green rows with all required clauses and evidence present. This qualifies the
+model/checker corrections and the repaired qualification pipeline at that exact
+checkpoint. Later library changes still need a fresh complete candidate run;
+this result does not qualify the current branch tip by inheritance.
+
 **Acceptance:** all required jobs pass in one attempt at the candidate SHA;
 all 44 verdicts have current evidence; the process failure test repeatedly
 establishes its fault ordering under load. Rerun every invariant producer and
@@ -737,6 +745,14 @@ membership remains open; the counter deliberately supports only its fixed voter
 set. An acknowledged write must survive recovery; an ambiguous write must retain
 its identity and report an unknown outcome. Application idempotency must remain
 explicit—the existing request ID is correlation, not deduplication.
+
+The existing synchronous membership API now honors `RemoveNode` for learners.
+It previously sent every removal to the voter-only kernel command and refused
+an existing learner with `VoterNotFound`. Learner removal from a stable
+configuration now uses the existing safe learner-only change path, preserving
+the voters and other learners. Voter removal keeps its joint-consensus path;
+unknown-node and last-voter refusals are unchanged. This repairs that existing
+API; it does not add a managed membership executor to the durable owner.
 
 **Acceptance:** an external consumer composes the supported fast durable path
 without copying an owner loop from the benchmark/example, with the same

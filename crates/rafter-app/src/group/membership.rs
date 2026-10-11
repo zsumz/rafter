@@ -9,6 +9,7 @@ use super::{
     Debug, GroupStepReport, MembershipChange, MembershipEvent, PersistedRaftRuntime,
     ProposalRejection, RaftGroup, RaftInput, ReplicatedStateMachine,
 };
+use rafter::{MembershipConfig, MembershipSet, MembershipValidationError};
 
 impl<G, A, R> RaftGroup<G, A, R>
 where
@@ -17,8 +18,11 @@ where
     A::CommandResult: Clone,
     R: PersistedRaftRuntime,
 {
-    pub(super) fn membership_change_input(change: MembershipChange) -> RaftInput {
-        match change {
+    pub(super) fn membership_change_input(
+        &self,
+        change: MembershipChange,
+    ) -> Result<RaftInput, MembershipValidationError> {
+        Ok(match change {
             MembershipChange::AddLearner { node_id, info: _ } => RaftInput::AddLearner {
                 learner_id: node_id,
             },
@@ -26,9 +30,27 @@ where
                 learner_id: node_id,
                 promotion_barrier: barrier,
             },
-            MembershipChange::RemoveNode { node_id } => {
-                RaftInput::RemoveVoter { voter_id: node_id }
-            }
+            MembershipChange::RemoveNode { node_id } => match self.raft.membership() {
+                MembershipConfig::Stable(current) if current.learners().contains(&node_id) => {
+                    // Learner removal preserves the voter quorum. The kernel's
+                    // safe change path still checks leadership and outstanding
+                    // configuration work before appending a stable entry.
+                    let target = MembershipSet::new(
+                        current.voters().to_vec(),
+                        current
+                            .learners()
+                            .iter()
+                            .copied()
+                            .filter(|id| *id != node_id)
+                            .collect(),
+                    )?;
+                    RaftInput::ChangeMembership {
+                        target,
+                        promotion_barriers: Vec::new(),
+                    }
+                }
+                _ => RaftInput::RemoveVoter { voter_id: node_id },
+            },
             MembershipChange::EnterJoint {
                 target,
                 promotion_barriers,
@@ -41,7 +63,7 @@ where
                 target,
                 promotion_barriers: Vec::new(),
             },
-        }
+        })
     }
 
     pub(super) fn record_membership_rejection(
