@@ -990,12 +990,13 @@ name = "runtime"
 packages = ["rafter-runtime"]
 may_depend_on = [
   "kernel",
+  "checksum",
   "runtime-boundary",
   "durability",
   "test-toolkit",
   "transport-dev",
 ]
-reason = "The durable persist-before-output node; its examples exercise the dev transport, so that edge is dev-only."
+reason = "The durable persist-before-output node verifies streamed application snapshots with the shared checksum primitive; its examples exercise the dev transport, so that edge is dev-only."
 
 [layer.dependencies]
 external = "locked"

@@ -232,6 +232,10 @@ pub trait ReplicatedStateMachine {
     /// [`ApplicationSnapshot::raft_snapshot`] is present, the snapshot payload
     /// may be managed by the runtime snapshot store instead of carried inline
     /// in [`ApplicationSnapshot::payload`].
+    /// `rafter_runtime::snapshot_io::SnapshotPayloadReader` reads that descriptor from
+    /// an existing chunk source with explicit payload/chunk limits. Decode into
+    /// temporary state, finish checksum verification, then atomically publish
+    /// the application state and applied floor; the reader does not publish them.
     ///
     /// # Errors
     ///

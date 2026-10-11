@@ -56,7 +56,6 @@
 //!     LogIndex(2),
 //! );
 //! ```
-
 #[cfg(test)]
 use rafter::{
     BootstrapValidationError, Input as RaftInput, LogEntry, LogIndex, NodeId as RaftNodeId,
@@ -88,8 +87,9 @@ mod runtime_api;
 /// Poll-driven ownership of persistence, application, and lifecycle fences.
 pub mod service;
 mod snapshot_install;
+/// Bounded, cancellable access to application snapshot payloads.
+pub mod snapshot_io;
 mod step;
-
 pub use error::{RaftRuntimeError, RaftRuntimeFatalError};
 pub use log_retirement::{LogRetirementSubmitError, LogRetirementWorker};
 pub use log_retirement::{LogRetirementWorkerOptions, LogRetirementWorkerPanicked};

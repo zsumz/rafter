@@ -142,3 +142,25 @@ cargo run -p rafter-runtime --example pipelined_durable_service
 Its in-process message queue is intentionally not an authenticated production
 transport. Real services must supply peer authentication and choose an explicit
 overload policy for their bounded client and peer queues.
+
+## Bounded snapshot installation
+
+`snapshot_io::SnapshotPayloadReader` adapts an existing `SnapshotChunkSource`
+to `std::io::Read`, retaining at most one configured chunk. Set an explicit total
+payload limit with `SnapshotReadOptions::new(max_payload_bytes)` and optionally
+change the default 64 KiB chunk limit. Construction rejects a descriptor behind
+the application's durable floor before requesting bytes. A cloneable
+`SnapshotCancellation` cooperatively stops an attempt before/after source calls
+and at final verification; it cannot interrupt a blocked source call.
+
+Decode into temporary state, then call `finish()` before publishing anything.
+Its receipt verifies complete consumption, CRC32, and the exact descriptor.
+The application still owns schema validation, destination limits, and atomic
+durable publication of state plus applied floor. Keep the application quiescent
+through installation. CRC32 detects corruption; it does not authenticate peers.
+The source must bound its own allocations, and a caller using `read_to_end`
+still allocates the complete payload.
+
+The existing inline `ApplicationSnapshot` remains available. Streaming creation
+and general application publication/recovery qualification are separate work;
+this reader owns no filesystem, database transaction, or background worker.

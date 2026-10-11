@@ -74,9 +74,11 @@ the deterministic invariant verdict.
 
 ## Deferred additive work
 
-- C1 streaming snapshots are outside this completed initial scope. A future
-  public streaming interface remains additive; the existing bounded
-  descriptor/chunk path and its current contracts are unchanged.
+- C1 streaming snapshots were outside the completed initial scope. The additive
+  application `SnapshotPayloadReader` now verifies bounded, cancellable reads
+  from the existing descriptor/chunk path before application publication.
+  Streaming creation and general application crash/publication qualification
+  remain open; see [release readiness](release-readiness.md#4-decide-the-application-snapshot-boundary-before-freezing-the-api).
 - C2 replication pipelining is now an opt-in additive runtime interface. Its
   bounded persistence worker removes the benchmark's private executor, and a
   complete public-API reference composition now exercises WAL storage, bounded

@@ -350,11 +350,6 @@ reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by sc
 
 [[ratchet]]
 rule = "rust.file-size"
-target = "crates/rafter/tests/dependency_boundary.rs"
-reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
-
-[[ratchet]]
-rule = "rust.file-size"
 target = "crates/rafter/tests/invariant_ci_contract/portability_scenarios.rs"
 reason = "Pre-adoption scenario-suite size held as shrink-only debt; split by scenario toward the 400-line target."
 

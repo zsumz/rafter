@@ -1339,6 +1339,7 @@ name = "rafter-runtime"
 version = "0.0.2-alpha.1"
 dependencies = [
  "rafter",
+ "rafter-crc32",
  "rafter-invariant-test",
  "rafter-runtime-api",
  "rafter-storage",

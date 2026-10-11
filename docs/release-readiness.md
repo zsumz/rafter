@@ -258,19 +258,34 @@ behavior in source and exact-package tests.
 
 ### 4. Decide the application snapshot boundary before freezing the API
 
-**Scope decision, not a claim that network snapshots are unbounded.** Wire and
-storage transfer are already chunked and have multi-gigabyte coverage. The
+**Decision: support large application snapshots additively.** Wire and storage
+transfer are already chunked and have multi-gigabyte coverage. The
 application-facing [`ApplicationSnapshot`](../crates/rafter-app/src/state_machine.rs)
 still contains `payload: Vec<u8>` for locally built snapshots and an optional
-descriptor for stored installs. A general public streaming application API is
-explicitly deferred in [work completion](work-completion.md).
+descriptor for stored installs; that form remains available.
 
-If large state machines are in the first stable scope, provide bounded
-reader/writer or descriptor-based creation/install with cancellation, checksums,
-applied-floor validation, and crash-safe publication. Exercise a state larger
-than the configured memory budget, including interruption and restart. If that
-scope is deferred, keep an additive extension path and state the supported
-application snapshot limits before freezing the public shape.
+The first public streaming piece is
+[`SnapshotPayloadReader`](../crates/rafter-runtime/src/snapshot_io.rs). It reads an
+existing immutable chunk source with explicit total/chunk budgets, cooperative
+cancellation, exact returned-length/capacity checks, CRC32 verification, and a
+non-regressing applied floor. Only complete verified consumption produces a
+descriptor-bound receipt. A source panic fences a caught-and-reused reader.
+The application must decode into temporary state, validate its schema, and
+atomically publish state plus floor after verification. This helper does not
+own a database, destination allocation, or filesystem publication policy.
+
+An independent archive consumer reads 2 MiB + 17 bytes from a reopened file
+snapshot store through 4 KiB source chunks and a 113-byte application buffer.
+Cancellation and checksum failure preserve the old installed file/floor; a
+fresh attempt publishes and reopens the complete new state/floor. This is normal
+reopen evidence, not a power-loss sweep. Source/reader failure tests also cover
+early completion, wrong lengths, oversized allocations, empty payloads, and
+regressing or excessive descriptors before I/O.
+
+Still required before freezing this API: streaming creation, an application
+schema integration with bounded decoding, and interrupted/crash-safe publication
+and restart qualification beyond the opaque-file fixture. Complete those paths
+without materializing the whole application state in a snapshot buffer.
 
 ### 5. Qualify operational bounds and performance together
 
