@@ -104,6 +104,25 @@ description = "Exercise bounded runtime retrieval, cached installation, and fail
 run = ["python3", "-m", "unittest", "scripts/tests/test_invariant_runtime_setup.py"]
 tools = ["python3"]
 
+[tasks.counter-guide-tests]
+description = "Refuse stale/mixed counter dependency graphs and leaked smoke-test children. Requires Python 3.11+."
+run = ["python3", "-m", "unittest", "scripts/tests/test_counter_guide.py"]
+tools = ["python3"]
+
+[tasks.counter-guide]
+description = "Build the extracted counter guide against this checkout and exercise real TLS processes. Requires Python 3.11+."
+needs = ["counter-guide-tests"]
+run = ["python3", "scripts/check-counter-guide", "--mode", "checkout"]
+tools = ["python3", "cargo", "openssl"]
+resources = ["counter-guide-target"]
+
+[tasks.counter-guide-pinned]
+description = "Qualify the copied standalone counter using only its exact Git revision and canonical lock. Requires Python 3.11+."
+needs = ["counter-guide-tests"]
+run = ["python3", "scripts/check-counter-guide", "--mode", "pinned"]
+tools = ["python3", "cargo", "openssl"]
+resources = ["counter-guide-target"]
+
 [tasks.lint]
 description = "Validate formatting, lints, documentation, and proof references."
 needs = [
@@ -121,6 +140,8 @@ needs = [
   "durable-bench-tests",
   "policy-tools",
   "runtime-setup-tests",
+  "counter-guide",
+  "counter-guide-pinned",
 ]
 
 [tasks.durable-bench-tests]

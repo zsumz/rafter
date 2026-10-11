@@ -83,6 +83,12 @@ jobs:
         run: scripts/tests/tla_continuation_telemetry_test.sh
       - name: invariant runtime retrieval and failure checks
         run: python3 -m unittest scripts/tests/test_invariant_runtime_setup.py
+      - name: counter guide dependency and cleanup controls
+        run: python3 -m unittest scripts/tests/test_counter_guide.py
+      - name: counter guide against this checkout
+        run: python3 scripts/check-counter-guide --mode checkout
+      - name: counter guide standalone Git pin
+        run: python3 scripts/check-counter-guide --mode pinned
       - name: out-of-workspace manifests
         # `cargo fmt --all` and `cargo clippy --workspace` above stop at the
         # workspace members. fuzz/ and bench-compare/ keep their own manifests

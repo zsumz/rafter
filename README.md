@@ -57,6 +57,11 @@ Choose the layer that matches how much of the integration you want Rafter to pro
 
 ## Example
 
+The [getting-started walkthrough](./docs/getting-started.md) builds a standalone
+counter with three server processes, durable application state, and mutual TLS.
+Its complete copied application is checked against both this checkout and an
+exact Git revision. Repository guide checks require Python 3.11 or newer.
+
 ```rust
 use rafter::{Input, Node, NodeConfig, NodeId, Output};
 

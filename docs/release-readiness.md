@@ -78,7 +78,7 @@ is September 22's qualified-performance documentation update.
 
 | Branch | Finding | Recommended action |
 | --- | --- | --- |
-| `docs/layered-stack-readme` (`3790e23a`) | The only open PR, [#13](https://github.com/zsumz/rafter/pull/13); six unique commits and four main commits behind its merge base. Adds a standalone TLS counter, guide, and smoke check. | Update onto current main, review the example against the durable lifecycle contracts, and resolve its failing gates before merging. |
+| `docs/layered-stack-readme` (`3790e23a`) | Pre-existing open PR [#13](https://github.com/zsumz/rafter/pull/13); six unique commits and four main commits behind its merge base. Adds a standalone TLS counter, guide, and smoke check. | The counter, guide, and checker are now ported and qualified on this release branch. Finish durable-owner adoption and reconcile the overlapping PR before merging. |
 | `perf/raft-performance` (`66a7d719`) | [#19](https://github.com/zsumz/rafter/pull/19) and [#20](https://github.com/zsumz/rafter/pull/20) are merged. Its tip tree exactly matches merged main commit `ae951379`; raw ahead counts reflect separate history. | Start new performance work from main; do not merge the historical branch again. |
 | `fix/nightly-coverage-contract` / `docs/sync-qualified-performance` | [#21](https://github.com/zsumz/rafter/pull/21) / [#22](https://github.com/zsumz/rafter/pull/22) are merged. | Treat them as historical branches. |
 | `codex/snapshot-log-recovery-main` / `refactor/protocol-reading-paths` | [#11](https://github.com/zsumz/rafter/pull/11) / [#12](https://github.com/zsumz/rafter/pull/12) are merged and their tips are ancestors of main. | Keep the recovered snapshot/configuration behavior and walkthroughs already on main. |
@@ -89,6 +89,30 @@ PR #13 was mergeable but behind. Its lint, test, source/package/MSRV, and
 individual invariant jobs passed in the reported run; `invariants-pr`,
 `zrail-policy-review`, and `zrail` failed. The architecture environment review
 is a maintainer gate, not something a lockfile refresh can satisfy.
+
+The release branch now carries PR #13's counter, guide, and extraction checker
+without importing its stale root README, CI, or architecture lock. The standalone
+project pins the full qualified commit `c2924ca1508f05f30363bb495ffa760f21e7c76a`.
+Its nine Rafter packages changed revision while third-party locks stayed fixed.
+The checker has separate checkout and pinned modes: the first validates every
+resolved Rafter path against this checkout, and the second requires the exact
+Git source and canonical lock. Both extract the checked guide into a temporary
+project before building. Fourteen controls reject stale/mixed/missing/private
+graphs and preserve cleanup ownership when a smoke-test shutdown request or wait
+fails. Both cleanup regressions fail the original harness; deliberately omitting
+all checkout overrides is rejected before compilation.
+
+Both modes pass Rust 1.88 formatting, strict Clippy, three application tests,
+and the real three-process TLS smoke sequence: acknowledged writes, redirected
+reads, leader loss and catch-up, missing/corrupt state refusal, complete cluster
+crash recovery, quorum loss with an uncertain write, and clean shutdown. Python
+3.13 initially refused the generated server certificates for missing authority
+key identifiers. The fixture now emits CA/leaf subject identifiers and leaf
+authority identifiers; the peer probe explicitly enables strict X.509 checks
+before verifying client-certificate refusal. CI and zcheck run both modes and
+the controls; the repository checker requires Python 3.11 or newer. This counter
+still uses the existing synchronous `TransportRaftDriver`; adopting the optional
+durable owner is the next slice. The original PR remains unmerged.
 
 ## Prioritized code work
 
@@ -549,7 +573,7 @@ packages. Nineteen runner controls and strict lint/docs, source/dependency/size,
 workflow/profile, and architecture checks pass. Hosted qualification of this
 new candidate remains required.
 
-Use PR #13's counter as an independent adopter, after updating it. Test actual
+Use the now-qualified PR #13 counter as the next durable-owner adopter. Test actual
 TLS processes with restart, full queues, stalled fsync, leadership changes,
 canceled callers, snapshot install, and shutdown during outstanding work.
 An acknowledged write must survive recovery; an ambiguous write must retain
