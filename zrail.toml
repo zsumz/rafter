@@ -1370,6 +1370,9 @@ inputs = [
   "scripts/zrail-reconcile",
   "scripts/invariants-pr-preflight",
   "scripts/tests/review_policy_test.py",
+  "scripts/audit-published-dependencies",
+  "scripts/published_dependency_audit.py",
+  "scripts/tests/test_published_dependency_audit.py",
 ]
 requires = ["rustdoc"]
 reason = "Pull-request qualification: lint, workspace tests, reference consumers, and the deterministic invariant aggregate."

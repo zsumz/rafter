@@ -206,6 +206,18 @@ description = "Record the resolved compiler for the separately installed stable 
 run = ["rustc", "+stable", "--version", "--verbose"]
 tools = ["rustc"]
 
+[tasks.dependency-audit-tests]
+description = "Reject incomplete public dependency graphs and narrowed advisory reports. Requires Python 3.11+."
+run = ["python3", "-m", "unittest", "scripts/tests/test_published_dependency_audit.py"]
+tools = ["python3"]
+
+[tasks.dependency-audit]
+description = "Audit all public features with workspace-locked versions and a fresh RustSec database. Requires cargo-audit 0.22.2, Python 3.11+, and network access."
+needs = ["dependency-audit-tests"]
+run = ["python3", "scripts/audit-published-dependencies"]
+tools = ["cargo", "cargo-audit", "python3"]
+resources = ["advisory-db"]
+
 [tasks.current-stable-workspace]
 description = "Build every workspace target with current stable Rust and the locked dependencies."
 needs = ["current-stable-identity"]
@@ -275,7 +287,7 @@ tools = ["python3"]
 
 [tasks.full]
 description = "Qualify the checkout and every locally runnable deeper evidence lane."
-needs = ["check", "current-stable", "invariants-pr", "model-check", "reference-source", "reference-package"]
+needs = ["check", "current-stable", "dependency-audit", "invariants-pr", "model-check", "reference-source", "reference-package"]
 
 # Performance evidence stays opt-in, separate from concurrent correctness work.
 [tasks.build-durable-bench]

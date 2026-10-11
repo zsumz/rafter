@@ -56,6 +56,23 @@ lanes remain the release baseline. CI retains both Rust and Cargo identities.
 The current-stable task is included in `full`, and requires the additional
 toolchain above; ordinary `zcheck` continues to use the checkout's pinned MSRV.
 
+CI also audits all publishable libraries and every optional feature against a
+fresh RustSec advisory database. Run the same gate locally with:
+
+```sh
+cargo +1.97.1 install cargo-audit --version 0.22.2 --locked
+zcheck run dependency-audit
+```
+
+This gate is included in `full` and needs network access. It resolves an isolated
+consumer seeded by the workspace lock, then refuses changed third-party versions
+or checksums, missing public roots/features, private paths, and advisory ignores
+or target/severity filters. Vulnerabilities, informational advisories and yanked
+packages fail qualification. Receipts retain the exact audited lock, graph,
+checker/compiler identities and fetched advisory database commit. The root lock
+is never rewritten. Source dependency evidence complements exact-archive tests;
+it does not audit the repository-only verifier tools or establish license policy.
+
 `zcheck run full` adds the deeper local lanes; inspect the plan for platform
 requirements. Invariant evidence execution requires Linux, Python 3.11+, Java
 21, and the pinned TLC JAR at `tools/cache/tla2tools.jar`. Install the asset from

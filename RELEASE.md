@@ -27,6 +27,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 scripts/rustdoc-check
 scripts/work-completion-check
+scripts/audit-published-dependencies
 scripts/reference-source-check
 scripts/reference-package-check
 scripts/reference-process-check --list-only
@@ -38,6 +39,12 @@ scripts/raft-burn-in
 scripts/counter-profile counter-nightly
 scripts/counter-profile counter-weekly
 ```
+
+The public dependency audit requires cargo-audit 0.22.2 (installed with
+`cargo +1.97.1 install cargo-audit --version 0.22.2 --locked`), Python 3.11+,
+and network access. Retain its exact lock, feature coverage and fetched advisory
+database identity alongside archive evidence. It rejects advisories and warnings
+without exclusions; repository-only tools and license policy need separate review.
 
 The scheduled `invariants-nightly`, `invariants-weekly`, and pinned Maelstrom
 jobs remain the authoritative Linux evidence for their full profiles. The

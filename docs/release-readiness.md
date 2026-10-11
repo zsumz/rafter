@@ -914,8 +914,21 @@ including 545 tests, storage and wire compatibility, and rolling TLS upgrades;
 57 existing process/profile cases remain assigned to their dedicated lanes.
 Architecture analysis passes, with the rustls requirement replacement recorded
 as one granted and one revoked dependency edge requiring maintainer review.
-An automated advisory gate and license checks for the published graph remain
-to be added; repository-only verifier dependencies need their own assessment.
+The advisory check is now an executable per-PR `dependency-audit` job and
+`zcheck run dependency-audit`, included in `full`. It discovers the public set
+from Cargo and checks the release inventory, enables every feature in an isolated
+consumer, and proves the resolved registry versions/checksums match the workspace
+lock before auditing. It retains the lock, graph, tool versions, exact manifest
+hashes and freshly fetched database identity. Missing roots/features, unexpected
+paths, changed versions/checksums, narrowed advisory settings, vulnerabilities,
+informational warnings and yanked packages fail. An explicit isolated policy
+prevents inherited developer exclusions. License policy and repository-only
+verifier dependencies still require their own assessments; archive dependency
+auditing above was a separate manual qualification.
+Eleven adversarial controls pass, and the real pre-fix rustls lock is rejected
+with RUSTSEC-2026-0285. The existing 28 CI contracts and all ten immutable action
+pin checks pass. The audit gate's three source files are content-addressed by
+the architecture contract without adding dependency grants or adoption debt.
 
 ## Suggested sequence
 

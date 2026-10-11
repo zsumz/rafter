@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Audit every public library feature using exact workspace-locked dependencies."""
+
+import argparse
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import tomllib
+
+from published_dependency_audit import (
+    ADVISORY_URL, AUDIT_VERSION, digest, probe_manifest, public_packages,
+    validate_closure, validate_report,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run(command, cwd, output):
+    with output.open("wb") as stream:
+        result = subprocess.run(command, cwd=cwd, stdout=stream, stderr=subprocess.PIPE)
+    output.with_suffix(output.suffix + ".stderr").write_bytes(result.stderr)
+    if result.returncode:
+        raise ValueError(f"command failed ({result.returncode}): {' '.join(command)}; see {output}")
+    return output.read_text()
+
+
+def audit(artifacts):
+    seed_path = ROOT / "Cargo.lock"
+    seed = seed_path.read_text()
+    seed_hash = digest(seed_path)
+    workspace = json.loads(run(
+        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+        ROOT, artifacts / "workspace-metadata.json"))
+    packages = public_packages(workspace, ROOT)
+    msrv = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["rust-version"]
+    cargo = run(["cargo", "--version"], ROOT, artifacts / "cargo-version.txt").strip()
+    rustc = run(["rustc", "--version", "--verbose"], ROOT,
+                artifacts / "rustc-version.txt").strip()
+    audit_version = run(["cargo", "audit", "--version"], ROOT,
+                        artifacts / "cargo-audit-version.txt").strip()
+    if audit_version.split()[-1] != AUDIT_VERSION:
+        raise ValueError(f"install cargo-audit {AUDIT_VERSION} with --locked")
+    with tempfile.TemporaryDirectory(prefix="rafter-public-audit-") as temporary:
+        probe = Path(temporary).resolve()
+        (probe / "Cargo.toml").write_text(probe_manifest(packages, msrv))
+        (probe / "src").mkdir()
+        (probe / "src/lib.rs").write_text("// Dependency resolution only; no build.\n")
+        (probe / "Cargo.lock").write_text(seed)
+        # A project-local config takes precedence over ~/.cargo/audit.toml.
+        # Do not inherit a developer's advisory ignores or offline/target policy.
+        (probe / ".cargo").mkdir()
+        (probe / ".cargo/audit.toml").write_text(
+            f'[database]\nurl = "{ADVISORY_URL}"\nfetch = true\nstale = false\n'
+            '[output]\ndeny = ["warnings"]\nquiet = false\n[yanked]\nenabled = true\n')
+        shutil.copyfile(probe / "Cargo.toml", artifacts / "consumer.toml")
+        shutil.copyfile(probe / ".cargo/audit.toml", artifacts / "audit-policy.toml")
+        # Only the temporary seed may be pruned. Reject any changed third-party
+        # version/checksum afterwards, even if Cargo silently re-resolves it.
+        metadata = json.loads(run(["cargo", "metadata", "--format-version", "1"],
+                                  probe, artifacts / "consumer-metadata.json"))
+        resolved = (probe / "Cargo.lock").read_text()
+        (artifacts / "Cargo.lock").write_text(resolved)
+        closure = validate_closure(metadata, packages, probe, seed, resolved)
+        closure.update(workspace_lock_sha256=seed_hash,
+                       audit_lock_sha256=digest(artifacts / "Cargo.lock"),
+                       public_manifest_sha256={name: digest(p["manifest_path"])
+                                               for name, p in packages.items()})
+        (artifacts / "closure.json").write_text(json.dumps(closure, indent=2) + "\n")
+        command = ["cargo", "audit", "--file", str(artifacts / "Cargo.lock"),
+                   "--json", "--deny", "warnings"]
+        result = subprocess.run(command, cwd=probe, capture_output=True)
+        (artifacts / "audit.json").write_bytes(result.stdout)
+        (artifacts / "audit.stderr").write_bytes(result.stderr)
+        if not result.stdout and result.returncode:
+            raise ValueError(f"cargo-audit failed (exit {result.returncode}); see audit.stderr")
+        report = json.loads(result.stdout)
+        validate_report(report, result.returncode, closure["package_count"])
+    if digest(seed_path) != seed_hash:
+        raise ValueError("workspace lock changed during the audit")
+    receipt = {"schema": 1, "status": "passed", "cargo": cargo, "rustc": rustc,
+               "cargo_audit": audit_version, "database": report["database"],
+               "settings": report["settings"], "closure": closure}
+    (artifacts / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    print(f'PASS: {len(packages)} public roots, {len(closure["registry_packages"])} '
+          f'third-party packages, all features; evidence: {artifacts}')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--artifacts", type=Path, help="fresh evidence directory")
+    args = parser.parse_args()
+    if args.artifacts:
+        artifacts = args.artifacts.resolve()
+        artifacts.mkdir(parents=True, exist_ok=False)
+    else:
+        parent = ROOT / "target/published-dependency-audit"
+        parent.mkdir(parents=True, exist_ok=True)
+        artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
+    try:
+        audit(artifacts)
+    except (ValueError, KeyError, IndexError, TypeError, OSError) as error:
+        raise SystemExit(f"FAIL: {error}; evidence: {artifacts}") from error
+
+
+if __name__ == "__main__":
+    main()
