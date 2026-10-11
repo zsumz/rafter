@@ -118,7 +118,9 @@ pub struct Cluster {
 }
 impl Cluster {
     pub fn new() -> Self {
-        let base = crate::reads_support::Cluster::new(4);
+        Self::attach(crate::reads_support::Cluster::new(4))
+    }
+    pub fn attach(base: crate::reads_support::Cluster) -> Self {
         assert!(base.network.is_empty());
         let link = Link::default();
         let nodes = base

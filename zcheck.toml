@@ -193,7 +193,7 @@ resources = ["cargo-target"]
 
 [tasks.durable-client]
 description = "Exercise managed writes, reads, maintenance, and lifecycle fences through the opt-in durable owner."
-run = ["scripts/cargo-test-exact", "396", "-", "--locked", "-p", "rafter-service", "--features", "durable"]
+run = ["scripts/cargo-test-exact", "397", "-", "--locked", "-p", "rafter-service", "--features", "durable"]
 tools = ["cargo"]
 resources = ["cargo-target"]
 

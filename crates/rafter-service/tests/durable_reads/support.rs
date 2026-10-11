@@ -45,6 +45,16 @@ impl Replica {
         paused: bool,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
+        Self::with_options(id, peers, limit, paused, ServiceOptions::new(), wake)
+    }
+    pub fn with_options(
+        id: u64,
+        peers: Vec<NodeId>,
+        limit: usize,
+        paused: bool,
+        options: ServiceOptions,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         let (entered, wait) = mpsc::sync_channel(1);
         let (release, resume) = mpsc::sync_channel(1);
         let dropped = Arc::new(AtomicBool::new(false));
@@ -66,7 +76,7 @@ impl Replica {
                 dropped: Arc::clone(&dropped),
             },
             DurableClientOptions::new(
-                ServiceOptions::new(),
+                options,
                 DurableWriteLimits {
                     writes: NonZeroUsize::new(4).unwrap(),
                     payload_bytes: NonZeroUsize::new(64).unwrap(),
@@ -130,14 +140,19 @@ impl Cluster {
         Self::new_with_paused_leader(limit, false)
     }
     pub fn new_with_paused_leader(limit: usize, paused: bool) -> Self {
+        Self::with_options(limit, paused, ServiceOptions::new())
+    }
+    pub fn with_options(limit: usize, paused: bool, options: ServiceOptions) -> Self {
         let mut cluster = Self {
             nodes: (1..=3)
                 .map(|id| {
-                    Replica::new(
+                    Replica::with_options(
                         id,
                         (1..=3).filter(|n| *n != id).map(NodeId).collect(),
                         limit,
                         paused && id == 1,
+                        options,
+                        || {},
                     )
                 })
                 .collect(),

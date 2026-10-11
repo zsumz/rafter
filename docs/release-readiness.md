@@ -874,6 +874,15 @@ The counter pressure lane above establishes one bounded overload/recovery case
 with real processes and TLS. It does not establish latency distributions, memory
 ceilings for the whole host, or sustained throughput.
 
+A three-voter durable-driver regression now keeps independent four-request
+write and read windows replenished across 128 writes and 128 local/quorum reads.
+One-proposal batches preserve backlog in both queues. It checks progress in both
+streams, retained count/byte limits, caller freshness floors, quorum views
+against the acknowledged write history, and final follower durability. Forcing
+either fixed scheduling priority fails with the corresponding starvation
+verdict. This is a bounded regression with real workers and in-memory stores
+and links; physical disk/TLS soak and latency qualification remain separate.
+
 Extend the existing qualified benchmarks to separate hosts and disks, with
 slow/minority followers, lossy links, disk pressure, compaction, recovery, and
 TLS enabled. Publish throughput alongside p99/p99.9 latency, retained memory,
