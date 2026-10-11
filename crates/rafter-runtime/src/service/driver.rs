@@ -6,7 +6,7 @@ use crate::pipelined::{PipelineProgress, ThreadedPipelinedRaftNode};
 use crate::{DurableRaftNode, DurableRaftNodeStorage};
 use rafter::{LogIndex, NodeConfig, Output, SnapshotChunkSource};
 use rafter_storage::{RaftHardStateStore, RaftLogSegment, RaftSnapshotStore};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 /// One owner coordinating the two durable fences and bounded dispatch.
 ///
@@ -22,6 +22,7 @@ pub struct DurableService<H, L, S, T: ApplicationEntry, A: DurableApplication<T>
     pub(super) dispatched: LogIndex,
     pub(super) snapshot_floor: Option<LogIndex>,
     pub(super) options: ServiceOptions,
+    pub(super) wake: Arc<dyn Fn() + Send + Sync>,
     pub(super) recovering: bool,
     pub(super) draining: bool,
     pub(super) terminal: Option<Terminal>,
@@ -51,6 +52,29 @@ where
         application: A,
         options: ServiceOptions,
         adapter: impl FnMut(CommittedCommand) -> Result<T, ServiceAdapterError> + Send + 'static,
+    ) -> Result<Self, ServiceError> {
+        Self::recover_with_wake(config, storage, application, options, adapter, || {})
+    }
+
+    /// Recovers with notifications from both workers, including after restarts.
+    ///
+    /// `wake` may run concurrently on either worker thread. It must be bounded,
+    /// nonblocking, non-panicking, and must not reenter this owner. It remains
+    /// installed across snapshot handoff and local compaction. A retained,
+    /// coalescing notification prevents a completion between polling and waiting
+    /// from being lost. Poll [`Self::poll_next`] until `ServicePoll::Pending`
+    /// before waiting; after local input or snapshot resumption poll again.
+    /// The caller schedules its own consensus ticks and transport readiness.
+    ///
+    /// # Errors
+    /// Has the same consuming recovery failure contract as [`Self::recover`].
+    pub fn recover_with_wake(
+        config: NodeConfig,
+        storage: DurableRaftNodeStorage<H, L, S>,
+        application: A,
+        options: ServiceOptions,
+        adapter: impl FnMut(CommittedCommand) -> Result<T, ServiceAdapterError> + Send + 'static,
+        wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, ServiceError> {
         if options.max_proposals == 0 || options.max_proposal_bytes == 0 {
             return Err(ServiceError::Start(std::io::Error::new(
@@ -83,10 +107,18 @@ where
                 snapshot: snapshot.clone(),
             });
         }
-        let node = ThreadedPipelinedRaftNode::start(node, options.persistence)
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+        let persistence_wake = Arc::clone(&wake);
+        let node =
+            ThreadedPipelinedRaftNode::start_with_wake(node, options.persistence, move || {
+                persistence_wake();
+            })
             .map_err(|error| ServiceError::Start(error.into_parts().0))?;
-        let application = ApplicationWorker::start(application, options.application, || {})
-            .map_err(ServiceError::Start)?;
+        let application_wake = Arc::clone(&wake);
+        let application = ApplicationWorker::start(application, options.application, move || {
+            application_wake();
+        })
+        .map_err(ServiceError::Start)?;
         Ok(Self {
             node,
             application: Some(application),
@@ -96,6 +128,7 @@ where
             dispatched: floor,
             snapshot_floor: None,
             options,
+            wake,
             recovering: true,
             draining: false,
             terminal: None,

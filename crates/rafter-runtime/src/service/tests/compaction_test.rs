@@ -17,7 +17,7 @@ use std::{
 };
 
 #[derive(Debug)]
-struct Source {
+pub(super) struct Source {
     inner: InMemoryRaftSnapshotStore,
     calls: Arc<AtomicUsize>,
     missing: bool,
@@ -37,7 +37,10 @@ impl SnapshotChunkSource for Source {
         }
     }
 }
-fn snapshot(store: &mut Store, node: &Node) -> Result<(RaftSnapshot, Source), ServiceAdapterError> {
+pub(super) fn snapshot(
+    store: &mut Store,
+    node: &Node,
+) -> Result<(RaftSnapshot, Source), ServiceAdapterError> {
     let metadata = RaftSnapshotMetadata::new(
         SnapshotGroupId::new("owner-compaction")?,
         node.id(),

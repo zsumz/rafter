@@ -9,7 +9,8 @@
 //! Polling never waits for persistence or application work to finish. An idle
 //! application thread is joined at snapshot handoff. Ordinary consensus steps
 //! still use the synchronous durability fence; eligible proposal batches use
-//! the persistence thread. Callers choose their executor and polling schedule.
+//! the persistence thread. Callers choose their executor; `recover_with_wake`
+//! and `poll_next` support notification-driven scheduling without timer polling.
 //!
 //! Peer sends go to the caller's existing authenticated transport. Only
 //! [`crate::service::ServiceEvent::Applied`] establishes client write success. Appended IDs are
@@ -37,7 +38,7 @@ mod poll;
 mod step;
 
 pub use command::CommittedCommand;
-pub use contract::{ServiceEvent, ServiceInput, ServiceOptions, ServiceState};
+pub use contract::{ServiceEvent, ServiceInput, ServiceOptions, ServicePoll, ServiceState};
 pub use driver::DurableService;
 pub use error::{ServiceAdapterError, ServiceError, ServiceStepError};
 

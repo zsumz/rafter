@@ -18,7 +18,7 @@ use rafter_reference_ledger::{
 use rafter_runtime::{
     service::{
         CommittedCommand, DurableService, ServiceAdapterError, ServiceError, ServiceEvent,
-        ServiceInput, ServiceOptions, ServiceState,
+        ServiceInput, ServiceOptions, ServicePoll, ServiceState,
     },
     DurableRaftNode, DurableRaftNodeStorage,
 };
@@ -29,6 +29,7 @@ use rafter_storage::{
 use scratch::ScratchDir;
 use std::{
     path::Path,
+    sync::mpsc,
     time::{Duration, Instant},
 };
 use support::{amount, config, execute, open_session};
@@ -79,48 +80,73 @@ fn adapt(command: CommittedCommand) -> Result<LedgerApplicationEntry, ServiceAda
     })
     .with_protocol_prefix(command.first_index))
 }
-fn open(root: &Path, directory: &str) -> Owner {
+fn open(root: &Path, directory: &str) -> (Owner, mpsc::Receiver<()>) {
+    let (notify, wake) = mpsc::sync_channel(1);
     let mut options = ServiceOptions::new();
     options.application = options.application.with_limits(1, 4096, 1, 4096);
-    Owner::recover(
+    let owner = Owner::recover_with_wake(
         raft_config(),
         stores(root),
         app(root, directory),
         options,
         adapt,
+        move || {
+            let _ = notify.try_send(());
+        },
     )
-    .unwrap()
+    .unwrap();
+    (owner, wake)
 }
 fn payload(command: &Command) -> Vec<u8> {
     LedgerStateMachine::new(config(1, 2))
         .encode_command(command)
         .unwrap()
 }
-fn poll_until(owner: &mut Owner, mut done: impl FnMut(&Owner) -> bool) -> Vec<Event> {
+fn poll_until(
+    owner: &mut Owner,
+    wake: &mpsc::Receiver<()>,
+    mut done: impl FnMut(&Owner) -> bool,
+) -> Vec<Event> {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut events = Vec::new();
     while !done(owner) {
         assert!(Instant::now() < deadline, "owner stalled: {owner:?}");
-        if let Some(event) = owner.poll().unwrap() {
-            events.push(event);
+        match owner.poll_next().unwrap() {
+            ServicePoll::Event(event) => events.push(event),
+            ServicePoll::Progress => {}
+            ServicePoll::Pending if done(owner) => break,
+            ServicePoll::Pending => wait(wake, deadline),
+            other => panic!("unknown scheduling disposition: {other:?}"),
         }
-        std::thread::yield_now();
     }
     events
 }
-fn shutdown(owner: &mut Owner) -> DurableLedgerStateMachine {
+fn shutdown(owner: &mut Owner, wake: &mpsc::Receiver<()>) -> DurableLedgerStateMachine {
     owner.begin_shutdown();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         assert!(Instant::now() < deadline);
         // This helper is called after all expected completions were observed.
-        assert!(owner.poll().unwrap().is_none());
+        let pending = match owner.poll_next().unwrap() {
+            ServicePoll::Progress => false,
+            ServicePoll::Pending => true,
+            other => panic!("unexpected remaining event: {other:?}"),
+        };
         match owner.finish_shutdown() {
             Ok(application) => return application,
-            Err(ServiceError::NotReady(_)) => std::thread::yield_now(),
+            Err(ServiceError::NotReady(_)) => {
+                if pending {
+                    wait(wake, deadline);
+                }
+            }
             other => panic!("unexpected shutdown: {other:?}"),
         }
     }
+}
+
+fn wait(wake: &mpsc::Receiver<()>, deadline: Instant) {
+    wake.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .expect("worker wake required; no periodic poll fallback");
 }
 
 #[test]
@@ -130,8 +156,8 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
     seed_recovery(root);
 
     // Three committed commands exceed the owner's single application credit.
-    let mut owner = open(root, "application");
-    let events = poll_until(&mut owner, |o| o.state() == ServiceState::Ready);
+    let (mut owner, wake) = open(root, "application");
+    let events = poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready);
     let applied: Vec<_> = events
         .into_iter()
         .map(|event| match event {
@@ -147,7 +173,7 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
         .collect();
     assert_eq!(applied, [LogIndex(2), LogIndex(3), LogIndex(4)]);
     owner.try_step(Input::Tick.into()).unwrap();
-    poll_until(&mut owner, |o| o.state() == ServiceState::Ready);
+    poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready);
     owner
         .try_step(ServiceInput::from(Input::TrackedClientProposal {
             proposal_id: LocalProposalId(42),
@@ -170,35 +196,36 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
     let deadline = Instant::now() + Duration::from_secs(10);
     let completion = loop {
         assert!(Instant::now() < deadline);
-        match owner.poll().unwrap() {
-            Some(ServiceEvent::Applied(done)) => break done,
-            Some(ServiceEvent::Output(Output::LocalProposalAppended { .. })) | None => {}
+        match owner.poll_next().unwrap() {
+            ServicePoll::Event(ServiceEvent::Applied(done)) => break done,
+            ServicePoll::Event(ServiceEvent::Output(Output::LocalProposalAppended { .. }))
+            | ServicePoll::Progress => {}
+            ServicePoll::Pending => wait(&wake, deadline),
             other => panic!("unexpected write event: {other:?}"),
         }
-        std::thread::yield_now();
     };
     assert_eq!(
         completion.outcomes()[0].local_proposal_id,
         Some(LocalProposalId(42))
     );
     assert_eq!(owner.durable_through(), Some(LogIndex(6)));
-    let application = shutdown(&mut owner);
+    let application = shutdown(&mut owner, &wake);
     assert_eq!(application.store().ledger().view().accounts, [(ACCOUNT, 9)]);
     drop(application);
     drop(owner);
-    let mut owner = open(root, "application");
-    assert!(poll_until(&mut owner, |o| o.state() == ServiceState::Ready).is_empty());
+    let (mut owner, wake) = open(root, "application");
+    assert!(poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready).is_empty());
     compact(&mut owner);
     assert_eq!(owner.ready_node().unwrap().snapshot_index(), LogIndex(6));
     assert_eq!(owner.durable_through(), Some(LogIndex(6)));
     assert_eq!(
-        shutdown(&mut owner).store().ledger().view().accounts,
+        shutdown(&mut owner, &wake).store().ledger().view().accounts,
         [(ACCOUNT, 9)]
     );
     drop(owner);
 
     // A separate blank application recovers only from the promoted descriptor.
-    let mut owner = open(root, "restored-application");
+    let (mut owner, wake) = open(root, "restored-application");
     let Some(ServiceEvent::InstallSnapshot {
         snapshot,
         mut application,
@@ -215,17 +242,17 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
         })
         .unwrap();
     owner.resume_snapshot(application).unwrap();
-    assert!(poll_until(&mut owner, |o| o.state() == ServiceState::Ready).is_empty());
+    assert!(poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready).is_empty());
     assert_eq!(
-        shutdown(&mut owner).store().ledger().view().accounts,
+        shutdown(&mut owner, &wake).store().ledger().view().accounts,
         [(ACCOUNT, 9)]
     );
     drop(owner);
 
     // Previously acknowledged bytes survive reopening the original journal too.
-    let mut owner = open(root, "application");
-    assert!(poll_until(&mut owner, |o| o.state() == ServiceState::Ready).is_empty());
-    let application = shutdown(&mut owner);
+    let (mut owner, wake) = open(root, "application");
+    assert!(poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready).is_empty());
+    let application = shutdown(&mut owner, &wake);
     assert_eq!(application.store().applied_index(), LogIndex(6));
     assert_eq!(application.store().ledger().view().accounts, [(ACCOUNT, 9)]);
 }

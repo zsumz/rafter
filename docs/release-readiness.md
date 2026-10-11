@@ -221,9 +221,16 @@ source/publication/compaction failures fence it, including a failure after the
 new snapshot was published. The ledger uses this path and the existing bounded
 retirement worker before snapshot restore and reopen.
 
-Remaining composition work includes completion wake integration and bounded
-client/read waiter ownership. The
-current owner polls workers and ordinary consensus inputs retain synchronous
+Completion wake integration now covers both workers, including terminal
+storage/application panics and application restarts after snapshot installation
+or compaction. `poll_next` distinguishes internal progress from pending work;
+embeddings drain progress before waiting on a retained, coalescing notification.
+The real-file ledger consumer uses this contract without timer polling, and
+gated tests cover completion between polling and waiting, coalesced wakes,
+and stale notifications from replaced workers.
+
+Remaining composition work includes bounded client/read waiter ownership and
+TLS process adoption of the owner. Ordinary consensus inputs retain synchronous
 I/O. Its memory claim covers one existing output batch, one converted command,
 and worker credits; it does not bound the kernel log or an entire recovery
 output batch. Keep application schemas, authentication policy, and scheduling

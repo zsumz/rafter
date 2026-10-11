@@ -87,11 +87,22 @@ This first owner has no input mailbox. Its retained work is one existing runtime
 output batch, one converted command, and bounded worker credits; a runtime or
 recovery batch itself can be large. The caller still bounds input frames,
 client/read waiters, transport queues, and consumed events. Ordinary consensus
-steps remain synchronous, and the caller provides periodic completion polling.
-Executor wake integration remains a separate composition slice. The independent ledger's
+steps remain synchronous. `recover_with_wake` installs a notification on both
+workers and preserves it across snapshot resumption and local compaction.
+The callback may run concurrently; it must be bounded, nonblocking, and must
+not panic or reenter the owner. Use a retained/coalescing token, for example a
+capacity-one channel's `try_send` or a dedicated owner thread's `unpark`.
+Call `poll_next` until `ServicePoll::Pending`: deliver every `Event`, and poll
+again on `Progress`. Check admission/lifecycle state before sleeping, and poll
+again after local input or snapshot resumption. Never clear a notification
+between the last poll and waiting. If a dispatch budget expires earlier,
+schedule another turn yourself. Ticks and transport readiness remain the
+embedding's responsibility. `poll` and `recover` remain available for embeddings
+that already schedule periodic polling. The independent ledger's
 `tests/service_owner.rs` uses this API over real Raft files and its transactional
 journal, exercising backlog recovery, tracked durable completion, shutdown,
-descriptor installation, and reopen in source and exact-package lanes.
+descriptor installation, and reopen in source and exact-package lanes. It now
+waits on a coalesced notification when pending, with no periodic polling fallback.
 
 `DurableService::compact_snapshot_with` now lends the quiescent application
 store and read-only runtime to a snapshot builder. It refuses outstanding work

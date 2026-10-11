@@ -1,7 +1,7 @@
 //! Ordered output dispatch and non-waiting completion consumption.
 
 use super::driver::Terminal;
-use super::{CommittedCommand, DurableService, ServiceError, ServiceEvent};
+use super::{CommittedCommand, DurableService, ServiceError, ServiceEvent, ServicePoll};
 use crate::application::{
     ApplicationEntry, ApplicationEvent, ApplicationSubmitRejection, DurableApplication,
 };
@@ -20,26 +20,49 @@ where
     ///
     /// `None` can mean an internal dispatch advanced without an external event;
     /// keep polling while draining or recovering. This never waits for outstanding
-    /// I/O. Snapshot handoff joins an already idle application thread. Consume
+    /// I/O. Snapshot handoff joins an already idle application thread.
+    /// For notification-driven scheduling use [`Self::poll_next`]. Consume
     /// all events even after closing admission with `begin_shutdown`.
     ///
     /// # Errors
     /// A worker, adapter, storage, or unserviceable application-admission failure
     /// fences the incarnation. No later success or read grant is released.
     pub fn poll(&mut self) -> Result<Option<ServiceEvent<T, A>>, ServiceError> {
+        self.poll_next().map(|step| match step {
+            ServicePoll::Event(event) => Some(event),
+            ServicePoll::Progress | ServicePoll::Pending => None,
+        })
+    }
+
+    /// Performs one bounded step with an explicit scheduling disposition.
+    ///
+    /// Continue polling after `Event` or `Progress`. On `Pending`, inspect
+    /// lifecycle/admission state, then wait using the retained notification
+    /// installed with [`Self::recover_with_wake`]. Do not clear a notification
+    /// after polling: a worker may have published completion in between. If a
+    /// per-turn dispatch budget is exhausted before `Pending`, schedule another
+    /// turn yourself rather than relying on a future worker notification.
+    ///
+    /// `Pending` is not proof that the service is idle: I/O may be outstanding,
+    /// or application state may be handed off for installation. New local input
+    /// and `resume_snapshot` require another poll even without a worker wake.
+    ///
+    /// # Errors
+    /// Uses the same terminal error contract as [`Self::poll`].
+    pub fn poll_next(&mut self) -> Result<ServicePoll<T, A>, ServiceError> {
         if self.terminal == Some(Terminal::Failed) {
             return Err(ServiceError::Failed);
         }
         let Some(application) = self.application.as_ref() else {
-            return Ok(None);
+            return Ok(ServicePoll::Pending);
         };
         match application.try_complete() {
             Ok(Some(ApplicationEvent::Applied(done))) => {
-                return Ok(Some(ServiceEvent::Applied(done)))
+                return Ok(ServicePoll::Event(ServiceEvent::Applied(done)))
             }
             Ok(Some(ApplicationEvent::Failed(failure))) => {
                 self.terminal = Some(Terminal::Failed);
-                return Ok(Some(ServiceEvent::ApplicationFailed(failure)));
+                return Ok(ServicePoll::Event(ServiceEvent::ApplicationFailed(failure)));
             }
             Err(_) => return self.poison(ServiceError::ApplicationStopped),
             Ok(None) => {}
@@ -47,18 +70,27 @@ where
         if !self.pending.is_empty() {
             return self.submit_pending();
         }
+        let mut progressed = false;
         if self.outputs.is_empty() {
             match self.node.try_complete() {
-                Ok(Some(completed)) => self.outputs = completed.into_outputs().into(),
+                Ok(Some(completed)) => {
+                    self.outputs = completed.into_outputs().into();
+                    progressed = true;
+                }
                 Err(error) => return self.poison(ServiceError::Persistence(error)),
                 Ok(None) => {}
             }
         }
         if self.recovering && self.idle() {
             self.recovering = false;
+            progressed = true;
         }
         let Some(output) = self.outputs.pop_front() else {
-            return Ok(None);
+            return Ok(if progressed {
+                ServicePoll::Progress
+            } else {
+                ServicePoll::Pending
+            });
         };
         match output {
             Output::Apply {
@@ -94,7 +126,9 @@ where
                 self.pending.push_back(entry);
                 self.submit_pending()
             }
-            Output::ApplySnapshot { snapshot } => self.handoff_snapshot(snapshot),
+            Output::ApplySnapshot { snapshot } => self
+                .handoff_snapshot(snapshot)
+                .map(|event| event.map_or(ServicePoll::Pending, ServicePoll::Event)),
             Output::ReadIndexGranted {
                 read_id,
                 read_index,
@@ -108,17 +142,17 @@ where
                     read_index,
                 };
                 if self.durable_through().is_some_and(|floor| floor >= needed) {
-                    Ok(Some(ServiceEvent::Output(output)))
+                    Ok(ServicePoll::Event(ServiceEvent::Output(output)))
                 } else {
                     self.outputs.push_front(output);
-                    Ok(None)
+                    Ok(ServicePoll::Pending)
                 }
             }
-            output => Ok(Some(ServiceEvent::Output(output))),
+            output => Ok(ServicePoll::Event(ServiceEvent::Output(output))),
         }
     }
 
-    fn submit_pending(&mut self) -> Result<Option<ServiceEvent<T, A>>, ServiceError> {
+    fn submit_pending(&mut self) -> Result<ServicePoll<T, A>, ServiceError> {
         let Some(application) = self.application.as_ref() else {
             return self.poison(ServiceError::ApplicationStopped);
         };
@@ -128,12 +162,12 @@ where
                 if let Some(through) = through {
                     self.dispatched = through;
                 }
-                Ok(None)
+                Ok(ServicePoll::Progress)
             }
             Err(ApplicationSubmitRejection::Full { .. } | ApplicationSubmitRejection::Stopped)
                 if application.is_busy() =>
             {
-                Ok(None)
+                Ok(ServicePoll::Pending)
             }
             Err(error) => self.poison(ServiceError::ApplicationAdmission(error)),
         }

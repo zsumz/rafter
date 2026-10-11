@@ -7,3 +7,5 @@ mod lifecycle_test;
 mod persistence_test;
 mod streamed_compaction_test;
 mod support;
+mod wake_lifecycle_test;
+mod wake_test;

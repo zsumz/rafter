@@ -75,6 +75,34 @@ impl Default for ServiceOptions {
     }
 }
 
+/// One bounded scheduling step, distinguishing internal progress from waiting.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "transfer the existing owned event without allocating per poll"
+)]
+#[non_exhaustive]
+pub enum ServicePoll<T: ApplicationEntry, A: DurableApplication<T>> {
+    /// Deliver this event and continue polling before waiting.
+    Event(ServiceEvent<T, A>),
+    /// Internal work advanced; poll again without waiting for a notification.
+    Progress,
+    /// No work can advance now. A worker notification, new input, snapshot
+    /// resumption, or caller-scheduled tick may permit progress. Check lifecycle
+    /// state before sleeping: a drained service can finish shutdown, and a
+    /// snapshot handoff or stopped service has no pending application worker.
+    Pending,
+}
+
+impl<T: ApplicationEntry, A: DurableApplication<T>> std::fmt::Debug for ServicePoll<T, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Event(event) => f.debug_tuple("Event").field(event).finish(),
+            Self::Progress => f.write_str("Progress"),
+            Self::Pending => f.write_str("Pending"),
+        }
+    }
+}
+
 /// One event transferred to the embedding, without an extra delivery queue.
 ///
 /// Credits are released when this event is returned. The caller must bound its

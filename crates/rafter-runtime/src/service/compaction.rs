@@ -88,8 +88,10 @@ where
             Err(ServiceError::SnapshotFloor { expected, actual })
         };
         drop(source);
-        let worker = ApplicationWorker::start(application, self.options.application, || {})
-            .map_err(ServiceError::Start)?;
+        let wake = std::sync::Arc::clone(&self.wake);
+        let worker =
+            ApplicationWorker::start(application, self.options.application, move || wake())
+                .map_err(ServiceError::Start)?;
         self.application = Some(worker);
         self.terminal = None;
         result

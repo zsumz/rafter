@@ -7,7 +7,7 @@ use rafter::{
 };
 use rafter_storage::PersistedRaftSnapshot;
 
-fn snapshotted() -> Node {
+pub(super) fn snapshotted() -> Node {
     let mut node = log_with_commands(3);
     let metadata = RaftSnapshotMetadata::new(
         SnapshotGroupId::new("owner-tests").unwrap(),

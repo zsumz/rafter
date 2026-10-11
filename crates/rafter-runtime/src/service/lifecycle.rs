@@ -58,10 +58,12 @@ where
         if actual != expected {
             return self.poison(ServiceError::ApplicationFloor { expected, actual });
         }
-        let worker = match ApplicationWorker::start(application, self.options.application, || {}) {
-            Ok(worker) => worker,
-            Err(error) => return self.poison(ServiceError::Start(error)),
-        };
+        let wake = std::sync::Arc::clone(&self.wake);
+        let worker =
+            match ApplicationWorker::start(application, self.options.application, move || wake()) {
+                Ok(worker) => worker,
+                Err(error) => return self.poison(ServiceError::Start(error)),
+            };
         self.application = Some(worker);
         self.dispatched = expected;
         self.snapshot_floor = None;

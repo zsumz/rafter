@@ -62,6 +62,9 @@ struct Cluster {
 }
 impl Cluster {
     fn new() -> Self {
+        Self::with_wake(|| {})
+    }
+    fn with_wake(wake: impl Fn() + Send + Sync + 'static) -> Self {
         let config = |id| {
             NodeConfig::new(
                 NodeId(id),
@@ -72,7 +75,7 @@ impl Cluster {
         };
         let log = GatedLog::default();
         let gate = Arc::clone(&log.gate);
-        let mut owner = Owner::recover(
+        let mut owner = Owner::recover_with_wake(
             config(1),
             DurableRaftNodeStorage {
                 hard_state_store: InMemoryRaftHardStateStore::new(),
@@ -82,6 +85,7 @@ impl Cluster {
             Store::default(),
             ServiceOptions::new(),
             adapt,
+            wake,
         )
         .unwrap();
         owner.poll().unwrap();
@@ -255,4 +259,48 @@ fn persistence_panic_poison_suppresses_dependent_outputs() {
     }
     assert_eq!(cluster.owner.state(), ServiceState::Failed);
     assert!(cluster.owner.poll().is_err());
+}
+
+#[test]
+fn persistence_completion_and_panic_wake_the_composed_owner() {
+    for panic in [false, true] {
+        let (notify, wake) = mpsc::sync_channel(1);
+        let mut cluster = Cluster::with_wake(move || {
+            let _ = notify.try_send(());
+        });
+        let (started, mut release) = cluster.delay(panic);
+        cluster.propose();
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Drain speculative peer output; no polling timer is used once pending.
+        for _ in 0..100 {
+            match cluster.owner.poll_next().unwrap() {
+                ServicePoll::Event(ServiceEvent::Output(output)) => cluster.route(output),
+                ServicePoll::Progress => {}
+                ServicePoll::Pending => break,
+                other => panic!("dependent event escaped: {other:?}"),
+            }
+        }
+        assert!(matches!(
+            cluster.owner.poll_next().unwrap(),
+            ServicePoll::Pending
+        ));
+        assert!(wake.try_recv().is_err());
+        release.now();
+        wake.recv_timeout(Duration::from_secs(5))
+            .expect("worker must wake owner");
+        if panic {
+            assert!(matches!(
+                cluster.owner.poll_next(),
+                Err(ServiceError::Persistence(_))
+            ));
+            assert_eq!(cluster.owner.state(), ServiceState::Failed);
+        } else {
+            assert!(!matches!(
+                cluster.owner.poll_next().unwrap(),
+                ServicePoll::Pending
+            ));
+            assert_eq!(cluster.owner.progress().durable, LogIndex(2));
+            assert_eq!(cluster.drive(), [LogIndex(2)]);
+        }
+    }
 }
