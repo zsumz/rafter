@@ -24,8 +24,6 @@ pub enum WriteErrorKind {
     Rejected,
     /// The encoded command exceeded the configured limit.
     PayloadTooLarge,
-    /// Managed write admission is full.
-    Backpressure,
     /// The driver cannot prove whether the command took effect.
     UnknownOutcome,
     /// The request named another group.
@@ -46,6 +44,9 @@ pub enum WriteErrorKind {
     LocalProposalIdExhausted,
     /// The managed driver violated its own invariant.
     ManagedInvariantViolation,
+    // Append new kinds so the published numeric categories keep their values.
+    /// Managed write admission is full.
+    Backpressure,
 }
 
 /// Stable category of a [`TransferLeadershipError`](super::TransferLeadershipError).
@@ -63,10 +64,6 @@ pub enum TransferLeadershipErrorKind {
     NotLeader,
     /// The Raft runtime rejected the transfer.
     Rejected,
-    /// Managed transfer admission is full.
-    Backpressure,
-    /// Backend release prevented request confirmation.
-    Unconfirmed,
     /// The request named another group.
     WrongGroup,
     /// Durable storage failed.
@@ -77,6 +74,10 @@ pub enum TransferLeadershipErrorKind {
     ShuttingDown,
     /// The group is permanently poisoned.
     Poisoned,
+    /// Managed transfer admission is full.
+    Backpressure,
+    /// Backend release prevented request confirmation.
+    Unconfirmed,
 }
 
 /// Stable category of a [`ShutdownError`](super::ShutdownError).
@@ -106,8 +107,6 @@ pub enum ReadErrorKind {
     NotLeader,
     /// The Raft runtime rejected the read barrier.
     Rejected,
-    /// Managed read admission is full.
-    Backpressure,
     /// An active read barrier was canceled.
     Canceled,
     /// The requested consistency mode is unsupported.
@@ -134,4 +133,6 @@ pub enum ReadErrorKind {
     ReadIdExhausted,
     /// The managed driver violated its own invariant.
     ManagedInvariantViolation,
+    /// Managed read admission is full.
+    Backpressure,
 }

@@ -316,6 +316,18 @@ needs interruption/restart tests and a recoverable publication boundary.
 Retain the current format vectors and exact-archive consumer lanes; add a
 public API baseline that detects unintended breaking changes.
 
+An initial public-API comparison now covers all eleven crates against the
+explicit published `0.0.2-alpha.1` baseline, separately with default and all
+features. It uses pinned cargo-semver-checks 0.51.0 on Rust 1.97.1; library
+build/test qualification remains on Rust 1.88. The check found an unintended
+service API change: inserting new admission/transfer variants shifted existing
+numeric error-kind values. A downstream Rust 1.88 consumer reproduced
+`WriteErrorKind::UnknownOutcome as usize` changing from 3 to 4. Appending the new
+variants preserves all 35 published write/read/transfer categories; a regression
+also preserves their ordering. Both full API comparisons now pass with no
+findings. This is source API evidence, not a Rust memory-layout or wire-encoding
+promise. The automated gate and supported target matrix remain follow-up work.
+
 The release branch now adds an initial
 [archive-based file-store matrix](storage-upgrades.md). It compiles identical
 public-API fixtures against checksum-pinned published `0.0.2-alpha.1` archives

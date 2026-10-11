@@ -42,16 +42,6 @@ pub enum WriteError {
         /// Actual encoded payload size in bytes.
         actual: usize,
     },
-    /// The driver's retained request or byte budget cannot admit this command.
-    ///
-    /// Refused before allocating a proposal ID or appending the command, so
-    /// the request identity remains unused. Retained results can keep this
-    /// budget full until their futures are consumed or dropped. Retry only
-    /// after capacity becomes available; this variant promises no retry time.
-    /// An encoded buffer exceeding the entire byte budget cannot fit even
-    /// after other work completes; reduce its retained capacity or raise the
-    /// configured limit.
-    Backpressure,
     /// The operation may or may not have committed and applied.
     ///
     /// Retry only with application-level idempotency if duplicate effects
@@ -134,6 +124,16 @@ pub enum WriteError {
         /// Stable diagnostic for the violated invariant.
         message: String,
     },
+    /// The driver's retained request or byte budget cannot admit this command.
+    ///
+    /// Refused before allocating a proposal ID or appending the command, so
+    /// the request identity remains unused. Retained results can keep this
+    /// budget full until their futures are consumed or dropped. Retry only
+    /// after capacity becomes available; this variant promises no retry time.
+    /// An encoded buffer exceeding the entire byte budget cannot fit even
+    /// after other work completes; reduce its retained capacity or raise the
+    /// configured limit.
+    Backpressure,
 }
 
 impl WriteError {

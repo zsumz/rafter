@@ -36,15 +36,6 @@ pub enum ReadError {
         /// Current leader, when known.
         leader_hint: Option<NodeId>,
     },
-    /// The driver's retained request or byte budget cannot admit this query.
-    ///
-    /// Refused before reserving a read ID or invoking the application query.
-    /// Retained results can keep the budget full until their futures are
-    /// consumed or dropped. This variant promises no retry time.
-    /// An encoded buffer exceeding the entire byte budget cannot fit even
-    /// after other work completes; reduce its retained capacity or raise the
-    /// configured limit.
-    Backpressure,
     /// An active linearizable read barrier was canceled.
     Canceled {
         /// Identifier of the canceled read.
@@ -144,6 +135,15 @@ pub enum ReadError {
         /// Stable diagnostic for the violated invariant.
         message: String,
     },
+    /// The driver's retained request or byte budget cannot admit this query.
+    ///
+    /// Refused before reserving a read ID or invoking the application query.
+    /// Retained results can keep the budget full until their futures are
+    /// consumed or dropped. This variant promises no retry time.
+    /// An encoded buffer exceeding the entire byte budget cannot fit even
+    /// after other work completes; reduce its retained capacity or raise the
+    /// configured limit.
+    Backpressure,
 }
 
 impl ReadError {

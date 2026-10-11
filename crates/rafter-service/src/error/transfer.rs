@@ -34,13 +34,6 @@ pub enum TransferLeadershipError {
         /// Current leader, when known.
         leader_hint: Option<NodeId>,
     },
-    /// The managed transfer slot is still retained by queued work or a result.
-    Backpressure,
-    /// The driver released the incarnation before confirming the request.
-    ///
-    /// A transfer may have begun. Observe actual leadership under a fresh
-    /// incarnation; this does not report a protocol refusal or successful handoff.
-    Unconfirmed,
     /// The request named a group this driver does not own.
     WrongGroup,
     /// The Raft runtime failed to persist or query local durable state.
@@ -65,6 +58,13 @@ pub enum TransferLeadershipError {
         /// Preserved typed cause, when poisoning originated in a callback.
         cause: Option<ErrorCause>,
     },
+    /// The managed transfer slot is still retained by queued work or a result.
+    Backpressure,
+    /// The driver released the incarnation before confirming the request.
+    ///
+    /// A transfer may have begun. Observe actual leadership under a fresh
+    /// incarnation; this does not report a protocol refusal or successful handoff.
+    Unconfirmed,
 }
 
 impl TransferLeadershipError {
