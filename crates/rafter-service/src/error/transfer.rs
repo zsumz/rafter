@@ -58,7 +58,7 @@ pub enum TransferLeadershipError {
         /// Preserved typed cause, when poisoning originated in a callback.
         cause: Option<ErrorCause>,
     },
-    /// The managed transfer slot is still retained by queued work or a result.
+    /// The managed control slot is still retained by queued work or a result.
     Backpressure,
     /// The driver released the incarnation before confirming the request.
     ///

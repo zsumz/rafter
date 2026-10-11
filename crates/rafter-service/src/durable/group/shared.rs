@@ -1,5 +1,8 @@
-//! Client endpoints and one retained transfer request; never a backend owner.
-use super::{lock, DurableReadSender, DurableWriteSender};
+//! Client endpoints and one retained control request; never a backend owner.
+use super::{
+    lock, membership, DurableMembershipError, DurableMembershipLimits, DurableReadSender,
+    DurableWriteSender,
+};
 use crate::{
     durable::{budget::Budget, reply::Reply},
     MetricsPublisher, TransferLeadershipError,
@@ -14,6 +17,7 @@ pub(super) struct Shared<G, O, R> {
     pub metrics: MetricsPublisher<G>,
     pub state: Mutex<State>,
     pub budget: Arc<Budget>,
+    pub membership_limits: Option<DurableMembershipLimits>,
     pub wake: Arc<dyn Fn() + Send + Sync>,
 }
 #[derive(Default)]
@@ -22,6 +26,7 @@ pub(super) struct State {
     pub shutdown: bool,
     pub stopped: bool,
     pub transfer: Option<Transfer>,
+    pub membership: Option<membership::Pending>,
 }
 pub(super) struct Transfer {
     pub target: NodeId,
@@ -39,25 +44,32 @@ impl<G, O, R> Shared<G, O, R> {
     }
     pub(super) fn finish(&self) {
         self.close();
-        let transfer = {
+        let (transfer, membership) = {
             let mut state = lock(&self.state);
             state.stopped = true;
-            state.transfer.take()
+            (state.transfer.take(), state.membership.take())
         };
         // Publish all terminal states before either subscriber class runs.
-        let waker = transfer.and_then(|t| {
+        let transfer_waker = transfer.and_then(|t| {
             t.reply.complete(Err(if t.submitted {
                 TransferLeadershipError::Unconfirmed
             } else {
                 TransferLeadershipError::ShuttingDown
             }))
         });
+        let membership_waker = membership.and_then(|m| {
+            m.reply.complete(Err(if m.submitted {
+                DurableMembershipError::Unconfirmed
+            } else {
+                DurableMembershipError::ShuttingDown
+            }))
+        });
         let closed =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.metrics.close()));
         let notified = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Some(waker) = waker {
-                waker.wake();
-            }
+            crate::durable::reply::wake_all(
+                transfer_waker.into_iter().chain(membership_waker).collect(),
+            );
         }));
         if let Err(error) = closed.and(notified) {
             std::panic::resume_unwind(error);

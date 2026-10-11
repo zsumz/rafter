@@ -803,6 +803,23 @@ forms, protocol refusals, and a durable write plus quorum read after removal.
 This is a shared translation boundary; it does not yet add a queued membership
 executor or a committed-change receipt to the durable owner.
 
+The opt-in `DurableRaftDriver::attach_with_membership` now admits bounded
+membership proposals through `DurableCommandSender::propose_membership`. One
+retained control credit is shared with leadership transfer, including canceled
+submitted work and uncollected results. Target and promotion-barrier vectors are
+normalized and charged by capacity; opaque metadata is discarded. This bounds
+retained queue payload, not transient dispatch allocations or the kernel log.
+Translation uses effective membership at dispatch and preserves the original
+request for busy retry. A receipt identifies the durably appended index and term
+after immediate effects drain; it does not establish commit. Exact refusals and
+uncertain release outcomes remain distinct. Default attachment keeps manual
+membership inputs; managed attachment guards them to preserve correlation.
+Sixteen real-worker regressions cover admission versus commit, prior-output
+isolation, typed refusals, payload/credit bounds, cancellation, shutdown,
+callback failures, and progress under client/control backlog. Full plan
+execution, committed-change tracking, peer authorization and retirement
+remain the embedding's responsibility.
+
 **Acceptance:** an external consumer composes the supported fast durable path
 without copying an owner loop from the benchmark/example, with the same
 behavior in source and exact-package tests.

@@ -22,6 +22,11 @@
 //! exposing the managed `RaftHandle` through [`DurableCommandSender`](crate::durable::DurableCommandSender). The
 //! embedding owns authenticated inbound routing, membership policy, snapshot
 //! installation, and transport lifecycle.
+//! Opt-in [`DurableRaftDriver::attach_with_membership`](crate::durable::DurableRaftDriver::attach_with_membership) adds bounded membership
+//! proposal admission through the sender. Its receipt identifies a durable
+//! append with drained immediate effects; committed membership still requires
+//! observing the corresponding configuration commit. Default attachment keeps
+//! manual membership inputs available.
 
 mod budget;
 mod group;
@@ -32,7 +37,8 @@ mod sender;
 mod shared;
 
 pub use group::{
-    DurableCommandSender, DurableDriverAttachError, DurableRaftDriver, DurableRaftHandle,
+    DurableCommandSender, DurableDriverAttachError, DurableMembershipError,
+    DurableMembershipLimits, DurableMembershipReceipt, DurableRaftDriver, DurableRaftHandle,
 };
 pub use owner::{DurableClientOwner, DurableClientStepError};
 pub use read::{DurableClientOptions, DurableReadLimits, DurableReadSender, DurableReadStats};

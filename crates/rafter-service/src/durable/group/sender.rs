@@ -15,7 +15,8 @@ use std::sync::Arc;
 ///
 /// Commands and queries are independently encoded byte vectors. The original
 /// client's count/capacity limits and durable completion semantics are preserved.
-/// At most one transfer remains retained, including its uncollected result.
+/// At most one control remains retained, including its uncollected result.
+/// Opt-in membership proposals share that credit with leadership transfer.
 pub struct DurableCommandSender<G, O, R> {
     pub(super) shared: Arc<Shared<G, O, R>>,
 }

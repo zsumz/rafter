@@ -15,10 +15,12 @@ mod attachment;
 mod compaction;
 mod drive;
 mod lifecycle;
+mod membership;
 mod observe;
 mod sender;
 mod shared;
 pub use attachment::DurableDriverAttachError;
+pub use membership::{DurableMembershipError, DurableMembershipLimits, DurableMembershipReceipt};
 pub use sender::DurableCommandSender;
 
 /// A managed encoded-command/query handle for one durable group.
@@ -60,53 +62,6 @@ where
     Tr: RaftTransport<G>,
     R: Send + 'static,
 {
-    /// Attaches a group identity and an already configured transport.
-    ///
-    /// The original owner remains exclusive. The existing write/read clients
-    /// continue to refer to that incarnation. Callers must use this driver for
-    /// all later inputs and its handle for leadership transfer and shutdown.
-    ///
-    /// # Errors
-    /// Returns the unchanged owner and transport if no initial metrics snapshot can be
-    /// observed, or if it has already begun shutdown or failed. Continue driving
-    /// recovery/ownership handoff and retry attachment when state is observable.
-    #[allow(
-        clippy::type_complexity,
-        reason = "attachment failure returns the concrete owner and transport without erasing their types"
-    )]
-    pub fn attach(
-        group: G,
-        owner: DurableClientOwner<H, L, S, T, A, R>,
-        transport: Tr,
-    ) -> Result<Self, DurableDriverAttachError<DurableClientOwner<H, L, S, T, A, R>, Tr>> {
-        let state = owner.state();
-        if matches!(
-            state,
-            ServiceState::Failed | ServiceState::Draining | ServiceState::Stopped
-        ) {
-            return Err(DurableDriverAttachError::new(owner, transport, state));
-        }
-        let Some(metrics) = owner.metrics() else {
-            return Err(DurableDriverAttachError::new(owner, transport, state));
-        };
-        let writes = owner.sender();
-        let shared = Arc::new(shared::Shared {
-            group: group.clone(),
-            reads: owner.read_sender(),
-            wake: Arc::clone(&writes.shared.wake),
-            writes,
-            metrics: MetricsPublisher::new(observe::grouped(metrics, group)),
-            state: std::sync::Mutex::new(shared::State::default()),
-            budget: Arc::new(super::budget::Budget::default()),
-        });
-        Ok(Self {
-            owner: Some(owner),
-            shared,
-            transport,
-            refused_sends: 0,
-            failed: false,
-        })
-    }
     /// Returns the group-validating endpoint without retaining the backend.
     #[must_use]
     pub fn sender(&self) -> DurableCommandSender<G, A::Outcome, R> {
@@ -151,11 +106,26 @@ where
     /// Membership authorization remains the embedding's responsibility.
     /// # Errors
     /// Preserves owner refusals; raw leadership transfer must use the handle.
+    /// With managed membership enabled, membership inputs must use the sender.
     /// # Panics
     /// A caught backend or metrics callback panic fences admission.
     pub fn try_step(&mut self, input: Input) -> Result<(), DurableClientStepError> {
         if matches!(input, Input::TransferLeadership { .. }) {
             return Err(DurableClientStepError::UnmanagedTransfer(Box::new(input)));
+        }
+        if self.shared.membership_limits.is_some()
+            && matches!(
+                input,
+                Input::AddLearner { .. }
+                    | Input::PromoteLearner { .. }
+                    | Input::RemoveVoter { .. }
+                    | Input::EnterJoint { .. }
+                    | Input::LeaveJoint
+                    | Input::ChangeMembership { .. }
+                    | Input::DangerousRawConfigurationProposal { .. }
+            )
+        {
+            return Err(DurableClientStepError::UnmanagedMembership(Box::new(input)));
         }
         if self.failed {
             return Err(DurableClientStepError::Service(ServiceStepError::Fatal(

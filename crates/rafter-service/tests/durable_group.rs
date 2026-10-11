@@ -167,6 +167,14 @@ mod control_load;
 mod lifecycle;
 #[path = "durable_group/membership.rs"]
 mod membership;
+#[path = "durable_group/membership_admission.rs"]
+mod membership_admission;
+#[path = "durable_group/membership_credits.rs"]
+mod membership_credits;
+#[path = "durable_group/membership_lifecycle.rs"]
+mod membership_lifecycle;
+#[path = "durable_group/membership_load.rs"]
+mod membership_load;
 #[path = "durable_group/mixed_load.rs"]
 mod mixed_load;
 

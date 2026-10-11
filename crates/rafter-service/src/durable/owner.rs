@@ -210,6 +210,8 @@ pub enum DurableClientStepError {
     UnmanagedRead(Box<Input>),
     /// A grouped driver owns transfer correlation; use its managed handle.
     UnmanagedTransfer(Box<Input>),
+    /// An opted-in grouped driver owns membership proposal correlation.
+    UnmanagedMembership(Box<Input>),
     /// The underlying service's unchanged refusal or fatal failure.
     Service(ServiceStepError),
 }

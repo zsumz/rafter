@@ -1,4 +1,4 @@
-//! Route immediate effects before resolving a managed transfer request.
+//! Route immediate effects before resolving a managed control request.
 use super::{
     lifecycle, lock, ApplicationEntry, DurableApplication, DurableClientStepError,
     DurableRaftDriver, DurableRaftNode, Input, RaftHardStateStore, RaftLogSegment,
@@ -28,8 +28,9 @@ where
     /// `Progress` includes a routed send, so callers must continue polling before
     /// waiting. Transport refusals are counted as Raft message loss. A transfer
     /// resolves after its immediate effects drain, not after another election.
-    /// Queued clients receive an admission turn after each completed transfer,
-    /// even when another transfer is already queued.
+    /// Membership receipts likewise confirm proposal admission, not commit.
+    /// Queued clients receive an admission turn after each completed control,
+    /// even when another control is already queued.
     /// Requested shutdown drains work and releases the backend before completing
     /// shutdown futures or closing metrics; duplicate shutdown calls also wait.
     /// # Errors
@@ -66,30 +67,33 @@ where
         let shutdown = lock(&self.shared.state).shutdown;
         if shutdown {
             owner.begin_shutdown();
-        } else if owner.state() == ServiceState::Ready && self.start_transfer()? {
+        } else if owner.state() == ServiceState::Ready
+            && (self.start_transfer()? || self.start_membership()?)
+        {
             return Ok(ServicePoll::Progress);
         }
         let Some(owner) = self.owner.as_mut() else {
             return Err(ServiceError::Failed);
         };
-        let transfer_pending = lock(&self.shared.state)
-            .transfer
-            .as_ref()
-            .is_some_and(|transfer| transfer.submitted);
-        let mut polled = if transfer_pending {
+        let control_pending = {
+            let state = lock(&self.shared.state);
+            state.transfer.as_ref().is_some_and(|t| t.submitted)
+                || state.membership.as_ref().is_some_and(|m| m.submitted)
+        };
+        let mut polled = if control_pending {
             owner.poll_backend()?
         } else {
             owner.poll_next()?
         };
-        let finished_transfer = !shutdown
+        let finished_control = !shutdown
             && matches!(polled, ServicePoll::Pending)
             && self
                 .owner
                 .as_ref()
                 .is_some_and(|owner| owner.state() == ServiceState::Ready)
-            && self.finish_transfer();
-        if finished_transfer {
-            // The transfer's immediate effects are drained. Give clients one
+            && (self.finish_transfer() || self.finish_membership()?);
+        if finished_control {
+            // The control's immediate effects are drained. Give clients one
             // bounded turn before dispatching another request, including one queued
             // by a completion callback. Route events through the same path below.
             polled = self
@@ -144,8 +148,20 @@ where
                     Output::LeadershipTransferRejected { target, reason },
                 )))
             }
+            ServicePoll::Event(ServiceEvent::Output(Output::RejectProposal {
+                proposal_id: None,
+                reason,
+            })) => {
+                self.observe_membership_rejection(&reason);
+                Ok(ServicePoll::Event(ServiceEvent::Output(
+                    Output::RejectProposal {
+                        proposal_id: None,
+                        reason,
+                    },
+                )))
+            }
             ServicePoll::Pending if shutdown => self.drain_shutdown(),
-            ServicePoll::Pending if finished_transfer => Ok(ServicePoll::Progress),
+            ServicePoll::Pending if finished_control => Ok(ServicePoll::Progress),
             other => Ok(other),
         }
     }

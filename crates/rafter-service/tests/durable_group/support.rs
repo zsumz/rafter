@@ -77,10 +77,29 @@ pub struct Replica {
 }
 impl Replica {
     pub fn attach(node: crate::reads_support::Replica, link: Link) -> Self {
+        Self::attach_options(node, link, None)
+    }
+    pub fn attach_with_membership(
+        node: crate::reads_support::Replica,
+        link: Link,
+        limits: rafter_service::durable::DurableMembershipLimits,
+    ) -> Self {
+        Self::attach_options(node, link, Some(limits))
+    }
+    fn attach_options(
+        node: crate::reads_support::Replica,
+        link: Link,
+        limits: Option<rafter_service::durable::DurableMembershipLimits>,
+    ) -> Self {
         let writes = node.owner.sender();
+        let driver = match limits {
+            Some(limits) => Driver::attach_with_membership(GROUP, node.owner, link, limits),
+            None => Driver::attach(GROUP, node.owner, link),
+        }
+        .unwrap();
         Self {
             release: node.release,
-            driver: Driver::attach(GROUP, node.owner, link).unwrap(),
+            driver,
             entered: node.entered,
             dropped: node.dropped,
             queries: node.queries,
