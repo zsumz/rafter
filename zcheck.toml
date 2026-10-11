@@ -209,11 +209,17 @@ tools = ["cargo"]
 resources = ["reference-target"]
 
 [tasks.reference-package]
-description = "Run the exact-package reference-consumer acceptance systems."
+description = "Run exact-package consumers and published-to-candidate storage recovery."
+needs = ["storage-upgrade-runner-tests"]
 run = ["scripts/reference-package-check"]
 timeout = "60m"
-tools = ["cargo", "tar"]
+tools = ["cargo", "tar", "python3", "rustup"]
 resources = ["reference-target"]
+
+[tasks.storage-upgrade-runner-tests]
+description = "Verify archive and dependency refusal boundaries of the storage upgrade runner."
+run = ["python3", "-m", "unittest", "scripts/tests/test_storage_upgrade.py"]
+tools = ["python3"]
 
 [tasks.full]
 description = "Qualify the checkout and every locally runnable deeper evidence lane."

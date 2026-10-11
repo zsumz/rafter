@@ -152,7 +152,11 @@ The acceptance job:
 9. verifies required package contents, including README and format documents.
 
 `scripts/reference-package-check` runs that deterministic job and reports every
-boundary it finds violated. `scripts/reference-package-process-check` uses the
+boundary it finds violated. Its deterministic and MSRV modes also execute the
+[published-to-candidate file-store matrix](storage-upgrades.md), using the same
+candidate archives and a checksum-pinned published baseline. This phase requires
+Python 3.11+ and retains a separate upgrade receipt.
+`scripts/reference-package-process-check` uses the
 same materialization and rejection phases; it does not carry a second publish
 list or construct its own patch table.
 

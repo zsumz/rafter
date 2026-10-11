@@ -31,7 +31,7 @@ their separate Rust 1.97.1 installation requirement.
 | `cargo build --locked --workspace --all-targets` | Passed on Rust 1.88.0, `aarch64-apple-darwin`. |
 | `cargo test --locked --workspace` | Passed: 3,082 tests, zero failures, 58 ignored, including documentation tests. |
 | `zcheck run lint --jobs 1` | Passed: 13 tasks, including macOS Clippy, fuzz and Rafter-only benchmark Clippy, strict rustdoc, transport memory, telemetry, and policy checks. The Linux-only Clippy task is replaced by the macOS task. |
-| `zrail check` | Passed: 2,025 Rust files analyzed, zero errors, warnings, or unresolved contexts; after the cache initialization described below. |
+| `zrail check` | Passed: 2,026 Rust files analyzed, zero errors, warnings, or unresolved contexts; after the cache initialization described below. |
 | `scripts/reference-source-check` | Passed: 480 tests, 56 ignored; formatting, Clippy, and strict documentation also passed. |
 | CI compiler selection | Shell checks preserve requested `1.88`, `1.97.1`, and `nightly`; an explicit Rust 1.97.1 environment overrides the local pin. |
 
@@ -155,6 +155,16 @@ RFHS, RFHJ, and shared WAL layouts with no implicit migration. A migration tool
 needs interruption/restart tests and a recoverable publication boundary.
 Retain the current format vectors and exact-archive consumer lanes; add a
 public API baseline that detects unintended breaking changes.
+
+The release branch now adds an initial
+[archive-based file-store matrix](storage-upgrades.md). It compiles identical
+public-API fixtures against checksum-pinned published `0.0.2-alpha.1` archives
+and the candidate's exact archives. Log, installed-snapshot, and interrupted
+snapshot-transfer cases recover, continue writing, and reopen. A validly
+checksummed future hard-state version must be refused without durable mutation.
+The deterministic and MSRV package lanes run this matrix and retain evidence;
+it does not qualify journal/shared WAL migration, downgrades, or mixed-version
+wire behavior.
 
 **Acceptance:** the advertised upgrade matrix passes from real package
 archives, each durable layout has a stated support/migration policy, and public

@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "version": "0.0.2-alpha.1",
+  "packages": {
+    "rafter": "becf4e9c723d630842bb348399b09d99de1acd6c423efe4d0727d0e1b12d977c",
+    "rafter-crc32": "a5141c0fc58a99a7815ff968382fe9b540ac596e6fea904f0630a08b9456db36",
+    "rafter-storage": "e3e7ed2cab9ebf1298d1a1fb7704da4c839aac5858d4db1d781ebe026b74b377"
+  }
+}

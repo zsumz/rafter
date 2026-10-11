@@ -996,7 +996,9 @@ jobs:
         with:
           cache-on-failure: true
       - name: Exact-package boundary adversarial checks
-        run: scripts/tests/reference_package_boundary_test.sh
+        run: |
+          scripts/tests/reference_package_boundary_test.sh
+          python3 -m unittest scripts/tests/test_storage_upgrade.py
       - name: Reference consumers against exact package archives
         # This used to be the only lane that built `rafter` in its published
         # shape: every cargo invocation over the root workspace resolved
@@ -1010,7 +1012,16 @@ jobs:
           # checkout, so the workdir must live outside it. runner.temp is a
           # sibling of the workspace, never a child.
           TMPDIR: ${{ runner.temp }}
-        run: scripts/reference-package-check
+        run: scripts/reference-package-check --artifacts artifacts/reference-package
+      - name: Upload exact-package and storage upgrade receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reference-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/reference-package/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
   reference-package-msrv:
     name: reference-package-msrv
@@ -1048,6 +1059,7 @@ jobs:
           path: |
             artifacts/reference-package-msrv/
             artifacts/reference-package-msrv.log
+          include-hidden-files: true
           if-no-files-found: error
 
   reference-package-process:

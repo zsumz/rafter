@@ -49,6 +49,13 @@ not a generic server, certificate platform, or deployment controller.
 This section does not authorize a version change, RC, `1.0.0`, tag, publish,
 mandatory release workflow, or mixed-version compatibility claim.
 
+The deterministic and MSRV package lanes now include the
+[file-store upgrade matrix](docs/storage-upgrades.md): published archive writes,
+candidate recovery and continuation, and refusal of a future hard-state
+version without durable mutation. Retain its receipt with the exact-package
+evidence. Other storage layouts, downgrades and mixed-version wire operation
+remain outside that matrix and require separate qualification.
+
 ## 0.0.2-alpha.1 Product Preview
 
 Rafter 0.0.2-alpha.1 is the first coordinated prerelease of the current product
