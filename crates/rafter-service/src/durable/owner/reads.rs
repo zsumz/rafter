@@ -2,7 +2,8 @@
 
 use super::{
     ApplicationEntry, DurableApplication, DurableClientOwner, Input, RaftHardStateStore,
-    RaftLogSegment, RaftSnapshotStore, ServiceError, ServiceStepError, SnapshotChunkSource,
+    RaftLogSegment, RaftSnapshotStore, ServiceError, ServicePoll, ServiceStepError,
+    SnapshotChunkSource,
 };
 use crate::{durable::read::Phase, ReadError};
 use rafter::Output;
@@ -77,9 +78,9 @@ where
         Ok(())
     }
 
-    pub(super) fn drive_read(&mut self) -> Result<bool, ServiceError> {
+    pub(super) fn drive_read(&mut self) -> Result<Option<ServicePoll<T, A>>, ServiceError> {
         let Some(work) = self.reads.as_ref().and_then(|r| r.shared.next_work()) else {
-            return Ok(false);
+            return Ok(None);
         };
         self.failed = true;
         let mut fence = self.callback_fence();
@@ -105,10 +106,17 @@ where
             Phase::Ready(_) => self.evaluate_query(work),
             Phase::Barrier => Err(ServiceError::OutputOrder),
         };
-        if result.is_ok() {
-            self.failed = false;
-            fence.armed = false;
+        let progressed = result?;
+        self.failed = false;
+        fence.armed = false;
+        if progressed {
+            Ok(Some(ServicePoll::Progress))
+        } else {
+            // Keep the read turn until already-owned application work releases
+            // its view. Admitting another write here can keep the view busy
+            // indefinitely despite alternating the nominal queue preference.
+            self.prefer_reads = true;
+            Ok(Some(ServicePoll::Pending))
         }
-        result
     }
 }

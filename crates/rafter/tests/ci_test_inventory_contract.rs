@@ -22,7 +22,7 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
     let ci = read(&root.join(".github/workflows/ci.yml"));
     for selection in [
         "scripts/cargo-test-exact 6 dependency_boundary --workspace",
-        "scripts/cargo-test-exact 437 - --locked -p rafter-service --features durable",
+        "scripts/cargo-test-exact 440 - --locked -p rafter-service --features durable",
         "scripts/cargo-test-exact 2 source_boundary -p rafter",
         "scripts/cargo-test-exact 1 file_size_guard -p rafter -- --nocapture",
         "scripts/cargo-test-exact 3 - -p rafter --test test_location_guard -- --nocapture",

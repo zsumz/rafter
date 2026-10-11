@@ -179,6 +179,8 @@ mod membership_lifecycle;
 mod membership_load;
 #[path = "durable_group/mixed_load.rs"]
 mod mixed_load;
+#[path = "durable_group/query_fairness.rs"]
+mod query_fairness;
 #[path = "durable_group/retention.rs"]
 mod retention;
 

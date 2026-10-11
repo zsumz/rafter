@@ -12,6 +12,9 @@ release mechanics and exact publish lists live in [RELEASE.md](./RELEASE.md).
   reads preserve application freshness floors. Cancellation, uncollected
   results, shutdown and ambiguous outcomes have explicit ownership contracts.
   It reuses the existing persistence/application workers and TLS transport.
+- Ready durable queries retain their admission turn while the application view
+  is busy, preventing queued writes from repeatedly displacing them. Canceling
+  the query releases its turn; reads still awaiting quorum allow write admission.
 - Durable drivers support application snapshot handoff, local snapshot
   maintenance, leadership transfer and bounded membership proposal admission.
   A membership receipt identifies a durable append; applications must still

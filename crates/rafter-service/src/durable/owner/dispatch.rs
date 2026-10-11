@@ -74,8 +74,10 @@ where
             return Ok(polled);
         }
         self.prefer_reads = !self.prefer_reads;
-        if !self.prefer_reads && self.drive_read()? {
-            return Ok(ServicePoll::Progress);
+        if !self.prefer_reads {
+            if let Some(polled) = self.drive_read()? {
+                return Ok(polled);
+            }
         }
         let batch = match self.next_batch() {
             Ok(batch) => batch,
@@ -86,8 +88,8 @@ where
             }
         };
         if batch.is_empty() {
-            return Ok(if self.prefer_reads && self.drive_read()? {
-                ServicePoll::Progress
+            return Ok(if self.prefer_reads {
+                self.drive_read()?.unwrap_or(ServicePoll::Pending)
             } else {
                 ServicePoll::Pending
             });

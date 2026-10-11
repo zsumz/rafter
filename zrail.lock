@@ -5,7 +5,7 @@ producer = "0.0.3-rc.8"
 contract_sha256 = "9efa271a43e0647d7963e9b3f40ead54acfc0590de18beecaeb48f8a229d0dd5"
 
 [analysis]
-inventory_sha256 = "d0099ca88e1ae69b8f3a7a1d8aa12c9bedf670dbf4f5a0b2cc220ee7cfb925d6"
+inventory_sha256 = "05e6ce3b8caadc40f406a38bbce451ca7fefd5cb41aca413063b52568d3d4ecb"
 exclusions_sha256 = "938ddad6868e3a6a928a0720de503d2c6745c1ed05522321fd81e0d2a9f4c6ca"
 cargo_lock_sha256 = "aebbcd6c51e01fb77b97c69e2304f3ad34c66cdf6f3b2cc4e0fdc89829a9581f"
 cargo_features_sha256 = "47c0921024bfff9f3940814f4bb24aefa991504628f7da720988c1c30e253694"
@@ -13,11 +13,11 @@ feature_worlds_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991
 feature_worlds = 0
 packages = 16
 targets = 165
-physical_rust_files = 2167
-base_source_contexts = 3700
+physical_rust_files = 2168
+base_source_contexts = 3701
 derived_source_contexts = 0
-source_facts = 820070
-projection_queries = 3159532
+source_facts = 821006
+projection_queries = 3163832
 projected_facts = 2538
 unresolved_bindings = 0
 analyzer_semantics = 6
@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "d02ba8d3ee4365154b5f05a2fca71e644c069c40ef6668a8b57a1eff29c6268b"
+sha256 = "e7a95cb5678e46ee885a19c7c91725ccb7ba26c6fb6bdc2ec24f29cba5a20528"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1340,12 +1340,12 @@ inputs_sha256 = "63d6d174b5eaa0e0bf722727d36823c30620a4d7c7b884df24f43f65ff4f945
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "43ffc9d2cc4d6ff28f3f7fada47e2e152247dba567231ab70b9bb7b2c8c5a7bd"
+inputs_sha256 = "561fb365bc45a0f727a38ff19581e83d56eb2e23be2c40839118f13c5bc9beca"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "0ed43c0f9edfbd440b8e6fd784aa3918eb330c840821fac32343a0bfeb034d50"
+inputs_sha256 = "95ef6e0170e0d1de5b1bffbf706c313cd62644ac67058e3ef66f718305389f38"
 
 [[macro_source]]
 allowance = "clap::Parser"

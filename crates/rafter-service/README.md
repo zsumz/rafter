@@ -65,6 +65,12 @@ required application floor, and preserve any higher caller `min_applied_index`.
 An unavailable floor is refused; it is never lowered. The proof keeps the term
 captured at the grant, even if leadership changes before the query runs.
 
+Queued client admission alternates read and write turns. A ready query that finds the
+application view busy retains its turn until already-owned application work
+releases the view; queued writes cannot repeatedly displace it. Worker completion
+notifies the owner to poll again. Canceling that query releases its turn, and a
+read still awaiting quorum does not prevent write admission.
+
 Read credits cover queued requests, quorum rounds, and uncollected results,
 charging encoded `Vec` capacity. Canceling a caller cannot free a quorum round's
 credit: the owner retains it until the kernel grants/cancels the round or the
