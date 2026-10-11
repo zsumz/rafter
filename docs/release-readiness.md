@@ -1047,14 +1047,20 @@ either fixed scheduling priority fails with the corresponding starvation
 verdict. This is a bounded regression with real workers and in-memory stores
 and links; physical disk/TLS soak and latency qualification remain separate.
 
-The independent ledger consumer now completes 128 deposits alongside 128
-local/quorum reads through real file stores, application journals and mutual TLS.
-Two-request windows stay replenished; excess reads and writes must report
-backpressure. The scenario checks receipt identity, read freshness and quorum
-views against the complete acknowledged history, converges all replicas, compacts
-their snapshots and reopens under a different leader. Retrying the final deposit
-must preserve the balance without applying it twice. This is a bounded,
-single-host correctness case, not a sustained performance or physical-fault claim.
+The independent ledger consumer now repeats its mixed workload through three
+load/compaction/cold-recovery cycles, rotating through all three leaders while
+preserving one ledger. Each cycle completes 128 deposits alongside 128 local/quorum
+reads through real file stores, application journals and mutual TLS. Two-request
+windows stay replenished; exact retained counts, bounded encoded capacities and
+cumulative refusal counts are checked while both streams remain offered. Every
+cycle checks receipt identity, freshness and quorum views against its acknowledged
+history, converges all replicas, compacts their snapshots and reopens under the
+next leader. Retrying the last acknowledged deposit must preserve the balance
+without applying it twice; the recovered owner starts with empty client budgets
+and no refusal history, then serves the next full workload. The complete case
+covers 384 deposits and 384 mixed reads plus three recovery retries and quorum
+reads. This is a bounded, single-host correctness case, not a sustained performance
+or physical-fault claim; diagnostic collection remains enabled in this fixture.
 
 The same backlog review reproduced a control-plane liveness defect: a full
 local-read stream could indefinitely postpone an accepted or rejected leadership
