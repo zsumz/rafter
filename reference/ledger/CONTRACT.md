@@ -1107,9 +1107,25 @@ request preserves the balance. New volatile correlation IDs do not provide
 deduplication; the persisted ledger request identity does. The new leader's
 protocol-only commit is translated to the application floor before querying.
 
+The same fixture also transfers a 65,632-byte snapshot in two chunks. It provisions
+identical nonempty application genesis before starting Raft: those accounts are
+fixture input, not evidence of replicated creation. Real replicated deposits
+then change the balance while one follower is offline. After compacting, it
+reopens the majority to discard queued appends, so the stale follower must use
+the snapshot. The wire and queue byte limits accommodate the kernel's fixed
+64 KiB payload chunk plus metadata; the 128 KiB wire cap includes both.
+
+The follower stops after its first durable chunk and reopens with the same
+transfer identity, descriptor, and 64 KiB offset. Its application floor remains
+unchanged until the full snapshot is installed. The embedding treats staging
+outputs as observations of already-persisted work. During application handoff,
+the owner refuses inputs and queries; only a completed descriptor install allows
+resumption. Another full reopen elects this follower leader, then verifies the
+new balance and snapshot-restored request deduplication. These are orderly
+restarts at a deterministic partial-transfer boundary, not process-kill tests.
+
 This same source also runs against extracted package archives. It qualifies
 fixed-membership composition in one OS process, not process crashes, multi-host
 latency, or full-queue liveness. The fixture polls TLS's bounded inbound queue;
-TLS does not currently expose an inbound wake callback. Managed client ownership,
-snapshot transfer through this owner/TLS composition, and process fault isolation
-remain separate qualification work.
+TLS does not currently expose an inbound wake callback. Managed client ownership
+and process fault isolation remain separate qualification work.

@@ -50,13 +50,13 @@ pub fn bind(root: &Path, id: u64, fresh: bool) -> (Link, EndpointBook) {
         DirectoryLimits::new(1, 3).unwrap(),
         EndpointBookLimits::new(2, 1).unwrap(),
         CertificateDirectoryLimits::new(3, 3).unwrap(),
-        WireLimits::new(64 * 1024, 8).unwrap(),
+        WireLimits::new(128 * 1024, 8).unwrap(),
     )
     .with_sessions(SessionStoreLimits::new(2).unwrap())
     .with_runtime(
         RuntimeLimits::new(
-            OutboundQueueLimits::new(16, 64 * 1024, 2, 4096, 1).unwrap(),
-            InboundQueueLimits::new(16, 64 * 1024, 32, 128 * 1024).unwrap(),
+            OutboundQueueLimits::new(16, 128 * 1024, 2, 4096, 1).unwrap(),
+            InboundQueueLimits::new(16, 128 * 1024, 32, 256 * 1024).unwrap(),
             6,
         )
         .unwrap()

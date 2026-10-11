@@ -1,5 +1,5 @@
 //! A deterministic pause before the first real application transaction.
-use crate::support::config;
+use super::config;
 use rafter::LogIndex;
 use rafter_app::state_machine::{ApplyEntry, ReplicatedStateMachine};
 use rafter_reference_ledger::{
@@ -70,8 +70,7 @@ impl DurableApplication<LedgerApplicationEntry> for Application {
     }
 }
 pub fn adapt(command: CommittedCommand) -> Result<LedgerApplicationEntry, ServiceAdapterError> {
-    let decoded =
-        LedgerStateMachine::new(config(1, 2)).decode_command(command.payload.as_slice())?;
+    let decoded = LedgerStateMachine::new(config()).decode_command(command.payload.as_slice())?;
     drop(command.payload);
     Ok(LedgerApplicationEntry::new(ApplyEntry {
         index: command.index,

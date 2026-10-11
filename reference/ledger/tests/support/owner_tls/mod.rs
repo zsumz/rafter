@@ -3,25 +3,37 @@
 mod application;
 mod link;
 mod node;
-use crate::support::config;
+mod snapshot;
 pub use application::gate;
 use application::Gate;
 use node::Replica;
 use rafter::{Input, LocalProposalId, LogIndex, ReadId, Role};
 use rafter_app::state_machine::ReplicatedStateMachine;
-use rafter_reference_ledger::{AccountId, Command, LedgerQueryResult, LedgerStateMachine};
+use rafter_reference_ledger::{
+    AccountId, Command, LedgerConfig, LedgerQueryResult, LedgerStateMachine,
+};
+pub use snapshot::seed_genesis;
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
+pub fn config() -> LedgerConfig {
+    crate::support::config(1, 8192)
+}
 pub const ACCOUNT: AccountId = AccountId::new(19);
 #[derive(Debug)]
 pub struct Cluster {
     pub nodes: Vec<Replica>,
 }
 impl Cluster {
-    pub fn open(root: &Path, fresh: bool, mut gate: Option<Gate>) -> Self {
-        let nodes: Vec<_> = (1..=3)
+    pub fn open(root: &Path, fresh: bool, gate: Option<Gate>) -> Self {
+        Self::open_count(root, fresh, gate, 3)
+    }
+    pub fn reopen_majority(root: &Path) -> Self {
+        Self::open_count(root, false, None, 2)
+    }
+    fn open_count(root: &Path, fresh: bool, mut gate: Option<Gate>, count: u64) -> Self {
+        let nodes: Vec<_> = (1..=count)
             .map(|id| Replica::open(&root.join(format!("node-{id}")), id, fresh, gate.take()))
             .collect();
         for node in &nodes {
@@ -37,6 +49,30 @@ impl Cluster {
         let mut cluster = Self { nodes };
         cluster.until(|c| c.nodes.iter().all(Replica::ready));
         cluster
+    }
+    pub fn stop_last(&mut self) {
+        assert_eq!(self.nodes.len(), 3);
+        let node = self.nodes.pop().unwrap();
+        assert_eq!(node.id, 3);
+        node.close();
+    }
+    pub fn restart_last(&mut self, root: &Path) {
+        assert_eq!(self.nodes.len(), 2);
+        let mut node = Replica::open(&root.join("node-3"), 3, false, None);
+        for other in &self.nodes {
+            link::endpoint(&other.endpoints, node.id, node.link.local_addr());
+            link::endpoint(&node.endpoints, other.id, other.link.local_addr());
+        }
+        // Finish local recovery before activating TLS; callers can inspect the
+        // recovered partial transfer before any new frame reaches the owner.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !node.ready() {
+            node.pump();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        node.link.start().unwrap();
+        self.nodes.push(node);
     }
     pub fn until(&mut self, mut done: impl FnMut(&Self) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -82,7 +118,7 @@ impl Cluster {
         self.until(|c| c.nodes[index].ready());
         self.nodes[index].input(Input::TrackedClientProposal {
             proposal_id: LocalProposalId(id),
-            payload: LedgerStateMachine::new(config(1, 2))
+            payload: LedgerStateMachine::new(config())
                 .encode_command(command)
                 .unwrap(),
         });

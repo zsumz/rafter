@@ -1,9 +1,9 @@
 //! One bounded owner turn: persist/apply first, then authenticated peer input.
+use super::config;
 use super::{
     application::{adapt, Application, Gate},
     link::{self, Link},
 };
-use crate::support::config;
 use rafter::{Input, LocalProposalId, LogIndex, Message, NodeConfig, NodeId, Output, ReadId};
 use rafter_app::state_machine::{ReadBarrier, ReplicatedStateMachine};
 use rafter_reference_ledger::{
@@ -48,6 +48,9 @@ pub struct Replica {
     pub read_round: Option<u64>,
     pub read_responses: usize,
     pub blocked_read_polls: usize,
+    pub snapshot_installs: usize,
+    pub snapshot_chunks: usize,
+    pub snapshot_max_offset: u64,
 }
 impl Replica {
     pub fn open(root: &Path, id: u64, fresh: bool, gate: Option<Gate>) -> Self {
@@ -59,7 +62,7 @@ impl Replica {
                 .into_parts();
         let application = Application {
             ledger: DurableLedgerStateMachine::new(
-                LedgerStore::open(&root.join("application"), config(1, 2)).unwrap(),
+                LedgerStore::open(&root.join("application"), config()).unwrap(),
                 root.join("raft/snapshots"),
             ),
             gate,
@@ -95,6 +98,9 @@ impl Replica {
             read_round: None,
             read_responses: 0,
             blocked_read_polls: 0,
+            snapshot_installs: 0,
+            snapshot_chunks: 0,
+            snapshot_max_offset: 0,
         }
     }
     pub fn ready(&self) -> bool {
@@ -148,6 +154,9 @@ impl Replica {
                     assert!(self.owner.durable_through().unwrap() >= required);
                     self.pending_read = Some((read_id, required));
                 }
+                ServicePoll::Event(ServiceEvent::Output(Output::StageSnapshotChunk { chunk })) => {
+                    self.observe_staged(&chunk);
+                }
                 ServicePoll::Event(ServiceEvent::Applied(done)) => {
                     for outcome in done.outcomes() {
                         assert!(self.owner.durable_through().unwrap() >= outcome.index);
@@ -158,12 +167,20 @@ impl Replica {
                         }
                     }
                 }
+                ServicePoll::Event(ServiceEvent::InstallSnapshot {
+                    snapshot,
+                    application,
+                }) => self.install(snapshot, application),
                 ServicePoll::Pending => {
                     if self.read_responses > 0 && self.owner.state() == ServiceState::Busy {
                         self.blocked_read_polls += 1;
                     }
                     break;
                 }
+                ServicePoll::Event(ServiceEvent::Output(other)) => panic!(
+                    "unexpected owner output: {:?}",
+                    std::mem::discriminant(&other)
+                ),
                 other => panic!("unexpected owner event: {other:?}"),
             }
         }
@@ -175,6 +192,11 @@ impl Replica {
                 assert_eq!(frame.group_id, link::GROUP);
                 assert_eq!(frame.raft_to, NodeId(self.id));
                 assert_eq!(frame.authenticated_peer, link::peer(frame.raft_from.0));
+                if let Message::InstallSnapshotChunk(chunk) = &frame.message {
+                    assert!(chunk.chunk.len() <= 64 * 1024);
+                    self.snapshot_chunks += 1;
+                    self.snapshot_max_offset = self.snapshot_max_offset.max(chunk.offset);
+                }
                 let read_response = match &frame.message {
                     Message::AppendEntriesResponse(response) => {
                         response.success
@@ -194,8 +216,8 @@ impl Replica {
             }
         }
         let depth = self.link.queue_depths().unwrap();
-        assert!(depth.outbound_frames <= 32 && depth.outbound_bytes <= 128 * 1024);
-        assert!(depth.inbound_frames <= 32 && depth.inbound_bytes <= 128 * 1024);
+        assert!(depth.outbound_frames <= 32 && depth.outbound_bytes <= 256 * 1024);
+        assert!(depth.inbound_frames <= 32 && depth.inbound_bytes <= 256 * 1024);
         assert!(depth.inbound_memory_bytes <= 8 * 1024 * 1024);
         assert_ne!(self.link.health(), TransportHealth::Failed);
     }

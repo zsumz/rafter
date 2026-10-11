@@ -273,16 +273,25 @@ application credit are checked while a paused transaction holds both write
 completion and a real quorum read behind application durability. Cold reopening
 all replicas preserves acknowledged balances and application deduplication after
 a different leader is elected. The same test runs in source and exact-package
-lanes. This is same-process fixed-membership evidence; process fault isolation,
-snapshot transfer through this composition, managed clients, and full-queue
-liveness remain unqualified. The fixture polls the bounded TLS inbox because it
-has no inbound wake callback.
+lanes. A second case forces a two-chunk snapshot from compacted files, restarts
+the follower at a durably staged 64 KiB boundary, and checks the exact recovered
+transfer identity and offset before accepting more traffic. Application handoff
+refuses reads and inputs until installation completes. The restored follower
+later becomes leader after another full reopen and preserves request
+deduplication. The fixture provisions identical nonempty genesis to exceed one
+chunk; replicated deposits provide the state change being recovered. Wire limits
+include metadata beyond the fixed 64 KiB payload chunk. This is same-process,
+fixed-membership evidence with orderly restarts; process fault isolation, managed
+clients, and full-queue liveness remain unqualified. The fixture polls the bounded
+TLS inbox because it has no inbound wake callback.
 
-This slice passes 530 source-consumer tests and 535 exact-package/MSRV tests on
+The owner/TLS qualification now passes 531 source-consumer tests and 536 exact-package/MSRV tests on
 Rust 1.88.0, with 57 existing profiles ignored in each lane. All seven package
 phases pass, including the published storage, wire, and rolling-TLS matrices.
-The final TLS fixture passes 32 repetitions across four concurrent processes;
-temporarily reversing the owner's read durability fence fails its regression.
+Both TLS cases pass 32 repetitions across four concurrent processes. Reversing
+the owner's read durability fence fails the read regression; omitting partial
+transfer rehydration fails the snapshot regression at its exact recovered-offset
+assertion.
 Strict consumer lint, documentation, formatting, and size checks pass. Architecture
 analysis has no findings or policy changes for this reference-only slice.
 
