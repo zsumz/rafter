@@ -784,6 +784,32 @@ jobs:
           path: artifacts/reference-counter/process-suite-nightly.log
           if-no-files-found: error
 
+  reference-owner-soak:
+    name: reference-owner-soak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: File-backed TLS owner load and cold recovery
+        run: |
+          mkdir -p artifacts/reference-owner
+          scripts/reference-owner-soak 2>&1 | tee artifacts/reference-owner/soak.log
+      - name: Upload owner soak diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reference-owner-soak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/reference-owner/soak.log
+            reference/Cargo.lock
+          if-no-files-found: error
+
   multi-gigabyte-test:
     name: multi-gigabyte-test
     runs-on: ubuntu-24.04

@@ -1099,6 +1099,11 @@ jobs:
         # tests/process_cluster.rs, so this is a cached `--list`.
         run: scripts/reference-process-check --list-only
 
+      - name: Owner TLS soak selection
+        run: |
+          python3 -m unittest scripts/tests/test_reference_owner_soak.py
+          scripts/reference-owner-soak --list-only
+
   reference-package:
     name: reference-package
     runs-on: ubuntu-24.04

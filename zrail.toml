@@ -1377,6 +1377,12 @@ inputs = [
   "scripts/public_api_check.py",
   "scripts/tests/test_public_api_check.py",
   "scripts/reference-package-check",
+  "scripts/reference-owner-soak",
+  "scripts/cargo-test-exact",
+  "scripts/reference-source-check",
+  "scripts/tests/test_reference_owner_soak.py",
+  "verification/reference-owner-soak-inventory.txt",
+  ".github/workflows/nightly.yml",
   "scripts/archive_dependencies.py",
   "scripts/tests/test_archive_dependencies.py",
 ]

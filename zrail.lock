@@ -2,7 +2,7 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "9efa271a43e0647d7963e9b3f40ead54acfc0590de18beecaeb48f8a229d0dd5"
+contract_sha256 = "d9a86d212020eb114c08770b0152830cadee6a67e7fcb7147b220b177d867979"
 
 [analysis]
 inventory_sha256 = "c0aa0c4355ce865f2c6c153245bdb74bad99fd8b6ae9f38ba66bcc7a137c0077"
@@ -28,7 +28,7 @@ sha256 = "9259ae9e9f531ebd96eb0f449385e3dd80c795aef987588b244eb06b2bb5bb0e"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "c3c150b967a95273cdcab212febd2cdd9300674ff7ffe764c89e4b20a461fbb2"
+sha256 = "d739bf68bfb6dd197ebd81a269662b6e95d767ec8dc2cc0b0317dfd8f231732f"
 
 [[package]]
 name = "rafter"
@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "e7a95cb5678e46ee885a19c7c91725ccb7ba26c6fb6bdc2ec24f29cba5a20528"
+sha256 = "85d8ae996d78b8d6dbe997ae11d051bcd7666a409dcbeeb1ff93c7661323b24f"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1264,12 +1264,20 @@ path = ".github/actions/setup-rust/action.yml"
 sha256 = "7ae4cdd9c7d91b6d352fdc68d1e1daaa8780c803f1cadedb09245efc5084fa5a"
 
 [[gate.input]]
+path = ".github/workflows/nightly.yml"
+sha256 = "4cbff2b4c42f43bd8706deda7bfeaa16826a12b6f0d0e0a68d7f0658cdf49689"
+
+[[gate.input]]
 path = "scripts/archive_dependencies.py"
 sha256 = "061c7fb3d9763c7e193624e0fcc0597ef990919d5c32f8b95b5e7999c1259a77"
 
 [[gate.input]]
 path = "scripts/audit-published-dependencies"
 sha256 = "606d7bfd9710396ec7ce09dd6551f656eb5b011e5bb6ca88e9ecb31022e28b51"
+
+[[gate.input]]
+path = "scripts/cargo-test-exact"
+sha256 = "b175525ade2c69293fc459124d2aa296651cc2249ad7ea2df5626c7f55a3d636"
 
 [[gate.input]]
 path = "scripts/check-public-api"
@@ -1288,8 +1296,16 @@ path = "scripts/published_dependency_audit.py"
 sha256 = "63ec18c9e87e0d5ca730b57f3a2ae5eadeff7498749e2fd12cfdc7c041d1c48c"
 
 [[gate.input]]
+path = "scripts/reference-owner-soak"
+sha256 = "6cb50a604734c9b964b938a10b59fac9b2c1a87fcfc1f5decde093d7a5f5081f"
+
+[[gate.input]]
 path = "scripts/reference-package-check"
 sha256 = "75269f6de71d8ec2ea3a069bea033886d8f4392e4ad877f693beed6755f68a8c"
+
+[[gate.input]]
+path = "scripts/reference-source-check"
+sha256 = "18982c0d6075c8a7e03d6eedb680cdee39d184e41afb75a72eee012e1b84088d"
 
 [[gate.input]]
 path = "scripts/tests/invariant_runtime_fixture.py"
@@ -1316,6 +1332,10 @@ path = "scripts/tests/test_published_dependency_audit.py"
 sha256 = "15b9bbee2fde6cf5d0800b14ab9a7e3152c4f41861df0e67cf832855c3de67b4"
 
 [[gate.input]]
+path = "scripts/tests/test_reference_owner_soak.py"
+sha256 = "e5922ad4fea64e8e56e3cd3ad93d90ddee2fae9363c92f07ff196aeaef8d9602"
+
+[[gate.input]]
 path = "scripts/zrail-reconcile"
 sha256 = "47fbd7ddc88fbd309c3e061261a2a7de8278b925f93e4fd1984f4f2224edb2ec"
 
@@ -1324,8 +1344,12 @@ path = "verification/github-actions.lock"
 sha256 = "d9cdce68c892ba18e227f77106f64df324df02ace62c727d02de89a6453a3561"
 
 [[gate.input]]
+path = "verification/reference-owner-soak-inventory.txt"
+sha256 = "19e1ed5247dad8e14aa399a179d4c350651cd1d08bdacd021fa6da39b385ac96"
+
+[[gate.input]]
 path = "zcheck.toml"
-sha256 = "0a287616ed049477052cb23f2e4b734a224a248a6eead106598fd542dae00fe8"
+sha256 = "ea97fe4ae96f342f8f142dd7c7f9a5547a9c11bf7a2305fcd8d71fa074a01b13"
 
 [[gate]]
 name = "rustdoc"

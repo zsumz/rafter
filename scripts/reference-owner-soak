@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Run the fixed file/TLS owner soak against the checkout's public libraries.
+# Usage: scripts/reference-owner-soak [--list-only]
+set -euo pipefail
+
+list_only=()
+case "$#:${1:-}" in
+    0:) ;;
+    1:--list-only) list_only=(--list-only) ;;
+    *)
+        echo "usage: scripts/reference-owner-soak [--list-only]" >&2
+        exit 2
+        ;;
+esac
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+patch_file="$(mktemp "${TMPDIR:-/tmp}/rafter-owner-soak-patch.XXXXXX")"
+trap 'rm -f "$patch_file"' EXIT
+# A failed or empty patch table must never fall back to published libraries.
+"${repo_root}/scripts/reference-source-check" --print-args > "$patch_file"
+patch=()
+while IFS= read -r argument; do
+    [[ -n "$argument" ]] || continue
+    patch+=("$argument")
+done < "$patch_file"
+if (( ${#patch[@]} == 0 )); then
+    echo "error: empty public dependency patch table" >&2
+    exit 1
+fi
+
+source_ref="$(git -C "$repo_root" rev-parse HEAD)"
+printf 'source: %s\n' "$source_ref"
+rustc --version --verbose
+cargo --version
+cd "${repo_root}/reference"
+# The inventory rejects missing, renamed, unignored, or extra selected cases.
+"${repo_root}/scripts/cargo-test-exact" 1 - \
+    --inventory "${repo_root}/verification/reference-owner-soak-inventory.txt" \
+    "${list_only[@]+"${list_only[@]}"}" "${patch[@]}" \
+    -p rafter-reference-ledger --test service_owner_tls -- \
+    --ignored --test-threads=1 --nocapture

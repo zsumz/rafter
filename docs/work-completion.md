@@ -18,6 +18,7 @@ release, a version change, a tag, a publication, or a mixed-version guarantee.
 | Replicated ledger | Durable per-replica process composition, including fail-closed journal repair escalation | `scripts/reference-process-check`; CI/main and Nightly `reference-process` |
 | Replicated ledger | Exact archive deterministic and process execution | `scripts/reference-package-check`; `scripts/reference-package-process-check`; CI `reference-package` and `reference-package-process` |
 | Fast durable service | Exact-archive execution of the three-voter WAL, persistence-pipeline, bounded-transport, durable-application, snapshot, and recovery composition | `scripts/reference-package-check`; CI `reference-package` and `reference-package-msrv` |
+| Durable service owner | Fixed 96-cycle file/TLS load, fairness, compaction, deduplicated retry, and cold-recovery qualification | `scripts/reference-owner-soak`; Nightly `reference-owner-soak` |
 | Standalone TLS counter | Extracted teaching application with checked dependency provenance, bounded durable owner, blocked-publication backpressure, and real process failures/recovery in checkout and pinned-Git modes | `scripts/check-counter-guide`; CI `lint` |
 | Fenced lock | Deterministic lock histories, an independent linearizability checker, and an independent guarded-resource checker | `scripts/reference-source-check`; CI `reference-source` |
 | Fenced lock | Insecure integration process composition and the authenticated bounded production-composition fixture | `scripts/reference-process-check`; CI/main and Nightly `reference-process` |
@@ -78,9 +79,9 @@ multiplexed peer connection.
 
 | Tier | Stable jobs and commands | Claim |
 | --- | --- | --- |
-| Every pull request | CI `lint`, `current-stable`, `public-api`, `dependency-audit`, `test`, `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` | Workspace quality; current-stable workspace and optional durable builds; published source API comparisons; public dependency advisories across all features and a separate complete-workspace audit; source and exact-package deterministic consumers; process-inventory membership; published-shape Rust 1.88; fast scheduler profile; deterministic 44-invariant aggregate |
+| Every pull request | CI `lint`, `current-stable`, `public-api`, `dependency-audit`, `test`, `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` | Workspace quality; current-stable workspace and optional durable builds; published source API comparisons; public dependency advisories across all features and a separate complete-workspace audit; source and exact-package deterministic consumers; process and owner-soak inventory membership; published-shape Rust 1.88; fast scheduler profile; deterministic 44-invariant aggregate |
 | Push to main | CI `reference-process` and `reference-package-process` | Every reviewed durable process suite in source and exact-package shapes |
-| Nightly | Nightly `reference-process`, `burn-in`, `invariants-nightly`, `invariants-maelstrom`, `multi-gigabyte-test`, and `counter-reference-nightly` | Process rerun, burn-in, randomized/replayable invariant evidence, real pinned Maelstrom, bounded multi-gigabyte snapshot streaming, and the 1,024-group scheduler profile |
+| Nightly | Nightly `reference-process`, `reference-owner-soak`, `burn-in`, `invariants-nightly`, `invariants-maelstrom`, `multi-gigabyte-test`, and `counter-reference-nightly` | Process rerun, repeated owner load/recovery, burn-in, randomized/replayable invariant evidence, real pinned Maelstrom, bounded multi-gigabyte snapshot streaming, and the 1,024-group scheduler profile |
 | Weekly | Weekly `invariants-weekly`, `invariants-maelstrom`, and `counter-reference-weekly` | Deep tests/model checking, storage and snapshot histories, three-trial pinned Maelstrom, and the retained 4,096-group scheduler profile |
 | Manual exact evidence | `scripts/reference-package-process-check` | One archive set, recorded SHA-256 hashes, every exact-package process suite, and published-shape Rust 1.88 smoke |
 
@@ -137,6 +138,7 @@ script scripts/audit-published-dependencies
 script scripts/reference-source-check
 script scripts/reference-package-check
 script scripts/reference-process-check
+script scripts/reference-owner-soak
 script scripts/reference-package-process-check
 script scripts/counter-profile
 script scripts/maelstrom-lin-kv
@@ -159,6 +161,7 @@ workflow-job .github/workflows/nightly.yml burn-in
 workflow-job .github/workflows/nightly.yml invariants-maelstrom
 workflow-job .github/workflows/nightly.yml invariants-nightly
 workflow-job .github/workflows/nightly.yml reference-process
+workflow-job .github/workflows/nightly.yml reference-owner-soak
 workflow-job .github/workflows/nightly.yml multi-gigabyte-test
 workflow-job .github/workflows/nightly.yml counter-reference-nightly
 workflow-job .github/workflows/weekly.yml invariants-maelstrom

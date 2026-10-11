@@ -618,9 +618,9 @@ reach it; its process composition owns the equivalent decisions itself.
 
 | Lane | Required work | Executed by |
 | --- | --- | --- |
-| Every PR | Source and exact-package deterministic tests, process-inventory membership, published-shape Rust 1.88 build/test plus process smoke, the counter-fast profile, and the deterministic invariant aggregate | `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` in `ci.yml` |
+| Every PR | Source and exact-package deterministic tests, process and owner-soak inventory membership, published-shape Rust 1.88 build/test plus process smoke, the counter-fast profile, and the deterministic invariant aggregate | `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` in `ci.yml` |
 | Main | All reviewed process tests in source mode and against exact archives | `reference-process` and `reference-package-process` in `ci.yml` |
-| Nightly | All reviewed source process tests, burn-in, real pinned Maelstrom, randomized/replayable invariant evidence, bounded multi-gigabyte snapshot streaming, and the 1,024-group counter profile | `reference-process`, `burn-in`, `invariants-maelstrom`, `invariants-nightly`, `multi-gigabyte-test`, and `counter-reference-nightly` in `nightly.yml` |
+| Nightly | All reviewed source process tests, 96 file/TLS owner load and recovery cycles, burn-in, real pinned Maelstrom, randomized/replayable invariant evidence, bounded multi-gigabyte snapshot streaming, and the 1,024-group counter profile | `reference-process`, `reference-owner-soak`, `burn-in`, `invariants-maelstrom`, `invariants-nightly`, `multi-gigabyte-test`, and `counter-reference-nightly` in `nightly.yml` |
 | Weekly | Deep tests/model checking, storage and snapshot histories, three-trial pinned Maelstrom, and the 4,096-group randomized counter profile with slow groups, snapshot/bulk pressure, poison, and lifecycle churn | `invariants-weekly`, `invariants-maelstrom`, and `counter-reference-weekly` in `weekly.yml` |
 | Release | Exact package archives, full same-version process suite, published-shape MSRV, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md`'s pre-publish block runs the source, exact-package, process, and MSRV lanes by hand; there is no release workflow, no mixed-version coverage, and no pinned downstream canary |
 
@@ -658,6 +658,18 @@ runs on every pull request, now also runs `scripts/reference-process-check
 inventory without running it. Adding, removing, or renaming a process test now
 fails on the pull request that does it. What still only happens after merge is
 the suite actually passing, which is the part that genuinely costs half an hour.
+
+`scripts/reference-owner-soak` (or `zcheck run reference-owner-soak`) runs one
+reviewed ignored case through 96 consecutive load, compaction, shutdown, and
+cold-recovery cycles. Each cycle retains the ordinary TLS owner's fairness,
+receipt, deduplication, and quorum-read assertions; the default test still runs
+three cycles. `verification/reference-owner-soak-inventory.txt` pins the exact
+ignored name. The PR source lane and `zcheck run reference-owner-soak-inventory`
+validate its selection without executing the soak. Nightly executes it on Linux
+and retains the resolved dependency lock alongside a log of the source revision,
+toolchain, and per-cycle progress.
+`zcheck run full` includes the soak. This is sampled same-version correctness
+evidence, not a throughput benchmark or a physical power-loss qualification.
 
 Randomized jobs must always print and retain their seed and minimized failing
 history. A sampled green run supplements deterministic proofs; it does not

@@ -291,6 +291,26 @@ timeout = "60m"
 tools = ["cargo"]
 resources = ["reference-target"]
 
+[tasks.reference-owner-soak-runner-tests]
+description = "Refuse failed source patching and stale or empty owner-soak selections."
+run = ["python3", "-m", "unittest", "scripts/tests/test_reference_owner_soak.py"]
+tools = ["python3", "bash"]
+
+[tasks.reference-owner-soak-inventory]
+description = "Verify the ignored owner TLS soak inventory without running its 96 cycles."
+needs = ["reference-owner-soak-runner-tests"]
+run = ["scripts/reference-owner-soak", "--list-only"]
+tools = ["cargo", "rustc", "git"]
+resources = ["reference-target"]
+
+[tasks.reference-owner-soak]
+description = "Exercise 96 file/TLS owner load, compaction, and cold-recovery cycles."
+needs = ["reference-owner-soak-runner-tests"]
+run = ["scripts/reference-owner-soak"]
+timeout = "60m"
+tools = ["cargo", "rustc", "git"]
+resources = ["reference-target"]
+
 [tasks.reference-package]
 description = "Run exact-package consumers, storage/wire compatibility, and mixed-version TLS rolling upgrades."
 needs = ["archive-compatibility-runner-tests"]
@@ -306,7 +326,7 @@ tools = ["python3"]
 
 [tasks.full]
 description = "Qualify the checkout and every locally runnable deeper evidence lane."
-needs = ["check", "current-stable", "public-api", "dependency-audit", "invariants-pr", "model-check", "reference-source", "reference-package"]
+needs = ["check", "current-stable", "public-api", "dependency-audit", "invariants-pr", "model-check", "reference-source", "reference-package", "reference-owner-soak"]
 
 # Performance evidence stays opt-in, separate from concurrent correctness work.
 [tasks.build-durable-bench]

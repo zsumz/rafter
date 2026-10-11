@@ -9,7 +9,7 @@ type Write = DriverFuture<Result<WriteReceipt<ApplyResult<ApplyOutcome>>, WriteE
 type Read = DriverFuture<Result<QueryReceipt<u64, LedgerQueryResult>, ReadError>>;
 const REQUESTS: usize = 128;
 const WINDOW: usize = 2;
-const CYCLES: usize = 3;
+mod soak;
 
 #[derive(Default)]
 struct Load {
@@ -248,10 +248,14 @@ fn verify_reopened(cluster: &mut Managed, leader: usize, balance: usize) -> LogI
 
 #[test]
 fn sustained_tls_windows_preserve_receipts_quorum_views_and_reopened_state() {
+    run_cycles(3);
+}
+
+fn run_cycles(cycles: usize) {
     let scratch = crate::scratch::ScratchDir::new("managed-mixed-tls");
     let mut cluster = Managed::open(scratch.path(), true, 0);
     let mut floor = initialize(&mut cluster);
-    for cycle in 0..CYCLES {
+    for cycle in 0..cycles {
         let leader = cycle % 3;
         let base_balance = cycle * REQUESTS;
         let mut load = Load {
@@ -286,6 +290,13 @@ fn sustained_tls_windows_preserve_receipts_quorum_views_and_reopened_state() {
         assert_eq!(refusals.writes, 0);
         assert_eq!(refusals.reads, Some(0));
         assert_eq!(refusals.controls, 0);
+        eprintln!(
+            "owner TLS cycle {}/{} complete: balance={}, next_leader={}",
+            cycle + 1,
+            cycles,
+            base_balance + REQUESTS,
+            next_leader + 1,
+        );
     }
     cluster.close();
 }
