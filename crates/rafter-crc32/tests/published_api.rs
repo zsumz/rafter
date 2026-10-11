@@ -9,7 +9,11 @@ fn published_default_constructs_and_resets_an_empty_checksum() {
 
     running.update(b"1234");
     let mut prefix = std::mem::take(&mut running);
-    assert_eq!(running.value(), 0, "generic take must reset to an empty CRC");
+    assert_eq!(
+        running.value(),
+        0,
+        "generic take must reset to an empty CRC"
+    );
 
     // Independent IEEE check value: constructor/reset must use the correct
     // initial state, not merely retain the Default trait's type signature.
