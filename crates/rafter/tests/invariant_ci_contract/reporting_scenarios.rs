@@ -61,10 +61,13 @@ fn complete_reports_publish_when_an_upstream_job_failed_but_the_gate_stays_red()
 fn verify_always_publish_failure_branch(root: &Path, contract: AggregateWorkflowContract) {
     let workflow = read(&root.join(contract.workflow));
     let aggregate = job_block(&workflow, contract.job);
+    let condition = if contract.profile == "nightly" {
+        "    if: ${{ !inputs.archives_only && always() && !cancelled() }}"
+    } else {
+        "    if: always() && !cancelled()"
+    };
     assert!(
-        aggregate
-            .lines()
-            .any(|line| line == "    if: always() && !cancelled()"),
+        aggregate.lines().any(|line| line == condition),
         "{} must report failed producers while respecting workflow cancellation",
         contract.profile
     );

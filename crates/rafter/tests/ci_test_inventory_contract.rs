@@ -53,6 +53,7 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
     }
 
     let nightly = read(&root.join(".github/workflows/nightly.yml"));
+    local::assert_nightly_archive_profile(&nightly);
     assert!(nightly
         .contains("scripts/cargo-test-exact 1 multi_gigabyte -p rafter --release -- --ignored"));
 

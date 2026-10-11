@@ -186,7 +186,7 @@ There are four distinct evidence boundaries:
 - **Source process** runs the reviewed ignored process inventories against those
   checkout-patched crates.
 - **Exact-package deterministic/process** builds ordinary targets or executes
-  all 34 reviewed process tests against one set of unpacked `.crate` archives.
+  all reviewed process tests against one set of unpacked `.crate` archives.
 - **Published-shape MSRV** creates archives with the current packaging Cargo,
   then regenerates the copied consumer lockfile, builds every target, runs the
   deterministic suites, and runs a ledger process smoke with Rust/Cargo 1.88.
@@ -621,6 +621,7 @@ it does not inherit the managed transport driver's checkpoint implementation.
 | --- | --- | --- |
 | Every PR | Source and exact-package deterministic tests, process and owner-soak inventory membership, published-shape Rust 1.88 build/test plus process smoke, the counter-fast profile, and the deterministic invariant aggregate | `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` in `ci.yml` |
 | Main | All reviewed process tests in source mode and against exact archives | `reference-process` and `reference-package-process` in `ci.yml` |
+| Manual candidate archives | All reviewed archive process tests, published-shape MSRV, storage/wire/rolling TLS upgrades, exact dependency audit, and source preservation | `candidate-archives` in `nightly.yml`, selected with `archives_only: true` |
 | Nightly | All reviewed source process tests, 96 file/TLS owner load and recovery cycles, burn-in, real pinned Maelstrom, randomized/replayable invariant evidence, bounded multi-gigabyte snapshot streaming, and the 1,024-group counter profile | `reference-process`, `reference-owner-soak`, `burn-in`, `invariants-maelstrom`, `invariants-nightly`, `multi-gigabyte-test`, and `counter-reference-nightly` in `nightly.yml` |
 | Weekly | Deep tests/model checking, storage and snapshot histories, three-trial pinned Maelstrom, and the 4,096-group randomized counter profile with slow groups, snapshot/bulk pressure, poison, and lifecycle churn | `invariants-weekly`, `invariants-maelstrom`, and `counter-reference-weekly` in `weekly.yml` |
 | Release | Exact package archives, full same-version process suite, published-shape MSRV, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md` runs source, exact-package, process, and MSRV lanes, including published-baseline storage, wire, and rolling TLS upgrades. The pinned-Git counter guide has its own checked lane. A tag-gating release workflow and independent production-consumer canary remain open |
@@ -660,8 +661,9 @@ runs on every pull request, now also runs `scripts/reference-process-check
 --list-only`: it compiles nothing extra -- that job already builds
 `tests/process_cluster.rs` -- lists the selection, and compares it to the
 inventory without running it. Adding, removing, or renaming a process test now
-fails on the pull request that does it. What still only happens after merge is
-the suite actually passing, which is the part that genuinely costs half an hour.
+fails on the pull request that does it. Full execution remains on main/nightly;
+the manual candidate archive profile below also makes archive process execution
+available before merge.
 
 `scripts/reference-owner-soak` (or `zcheck run reference-owner-soak`) runs one
 reviewed ignored case through 96 consecutive load, compaction, shutdown, and
@@ -678,6 +680,32 @@ evidence, not a throughput benchmark or a physical power-loss qualification.
 Randomized jobs must always print and retain their seed and minimized failing
 history. A sampled green run supplements deterministic proofs; it does not
 replace them.
+
+### Manual candidate archive qualification
+
+Push the candidate branch, then request its archive-only Linux profile:
+
+```sh
+gh workflow run nightly.yml --ref "$(git branch --show-current)" -F archives_only=true
+```
+
+This selects `candidate-archives` in the existing dispatchable Nightly workflow.
+It uses one archive set for all reviewed process cases, the Rust 1.88.0 build,
+deterministic suites and process smoke, and published storage, wire and rolling
+TLS upgrades. Packaging and the pinned cargo-audit checker use Rust 1.97.1.
+The separate advisory step audits the exact tested dependency graph.
+
+The run is named **Candidate archive qualification** and has its own concurrency
+group. Omitting the input, selecting `false`, and scheduled events retain the
+full Nightly jobs and their existing concurrency group. Archive-only runs do not
+execute the invariant aggregate or owner soak and cannot qualify those profiles.
+
+The upload records the checked-out GitHub SHA, every tracked source file's
+SHA-256, toolchain identities, archive and upgrade receipts, audit evidence and
+raw logs. Source identity and a clean checkout are checked before and after the
+run, including on failure. Uploads retain partial diagnostics when a phase fails;
+a source-preservation marker alone is not a successful qualification receipt.
+This is a pre-merge evidence lane, not a publishing or architecture-approval gate.
 
 ## API Promotion Rule
 

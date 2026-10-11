@@ -23,7 +23,7 @@ burden for durable applications. More throughput work should follow those.
 ## Current code checkpoint
 
 The release work is on `codex/stable-release-slices`, with code through
-[`fa2c3bf2`](https://github.com/zsumz/rafter/commit/fa2c3bf294e2b96663762e1b5dd1ec7b84f6b990)
+[`70420368`](https://github.com/zsumz/rafter/commit/7042036873a3f206422f051835c655039e748208)
 in draft [PR #23](https://github.com/zsumz/rafter/pull/23). The transport already
 exists: durable composition reuses its authenticated TLS sender and inbound
 validation. No transport replacement, version bump, tag, or publication is part
@@ -38,18 +38,33 @@ persists peer retirement and authorization policy. The feature remains default-o
 
 | Qualification | Source checkpoint and result |
 | --- | --- |
-| Integrated workspace with durable feature | `b62f8464`: all-target build, 3,339 tests (zero failed, 58 ignored), strict all-target Clippy and strict rustdoc pass on Rust 1.88; tracked source hashes remain unchanged. |
+| Integrated workspace with durable feature | `66bf4f43`: all-target build, 3,344 tests (zero failed, 58 ignored), strict all-target Clippy and strict rustdoc pass on Rust 1.88; all 2,808 tracked source hashes remain unchanged. |
+| Ledger readiness ownership | `70420368`: the follower reaches its durable baseline and exits cleanly before the contender recovers. All nine checkout process cases, 64 isolated readiness repetitions, strict reference lint/docs, architecture and final source/staging checks pass. Journal repair policy and dedicated abrupt-crash cases remain unchanged. |
 | Ready-query fairness | `9c08dd5a`: 440 service tests, 47 guards, strict lint/docs and all nine canonical file/TLS cases pass. The identical public production sources also pass nine isolated TLS cases with 96 mixed-load/compaction/cold-recovery cycles. The original scheduler and a partial fix fail deterministic regressions. |
 | Permanent owner-soak lane | `b540a714`: the exact ignored inventory is checked on PRs and runs in Nightly and `zcheck run full`. Locally, all 96 cycles, 543 normal reference tests, six runner checks and 47 guards pass, with strict lint/docs and source/staging preservation. Its Linux nightly execution is pending. |
 | Retained-log short reads | `fa2c3bf2`: all 317 storage tests, nine normal file/TLS cases, 47 guards, strict lint/docs and architecture checks pass. The original reader fails the allocation regression; a five-byte source with a 64 MiB claim retains 64 KiB with the fix. Error/prefix behavior and source/staging preservation pass. |
 | Durable benchmark report integrity | `552616c2`: 16 Python tests and four Rust configuration tests pass. Four malformed reports accepted by the previous checker are rejected; seven synthetic reports emitted by the actual Rust formatter pass. No new performance result is claimed. |
 | Storage recovery, corruption and publication | `2717e88e`: all 315 storage tests pass; the allocation gate rejects the previous checkpoint reader and passes the fix. |
 | Public API compatibility | `2717e88e`: all 22 default/all-feature comparisons against `0.0.2-alpha.1` pass. |
-| Exact packages and Rust 1.88 MSRV | `2717e88e`: all seven phases pass, including 548 tests and storage, wire and rolling TLS upgrades; 57 profiles remain assigned to dedicated lanes. |
-| Shipped archive dependency graph | `2717e88e`: all 51 packages, including 40 registry dependencies, pass the strict audit without exclusions. |
+| Exact packages and Rust 1.88 MSRV | The two-file candidate committed as `70420368` passes all seven phases, including all 56 reviewed process cases and storage, wire and rolling TLS upgrades. The candidate's tracked source is preserved and matches the committed tree. |
+| Shipped archive dependency graph | That same archive set passes the strict audit of all 51 packages, including 40 registry dependencies, without exclusions. |
 | Durable runtime and service suites | `addc9d78`: 238 runtime and 437 durable-service tests pass. The two ignored runtime process entries have an explicit CI parent-process selection. |
 | Independent file/TLS composition | `1aee0c76`: all nine cases pass; eight concurrent repetitions cover 24 mixed-load/compaction/recovery cycles across all three leaders. The same consumer also passes in the `2717e88e` archive lane. |
 | Architecture and source preservation | `2717e88e`: no diagnostics, new grants or debt; candidate inventory/implementation identities are refreshed. Maintainer architecture approval remains open. |
+
+The original `66bf4f43` archive process run remains a failed receipt. Its readiness
+test killed a follower during application-journal publication, then required plain
+recovery despite a legitimate complete unsealed frame. The unchanged test
+reproduced that refusal. The correction isolates readiness from that crash window
+and requires a successful process exit and `STOPPED` marker before handoff.
+
+The [manual candidate archive profile](reference-consumers.md#manual-candidate-archive-qualification)
+now makes Linux process/MSRV/upgrade and advisory qualification available before
+merge. Its separate concurrency group preserves full Nightly runs. The workflow
+and failure-reporting guards pass all 47 cases, strict lint and actionlint; eight
+profile controls and seven source/failure controls give the expected results.
+Hosted execution of this new profile remains to be qualified. It does not run or
+replace the authenticated invariant aggregate or the owner soak.
 
 Stable-release qualification remains open. In priority order:
 
