@@ -102,7 +102,7 @@ graphs and preserve cleanup ownership when a smoke-test shutdown request or wait
 fails. Both cleanup regressions fail the original harness; deliberately omitting
 all checkout overrides is rejected before compilation.
 
-Both modes pass Rust 1.88 formatting, strict Clippy, three application tests,
+Both modes pass Rust 1.88 formatting, strict Clippy, six application tests,
 and the real three-process TLS smoke sequence: acknowledged writes, redirected
 reads, leader loss and catch-up, missing/corrupt state refusal, complete cluster
 crash recovery, quorum loss with an uncertain write, and clean shutdown. Python
@@ -112,7 +112,11 @@ authority identifiers; the peer probe explicitly enables strict X.509 checks
 before verifying client-certificate refusal. CI and zcheck run both modes and
 the controls; the repository checker requires Python 3.11 or newer. This counter
 still uses the existing synchronous `TransportRaftDriver`; adopting the optional
-durable owner is the next slice. The original PR remains unmerged.
+durable owner is the next slice. Its application adapter is now qualified against
+the existing bounded worker: fixed-size decoded entries preserve protocol prefixes
+and result correlation; accepted work retains its credit until completion is
+consumed; failed atomic publication returns a failure and preserves the old floor
+and value across reopen. The original PR remains unmerged.
 
 ## Prioritized code work
 

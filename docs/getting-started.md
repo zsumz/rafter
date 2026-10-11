@@ -104,6 +104,13 @@ in order. Rafter uses those results to complete the corresponding requests.
 For a richer application, put ordinary rejections such as "job already finished"
 in `CommandResult`; an `apply_batch` error means the group cannot safely continue.
 
+The counter also includes an adapter for the bounded application worker in
+`src/application.rs`. It decodes committed bytes to a fixed-size entry, preserves
+the runtime-verified protocol-only prefix, and delegates durability to the same
+`apply_batch`. Its worker tests cover retained credits, durable results, and failed
+publication. The process below still uses the synchronous driver; switching its
+owner loop is a separate integration step.
+
 ## 3. Add durable Raft storage and connect your state machine
 
 There are **two kinds of saved state** in this application:
@@ -504,6 +511,7 @@ printf '\nCreated local TLS certificates in certs/.\n'
 <!-- counter-file: src/main.rs -->
 ```rust
 //! One counter replica per process; HTTP clients and authenticated Raft peers.
+mod application;
 mod checkpoint;
 mod counter;
 mod disk;
@@ -714,6 +722,82 @@ fn drive(
 </details>
 
 <details>
+<summary><strong>src/application.rs</strong> — Adapt committed commands to the application worker</summary>
+
+<!-- counter-file: src/application.rs -->
+```rust
+//! Move committed counter commands through the bounded application worker.
+use crate::{counter::Counter, disk};
+use rafter::LogIndex;
+use rafter_app::state_machine::{ApplyBatch, ApplyEntry, ApplyResult, ReplicatedStateMachine};
+use rafter_runtime::{
+    application::{ApplicationEntry, DurableApplication},
+    service::{CommittedCommand, ServiceAdapterError},
+};
+use std::{io, mem::size_of};
+
+#[derive(Debug)]
+pub struct Entry {
+    first: LogIndex,
+    command: ApplyEntry<u64>,
+}
+
+impl TryFrom<CommittedCommand> for Entry {
+    type Error = ServiceAdapterError;
+
+    fn try_from(command: CommittedCommand) -> Result<Self, Self::Error> {
+        // Decode to a scalar; do not retain an arbitrarily large backing frame.
+        let amount = u64::from_be_bytes(
+            command
+                .payload
+                .as_ref()
+                .try_into()
+                .map_err(|_| disk::invalid("an increment must be eight bytes"))?,
+        );
+        Ok(Self {
+            first: command.first_index,
+            command: ApplyEntry {
+                index: command.index,
+                term: command.term,
+                command: amount,
+                local_proposal_id: command.local_proposal_id,
+            },
+        })
+    }
+}
+
+impl ApplicationEntry for Entry {
+    fn first_log_index(&self) -> LogIndex {
+        self.first
+    }
+    fn log_index(&self) -> LogIndex {
+        self.command.index
+    }
+    fn retained_bytes(&self) -> usize {
+        // Entry, temporary batch copy, and eventual result are all fixed size.
+        size_of::<Self>() + size_of::<ApplyEntry<u64>>() + size_of::<ApplyResult<u64>>()
+    }
+}
+
+impl DurableApplication<Entry> for Counter {
+    type Outcome = ApplyResult<u64>;
+    type Error = io::Error;
+
+    fn applied_through(&self) -> LogIndex {
+        // This implementation's floor is the atomically saved in-memory state.
+        self.applied_index().expect("counter floor is infallible")
+    }
+    fn apply(&mut self, entries: &[Entry]) -> io::Result<Vec<Self::Outcome>> {
+        self.apply_batch(ApplyBatch {
+            entries: entries.iter().map(|entry| entry.command.clone()).collect(),
+        })
+    }
+}
+```
+
+</details>
+
+<details>
 <summary><strong>src/counter.rs</strong> — Define and save the counter</summary>
 
 <!-- counter-file: src/counter.rs -->
@@ -785,7 +869,7 @@ impl ReplicatedStateMachine for Counter {
 
     fn apply_batch(&mut self, batch: ApplyBatch<u64>) -> io::Result<Vec<ApplyResult<u64>>> {
         let mut next = self.state.clone();
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(batch.entries.len());
         for entry in batch.entries {
             if entry.index.0 <= next.applied {
                 return Err(disk::invalid("command was already applied"));

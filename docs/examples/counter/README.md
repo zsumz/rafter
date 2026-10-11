@@ -19,6 +19,11 @@ cargo build --locked
 python3 smoke.py target/debug/rafter-counter
 ```
 
+Application tests also qualify `src/application.rs` with the bounded worker:
+protocol-only prefixes, result correlation, retained credits, and failed durable
+publication. The process currently uses `TransportRaftDriver`; the adapter is the
+prerequisite for migrating its owner loop.
+
 The smoke test uses temporary directories and its own local ports. It checks
 TLS client authentication, writes and reads, leader loss, full-cluster crash
 recovery, missing or corrupt state, quorum loss, and clean shutdown. It only

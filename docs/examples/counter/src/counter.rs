@@ -65,7 +65,7 @@ impl ReplicatedStateMachine for Counter {
 
     fn apply_batch(&mut self, batch: ApplyBatch<u64>) -> io::Result<Vec<ApplyResult<u64>>> {
         let mut next = self.state.clone();
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(batch.entries.len());
         for entry in batch.entries {
             if entry.index.0 <= next.applied {
                 return Err(disk::invalid("command was already applied"));

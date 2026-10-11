@@ -1,4 +1,5 @@
 //! One counter replica per process; HTTP clients and authenticated Raft peers.
+mod application;
 mod checkpoint;
 mod counter;
 mod disk;

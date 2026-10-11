@@ -1,8 +1,12 @@
 //! Durable application behavior independent of the cluster transport.
+#[path = "../src/application.rs"]
+mod application;
 #[path = "../src/counter.rs"]
 mod counter;
 #[path = "../src/disk.rs"]
 mod disk;
+#[path = "support/worker.rs"]
+mod worker;
 
 use counter::{Counter, State};
 use rafter::{
