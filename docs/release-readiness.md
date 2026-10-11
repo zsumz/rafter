@@ -485,11 +485,19 @@ incarnations, and notification ordering. Snapshot-handoff and independent TLS
 consumer cases also check these observations. Six deliberately incorrect floor,
 proof-count, cancellation, and wake-order variants fail their exact regressions.
 
-Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
-The feature lane requires exactly 365 tests in both CI and zcheck.
+Metrics publication and closure now notify every registered subscriber before
+resuming a custom waker panic. Previously, one panic discarded the rest of the
+wakeups after removing their registrations, which could strand executor tasks.
+Both publication and closure regressions fail the prior implementation; the
+independent ledger consumer exercises terminal notification through public APIs.
+The tests also preserve the first of multiple panics and verify reentrant
+observation, visible state, registration cleanup, and subsequent publication.
 
-Local qualification passes 325 default service tests, 365 with `durable`, 537
-source-consumer tests, and 542 archive/MSRV consumer tests on Rust 1.88.0.
+Managed membership, `DriverCommandSender`, and TLS process adoption remain open.
+The feature lane requires exactly 367 tests in both CI and zcheck.
+
+Local qualification passes 327 default service tests, 367 with `durable`, 538
+source-consumer tests, and 543 archive/MSRV consumer tests on Rust 1.88.0.
 The 23 managed write/read tests also pass 64 repetitions across four concurrent
 runners (1,472 executions). Consumer lanes retain their 57 explicitly ignored
 cases for dedicated qualification. Strict docs and Clippy, 105 source/API/CI

@@ -32,7 +32,9 @@ even while the watch stays open and no further metrics are published. Canceled
 waits do not consume later updates. Registered task wakeups and their cleanup
 run outside the watch's locks, so waking or destroying a task can cancel a wait
 or inspect the publisher. Registration storage follows live pending waits;
-embeddings still control how many concurrent watches they open.
+embeddings still control how many concurrent watches they open. A panicking
+subscriber wakeup does not suppress later notifications: publication or closure
+remains visible, all remaining tasks are notified, then the first panic resumes.
 
 ## Optional durable client owner
 

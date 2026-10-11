@@ -63,6 +63,10 @@ impl<G> MetricsPublisher<G> {
     /// Discarding it with `let _ =` is correct wherever the caller closed the
     /// publisher itself and `false` therefore only means "already stopped" —
     /// which is what both of this crate's own call sites do, and both say so.
+    ///
+    /// # Panics
+    /// If a subscriber's wakeup panics, the update remains published and the
+    /// other registered subscribers are notified before the first panic resumes.
     #[must_use = "a closed publisher drops the snapshot instead of publishing it"]
     pub fn publish(&self, metrics: RaftGroupMetrics<G>) -> bool {
         let waiters = {
@@ -79,6 +83,10 @@ impl<G> MetricsPublisher<G> {
     }
 
     /// Closes the stream and wakes watchers that are waiting for changes.
+    ///
+    /// # Panics
+    /// If a subscriber's wakeup panics, the stream remains closed and the other
+    /// registered subscribers are notified before the first panic resumes.
     pub fn close(&self) {
         let waiters = {
             let mut state = lock_state(&self.shared);
@@ -187,3 +195,7 @@ mod tests;
 #[cfg(test)]
 #[path = "watch_cancellation_test.rs"]
 mod cancellation_tests;
+
+#[cfg(test)]
+#[path = "watch_panic_test.rs"]
+mod panic_tests;

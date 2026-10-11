@@ -44,10 +44,22 @@ impl<G> Drop for Registration<G> {
 }
 
 pub(super) fn wake_all(waiters: Vec<Arc<Waiter>>) {
+    let mut panic = None;
     for waiter in waiters {
         let waker = lock_state(&waiter.waker).take();
         if let Some(waker) = waker {
-            waker.wake();
+            // Publication/closure has already removed every registration.
+            // Unwinding now would drop later wakeups and strand those tasks.
+            if let Err(error) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker.wake()))
+            {
+                if panic.is_none() {
+                    panic = Some(error);
+                }
+            }
         }
+    }
+    if let Some(error) = panic {
+        std::panic::resume_unwind(error);
     }
 }
