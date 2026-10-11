@@ -197,6 +197,14 @@ fn speculative_replication_overlaps_fsync_but_quorum_and_client_success_stay_fen
     assert_eq!(cluster.follower.last_log_index(), LogIndex(2));
     assert_eq!(cluster.owner.progress().durable, LogIndex(1));
     assert_eq!(cluster.owner.durable_through(), Some(LogIndex::ZERO));
+    assert_eq!(
+        cluster
+            .owner
+            .try_read_application(LogIndex::ZERO, |_| panic!("read during persistence"))
+            .unwrap_err()
+            .rejection(),
+        ServiceReadRejection::NotReady(ServiceState::Busy)
+    );
     let input = ServiceInput::from(cluster.responses.front().unwrap().clone());
     assert!(
         matches!(cluster.owner.try_step(input.clone()), Err(ServiceStepError::Unavailable { input: returned, .. }) if returned == input)
@@ -204,6 +212,12 @@ fn speculative_replication_overlaps_fsync_but_quorum_and_client_success_stay_fen
     release.now();
     assert_eq!(cluster.drive(), [LogIndex(2)]);
     assert_eq!(cluster.owner.progress().committed, LogIndex(2));
+    let read = cluster
+        .owner
+        .try_read_application(LogIndex(2), |store| store.applied.clone())
+        .unwrap();
+    assert_eq!(read.durable_through(), LogIndex(2));
+    assert_eq!(read.into_output(), vec![LogIndex(2)]);
 }
 
 #[test]
@@ -258,6 +272,14 @@ fn persistence_panic_poison_suppresses_dependent_outputs() {
         }
     }
     assert_eq!(cluster.owner.state(), ServiceState::Failed);
+    assert_eq!(
+        cluster
+            .owner
+            .try_read_application(LogIndex::ZERO, |_| panic!("read after persistence failure"))
+            .unwrap_err()
+            .rejection(),
+        ServiceReadRejection::NotReady(ServiceState::Failed)
+    );
     assert!(cluster.owner.poll().is_err());
 }
 

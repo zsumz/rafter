@@ -83,6 +83,17 @@ retains a refused command under credit pressure, and exposes client-eligible
 the corresponding application prefix, including barriers at protocol-only
 positions. Peer sends use the embedding's existing authenticated transport.
 
+`DurableService::try_read_application` lends the verified application view only
+while the owner is ready. Recovery, pending persistence or outputs, snapshot
+handoff, draining, and terminal states refuse the unchanged callback. Ready
+owners can still return an application-busy or behind-floor refusal; poll
+progress before retrying. A caught callback panic terminally fences the owner.
+For a linearizable query, consume its matching `ReadIndexGranted`, capture the
+ready runtime's `committed_application_index_through(read_index)`, and supply
+that application floor. The callback runs on the caller's thread and must be
+bounded and read-only. The ledger consumer exercises actual grants before and
+after reopening, plus queries after compaction and snapshot installation.
+
 An `InstallSnapshot` event transfers the quiescent application store and the
 exact durable descriptor. The embedding installs its bytes and floor atomically,
 then calls `resume_snapshot`; later outputs and new input remain fenced until

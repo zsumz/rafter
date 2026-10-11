@@ -65,6 +65,11 @@ fn read_grant_waits_for_application_but_noop_barrier_needs_no_phantom_apply() {
             ..
         })
     )));
+    let read = service
+        .try_read_application(LogIndex::ZERO, |store| store.floor)
+        .unwrap();
+    assert_eq!(read.durable_through(), LogIndex::ZERO);
+    assert_eq!(read.into_output(), LogIndex::ZERO);
     service.begin_shutdown();
     let mut store = service.finish_shutdown().unwrap();
     let (started, release) = gate(&mut store);
@@ -117,6 +122,11 @@ fn read_grant_waits_for_application_but_noop_barrier_needs_no_phantom_apply() {
                     service.durable_through().unwrap() >= required,
                     "the application prefix is durable when the grant is delivered"
                 );
+                let read = service
+                    .try_read_application(required, |store| store.applied.clone())
+                    .unwrap();
+                assert_eq!(read.durable_through(), required);
+                assert_eq!(read.into_output(), vec![LogIndex(3)]);
                 granted = true;
             }
             None => std::thread::yield_now(),
@@ -143,6 +153,13 @@ fn application_failure_and_wrong_durable_floor_fence_every_later_input() {
             matches!(events.last(), Some(ServiceEvent::ApplicationFailed(failure)) if matches!(failure.kind(), ApplicationFailureKind::Store(_) | ApplicationFailureKind::DurableFloor { .. }))
         );
         assert!(matches!(service.poll(), Err(ServiceError::Failed)));
+        assert_eq!(
+            service
+                .try_read_application(LogIndex::ZERO, |_| panic!("read after failed apply"))
+                .unwrap_err()
+                .rejection(),
+            ServiceReadRejection::NotReady(ServiceState::Failed)
+        );
         assert!(matches!(
             service.try_step(ServiceInput::from(Input::Tick)),
             Err(ServiceStepError::Unavailable {
@@ -173,6 +190,13 @@ fn application_panic_and_adapter_range_violation_are_terminal() {
         }
     }
     assert_eq!(service.state(), ServiceState::Failed);
+    assert_eq!(
+        service
+            .try_read_application(LogIndex::ZERO, |_| panic!("read after application failure"))
+            .unwrap_err()
+            .rejection(),
+        ServiceReadRejection::NotReady(ServiceState::Failed)
+    );
     let mut service = Owner::recover(
         config(),
         log_with_commands(1).into_storage(),

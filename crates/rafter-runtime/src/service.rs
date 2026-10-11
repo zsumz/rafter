@@ -16,7 +16,8 @@
 //! [`crate::service::ServiceEvent::Applied`] establishes client write success. Appended IDs are
 //! correlation, not success or deduplication; dropped IDs have unknown outcome.
 //! A read grant is held until its application prefix is durable. The embedding
-//! must execute the read against an atomically consistent application view.
+//! can use [`crate::service::DurableService::try_read_application`] to query a
+//! verified application view while respecting the owner's lifecycle.
 //!
 //! Recovery and snapshot installation close admission until application state
 //! catches up. Snapshot bytes remain in the runtime's snapshot store; the
@@ -35,12 +36,14 @@ mod driver;
 mod error;
 mod lifecycle;
 mod poll;
+mod read;
 mod step;
 
 pub use command::CommittedCommand;
 pub use contract::{ServiceEvent, ServiceInput, ServiceOptions, ServicePoll, ServiceState};
 pub use driver::DurableService;
 pub use error::{ServiceAdapterError, ServiceError, ServiceStepError};
+pub use read::{ServiceReadError, ServiceReadRejection};
 
 #[cfg(test)]
 mod tests;

@@ -10,17 +10,20 @@ mod support;
 
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, Input,
-    LocalProposalId, LogIndex, NodeConfig, NodeId, Output, RaftSnapshotMetadata, SnapshotGroupId,
+    LocalProposalId, LogIndex, NodeConfig, NodeId, Output, RaftSnapshotMetadata, ReadId,
+    SnapshotGroupId,
 };
-use rafter_app::state_machine::{ApplicationSnapshot, ApplyEntry, ReplicatedStateMachine};
+use rafter_app::state_machine::{
+    ApplicationSnapshot, ApplyEntry, ReadBarrier, ReplicatedStateMachine,
+};
 use rafter_reference_ledger::{
     store::LedgerStore, AccountId, Command, DurableLedgerStateMachine, LedgerApplicationEntry,
-    LedgerStateMachine, Mutation,
+    LedgerQuery, LedgerQueryResult, LedgerStateMachine, Mutation,
 };
 use rafter_runtime::{
     service::{
         CommittedCommand, DurableService, ServiceAdapterError, ServiceError, ServiceEvent,
-        ServiceInput, ServiceOptions, ServicePoll, ServiceState,
+        ServiceInput, ServiceOptions, ServicePoll, ServiceReadRejection, ServiceState,
     },
     snapshot_io::SnapshotCancellation,
     DurableRaftNode, DurableRaftNodeStorage,
@@ -151,6 +154,68 @@ fn wait(wake: &mpsc::Receiver<()>, deadline: Instant) {
         .expect("worker wake required; no periodic poll fallback");
 }
 
+fn assert_read_refused(owner: &mut Owner, state: ServiceState) {
+    let error = owner
+        .try_read_application(LogIndex::ZERO, |_| panic!("closed owner ran query"))
+        .unwrap_err();
+    assert_eq!(error.rejection(), ServiceReadRejection::NotReady(state));
+}
+
+fn assert_balance(owner: &mut Owner, required: LogIndex, balance: u64) {
+    let read = owner
+        .try_read_application(required, |application| {
+            application.read(
+                LedgerQuery::GetAccount {
+                    account_id: ACCOUNT,
+                },
+                ReadBarrier {
+                    required_applied_index: required,
+                    local_applied_index: application.store().applied_index(),
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(read.durable_through(), required);
+    assert_eq!(
+        read.into_output().unwrap(),
+        LedgerQueryResult::Account {
+            account_id: ACCOUNT,
+            balance: Some(balance),
+        }
+    );
+}
+
+fn assert_granted_balance(
+    owner: &mut Owner,
+    wake: &mpsc::Receiver<()>,
+    required: LogIndex,
+    balance: u64,
+) {
+    let read_id = ReadId(1);
+    owner.try_step(Input::ReadIndex { read_id }.into()).unwrap();
+    let events = poll_until(owner, wake, |o| o.state() == ServiceState::Ready);
+    let granted = events
+        .into_iter()
+        .find_map(|event| match event {
+            ServiceEvent::Output(Output::ReadIndexGranted {
+                read_id: actual,
+                read_index,
+            }) if actual == read_id => Some(read_index),
+            _ => None,
+        })
+        .expect("the real Raft read grant must be delivered");
+    let application_floor = owner
+        .ready_node()
+        .unwrap()
+        .committed_application_index_through(granted);
+    assert_eq!(application_floor, required);
+    assert!(
+        granted > required,
+        "leadership no-op needs no phantom application update"
+    );
+    assert_balance(owner, application_floor, balance);
+}
+
 #[test]
 fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reopen() {
     let scratch = ScratchDir::new("durable-owner-package-consumer");
@@ -159,6 +224,7 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
 
     // Three committed commands exceed the owner's single application credit.
     let (mut owner, wake) = open(root, "application");
+    assert_read_refused(&mut owner, ServiceState::Recovering);
     let events = poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready);
     let applied: Vec<_> = events
         .into_iter()
@@ -176,6 +242,7 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
     assert_eq!(applied, [LogIndex(2), LogIndex(3), LogIndex(4)]);
     owner.try_step(Input::Tick.into()).unwrap();
     poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready);
+    assert_granted_balance(&mut owner, &wake, LogIndex(4), 7);
     owner
         .try_step(ServiceInput::from(Input::TrackedClientProposal {
             proposal_id: LocalProposalId(42),
@@ -191,6 +258,7 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
         }))
         .unwrap();
     owner.begin_shutdown();
+    assert_read_refused(&mut owner, ServiceState::Draining);
     assert!(matches!(
         owner.finish_shutdown(),
         Err(ServiceError::NotReady(_))
@@ -212,20 +280,36 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
     );
     assert_eq!(owner.durable_through(), Some(LogIndex(6)));
     let application = shutdown(&mut owner, &wake);
+    assert_read_refused(&mut owner, ServiceState::Stopped);
     assert_eq!(application.store().ledger().view().accounts, [(ACCOUNT, 9)]);
     drop(application);
     drop(owner);
     let (mut owner, wake) = open(root, "application");
     assert!(poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready).is_empty());
+    owner.try_step(Input::Tick.into()).unwrap();
+    poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready);
+    assert_granted_balance(&mut owner, &wake, LogIndex(6), 9);
     compact(&mut owner);
     assert_eq!(owner.ready_node().unwrap().snapshot_index(), LogIndex(6));
     assert_eq!(owner.durable_through(), Some(LogIndex(6)));
+    assert_balance(&mut owner, LogIndex(6), 9);
     assert_eq!(
         shutdown(&mut owner, &wake).store().ledger().view().accounts,
         [(ACCOUNT, 9)]
     );
     drop(owner);
 
+    restore_and_read_snapshot(root);
+
+    // Previously acknowledged bytes survive reopening the original journal too.
+    let (mut owner, wake) = open(root, "application");
+    assert!(poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready).is_empty());
+    let application = shutdown(&mut owner, &wake);
+    assert_eq!(application.store().applied_index(), LogIndex(6));
+    assert_eq!(application.store().ledger().view().accounts, [(ACCOUNT, 9)]);
+}
+
+fn restore_and_read_snapshot(root: &Path) {
     // A separate blank application recovers only from the promoted descriptor.
     let (mut owner, wake) = open(root, "restored-application");
     let Some(ServiceEvent::InstallSnapshot {
@@ -236,6 +320,7 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
         panic!("snapshot required");
     };
     assert_eq!(owner.state(), ServiceState::InstallingSnapshot);
+    assert_read_refused(&mut owner, ServiceState::InstallingSnapshot);
     application
         .install_snapshot(ApplicationSnapshot {
             applied_index: snapshot.metadata.last_included_index,
@@ -245,18 +330,12 @@ fn owner_replays_bounded_work_acks_after_durability_and_installs_snapshot_on_reo
         .unwrap();
     owner.resume_snapshot(application).unwrap();
     assert!(poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready).is_empty());
+    assert_balance(&mut owner, LogIndex(6), 9);
     assert_eq!(
         shutdown(&mut owner, &wake).store().ledger().view().accounts,
         [(ACCOUNT, 9)]
     );
     drop(owner);
-
-    // Previously acknowledged bytes survive reopening the original journal too.
-    let (mut owner, wake) = open(root, "application");
-    assert!(poll_until(&mut owner, &wake, |o| o.state() == ServiceState::Ready).is_empty());
-    let application = shutdown(&mut owner, &wake);
-    assert_eq!(application.store().applied_index(), LogIndex(6));
-    assert_eq!(application.store().ledger().view().accounts, [(ACCOUNT, 9)]);
 }
 
 fn seed_recovery(root: &Path) {

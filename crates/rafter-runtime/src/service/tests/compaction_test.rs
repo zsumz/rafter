@@ -11,9 +11,9 @@ use rafter_storage::{InMemoryRaftSnapshotStore, PersistedRaftSnapshot, RaftSnaps
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        mpsc, Arc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 #[derive(Debug)]
@@ -86,6 +86,11 @@ fn compaction_returns_retired_entries_and_restarts_application_without_reapplyin
     assert_eq!(service.ready_node().unwrap().snapshot_index(), LogIndex(4));
     assert_eq!(service.durable_through(), Some(LogIndex(4)));
     assert_eq!(service.state(), ServiceState::Ready);
+    let read = service
+        .try_read_application(LogIndex(4), |store| store.applied.clone())
+        .unwrap();
+    assert_eq!(read.durable_through(), LogIndex(4));
+    assert_eq!(read.into_output(), [LogIndex(2), LogIndex(3), LogIndex(4)]);
     service.try_step(Input::Tick.into()).unwrap();
     until(&mut service, |s| s.state() == ServiceState::Ready);
     service
@@ -111,7 +116,20 @@ fn compaction_returns_retired_entries_and_restarts_application_without_reapplyin
 fn finished_but_unconsumed_application_work_still_refuses_compaction() {
     let mut store = Store::default();
     let (started, release) = gate(&mut store);
-    let mut service = owner(log_with_commands(0), store, 1);
+    let (notify, notified) = mpsc::sync_channel(1);
+    let mut options = ServiceOptions::new();
+    options.application = options.application.with_limits(1, 64, 1, 64);
+    let mut service = Owner::recover_with_wake(
+        config(),
+        log_with_commands(0).into_storage(),
+        store,
+        options,
+        adapt,
+        move || {
+            let _ = notify.try_send(());
+        },
+    )
+    .unwrap();
     let mut release = release;
     assert!(matches!(
         service.compact_snapshot_with(snapshot),
@@ -130,11 +148,10 @@ fn finished_but_unconsumed_application_work_still_refuses_compaction() {
         Err(ServiceError::NotQuiescent)
     ));
     release.now();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while service.durable_through() != Some(LogIndex(3)) {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    // The floor is published before the completion is queued. The worker wake
+    // establishes that the event is actually available without consuming it.
+    notified.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(service.durable_through(), Some(LogIndex(3)));
     assert!(matches!(
         service.compact_snapshot_with::<Source>(|_, _| panic!("completion not consumed")),
         Err(ServiceError::NotQuiescent)

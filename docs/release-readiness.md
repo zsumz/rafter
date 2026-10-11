@@ -259,9 +259,13 @@ the same private lock; readers never wait for application I/O and receive the
 observed durable floor with an owned result. Refusals preserve the callback,
 and callback panic closes admission, poisons the view, and wakes termination
 without letting queued writes reuse it. There is no query mailbox or model
-copy. The real-file ledger consumer reads through the public API and compares
-the result with reopened state. This primitive still needs service lifecycle
-and managed client integration: it does not itself establish a Raft read grant.
+copy. `DurableService::try_read_application` now applies lifecycle admission
+before lending that view, preserving callbacks on refusal and fencing caught
+query panics. The real-file ledger consumer queries after actual read grants
+before and after reopening, including protocol-only barriers, then checks the
+same state after compaction and snapshot installation. Managed client ownership
+remains to be integrated; the read operation itself does not establish a Raft
+read grant.
 
 The existing managed `TransportRaftDriver` now also bounds completed results
 retained for clients. Its original per-kind unresolved limit allowed an
