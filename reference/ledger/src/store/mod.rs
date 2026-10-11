@@ -29,8 +29,8 @@
 //! The image is exactly the adapter's application snapshot frame. The contract
 //! enumerates the same facts for the durable transaction and for the
 //! application snapshot, so encoding them twice would be two chances to forget
-//! the deduplication cache. Recovery decodes an image through
-//! [`Ledger::from_snapshot`], which is the model's own validating restore path,
+//! the deduplication cache. Recovery decodes an image through the model-owned
+//! restore checks shared with [`Ledger::from_snapshot`],
 //! so a frame whose checksums verify still cannot produce a ledger that
 //! violates a resource or supply invariant.
 //!

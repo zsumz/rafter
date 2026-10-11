@@ -177,15 +177,33 @@ model's validating restore path. An install whose payload index disagrees with
 the declared index is refused, as is an install that would move the applied
 index backwards.
 
-Collection counts are untrusted. Before reserving an account or session vector,
+Collection counts are untrusted. Before decoding and allocating their records,
 the decoder verifies that the remaining payload can contain every declared
 record: at least 16 bytes per account plus the following four-byte session
 count, and at least 13 bytes per session. Checked arithmetic refuses a minimum
-extent that is not addressable. This prevents a tiny malformed frame from
-driving a large reservation; it does not replace configured model bounds or
-make the current whole-payload decoder a streaming implementation. The same
-decoder protects inline installation, promoted snapshot files, and journal
+extent that is not addressable. Configured account/session limits are checked
+at their count fields, before model insertion. The decoder builds one temporary
+ledger directly, using the same model-owned validator as `Ledger::from_snapshot`;
+it does not collect an intermediate vector of snapshot records. The same field
+grammar protects inline installation, promoted snapshot files, and journal
 images. A refusal publishes neither application state nor a new applied floor.
+
+Promoted installation decodes through `SnapshotPayloadReader`, whose own buffer
+retains at most one 16 KiB encoded chunk. The source backend owns any separate
+caching or opening buffers. Before opening a snapshot store, admission checks the
+descriptor's `ledger` kind, version 1, exact applied index, and configured byte
+limit. The schema's maximum is 33 fixed bytes, 16 per account, and 63 per cached
+session; account counts are also capped by their u32 wire field. The decoder
+validates record syntax, bounds, uniqueness, supply, and complete consumption;
+the reader's final receipt verifies length and CRC32 before the temporary ledger
+can be published. Current live state remains present during validation, so
+model memory is still proportional to the configured state bounds.
+
+This is streamed decoding, not a claim that all snapshot maintenance uses
+constant additional memory. Encoding still creates an application snapshot
+buffer, journal publication still builds a whole image, and journal opening
+still reads the journal into memory. Their streaming and crash qualification
+remain separate work.
 
 The durable adapter's application transaction must atomically persist:
 

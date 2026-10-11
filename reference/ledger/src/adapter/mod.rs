@@ -69,11 +69,12 @@ pub enum LedgerAdapterError {
         snapshot_index: LogIndex,
         applied_index: LogIndex,
     },
-    /// A snapshot install's application bytes could not be obtained.
+    /// A snapshot install's application bytes could not be obtained or verified.
     ///
     /// Either it carried no inline payload and no descriptor naming a promoted
     /// transfer, or this replica's snapshot source could not serve that
-    /// transfer. Both leave the same nothing to install, and it refuses rather
+    /// transfer, or the descriptor, configured byte limit, or payload integrity
+    /// check failed. These leave no verified state to install, and it refuses rather
     /// than installing an empty ledger over live state.
     SnapshotPayloadUnavailable { applied_index: LogIndex },
     /// A decoded snapshot violated a model resource or supply invariant.
@@ -294,11 +295,19 @@ impl ReplicatedStateMachine for LedgerStateMachine {
         &mut self,
         snapshot: ApplicationSnapshot,
     ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
-        let ledger_snapshot =
-            discipline::admit_install(&snapshot, self.applied_index, Some(&self.promoted))?;
-        self.ledger = Ledger::from_snapshot(self.config, ledger_snapshot)
-            .map_err(LedgerAdapterError::Snapshot)?;
+        self.ledger = discipline::admit_install(
+            &snapshot,
+            self.applied_index,
+            self.config,
+            Some(&self.promoted),
+        )?;
         self.applied_index = snapshot.applied_index;
         Ok(())
+    }
+}
+
+impl From<SnapshotError> for LedgerAdapterError {
+    fn from(error: SnapshotError) -> Self {
+        Self::Snapshot(error)
     }
 }

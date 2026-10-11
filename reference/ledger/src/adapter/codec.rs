@@ -1,14 +1,22 @@
+//! Version 1 command and snapshot encoding, with a shared decoding grammar.
+
+mod input;
+mod read;
+mod snapshot;
+
+use read::Cursor;
+pub(crate) use snapshot::{decode_snapshot, decode_snapshot_stream, snapshot_payload_limit};
+
 use std::{error::Error, fmt};
 
 use crate::{
-    AccountId, Amount, BusinessRejection, ClientId, Command, LedgerSnapshot, Mutation,
-    MutationResult, RequestIdentity, Sequence, SessionEpoch, SessionView,
+    BusinessRejection, ClientId, Command, LedgerSnapshot, Mutation, MutationResult, RequestIdentity,
 };
 
 /// Version byte of the replicated command frame.
 const COMMAND_FORMAT_VERSION: u8 = 1;
 /// Version byte of the application snapshot frame.
-const SNAPSHOT_FORMAT_VERSION: u8 = 1;
+pub(super) const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 
 const COMMAND_OPEN_SESSION: u8 = 1;
 const COMMAND_EXECUTE: u8 = 2;
@@ -230,51 +238,6 @@ pub fn encode_snapshot(
     Ok(bytes)
 }
 
-/// Decodes an application snapshot frame into its applied index and the
-/// opaque model snapshot.
-///
-/// # Errors
-///
-/// Returns a codec error when the frame is truncated, carries trailing bytes,
-/// names an unknown kind, or violates a nonzero field of the contract.
-/// Collection counts must fit the remaining frame before they may reserve memory.
-pub fn decode_snapshot(payload: &[u8]) -> Result<(u64, LedgerSnapshot), LedgerCodecError> {
-    let mut cursor = Cursor::new(payload);
-    let version = cursor.take_u8()?;
-    if version != SNAPSHOT_FORMAT_VERSION {
-        return Err(LedgerCodecError::UnsupportedSnapshotVersion { version });
-    }
-
-    let applied_index = cursor.take_u64()?;
-    let successful_deposits = cursor.take_u128()?;
-
-    let account_count = cursor.take_len()?;
-    // Each account has two u64 fields; the session-count field must still fit.
-    cursor.require_records(account_count, 16, 4)?;
-    let mut accounts = Vec::with_capacity(account_count);
-    for _ in 0..account_count {
-        accounts.push((AccountId::new(cursor.take_u64()?), cursor.take_u64()?));
-    }
-
-    let session_count = cursor.take_len()?;
-    // Even an uncached session needs a u32 id, u64 epoch, and one marker byte.
-    cursor.require_records(session_count, 13, 0)?;
-    let mut sessions = Vec::with_capacity(session_count);
-    for _ in 0..session_count {
-        sessions.push(SessionView {
-            client_id: cursor.take_client()?,
-            session_epoch: cursor.take_session_epoch()?,
-            cached: cursor.take_cached_completion()?,
-        });
-    }
-    cursor.finish()?;
-
-    Ok((
-        applied_index,
-        LedgerSnapshot::from_parts(accounts, sessions, successful_deposits),
-    ))
-}
-
 fn put_u64(bytes: &mut Vec<u8>, value: u64) {
     bytes.extend_from_slice(&value.to_be_bytes());
 }
@@ -348,176 +311,5 @@ const fn rejection_tag(rejection: BusinessRejection) -> u8 {
         BusinessRejection::BalanceOverflow => REJECTION_BALANCE_OVERFLOW,
         BusinessRejection::SupplyOverflow => REJECTION_SUPPLY_OVERFLOW,
         BusinessRejection::AccountNotEmpty => REJECTION_ACCOUNT_NOT_EMPTY,
-    }
-}
-
-struct Cursor<'a> {
-    bytes: &'a [u8],
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes }
-    }
-
-    fn take(&mut self, required: usize) -> Result<&'a [u8], LedgerCodecError> {
-        let Some((field, rest)) = self.bytes.split_at_checked(required) else {
-            return Err(LedgerCodecError::TruncatedFrame {
-                required,
-                available: self.bytes.len(),
-            });
-        };
-        self.bytes = rest;
-        Ok(field)
-    }
-
-    fn take_u8(&mut self) -> Result<u8, LedgerCodecError> {
-        Ok(self.take(1)?[0])
-    }
-
-    fn take_u32(&mut self) -> Result<u32, LedgerCodecError> {
-        let field = self.take(4)?;
-        Ok(u32::from_be_bytes(
-            field.try_into().expect("four bytes were taken"),
-        ))
-    }
-
-    fn take_u64(&mut self) -> Result<u64, LedgerCodecError> {
-        let field = self.take(8)?;
-        Ok(u64::from_be_bytes(
-            field.try_into().expect("eight bytes were taken"),
-        ))
-    }
-
-    fn take_u128(&mut self) -> Result<u128, LedgerCodecError> {
-        let field = self.take(16)?;
-        Ok(u128::from_be_bytes(
-            field.try_into().expect("sixteen bytes were taken"),
-        ))
-    }
-
-    fn take_len(&mut self) -> Result<usize, LedgerCodecError> {
-        let length = self.take_u32()?;
-        usize::try_from(length).map_err(|_| LedgerCodecError::LengthOutOfRange {
-            length: u64::from(length),
-        })
-    }
-
-    fn require_records(
-        &self,
-        count: usize,
-        minimum_record_bytes: usize,
-        following_bytes: usize,
-    ) -> Result<(), LedgerCodecError> {
-        let required = count
-            .checked_mul(minimum_record_bytes)
-            .and_then(|bytes| bytes.checked_add(following_bytes))
-            .ok_or(LedgerCodecError::LengthOutOfRange {
-                length: u64::try_from(count).unwrap_or(u64::MAX),
-            })?;
-        if required > self.bytes.len() {
-            return Err(LedgerCodecError::TruncatedFrame {
-                required,
-                available: self.bytes.len(),
-            });
-        }
-        Ok(())
-    }
-
-    fn take_client(&mut self) -> Result<ClientId, LedgerCodecError> {
-        Ok(ClientId::new(self.take_u32()?))
-    }
-
-    fn take_session_epoch(&mut self) -> Result<SessionEpoch, LedgerCodecError> {
-        SessionEpoch::new(self.take_u64()?).ok_or(LedgerCodecError::ZeroValuedField {
-            field: NonZeroField::SessionEpoch,
-        })
-    }
-
-    fn take_sequence(&mut self) -> Result<Sequence, LedgerCodecError> {
-        Sequence::new(self.take_u64()?).ok_or(LedgerCodecError::ZeroValuedField {
-            field: NonZeroField::Sequence,
-        })
-    }
-
-    fn take_amount(&mut self) -> Result<Amount, LedgerCodecError> {
-        Amount::new(self.take_u64()?).ok_or(LedgerCodecError::ZeroValuedField {
-            field: NonZeroField::Amount,
-        })
-    }
-
-    fn take_mutation(&mut self) -> Result<Mutation, LedgerCodecError> {
-        match self.take_u8()? {
-            MUTATION_OPEN_ACCOUNT => Ok(Mutation::OpenAccount {
-                account_id: AccountId::new(self.take_u64()?),
-            }),
-            MUTATION_DEPOSIT => Ok(Mutation::Deposit {
-                account_id: AccountId::new(self.take_u64()?),
-                amount: self.take_amount()?,
-            }),
-            MUTATION_TRANSFER => Ok(Mutation::Transfer {
-                from: AccountId::new(self.take_u64()?),
-                to: AccountId::new(self.take_u64()?),
-                amount: self.take_amount()?,
-            }),
-            MUTATION_CLOSE_ACCOUNT => Ok(Mutation::CloseAccount {
-                account_id: AccountId::new(self.take_u64()?),
-            }),
-            tag => Err(LedgerCodecError::UnknownMutationTag { tag }),
-        }
-    }
-
-    fn take_result(&mut self) -> Result<MutationResult, LedgerCodecError> {
-        match self.take_u8()? {
-            RESULT_ACCOUNT_OPENED => Ok(MutationResult::AccountOpened),
-            RESULT_DEPOSITED => Ok(MutationResult::Deposited {
-                balance: self.take_u64()?,
-            }),
-            RESULT_TRANSFERRED => Ok(MutationResult::Transferred {
-                from_balance: self.take_u64()?,
-                to_balance: self.take_u64()?,
-            }),
-            RESULT_ACCOUNT_CLOSED => Ok(MutationResult::AccountClosed),
-            RESULT_REJECTED => Ok(MutationResult::Rejected(self.take_rejection()?)),
-            tag => Err(LedgerCodecError::UnknownResultTag { tag }),
-        }
-    }
-
-    fn take_rejection(&mut self) -> Result<BusinessRejection, LedgerCodecError> {
-        match self.take_u8()? {
-            REJECTION_ACCOUNT_ALREADY_EXISTS => Ok(BusinessRejection::AccountAlreadyExists),
-            REJECTION_ACCOUNT_CAPACITY_EXCEEDED => Ok(BusinessRejection::AccountCapacityExceeded),
-            REJECTION_ACCOUNT_NOT_FOUND => Ok(BusinessRejection::AccountNotFound),
-            REJECTION_SAME_ACCOUNT => Ok(BusinessRejection::SameAccount),
-            REJECTION_INSUFFICIENT_FUNDS => Ok(BusinessRejection::InsufficientFunds),
-            REJECTION_BALANCE_OVERFLOW => Ok(BusinessRejection::BalanceOverflow),
-            REJECTION_SUPPLY_OVERFLOW => Ok(BusinessRejection::SupplyOverflow),
-            REJECTION_ACCOUNT_NOT_EMPTY => Ok(BusinessRejection::AccountNotEmpty),
-            tag => Err(LedgerCodecError::UnknownRejectionTag { tag }),
-        }
-    }
-
-    fn take_cached_completion(
-        &mut self,
-    ) -> Result<Option<(Sequence, Mutation, MutationResult)>, LedgerCodecError> {
-        match self.take_u8()? {
-            NO_CACHED_COMPLETION => Ok(None),
-            CACHED_COMPLETION => Ok(Some((
-                self.take_sequence()?,
-                self.take_mutation()?,
-                self.take_result()?,
-            ))),
-            marker => Err(LedgerCodecError::UnknownCacheMarker { marker }),
-        }
-    }
-
-    const fn finish(&self) -> Result<(), LedgerCodecError> {
-        if self.bytes.is_empty() {
-            Ok(())
-        } else {
-            Err(LedgerCodecError::TrailingBytes {
-                remaining: self.bytes.len(),
-            })
-        }
     }
 }

@@ -285,3 +285,14 @@ impl Error for LedgerStoreError {
         }
     }
 }
+
+impl From<LedgerCodecError> for LedgerStoreError {
+    fn from(error: LedgerCodecError) -> Self {
+        Self::Image(error)
+    }
+}
+impl From<SnapshotError> for LedgerStoreError {
+    fn from(error: SnapshotError) -> Self {
+        Self::Snapshot(error)
+    }
+}

@@ -1,3 +1,8 @@
+//! Ledger transitions and opaque snapshot state; restoration has one validating owner.
+
+mod restore;
+pub(crate) use restore::Restore;
+
 use std::{cmp::Ordering, collections::BTreeMap};
 
 use crate::{
@@ -32,7 +37,7 @@ impl LedgerSnapshot {
     ///
     /// Snapshot contents stay opaque outside this crate. The adapter reads
     /// them only to define its versioned byte representation; it never
-    /// reconstructs ledger state without [`Ledger::from_snapshot`].
+    /// bypasses the model validator shared by decoding and [`Ledger::from_snapshot`].
     pub(crate) fn accounts(&self) -> &[(AccountId, u64)] {
         &self.accounts
     }
@@ -58,39 +63,6 @@ impl LedgerSnapshot {
     /// Returns the cumulative successful external deposits.
     pub(crate) const fn successful_deposits(&self) -> u128 {
         self.successful_deposits
-    }
-
-    /// Rebuilds a snapshot from decoded parts.
-    ///
-    /// This performs no validation: every bound, ownership, and supply rule is
-    /// enforced by [`Ledger::from_snapshot`] when the snapshot is restored.
-    pub(crate) fn from_parts(
-        accounts: Vec<(AccountId, u64)>,
-        sessions: Vec<SessionView>,
-        successful_deposits: u128,
-    ) -> Self {
-        Self {
-            accounts,
-            sessions: sessions
-                .into_iter()
-                .map(|session| {
-                    (
-                        session.client_id,
-                        SessionRecord {
-                            session_epoch: session.session_epoch,
-                            cached: session.cached.map(|(sequence, mutation, result)| {
-                                CachedCompletion {
-                                    sequence,
-                                    mutation,
-                                    result,
-                                }
-                            }),
-                        },
-                    )
-                })
-                .collect(),
-            successful_deposits,
-        }
     }
 }
 
@@ -145,45 +117,16 @@ impl Ledger {
         config: LedgerConfig,
         snapshot: LedgerSnapshot,
     ) -> Result<Self, SnapshotError> {
-        if snapshot.accounts.len() > config.max_accounts() {
-            return Err(SnapshotError::TooManyAccounts);
+        let mut restore = Restore::new(config, snapshot.successful_deposits);
+        restore.admit_accounts(snapshot.accounts.len())?;
+        restore.admit_sessions(snapshot.sessions.len())?;
+        for (id, balance) in snapshot.accounts {
+            restore.account(id, balance)?;
         }
-        if u32::try_from(snapshot.sessions.len())
-            .map_or(true, |session_count| session_count > config.max_clients())
-        {
-            return Err(SnapshotError::TooManySessions);
+        for (id, session) in snapshot.sessions {
+            restore.record(id, session)?;
         }
-
-        let mut accounts = BTreeMap::new();
-        let mut total_balance = 0_u128;
-        for (account_id, balance) in snapshot.accounts {
-            if accounts.insert(account_id, balance).is_some() {
-                return Err(SnapshotError::DuplicateAccount);
-            }
-            total_balance = total_balance
-                .checked_add(u128::from(balance))
-                .ok_or(SnapshotError::SupplyOverflow)?;
-        }
-        if total_balance != snapshot.successful_deposits {
-            return Err(SnapshotError::SupplyMismatch);
-        }
-
-        let mut sessions = BTreeMap::new();
-        for (client_id, session) in snapshot.sessions {
-            if !config.admits_client(client_id) {
-                return Err(SnapshotError::ClientOutOfRange);
-            }
-            if sessions.insert(client_id, session).is_some() {
-                return Err(SnapshotError::DuplicateSession);
-            }
-        }
-
-        Ok(Self {
-            config,
-            accounts,
-            sessions,
-            successful_deposits: snapshot.successful_deposits,
-        })
+        restore.finish()
     }
 
     /// Applies one replicated command.

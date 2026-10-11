@@ -306,22 +306,45 @@ reopen evidence, not a power-loss sweep. Source/reader failure tests also cover
 early completion, wrong lengths, oversized allocations, empty payloads, and
 regressing or excessive descriptors before I/O.
 
-Still required before freezing this API: an application schema integration with
-bounded encoding/decoding and interrupted/crash-safe publication
-and restart qualification beyond the opaque-file fixture. Complete those paths
-without materializing the whole application state in a snapshot buffer.
+The ledger now installs its actual version-1 schema through that bounded reader.
+Promoted descriptor kind, version, index, and configured byte-limit checks run
+before opening the snapshot store. One shared grammar decodes inline bytes,
+streamed chunks, and journal images into temporary model state, checking counts
+before record allocation. A model-owned restorer centralizes bounds, uniqueness,
+and supply validation without intermediate snapshot-record vectors. Publication
+requires complete schema consumption and the reader's final CRC32 receipt.
+The stream retains one encoded chunk of at most 16 KiB; the old live ledger and
+new temporary ledger remain proportional to the configured model bounds.
+
+A generated 2 MiB + 46-byte schema restores 131,072 accounts in 129 bounded
+source calls. A separate real-file consumer installs a multi-chunk ledger,
+reopens its journal, and replays an exact cached request without another deposit.
+Negative checks cover descriptor admission before source/store effects, malformed
+records, configured count limits before decoding, checksum failure, and faulty
+source chunks. Schema version and valid encoded bytes remain unchanged.
+The streaming-decoder slice passes 496 source tests and 501 archive/MSRV tests
+(57 existing ignored profiles in each lane), strict consumer lint and docs,
+zrail, and all seven exact-package phases including storage, wire, and mixed TLS
+compatibility on Rust 1.88.0. Four deliberate bypasses of checksum completion,
+account/session admission, and source-opening admission fail their regressions.
+
+Still required before freezing this API: bounded application encoding, streamed
+journal publication and recovery, and interrupted/crash-safe publication
+qualification. The ledger's current encoding, journal replacement, and journal
+opening still materialize buffers; successful streamed decoding does not qualify
+those remaining paths.
 
 One prerequisite is now fixed in the ledger consumer's existing schema decoder:
 untrusted account/session counts previously reached `Vec::with_capacity` before
 the decoder checked whether the payload could contain those records. Checked
-minimum-byte admission now runs before both reservations, including space for
+minimum-byte admission now runs before record decoding, including space for
 the field following the account records. Regressions cover impossible and
 maximum counts, every truncated prefix of a valid frame, unchanged v1 bytes,
 and refused promoted files preserving the journal and applied floor after
 reopen. Removing either admission check fails the modest-count regression.
-This bounds allocation amplification from malformed counts; full application
-streaming and publication crash qualification remain open.
-Validation passes 487 source-consumer tests and 492 archive/MSRV tests, with
+This bounds allocation amplification from malformed counts; application encoding
+and publication crash qualification remain open.
+The earlier count-admission slice passed 487 source-consumer tests and 492 archive/MSRV tests, with
 57 existing ignored profiles in each lane. All seven exact-package phases,
 including storage, wire, and mixed-version TLS compatibility, pass on Rust
 1.88.0. Strict consumer lint/documentation checks and zrail also pass; this

@@ -49,8 +49,7 @@ pub(super) fn scan_journal(
             Err(tail) => break Some(tail),
         };
 
-        let (applied_index, snapshot) =
-            decode_snapshot(frame.image).map_err(LedgerStoreError::Image)?;
+        let (applied_index, ledger) = decode_snapshot::<LedgerStoreError>(frame.image, config)?;
         let applied_index = LogIndex(applied_index);
         if let Some(previous) = previous_index {
             if applied_index < previous {
@@ -60,7 +59,6 @@ pub(super) fn scan_journal(
                 });
             }
         }
-        let ledger = Ledger::from_snapshot(config, snapshot).map_err(LedgerStoreError::Snapshot)?;
 
         previous_index = Some(applied_index);
         image = Some((ledger, applied_index));
