@@ -89,10 +89,15 @@ multiplexed peer connection.
 The owner-soak job records every tracked source hash and requires a clean checkout
 before execution. Its always-run verification requires the same Git head, the
 same tracked bytes and a clean checkout afterward, including when the soak fails.
-Both inventories and status records accompany the log. The generated
-`reference/Cargo.lock` remains a separate retained input, not a tracked source
-file. These endpoint checks detect retained changes; they do not prove that a
-file was never transiently modified and restored during execution.
+Both inventories and status records accompany the log. The fast, nightly, and
+weekly counter-profile jobs enforce the same clean-source endpoint checks and
+retain compiler identity, workload output, and the complete profile log. Their
+64-, 1,024-, and 4,096-group histories use the real adapter in a deterministic
+in-memory fixture; they do not measure file-backed or multi-host TLS service
+performance. The generated `reference/Cargo.lock` remains a separate retained
+input for these jobs and the owner soak, not a tracked source file. These
+endpoint checks detect retained changes; they do not prove that a file was never
+transiently modified and restored during execution.
 
 The Maelstrom workflows use the repository-pinned verifier setup and preserve
 receipts/replay artifacts. They are sampled system evidence and do not replace

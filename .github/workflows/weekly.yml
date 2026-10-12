@@ -625,12 +625,35 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
+      - name: Record counter profile source identity
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-counter"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-counter/source-head.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-counter/source-before.status"
+          test ! -s "$RUNNER_TEMP/reference-counter/source-before.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-counter/source-before.sha256"
+          rustc --version --verbose > "$RUNNER_TEMP/reference-counter/rustc.txt"
+          cargo --version > "$RUNNER_TEMP/reference-counter/cargo.txt"
       - name: Counter reference weekly profile
-        run: scripts/counter-profile counter-weekly
+        run: |
+          scripts/counter-profile counter-weekly --artifacts "$RUNNER_TEMP/reference-counter/workload" 2>&1 | tee "$RUNNER_TEMP/reference-counter/profile.log"
+      - name: Verify counter profile source preservation
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-counter"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-counter/source-head-after.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-counter/source-after.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-counter/source-after.sha256"
+          test ! -s "$RUNNER_TEMP/reference-counter/source-after.status"
+          cmp "$RUNNER_TEMP/reference-counter/source-head.txt" "$RUNNER_TEMP/reference-counter/source-head-after.txt"
+          cmp "$RUNNER_TEMP/reference-counter/source-before.sha256" "$RUNNER_TEMP/reference-counter/source-after.sha256"
+          printf 'preserved\n' > "$RUNNER_TEMP/reference-counter/source-preserved.txt"
       - name: Upload counter weekly evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: counter-reference-weekly-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/reference-counter/counter-weekly/
+          path: |
+            ${{ runner.temp }}/reference-counter/
+            reference/Cargo.lock
           if-no-files-found: error

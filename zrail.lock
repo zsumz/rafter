@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "3569ac2dbd1468ebf183ab73429ae51627436245521016bdfc3323bb200d3010"
+sha256 = "75610bf08babeb95c4bf66553350db5b5870467d699767311aaeed046b361b95"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1265,7 +1265,7 @@ sha256 = "7ae4cdd9c7d91b6d352fdc68d1e1daaa8780c803f1cadedb09245efc5084fa5a"
 
 [[gate.input]]
 path = ".github/workflows/nightly.yml"
-sha256 = "fc2431e2fe2f29fb1480a50f4dcfe37309c93a92e23d911f83ffc10cd84ed205"
+sha256 = "18d3aead0221965935b1116dfbb79a11159672feac8337e556e2849b0bf088f8"
 
 [[gate.input]]
 path = "scripts/archive_dependencies.py"
