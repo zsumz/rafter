@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the standalone binary with real processes, TLS, and crash recovery."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -187,6 +188,35 @@ class Cluster:
         finally:
             obstacle.rmdir()
 
+    def check_load_capture(self, baseline):
+        leader = self.leader()
+        follower = next(node for node in self.children if node != leader)
+        for node, label, expected in [
+            (leader, "load-leader", {"write_acknowledged": 3, "read_succeeded": 3}),
+            (follower, "load-follower", {"write_refused": 3, "read_refused": 3}),
+        ]:
+            output = self.root / label
+            subprocess.run([sys.executable, str(Path(__file__).with_name("load.py")),
+                            "--node", str(node), "--http-base", str(self.http_base),
+                            "--output", str(output), "--seconds", "30", "--max-operations", "6",
+                            "--pause-ms", "0", "--read-every", "2"],
+                           check=True, timeout=40, stdout=subprocess.PIPE, text=True)
+            summary = json.loads((output / "summary.json").read_text())
+            assert summary["status"] == "completed" and summary["outcomes"] == expected, summary
+            assert summary["invoked"] == summary["completed"] == 6, summary
+            assert summary["unresolved_invocations"] == 0, summary
+            raw = (output / "history.jsonl").read_bytes()
+            assert summary["history_sha256"] == hashlib.sha256(raw).hexdigest()
+            assert summary["history_bytes"] == len(raw)
+            events = [json.loads(line) for line in raw.splitlines()]
+            assert [(event["event"], event["id"]) for event in events] == [
+                (kind, number) for number in range(1, 7) for kind in ("invoke", "complete")]
+            if node == leader:
+                assert [event["value"] for event in events if event["event"] == "complete"] == [
+                    baseline + (number + 1) // 2 for number in range(1, 7)]
+        self.converged(baseline + 3)
+        print("PASS: load histories bind exact outcomes; follower redirects never replay writes", flush=True)
+
     def close(self):
         for child in self.children.values():
             if child.poll() is None:
@@ -270,6 +300,7 @@ def exercise(binary, root, explicit_peers=False):
         cluster.start(leader)
         cluster.converged(value + 1)
         print("PASS: failed application save closes clients; restart replays the committed write", flush=True)
+        cluster.check_load_capture(value + 1)
         for node in list(cluster.children):
             cluster.stop(node, graceful=True)
         print("PASS: clean shutdown; standalone counter smoke passed", flush=True)

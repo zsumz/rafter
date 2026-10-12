@@ -86,6 +86,8 @@ def main():
         shutil.copyfile(PROJECT / "Cargo.lock", copied / "Cargo.lock")
         shutil.copyfile(PROJECT / "smoke.py", copied / "smoke.py")
         shutil.copyfile(PROJECT / "pressure.py", copied / "pressure.py")
+        shutil.copyfile(PROJECT / "load.py", copied / "load.py")
+        shutil.copyfile(PROJECT / "test_load.py", copied / "test_load.py")
         shutil.copytree(PROJECT / "tests", copied / "tests")
         env = dict(os.environ)
         target = Path(env.get("CARGO_TARGET_DIR", ROOT / "target/counter-guide")).resolve() / args.mode
@@ -99,6 +101,7 @@ def main():
         used = validate_graph(metadata, crates, revision, required, args.mode, copied)
         print(f"PASS: {len(used)} Rafter crates resolve to {args.mode}; standalone pin {revision}", flush=True)
         commands = [
+            [sys.executable, "-m", "unittest", "test_load.py"],
             ["rustc", "--version"],
             ["cargo", "fmt", "--all", "--", "--check"],
             ["cargo", "clippy", *config_args, "--locked", "--all-targets", "--", "-D", "warnings"],

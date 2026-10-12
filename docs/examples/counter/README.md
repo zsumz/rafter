@@ -103,3 +103,49 @@ and `zcheck run counter-pressure` require it against the checkout. Only the temp
 application files, update the explanations and excerpts as needed;
 `python3 scripts/check-counter-guide --update` refreshes the complete source
 reference and checks the excerpts without running Cargo.
+
+
+## Capture a sustained workload
+
+With Python 3.11 or newer, run one local client on each test host, using that host's
+node ID. For example, on node 1's host:
+
+```sh
+python3 load.py --node 1 --seconds 1800 --output /tmp/counter-node-1-run
+```
+
+The output directory must be new and its parent must exist. `--http-base` selects
+the same base port used by the local server. The client checks the node identity,
+keeps one active client exchange, increments by one, and makes every fifth
+operation a quorum read. `--read-every`, `--pause-ms`, and `--timeout` control that
+mix, the pause after completion, and the whole request deadline. `--max-operations`
+can additionally cap the number of dispatched operations. The duration bounds new
+dispatches; an already dispatched operation can finish within its request timeout.
+
+The client always contacts loopback, ignores HTTP proxy settings, and never follows
+redirects or retries writes. A follower's redirect is recorded as a refusal. A
+timeout, malformed acknowledgement, or uncertain server error remains uncertain;
+only an explicit pre-append refusal clears that uncertainty. Later operations have
+new IDs and are not retries of an earlier increment. Run clients on all replicas
+to continue supplying work when leadership moves.
+
+`history.jsonl` records each invocation before sending and each completion with its
+outcome and observed latency. An interrupted invocation without a completion stays
+unresolved. Histories stream to disk with bounded response buffers; their disk size
+grows with the workload. `summary.json` binds the exact history bytes by SHA-256,
+records outcome counts and latency range, and distinguishes complete from incomplete
+capture. `invocation.json` records the client source hash, host, parameters and
+endpoint; `initial-metrics.json` preserves the initial local node observation.
+Existing output is never overwritten. A missing or incomplete summary requires
+inspection, and a completed capture may contain no successful operations.
+
+These files are workload observations, not a qualification verdict. Capture the
+initial and final quorum value, server source/binary identities, topology, fault
+timeline, resource samples and all client histories when qualifying a cluster.
+Monotonic timestamps from different hosts cannot establish a shared ordering.
+HTTP round-trip latency includes the front end, consensus and storage; serial
+clients and history writes also affect load, so this is not a peak-throughput
+benchmark or a whole-host resource bound. Multi-host qualification remains separate
+from the local smoke suite. `python3 -m unittest test_load.py` exercises deadlines,
+cancellation, redirects, response bounds and uncertain outcomes; both guide modes
+also verify captured histories against real leader and follower processes.
