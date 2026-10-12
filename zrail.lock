@@ -1349,7 +1349,7 @@ sha256 = "19e1ed5247dad8e14aa399a179d4c350651cd1d08bdacd021fa6da39b385ac96"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "9746b750986e9ffedee81064268ac784e1cd08fee199e410e56011ea06086fa3"
+sha256 = "22498c765256ea53ae34be109fe3fa438772ecfecca2bc34c2dc8218496631da"
 
 [[gate]]
 name = "rustdoc"

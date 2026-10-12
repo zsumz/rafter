@@ -113,6 +113,73 @@ class QualificationReceipt(unittest.TestCase):
         self.assertEqual(receipt['status'], 'failed')
         self.assertFalse(receipt['binary_preserved'])
 
+    def test_leader_only_owns_every_volume_and_selects_the_observed_leader(self):
+        from io_stall_majority import MajorityCounterWorkload
+        binary = self.root / 'majority-binary'
+        binary.write_bytes(b'fixture')
+        for defect in [None, 'second_create', 'first_close', 'counter_close', 'second_resume']:
+            with self.subTest(defect=defect):
+                order, volumes = [], []
+                for node in (1, 2, 3):
+                    volume = Mock(root=self.root / f'volume-{node}', image=self.root / f'image-{node}',
+                                  uuid=f'uuid-{node}', sectors=262144, loop=f'/dev/loop{node}')
+                    volume.name = f'mapping-{node}'
+                    volume.create.side_effect = lambda n=node: order.append(f'create-{n}')
+                    volume.resume.side_effect = lambda n=node: order.append(f'resume-{n}')
+                    volume.close.side_effect = lambda n=node: order.append(f'close-{n}')
+                    volumes.append(volume)
+                counter = Mock(spec=MajorityCounterWorkload)
+                counter.leader = 2
+                counter.close.side_effect = lambda: order.append('counter-close')
+                if defect == 'second_create':
+                    volumes[1].create.side_effect = RuntimeError('partial create')
+                elif defect == 'first_close':
+                    volumes[0].close.side_effect = RuntimeError('first close failed')
+                elif defect == 'counter_close':
+                    counter.close.side_effect = RuntimeError('unreaped counter')
+                elif defect == 'second_resume':
+                    volumes[1].resume.side_effect = RuntimeError('resume failed')
+                with patch.object(runner, 'Commands'), \
+                        patch.object(runner, 'DisposableVolume', side_effect=volumes), \
+                        patch.object(runner, 'run_probe', return_value=['modeled']) as probe, \
+                        patch.object(runner, 'source_snapshot', return_value=self.snapshot), \
+                        patch.object(runner.tempfile, 'mkdtemp', return_value=str(self.root)), \
+                        patch('io_stall_majority.MajorityCounterWorkload', return_value=counter):
+                    receipt = runner.qualify(self.root / f'majority-{defect}', binary, leader_only=True)
+                self.assertEqual(receipt['status'], 'passed' if defect is None else 'failed')
+                if defect == 'second_create':
+                    probe.assert_not_called()
+                    counter.close.assert_not_called()
+                    volumes[0].close.assert_called_once()
+                    volumes[1].close.assert_called_once()
+                    volumes[2].close.assert_not_called()
+                    self.assertEqual(len(receipt['volumes']), 2)
+                    continue
+                self.assertIs(probe.call_args.args[0], volumes[1])
+                self.assertEqual(receipt['fault_node'], 2)
+                self.assertEqual(receipt['volume']['uuid'], 'uuid-2')
+                self.assertEqual(len(receipt['volumes']), 3)
+                for volume in volumes:
+                    volume.resume.assert_called_once()
+                    if defect == 'counter_close':
+                        volume.close.assert_not_called()
+                    else:
+                        volume.close.assert_called_once()
+                if defect != 'counter_close':
+                    self.assertLess(order.index('resume-3'), order.index('counter-close'))
+                    self.assertLess(order.index('counter-close'), order.index('close-3'))
+                if defect == 'first_close':
+                    self.assertEqual(receipt['volume_cleanup'], 'failed')
+                    self.assertEqual(receipt['volumes'][2]['cleanup'], 'passed')
+
+    def test_leader_only_arguments_refuse_before_creating_evidence(self):
+        for arguments in [dict(leader_only=True), dict(counter_binary=self.root / 'missing',
+                                                     leader_only=True, crash_while_stalled=True)]:
+            destination = self.root / 'must-not-create'
+            with self.assertRaises(ValueError):
+                runner.qualify(destination, **arguments)
+            self.assertFalse(destination.exists())
+
     def test_vm_selection_required_before_side_effects(self):
         artifacts = self.root / 'must-not-exist'
         result = subprocess.run([sys.executable, str(SCRIPTS / 'check-io-stall'),

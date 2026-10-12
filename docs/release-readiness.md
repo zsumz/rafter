@@ -85,6 +85,11 @@ Downloaded evidence verifies all 24 pre-recovery files, including hidden storage
 locks, all 2,821 source hashes and complete resource cleanup. Acknowledged value
 106 survives cold recovery and the next write reaches 107. This models process
 loss with the kernel and page cache present, not physical power loss.
+The live-credit counter slice at `3ccf9d3e` passes both Linux cases: one retained
+write/eight bytes remains visible throughout each stall while published pending
+writes stay zero. All credits drain after recovery. The next isolated-leader
+case requires the two healthy replicas to acknowledge work before storage resumes;
+its Linux qualification is still pending.
 
 Stable-release qualification remains open. In priority order:
 

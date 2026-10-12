@@ -30,17 +30,23 @@ class CounterWorkload:
         self.events.append(dict(event=event, monotonic_ns=time.monotonic_ns(), **fields))
         (self.artifacts / 'counter-events.json').write_text(json.dumps(self.events, indent=2) + '\n')
 
-    def start(self):
+    def prepare_data(self):
         self.root.mkdir()
         with (self.root / 'certificates.log').open('w') as log:
             subprocess.run(['sh', str(PROJECT / 'certs.sh')], cwd=self.root,
                            stdout=log, stderr=log, check=True, timeout=60)
-        result = subprocess.run([str(self.cluster.binary), 'init'], cwd=self.mount,
-                                env=self.cluster.env, capture_output=True, text=True, timeout=15)
-        (self.artifacts / 'counter-init.stdout').write_text(result.stdout)
-        (self.artifacts / 'counter-init.stderr').write_text(result.stderr)
-        result.check_returncode()
+        self.initialize(self.mount, 'counter-init')
         (self.root / 'data').symlink_to(self.mount / 'data', target_is_directory=True)
+
+    def initialize(self, mount, label):
+        result = subprocess.run([str(self.cluster.binary), 'init'], cwd=mount,
+                                env=self.cluster.env, capture_output=True, text=True, timeout=15)
+        (self.artifacts / (label + '.stdout')).write_text(result.stdout)
+        (self.artifacts / (label + '.stderr')).write_text(result.stderr)
+        result.check_returncode()
+
+    def start(self):
+        self.prepare_data()
         for node in (1, 2, 3):
             self.cluster.start(node)
         self.leader = self.cluster.leader()

@@ -64,16 +64,18 @@ class Commands:
             write_json(self.artifacts / 'commands.json', self.records)
 
 
-def qualify(artifacts, counter_binary=None, crash_while_stalled=False):
+def qualify(artifacts, counter_binary=None, crash_while_stalled=False, leader_only=False):
     if crash_while_stalled and counter_binary is None:
         raise ValueError('crash qualification requires a counter binary')
+    if leader_only and (counter_binary is None or crash_while_stalled):
+        raise ValueError('leader-only qualification requires a counter binary and excludes crash mode')
     artifacts.mkdir(parents=True, exist_ok=False)
     receipt = dict(schema=1, status='failed', scope='Linux loop/ext4 fsync stall probe only',
-                   crash_while_stalled=crash_while_stalled,
+                   crash_while_stalled=crash_while_stalled, leader_only=leader_only, volumes=[],
                    host=platform.uname()._asdict(), python=sys.version,
                    runner_image=os.environ.get('ImageVersion'),
                    runner_environment=os.environ.get('RUNNER_ENVIRONMENT'))
-    volume = None
+    volumes = []
     counter = None
     binary_hash = None
     before = None
@@ -93,16 +95,30 @@ def qualify(artifacts, counter_binary=None, crash_while_stalled=False):
         run(['sudo', '-n', 'dmsetup', 'targets'])
         # A fresh directory owns every resource. Never accept an existing block path.
         temporary = Path(tempfile.mkdtemp(prefix='rafter-io-stall-'))
-        volume = DisposableVolume(temporary / 'volume', run)
-        receipt['volume'] = dict(root=str(volume.root), image=str(volume.image),
-                                 mapping=volume.name, uuid=volume.uuid, bytes=volume.sectors * 512)
-        volume.create()
-        receipt['volume']['loop'] = volume.loop
+        for index in range(3 if leader_only else 1):
+            volume = DisposableVolume(temporary / f'volume-{index + 1}', run)
+            volumes.append(volume)  # Own partial setup before attempting any create.
+            info = dict(root=str(volume.root), image=str(volume.image),
+                        mapping=volume.name, uuid=volume.uuid, bytes=volume.sectors * 512)
+            receipt['volumes'].append(info)
+            volume.create()
+            info['loop'] = volume.loop
+        volume = volumes[0]
         if counter_binary is not None:
             from io_stall_counter import CounterWorkload
-            counter = CounterWorkload(counter_binary, temporary / 'counter', volume.mount, artifacts,
-                                      crash_while_stalled=crash_while_stalled)
+            if leader_only:
+                from io_stall_majority import MajorityCounterWorkload
+                counter = MajorityCounterWorkload(counter_binary, temporary / 'counter',
+                    {node: owned.mount for node, owned in enumerate(volumes, 1)}, artifacts)
+                receipt['scope'] = 'One stalled leader and two healthy local TLS counter nodes on separate Linux loop/ext4 filesystems'
+            else:
+                counter = CounterWorkload(counter_binary, temporary / 'counter', volume.mount, artifacts,
+                                          crash_while_stalled=crash_while_stalled)
             counter.start()
+            if leader_only:
+                volume = volumes[counter.leader - 1]
+                receipt['fault_node'] = counter.leader
+        receipt['volume'] = receipt['volumes'][volumes.index(volume)]
         receipt['events'] = run_probe(volume, ROOT / 'scripts/io_stall_probe.py', artifacts,
                                      while_stalled=counter.while_stalled if counter else None)
         if counter is not None:
@@ -111,7 +127,7 @@ def qualify(artifacts, counter_binary=None, crash_while_stalled=False):
         failures.append('qualification: ' + repr(error))
         (artifacts / 'qualification-error.txt').write_text(traceback.format_exc())
     finally:
-        if volume is not None:
+        for volume in volumes:
             try:
                 volume.resume()
             except BaseException as error:
@@ -125,14 +141,17 @@ def qualify(artifacts, counter_binary=None, crash_while_stalled=False):
                 receipt['counter_cleanup'] = 'failed'
         if receipt.get('counter_cleanup') == 'failed':
             receipt['volume_cleanup'] = 'retained until counter children are reaped'
-        if volume is not None and receipt.get('counter_cleanup') != 'failed':
-            try:
-                volume.close()
-                receipt['volume_cleanup'] = 'passed'
-            except BaseException as error:
-                failures.append('volume cleanup: ' + repr(error))
-                receipt['volume_cleanup'] = 'failed'
-                (artifacts / 'cleanup-error.txt').write_text(traceback.format_exc())
+        if volumes and receipt.get('counter_cleanup') != 'failed':
+            receipt['volume_cleanup'] = 'passed'
+            for index, volume in enumerate(volumes):
+                try:
+                    volume.close()
+                    receipt['volumes'][index]['cleanup'] = 'passed'
+                except BaseException as error:
+                    failures.append(f'volume {index + 1} cleanup: ' + repr(error))
+                    receipt['volumes'][index]['cleanup'] = 'failed'
+                    receipt['volume_cleanup'] = 'failed'
+                    (artifacts / f'cleanup-error-{index + 1}.txt').write_text(traceback.format_exc())
         if binary_hash is not None:
             try:
                 if hashlib.sha256(counter_binary.read_bytes()).hexdigest() != binary_hash:
@@ -164,11 +183,15 @@ def main():
                         help='also exercise this checkout-built standalone TLS counter')
     parser.add_argument('--crash-while-stalled', action='store_true',
                         help='SIGKILL the counter nodes while I/O is held; preserve inputs before recovery')
+    parser.add_argument('--leader-only', action='store_true',
+                        help='stall only the leader mapping; require the healthy majority to make progress')
     parser.add_argument('--disposable-linux-vm', action='store_true',
                         help='explicitly select a disposable VM with passwordless sudo')
     args = parser.parse_args()
     if args.crash_while_stalled and args.counter_binary is None:
         parser.error('--crash-while-stalled requires --counter-binary')
+    if args.leader_only and (args.counter_binary is None or args.crash_while_stalled):
+        parser.error('--leader-only requires --counter-binary and excludes --crash-while-stalled')
     if not args.disposable_linux_vm or sys.platform != 'linux':
         parser.error('run only in a disposable Linux VM with --disposable-linux-vm')
     def interrupted(signum, _frame):
@@ -176,7 +199,7 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     receipt = qualify(args.artifacts.resolve(),
                       args.counter_binary.resolve() if args.counter_binary else None,
-                      args.crash_while_stalled)
+                      args.crash_while_stalled, args.leader_only)
     print(json.dumps({k: receipt.get(k) for k in
                       ['source', 'status', 'source_preserved', 'volume_cleanup', 'errors']}, indent=2))
     return 0 if receipt['status'] == 'passed' else 1

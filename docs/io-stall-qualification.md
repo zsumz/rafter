@@ -133,6 +133,39 @@ preservation and failure handling. The [Linux run at `f5a9a3c8`](https://github.
 passes the crash case with a 53.06-second hold and three verified `SIGKILL` exits.
 Downloaded evidence verifies all 24 pre-recovery files (including hidden storage
 locks), all 2,821 source hashes and complete resource cleanup. Acknowledged value
-106 survives cold recovery; the next write reaches 107. The live-credit metric
-assertions added afterward require a new run. This tests OS process loss with the
-host kernel and page cache still present; it does not simulate physical power loss.
+106 survives cold recovery; the next write reaches 107. The [live-credit run at `3ccf9d3e`](https://github.com/zsumz/rafter/actions/runs/38188937241)
+also passes both 53-second counter cases. Every stalled write observation reports
+one retained write/eight bytes while published pending writes remain zero; all
+live credits drain after resume or recovery. It verifies the same 24 crash inputs
+and all 2,821 source hashes. This tests OS process loss with the host kernel and
+page cache still present; it does not simulate physical power loss.
+
+## One stalled leader with a healthy majority
+
+`--leader-only` requires `--counter-binary` and is separate from crash mode. The
+runner creates three independently owned loop/ext4 mappings and initializes fresh
+bootstrap data on each. Each live replica opens only its own node directory on
+its assigned filesystem; the runner checks that their device identities differ.
+The other bootstrap directories are never opened by a replica.
+
+After an acknowledged baseline of 5 and convergence, the observed leader selects
+which mapping to suspend. The same independent probe proves that filesystem stays
+blocked. One increment submitted to the old leader must time out uncertainly;
+it is never retried. The two healthy replicas must elect a higher-term leader,
+complete a quorum read, acknowledge a fresh increment of 100 and read it back
+before the mapping resumes. The blocked replica's published role may be stale,
+so it is excluded from leader discovery during the hold.
+
+After resume, all replicas must converge. The aggregate uncertain increment stays
+bounded to zero or one, and the majority's acknowledgement cannot disappear. Live
+credits must drain, a new write must succeed, and orderly cold recovery must
+preserve that value and accept another write. Source and binary hashes, per-node
+filesystem identities, the selected fault mapping, operation outcomes and every
+resource cleanup are retained. All mappings are resumed before any child is
+reaped. Failed child cleanup retains all three volumes; independent volume cleanup
+is attempted even if another owned volume fails to close.
+
+Portable controls qualify these failure paths and reject three directories on
+one filesystem as isolation. Actual Linux execution remains required for this
+new case. It models separate virtual block devices on one host; it does not
+establish multi-host availability or physical disk/power-loss behavior.
