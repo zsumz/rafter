@@ -107,6 +107,9 @@ def main():
             [sys.executable, "pressure.py" if args.pressure else "smoke.py",
              str(target / "debug/rafter-counter")],
         ]
+        if not args.pressure:
+            commands.append([sys.executable, "smoke.py",
+                             str(target / "debug/rafter-counter"), "--explicit-peers"])
         for command in commands:
             print("Running:", " ".join(command), flush=True)
             subprocess.run(command, cwd=copied, env=env, check=True)

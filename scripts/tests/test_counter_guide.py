@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from scripts import counter_guide_deps as deps
 
@@ -108,6 +108,21 @@ class CounterGraph(unittest.TestCase):
 
 
 class SmokeOwnership(unittest.TestCase):
+    def test_local_smoke_does_not_inherit_remote_peer_configuration(self):
+        with patch.dict(SMOKE.os.environ, {"COUNTER_PEER_ADDRS": "remote"}), \
+                patch.object(SMOKE, "free_base", side_effect=[21000, 25000]):
+            cluster = SMOKE.Cluster(Path("counter"), Path("."))
+        self.assertNotIn("COUNTER_PEER_ADDRS", cluster.env)
+        self.assertEqual(cluster.peer_ports, {1: 25001, 2: 25002, 3: 25003})
+
+    def test_explicit_smoke_exercises_placement_independent_of_node_id(self):
+        with patch.object(SMOKE, "free_base", side_effect=[21000, 25000]):
+            cluster = SMOKE.Cluster(Path("counter"), Path("."), explicit_peers=True)
+        self.assertEqual(cluster.peer_ports, {1: 25003, 2: 25002, 3: 25001})
+        self.assertEqual(cluster.env["COUNTER_PEER_ADDRS"],
+                         "127.0.0.1:25003,127.0.0.1:25002,127.0.0.1:25001")
+        self.assertEqual(cluster.env["COUNTER_PEER_BASE"], "unused-with-explicit-addresses")
+
     def cluster(self):
         cluster = SMOKE.Cluster.__new__(SMOKE.Cluster)
         child = Mock()

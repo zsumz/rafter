@@ -43,11 +43,34 @@ membership administration or exactly-once increment retries. A write error
 reports `write_may_have_committed: false` only for a proven pre-append refusal;
 timeouts and unresolved outcomes remain uncertain.
 
+For explicit peer placement, set the same `COUNTER_PEER_ADDRS` on all three
+nodes, with numeric socket addresses in node 1, 2, 3 order, for example:
+
+```sh
+export COUNTER_PEER_ADDRS='192.0.2.11:7001,192.0.2.12:7002,192.0.2.13:7003'
+```
+
+Replace those documentation addresses with the hosts' actual interface addresses.
+Each node binds its own address and dials the other two directly using the existing
+TLS transport. Certificate names remain `node-1`, `node-2`, and `node-3`; changing
+placement does not change authentication or authorize new members. Use brackets
+for IPv6, such as `[2001:db8::11]:7001`. The setting overrides `COUNTER_PEER_BASE`;
+an absent setting keeps the default loopback/base-port behavior. Partial lists,
+duplicate endpoints, unspecified or multicast IPs, and zero ports are refused.
+
+The HTTP API and redirects still use local loopback ports. A multi-host load runner
+must run locally on each test host and select the leader explicitly instead of
+following another host's loopback redirect. Provision each node's private key and
+data only on its owning host; shared CA and public peer certificates are needed on
+all three. This address option prepares a network test fixture; local smoke tests
+do not establish multi-host latency, throughput, or resource bounds.
+
 The smoke test uses temporary directories and its own local ports. It checks
 TLS client authentication, writes and reads, leader loss, full-cluster crash
 recovery, missing/corrupt or unsafe checkpoint state, quorum loss, failed
 application publication with committed replay after restart, and clean shutdown. It only
-stops processes it started.
+stops processes it started. Add `--explicit-peers` to repeat the checks with
+explicit, reordered peer ports. The guide checker runs both address modes.
 
 `GET /metrics` observes the owner without borrowing the application. Progress
 indexes and pending counts are last published and can stay stale during storage

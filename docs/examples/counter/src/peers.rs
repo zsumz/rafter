@@ -7,7 +7,7 @@ use rafter_transport_tls::{
     PeerEndpoint, PeerId, TlsIdentity, TlsPeerDirectory, TlsPeerTransport, TlsServerName,
     TransportConfig, TransportLimits, TransportTimeouts,
 };
-use std::{io, path::Path};
+use std::{io, net::SocketAddr, path::Path};
 
 pub type Transport = TlsPeerTransport<u64, GroupCodec>;
 
@@ -43,7 +43,40 @@ pub fn address(variable: &str, default: u16, id: u64) -> Result<std::net::Socket
     Ok(([127, 0, 0, 1], port).into())
 }
 
+// Addresses change placement, not the certificate identity of each fixed voter.
+fn peer_addresses() -> Result<[SocketAddr; 3]> {
+    match std::env::var("COUNTER_PEER_ADDRS") {
+        Ok(value) => parse_peer_addresses(&value),
+        Err(std::env::VarError::NotPresent) => Ok([
+            address("COUNTER_PEER_BASE", 7000, 1)?,
+            address("COUNTER_PEER_BASE", 7000, 2)?,
+            address("COUNTER_PEER_BASE", 7000, 3)?,
+        ]),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn parse_peer_addresses(value: &str) -> Result<[SocketAddr; 3]> {
+    let parsed = value
+        .split(',')
+        .map(|part| part.trim().parse::<SocketAddr>())
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let addresses: [SocketAddr; 3] = parsed
+        .try_into()
+        .map_err(|_| "COUNTER_PEER_ADDRS needs three addresses in node 1, 2, 3 order")?;
+    for (index, endpoint) in addresses.iter().enumerate() {
+        if endpoint.port() == 0 || endpoint.ip().is_unspecified() || endpoint.ip().is_multicast() {
+            return Err("COUNTER_PEER_ADDRS needs concrete peer IPs and nonzero ports".into());
+        }
+        if addresses[..index].contains(endpoint) {
+            return Err("COUNTER_PEER_ADDRS needs distinct peer addresses".into());
+        }
+    }
+    Ok(addresses)
+}
+
 pub fn open(id: u64, directory: &Path) -> Result<(Transport, TlsPeerDirectory<u64>)> {
+    let addresses = peer_addresses()?;
     let identity = TlsIdentity::from_pem_files(
         format!("certs/node-{id}.pem"),
         format!("certs/node-{id}-key.pem"),
@@ -61,7 +94,7 @@ pub fn open(id: u64, directory: &Path) -> Result<(Transport, TlsPeerDirectory<u6
             endpoints.replace(
                 principal(peer),
                 vec![PeerEndpoint::new(
-                    address("COUNTER_PEER_BASE", 7000, peer)?,
+                    addresses[(peer - 1) as usize],
                     TlsServerName::new(&format!("node-{peer}"))?,
                 )],
             )?;
@@ -77,7 +110,7 @@ pub fn open(id: u64, directory: &Path) -> Result<(Transport, TlsPeerDirectory<u6
     let config = TransportConfig::new(
         cluster(),
         principal(id),
-        address("COUNTER_PEER_BASE", 7000, id)?,
+        addresses[(id - 1) as usize],
         limits,
         TransportTimeouts::default(),
     );
@@ -110,5 +143,51 @@ impl GroupIdCodec<u64> for GroupCodec {
         Ok(u64::from_be_bytes(bytes.try_into().map_err(|_| {
             disk::invalid("group ID must be eight bytes")
         })?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_peer_addresses;
+
+    #[test]
+    fn explicit_addresses_preserve_node_order_and_accept_ipv6() {
+        let parsed =
+            parse_peer_addresses("192.0.2.1:7001, [2001:db8::2]:8100,127.0.0.1:9003").unwrap();
+        assert_eq!(
+            parsed.map(|address| address.to_string()),
+            ["192.0.2.1:7001", "[2001:db8::2]:8100", "127.0.0.1:9003",]
+        );
+    }
+
+    #[test]
+    fn partial_or_extra_peer_lists_are_refused() {
+        for value in [
+            "",
+            "127.0.0.1:1",
+            "127.0.0.1:1,127.0.0.1:2",
+            "127.0.0.1:1,127.0.0.1:2,127.0.0.1:3,127.0.0.1:4",
+        ] {
+            assert!(parse_peer_addresses(value).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn invalid_or_ambiguous_peer_endpoints_are_refused() {
+        for first in [
+            "localhost:7001",
+            "127.0.0.1",
+            "127.0.0.1:65536",
+            "127.0.0.1:0",
+            "0.0.0.0:7001",
+            "[::]:7001",
+            "224.0.0.1:7001",
+            "[ff02::1]:7001",
+            "127.0.0.1:7002",
+            "",
+        ] {
+            let value = format!("{first},127.0.0.1:7002,127.0.0.1:7003");
+            assert!(parse_peer_addresses(&value).is_err(), "accepted {value}");
+        }
     }
 }

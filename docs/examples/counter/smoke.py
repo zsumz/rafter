@@ -37,12 +37,21 @@ def free_base(exclude=None):
 
 
 class Cluster:
-    def __init__(self, binary, root):
+    def __init__(self, binary, root, explicit_peers=False):
         self.binary, self.root = binary, root
         self.http_base = free_base()
         self.peer_base = free_base(self.http_base)
         self.env = dict(os.environ, COUNTER_HTTP_BASE=str(self.http_base),
                         COUNTER_PEER_BASE=str(self.peer_base))
+        # Qualification must never inherit a caller's remote peer destinations.
+        self.env.pop("COUNTER_PEER_ADDRS", None)
+        self.peer_ports = {node: self.peer_base + node for node in (1, 2, 3)}
+        if explicit_peers:
+            # Reverse placement to detect any remaining node-ID/base-port assumption.
+            self.peer_ports = {node: self.peer_base + 4 - node for node in (1, 2, 3)}
+            self.env["COUNTER_PEER_ADDRS"] = ",".join(
+                f"127.0.0.1:{self.peer_ports[node]}" for node in (1, 2, 3))
+            self.env["COUNTER_PEER_BASE"] = "unused-with-explicit-addresses"
         self.children, self.logs = {}, []
 
     def command(self, *args):
@@ -115,7 +124,7 @@ class Cluster:
         context.minimum_version = ssl.TLSVersion.TLSv1_3
         context.set_alpn_protocols(["rafter/1"])
         try:
-            with socket.create_connection(("127.0.0.1", self.peer_base + node), timeout=3) as raw:
+            with socket.create_connection(("127.0.0.1", self.peer_ports[node]), timeout=3) as raw:
                 with context.wrap_socket(raw, server_hostname=f"node-{node}") as secure:
                     secure.sendall(b"no client certificate")
                     secure.recv(1)
@@ -187,8 +196,8 @@ class Cluster:
             log.close()
 
 
-def exercise(binary, root):
-    cluster = Cluster(binary, root)
+def exercise(binary, root, explicit_peers=False):
+    cluster = Cluster(binary, root, explicit_peers)
     try:
         shutil.copyfile(Path(__file__).with_name("certs.sh"), root / "certs.sh")
         with open(root / "certificates.log", "w") as log:
@@ -273,7 +282,7 @@ def exercise(binary, root):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: python3 smoke.py /path/to/rafter-counter")
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "--explicit-peers"):
+        raise SystemExit("usage: python3 smoke.py /path/to/rafter-counter [--explicit-peers]")
     with tempfile.TemporaryDirectory(prefix="rafter-counter-") as directory:
-        exercise(Path(sys.argv[1]).resolve(), Path(directory))
+        exercise(Path(sys.argv[1]).resolve(), Path(directory), len(sys.argv) == 3)
