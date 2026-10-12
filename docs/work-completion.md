@@ -98,7 +98,7 @@ The Maelstrom workflows use the repository-pinned verifier setup and preserve
 receipts/replay artifacts. They are sampled system evidence and do not replace
 the deterministic invariant verdict.
 
-## Deferred additive work
+## Additive capabilities and remaining work
 
 - C1 streaming snapshots were outside the completed initial scope. The additive
   `SnapshotPayloadReader` verifies bounded, cancellable reads from the existing

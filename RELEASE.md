@@ -16,8 +16,15 @@ kernel self-check the simulator reached for is now the documented public
 `Node::validate_derived_state`, returning a typed `StateValidationError`, and
 the feature is deleted from `rafter` entirely. The design and what it
 deliberately defers are recorded in [`docs/api-promotions.md`](docs/api-promotions.md).
-C1 streaming snapshots and C2 replication pipelining remain additive future
-work and are not preconditions smuggled into this preflight.
+Streaming application snapshots and persistence pipelining now have additive
+runtime APIs: `SnapshotPayloadReader` and `SnapshotPayloadWriter` provide
+bounded streaming adapters, and the opt-in pipeline overlaps eligible leader
+append messages with local persistence. The default-off `rafter-service/durable`
+feature supplies a bounded client owner and driver using the existing transport.
+Applications still own schema validation, atomic durable publication, membership
+execution, and peer policy. See the [current capability boundaries](docs/work-completion.md#additive-capabilities-and-remaining-work)
+and the [runtime](crates/rafter-runtime/README.md) and
+[service](crates/rafter-service/README.md) contracts.
 
 For a non-release completion run at one checked-out SHA, run and retain:
 
