@@ -110,6 +110,11 @@ description = "Exercise bounded runtime retrieval, cached installation, and fail
 run = ["python3", "-m", "unittest", "scripts/tests/test_invariant_runtime_setup.py"]
 tools = ["python3"]
 
+[tasks.io-stall-tests]
+description = "Exercise disposable-volume ownership, bounded probe failure, cleanup and source evidence without privileged commands."
+run = ["python3", "-m", "unittest", "scripts/tests/test_io_stall_volume.py", "scripts/tests/test_io_stall_controller.py", "scripts/tests/test_io_stall_runner.py"]
+tools = ["python3"]
+
 [tasks.counter-guide-tests]
 description = "Refuse stale/mixed counter dependency graphs and leaked smoke-test children. Requires Python 3.11+."
 run = ["python3", "-m", "unittest", "scripts/tests/test_counter_guide.py"]
@@ -154,6 +159,7 @@ needs = [
   "durable-bench-tests",
   "policy-tools",
   "runtime-setup-tests",
+  "io-stall-tests",
   "public-api-tests",
   "counter-guide",
   "counter-guide-pinned",

@@ -1,0 +1,48 @@
+name: Linux I/O stall qualification
+
+on:
+  push:
+    paths:
+      - '.github/workflows/io-stall.yml'
+      - 'scripts/check-io-stall'
+      - 'scripts/io_stall_*.py'
+      - 'scripts/tests/*io_stall*.py'
+  pull_request:
+    paths:
+      - '.github/workflows/io-stall.yml'
+      - 'scripts/check-io-stall'
+      - 'scripts/io_stall_*.py'
+      - 'scripts/tests/*io_stall*.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: io-stall-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fsync-probe:
+    # This job owns a new image and mapping in a fresh hosted VM, never a host disk.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Check portable failure and ownership controls
+        run: python3 -m unittest scripts/tests/test_io_stall_volume.py scripts/tests/test_io_stall_controller.py scripts/tests/test_io_stall_runner.py
+      - name: Qualify the owned filesystem stall and cleanup
+        run: |
+          python3 scripts/check-io-stall --disposable-linux-vm \
+            --artifacts "$RUNNER_TEMP/io-stall-evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: io-stall-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/io-stall-evidence
+          if-no-files-found: error
+          retention-days: 30

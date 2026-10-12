@@ -23,7 +23,7 @@ burden for durable applications. More throughput work should follow those.
 ## Current code checkpoint
 
 The release work is on `codex/stable-release-slices`, with code through
-[`70420368`](https://github.com/zsumz/rafter/commit/7042036873a3f206422f051835c655039e748208)
+[`52aadab0`](https://github.com/zsumz/rafter/commit/52aadab07f0526b5cb65d8c7e7d85cd168d8e6f3)
 in draft [PR #23](https://github.com/zsumz/rafter/pull/23). The transport already
 exists: durable composition reuses its authenticated TLS sender and inbound
 validation. No transport replacement, version bump, tag, or publication is part
@@ -63,8 +63,17 @@ now makes Linux process/MSRV/upgrade and advisory qualification available before
 merge. Its separate concurrency group preserves full Nightly runs. The workflow
 and failure-reporting guards pass all 47 cases, strict lint and actionlint; eight
 profile controls and seven source/failure controls give the expected results.
-Hosted execution of this new profile remains to be qualified. It does not run or
-replace the authenticated invariant aggregate or the owner soak.
+The [Linux run at `52aadab0`](https://github.com/zsumz/rafter/actions/runs/38185568986)
+passes all seven phases, including 56 reviewed process cases, and the exact
+51-package advisory audit without exclusions. Downloaded evidence reproduces the
+dependency projection and verifies audit/upgrade hash links and all 2,808 tracked
+source hashes. It retains archive hashes and receipts, not archive bytes. This
+profile does not run or replace the authenticated invariant aggregate or owner soak.
+
+The next [Linux I/O stall qualification](io-stall-qualification.md) slice establishes
+a private loop/ext4 fault mechanism and its cleanup before applying it to Rafter.
+Portable protocol, resource-ownership and failed-receipt controls pass; real Linux
+execution and the subsequent counter workload remain to be qualified.
 
 Stable-release qualification remains open. In priority order:
 
