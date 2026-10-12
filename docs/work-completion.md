@@ -86,6 +86,14 @@ multiplexed peer connection.
 | Weekly | Weekly `invariants-weekly`, `invariants-maelstrom`, and `counter-reference-weekly` | Deep tests/model checking, storage and snapshot histories, three-trial pinned Maelstrom, and the retained 4,096-group scheduler profile |
 | Manual exact evidence | `scripts/reference-package-process-check` | One archive set, recorded SHA-256 hashes, every exact-package process suite, and published-shape Rust 1.88 smoke |
 
+The owner-soak job records every tracked source hash and requires a clean checkout
+before execution. Its always-run verification requires the same Git head, the
+same tracked bytes and a clean checkout afterward, including when the soak fails.
+Both inventories and status records accompany the log. The generated
+`reference/Cargo.lock` remains a separate retained input, not a tracked source
+file. These endpoint checks detect retained changes; they do not prove that a
+file was never transiently modified and restored during execution.
+
 The Maelstrom workflows use the repository-pinned verifier setup and preserve
 receipts/replay artifacts. They are sampled system evidence and do not replace
 the deterministic invariant verdict.

@@ -1265,7 +1265,7 @@ sha256 = "7ae4cdd9c7d91b6d352fdc68d1e1daaa8780c803f1cadedb09245efc5084fa5a"
 
 [[gate.input]]
 path = ".github/workflows/nightly.yml"
-sha256 = "b6937921671fe2ab96cbde1bd6895ef0ebd04f9adc4f4bab18a2a88b1d3997cf"
+sha256 = "fc2431e2fe2f29fb1480a50f4dcfe37309c93a92e23d911f83ffc10cd84ed205"
 
 [[gate.input]]
 path = "scripts/archive_dependencies.py"
