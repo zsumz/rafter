@@ -14,6 +14,7 @@ release, a version change, a tag, a publication, or a mixed-version guarantee.
 | --- | --- | --- |
 | Durable storage | Native format, recovery, ownership, and failure-boundary tests on Linux and macOS | `cargo test --locked -p rafter-storage`; CI `test` and `invariants-launcher-macos` |
 | Durable storage | Allocation-counted refusal of malformed shared-WAL entry counts, preserving error and file contents | `zcheck run wal-recovery-memory`; CI `lint` |
+| Durable storage | Verified process termination at 36 streamed/publication/promotion/cleanup cases, preserved recovery inputs and subsequent publication | `zcheck run snapshot-process`; CI `test`; I/O qualification `snapshot-publication` |
 | Replicated ledger | Deterministic application/recovery acceptance and an independent bounded linearizability checker | `scripts/reference-source-check`; CI `reference-source` |
 | Replicated ledger | Durable per-replica process composition, including fail-closed journal repair escalation | `scripts/reference-process-check`; CI/main and Nightly `reference-process` |
 | Replicated ledger | Exact archive deterministic and process execution | `scripts/reference-package-check`; `scripts/reference-package-process-check`; CI `reference-package` and `reference-package-process` |
@@ -160,6 +161,7 @@ workflow-job .github/workflows/ci.yml reference-package-msrv
 workflow-job .github/workflows/ci.yml reference-package-process
 workflow-job .github/workflows/ci.yml reference-process
 workflow-job .github/workflows/ci.yml counter-reference-fast
+workflow-job .github/workflows/io-stall.yml snapshot-publication
 workflow-job .github/workflows/nightly.yml burn-in
 workflow-job .github/workflows/nightly.yml invariants-maelstrom
 workflow-job .github/workflows/nightly.yml invariants-nightly

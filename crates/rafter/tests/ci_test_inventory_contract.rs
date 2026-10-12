@@ -27,6 +27,7 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
     local::assert_durable_inventory(&root, durable);
     for selection in [
         "scripts/cargo-test-exact 6 dependency_boundary --workspace",
+        "scripts/cargo-test-exact 1 - --locked -p rafter-storage --lib -- --ignored --exact storage_failpoint_test::snapshot_process_test::snapshot_publication_survives_process_loss --nocapture",
         durable,
         "scripts/cargo-test-exact 2 source_boundary -p rafter",
         "scripts/cargo-test-exact 1 file_size_guard -p rafter -- --nocapture",

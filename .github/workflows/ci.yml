@@ -383,6 +383,8 @@ jobs:
         # Two #[ignore]d tests in a publishable crate that no lane ran. They
         # are ignored because they bind loopback, which every runner here has.
         run: scripts/cargo-test-exact 2 - -p rafter-transport-tcp-insecure --lib -- --ignored
+      - name: Snapshot publication process loss
+        run: scripts/cargo-test-exact 1 - --locked -p rafter-storage --lib -- --ignored --exact storage_failpoint_test::snapshot_process_test::snapshot_publication_survives_process_loss --nocapture
       - name: replicated KV process lifecycle
         run: scripts/cargo-test-exact 1 - -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture
       - name: Upload test process diagnostics

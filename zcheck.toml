@@ -211,9 +211,17 @@ run = ["scripts/cargo-test-exact", "440", "-", "--locked", "-p", "rafter-service
 tools = ["cargo"]
 resources = ["cargo-target"]
 
+[tasks.snapshot-process]
+description = "Kill snapshot writers at 36 publication/cleanup cases and verify strict recovery and later writes."
+platforms = ["linux", "macos"]
+run = ["scripts/cargo-test-exact", "1", "-", "--locked", "-p", "rafter-storage", "--lib", "--", "--ignored", "--exact", "storage_failpoint_test::snapshot_process_test::snapshot_publication_survives_process_loss", "--nocapture"]
+timeout = "10m"
+tools = ["cargo"]
+resources = ["cargo-target"]
+
 [tasks.check]
 description = "Qualify the checkout with the pull-request-tier local gates."
-needs = ["lint", "architecture", "test", "durable-client"]
+needs = ["lint", "architecture", "test", "durable-client", "snapshot-process"]
 
 [tasks.current-stable-identity]
 description = "Record the resolved compiler for the separately installed stable toolchain."

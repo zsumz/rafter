@@ -181,3 +181,43 @@ all 2,823 source hashes, the acknowledgement before resume and complete cleanup.
 The shared-volume normal/crash cases also pass in that run. These are separate
 virtual block devices on one host; they do not establish multi-host availability
 or physical disk/power-loss behavior.
+
+## Snapshot publication process loss
+
+The workflow also runs `snapshot-publication` independently of the suspended-volume
+jobs. It invokes one exactly selected, ignored storage test containing 36 cases:
+nine existing publication/cleanup boundaries, with and without an old current
+snapshot, through streamed file-source publication and inbound-transfer promotion.
+The payload crosses three of the store's 256 KiB publication chunks.
+
+A test-only hook stops the writer child at the named boundary. The parent waits
+for that marker, requires an actual `SIGKILL` exit, and copies every regular target
+file, including hidden temporary files, before strict reopen. Copies are checked
+byte-for-byte and retained with a length/CRC32 inventory; non-regular inputs and a
+changed inventory fail the test. Child startup and reaping have deadlines, and a
+failed case retains its workspace for diagnosis.
+
+Recovery must select the old snapshot (or none) before current-manifest rename,
+and the complete new snapshot afterward. It checks the full descriptor and every
+payload byte, the exact pending-transfer cleanup state, then publishes and reopens
+another snapshot. A complete transfer remains resumable before cleanup; removing
+its manifest makes a remaining body abandoned rather than authoritative.
+
+Run locally on Linux or macOS with:
+
+```sh
+zcheck run snapshot-process
+```
+
+To retain successful cases too, set `RAFTER_SNAPSHOT_PROCESS_ARTIFACTS` to a new
+directory whose parent already exists. The ordinary CI `test` job selects this
+parent explicitly; `zcheck run check` and `full` include it. The dedicated Linux
+job additionally retains compiler/source identity, tracked-file SHA-256 inventories
+before and after, case logs, outcomes and pre-recovery copies, including hidden
+files. Its uploads retain evidence for 30 days even on failure.
+
+The initial local matrix passes all 36 cases, and readback verifies all 138
+pre-recovery file copies. Hosted execution remains separately qualified. These
+are snapshot-store process-loss checks with the kernel and page cache present;
+they do not model physical power loss, the application database's publication,
+or an entire Raft node's recovery across all stores.

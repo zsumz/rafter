@@ -39,6 +39,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  snapshot-publication:
+    # Process loss preserves the kernel/page cache; no block-device manipulation.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.88.0"
+      - name: Record source and compiler identity
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/snapshot-process-evidence"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD > "$RUNNER_TEMP/snapshot-process-evidence/source.txt"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/snapshot-process-evidence/source-before.sha256"
+          rustc --version --verbose > "$RUNNER_TEMP/snapshot-process-evidence/rustc.txt"
+          cargo --version > "$RUNNER_TEMP/snapshot-process-evidence/cargo.txt"
+      - name: Kill snapshot writers at every selected publication boundary
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/snapshot-process-target"
+          export RAFTER_SNAPSHOT_PROCESS_ARTIFACTS="$RUNNER_TEMP/snapshot-process-evidence/cases"
+          scripts/cargo-test-exact 1 - --locked -p rafter-storage --lib -- --ignored --exact storage_failpoint_test::snapshot_process_test::snapshot_publication_survives_process_loss --nocapture 2>&1 | tee "$RUNNER_TEMP/snapshot-process-evidence/process.log"
+      - name: Verify source preservation
+        if: always()
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/snapshot-process-evidence/source-after.sha256"
+          cmp "$RUNNER_TEMP/snapshot-process-evidence/source-before.sha256" "$RUNNER_TEMP/snapshot-process-evidence/source-after.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: snapshot-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/snapshot-process-evidence
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+
   fsync-probe:
     # This job owns a new image and mapping in a fresh hosted VM, never a host disk.
     runs-on: ubuntu-24.04

@@ -56,6 +56,14 @@ struct Armed {
     thread: ThreadId,
     point: DurabilityPoint,
     triggered: Arc<AtomicBool>,
+    action: Action,
+}
+
+#[derive(Debug)]
+enum Action {
+    IoError,
+    #[cfg(unix)]
+    Pause(std::path::PathBuf),
 }
 
 static ACTIVE_FAILPOINTS: Mutex<Vec<Armed>> = Mutex::new(Vec::new());
@@ -74,6 +82,15 @@ pub(crate) struct Guard {
 /// parallel tests from observing the injection.
 #[must_use]
 pub(crate) fn arm(point: DurabilityPoint) -> Guard {
+    arm_action(point, Action::IoError)
+}
+
+#[cfg(unix)]
+fn arm_process_pause(point: DurabilityPoint, marker: std::path::PathBuf) -> Guard {
+    arm_action(point, Action::Pause(marker))
+}
+
+fn arm_action(point: DurabilityPoint, action: Action) -> Guard {
     let thread = std::thread::current().id();
     let triggered = Arc::new(AtomicBool::new(false));
     let mut active = active_failpoints();
@@ -85,6 +102,7 @@ pub(crate) fn arm(point: DurabilityPoint) -> Guard {
         thread,
         point,
         triggered: Arc::clone(&triggered),
+        action,
     });
     Guard {
         thread,
@@ -106,9 +124,22 @@ pub(crate) fn check(point: DurabilityPoint) -> io::Result<()> {
 
     let armed = active.swap_remove(index);
     armed.triggered.store(true, Ordering::Relaxed);
-    Err(io::Error::other(format!(
-        "injected storage failpoint: {point:?}"
-    )))
+    drop(active);
+    match armed.action {
+        Action::IoError => Err(io::Error::other(format!(
+            "injected storage failpoint: {point:?}"
+        ))),
+        #[cfg(unix)]
+        Action::Pause(marker) => {
+            // The parent kills this child after reading the exact boundary.
+            // Never unwind or return through the publication path first.
+            std::fs::write(marker, format!("{point:?}\n"))
+                .expect("process failpoint marker writes");
+            loop {
+                std::thread::park();
+            }
+        }
+    }
 }
 
 impl Guard {
@@ -150,3 +181,6 @@ mod log_test;
 mod snapshot_test;
 #[cfg(test)]
 mod support_test;
+
+#[cfg(unix)]
+mod snapshot_process_test;

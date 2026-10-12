@@ -93,6 +93,14 @@ in term 2 and acknowledges value 106 before resume. All replicas then converge,
 value 107 survives cold recovery, and the next write reaches 108. Evidence verifies
 the three filesystem identities, all 2,823 source hashes and complete cleanup.
 
+The snapshot-store process-loss matrix adds 36 local cases at existing publication
+and cleanup boundaries, through streamed source publication and received-transfer
+promotion, with and without an old snapshot. Every case verifies an actual
+`SIGKILL`, preserves inputs before strict reopen and publishes again afterward;
+readback checks all 138 pre-recovery copies. Its dedicated Linux job and exact
+CI/local selections are described in [I/O qualification](io-stall-qualification.md#snapshot-publication-process-loss).
+It does not qualify physical power loss or application-database publication.
+
 Stable-release qualification remains open. In priority order:
 
 1. Freeze one final candidate and finish its complete hosted Linux qualification,
