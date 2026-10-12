@@ -98,6 +98,35 @@ class QualificationReceipt(unittest.TestCase):
                 counter.start.assert_called_once()
                 counter.finish.assert_called_once()
 
+    def test_resource_collection_failure_still_resumes_and_releases_owned_resources(self):
+        from io_stall_counter import CounterWorkload
+        binary = self.root / 'resource-counter'
+        binary.write_bytes(b'fixture')
+        for phase in ['start', 'while_stalled', 'finish']:
+            with self.subTest(phase=phase):
+                order = []
+                counter = Mock(spec=CounterWorkload)
+                getattr(counter, phase).side_effect = RuntimeError('resource sample unavailable')
+                counter.close.side_effect = lambda: order.append('counter')
+                self.volume.resume.side_effect = lambda: order.append('resume')
+                self.volume.close.side_effect = lambda: order.append('volume')
+                def probe(_volume, _script, _artifacts, while_stalled):
+                    while_stalled()
+                    return ['modeled']
+                with patch.object(runner, 'Commands'), \
+                        patch.object(runner, 'DisposableVolume', return_value=self.volume), \
+                        patch.object(runner, 'run_probe', side_effect=probe), \
+                        patch.object(runner, 'source_snapshot', return_value=self.snapshot), \
+                        patch.object(runner.tempfile, 'mkdtemp', return_value=str(self.root)), \
+                        patch('io_stall_counter.CounterWorkload', return_value=counter):
+                    receipt = runner.qualify(self.root / ('resource-failure-' + phase), binary)
+                self.assertEqual(receipt['status'], 'failed')
+                self.assertTrue(any('resource sample unavailable' in e for e in receipt['errors']))
+                self.assertEqual(order, ['resume', 'counter', 'volume'])
+                self.assertEqual(receipt['counter_cleanup'], 'passed')
+                self.assertEqual(receipt['volume_cleanup'], 'passed')
+                self.assertTrue(receipt['source_preserved'])
+
     def test_changed_counter_binary_fails_receipt(self):
         binary = self.root / 'binary'
         binary.write_bytes(b'before')

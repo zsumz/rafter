@@ -19,6 +19,7 @@ class MajorityOracle(unittest.TestCase):
         self.counter = MajorityCounterWorkload.__new__(MajorityCounterWorkload)
         self.counter.root = self.counter.artifacts = root
         self.counter.events = []
+        self.counter.resource_sample = Mock(return_value={"portable": "fixture"})
         self.counter.leader = 1
         self.counter.baseline = dict(term=6, applied=2)
         self.counter.unknown = 1

@@ -61,7 +61,7 @@ class MajorityCounterWorkload(CounterWorkload):
         assert 0 <= blocked['retained_writes'] <= 8 and 0 <= blocked['retained_write_bytes'] <= 64, blocked
         self.record('majority_acknowledged_while_held', old_leader=self.leader,
                     elected=elected, acknowledged=acknowledged, blocked_metrics=blocked,
-                    uncertain_writes=self.unknown)
+                    uncertain_writes=self.unknown, resources=self.resource_sample())
 
     def finish(self):
         leader = self.cluster.leader()
@@ -73,7 +73,7 @@ class MajorityCounterWorkload(CounterWorkload):
         assert acknowledged == value + 1, acknowledged
         self.cluster.converged(acknowledged)
         self.record('majority_resumed', value_after_resume=value, acknowledged=acknowledged,
-                    drained_metrics=drained)
+                    drained_metrics=drained, resources=self.resource_sample())
         for node in list(self.cluster.children):
             self.cluster.stop(node, graceful=True)
         for node in (1, 2, 3):
@@ -82,6 +82,8 @@ class MajorityCounterWorkload(CounterWorkload):
         assert self.cluster.request(leader, '/value') == {'value': acknowledged}
         assert self.cluster.request(leader, '/add/1', 'POST') == {'value': acknowledged + 1}
         self.cluster.converged(acknowledged + 1)
+        resources = self.resource_sample()
         for node in list(self.cluster.children):
             self.cluster.stop(node, graceful=True)
-        self.record('majority_cold_recovery', preserved=acknowledged, next_write=acknowledged + 1)
+        self.record('majority_cold_recovery', preserved=acknowledged, next_write=acknowledged + 1,
+                    resources=resources)

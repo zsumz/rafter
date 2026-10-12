@@ -112,7 +112,7 @@ tools = ["python3"]
 
 [tasks.io-stall-tests]
 description = "Exercise disposable-volume ownership, bounded probe failure, cleanup and source evidence without privileged commands."
-run = ["python3", "-m", "unittest", "scripts/tests/test_io_stall_volume.py", "scripts/tests/test_io_stall_controller.py", "scripts/tests/test_io_stall_runner.py", "scripts/tests/test_io_stall_counter.py", "scripts/tests/test_io_stall_crash.py", "scripts/tests/test_io_stall_majority.py"]
+run = ["python3", "-m", "unittest", "scripts/tests/test_io_stall_volume.py", "scripts/tests/test_io_stall_controller.py", "scripts/tests/test_io_stall_runner.py", "scripts/tests/test_io_stall_counter.py", "scripts/tests/test_io_stall_crash.py", "scripts/tests/test_io_stall_majority.py", "scripts/tests/test_io_stall_resources.py"]
 tools = ["python3"]
 
 [tasks.counter-guide-tests]

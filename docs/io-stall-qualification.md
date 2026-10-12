@@ -103,6 +103,24 @@ acknowledged write, convergence and drained live write/read credits, then orderl
 shutdown and cold recovery of that acknowledged value. Another write must succeed
 following recovery. The exact binary hash is checked before and after execution.
 
+Each node has a resource sample at baseline, every stalled write observation,
+the held quorum-read observation, resumed progress and cold recovery before
+shutdown. The isolated-leader case samples baseline, majority acknowledgement
+while held, resume and cold recovery. Samples retain PID/start ticks, CPU ticks
+and clock rate, RSS/high-water/swap bytes, thread count and the actual descriptor
+count, with the raw procfs inputs and sampling interval. Exited children, changed
+identities, missing fields and unreadable inputs fail qualification; they cannot
+be reported as zero usage. A collection failure follows the same resume/cleanup
+path as a workload failure.
+
+These are sequential, non-atomic process observations. The Linux kernel documents
+that [procfs RSS counters are approximate](https://docs.kernel.org/filesystems/proc.html).
+Summing node RSS can double-count shared pages and excludes kernel buffers, page
+cache and the runner. High-water values belong to each process lifetime; restarted
+nodes have new identities. Sparse samples can miss transient thread/descriptor
+peaks. No fixed resource ceiling, physical-host memory bound, or performance
+threshold is established by this instrumentation.
+
 Cleanup resumes storage before trying every child, even if one cannot be reaped.
 Failed child cleanup retains the volume and fails the receipt. Node logs and
 per-request outcomes are uploaded with source, binary and resource receipts.

@@ -20,6 +20,7 @@ class CounterOracle(unittest.TestCase):
         self.counter = CounterWorkload.__new__(CounterWorkload)
         self.counter.root = self.counter.artifacts = Path(self.temporary.name)
         self.counter.events = []
+        self.counter.resource_sample = Mock(return_value={"portable": "fixture"})
         self.counter.leader = 1
         self.counter.baseline = {'applied': 2, 'write_refusals': 7, 'read_refusals': 3}
         self.counter.unknown = 0
@@ -54,6 +55,8 @@ class CounterOracle(unittest.TestCase):
         self.assertEqual(self.counter.events[0]['metrics']['retained_writes'], 1)
         self.assertEqual(self.counter.events[0]['metrics']['pending_writes'], 0)
         self.assertEqual(self.counter.unknown, 8)
+        self.assertEqual(self.counter.resource_sample.call_count, 10)
+        self.assertTrue(all(e['resources'] == {'portable': 'fixture'} for e in self.counter.events))
 
     def test_queued_cancellations_may_release_unsubmitted_capacity(self):
         self.held_responses()

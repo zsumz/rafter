@@ -9,6 +9,8 @@ import subprocess
 import time
 import urllib.error
 
+from io_stall_resources import sample_children
+
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT / 'docs/examples/counter'
 spec = importlib.util.spec_from_file_location('stall_counter_smoke', PROJECT / 'smoke.py')
@@ -29,6 +31,9 @@ class CounterWorkload:
     def record(self, event, **fields):
         self.events.append(dict(event=event, monotonic_ns=time.monotonic_ns(), **fields))
         (self.artifacts / 'counter-events.json').write_text(json.dumps(self.events, indent=2) + '\n')
+
+    def resource_sample(self):
+        return sample_children(self.cluster.children)
 
     def prepare_data(self):
         self.root.mkdir()
@@ -54,6 +59,7 @@ class CounterWorkload:
         self.cluster.converged(5)
         self.baseline = self.cluster.request(self.leader, '/metrics')
         self.record('baseline', leader=self.leader, value=5, metrics=self.baseline,
+                    resources=self.resource_sample(),
                     processes={node: child.pid for node, child in self.cluster.children.items()})
 
     def refused(self, path, method='POST'):
@@ -87,7 +93,8 @@ class CounterWorkload:
             assert 0 <= metrics['retained_write_bytes'] <= 64, metrics
             assert metrics['write_refusals'] == self.baseline['write_refusals'] + refused_before_append, metrics
             self.record('pending', attempts=attempt, uncertain=self.unknown,
-                        not_appended=refused_before_append, metrics=metrics)
+                        not_appended=refused_before_append, metrics=metrics,
+                        resources=self.resource_sample())
         assert self.unknown > 0, 'no write reached the uncertain timeout path'
         error, _ = self.refused('/value', 'GET')
         assert 'timed out' in error['error'], error
@@ -96,7 +103,7 @@ class CounterWorkload:
         assert 0 <= metrics['retained_read_bytes'] <= 8, metrics
         assert metrics['read_refusals'] == self.baseline['read_refusals'], metrics
         self.record('held', timed_out_writes=self.unknown, not_appended=refused_before_append,
-                    metrics=metrics)
+                    metrics=metrics, resources=self.resource_sample())
         if self.crash_while_stalled:
             self.kill_while_stalled()
 
@@ -112,7 +119,7 @@ class CounterWorkload:
         self.cluster.converged(acknowledged)
         drained = self.cluster.wait('owner credits drain after resumed I/O', self.drained_metrics)
         self.record('resumed', value_before_new_write=value, acknowledged=acknowledged,
-                    drained_metrics=drained)
+                    drained_metrics=drained, resources=self.resource_sample())
         for node in list(self.cluster.children):
             self.cluster.stop(node, graceful=True)
         for node in (1, 2, 3):
@@ -121,9 +128,11 @@ class CounterWorkload:
         assert self.cluster.request(leader, '/value') == {'value': acknowledged}
         assert self.cluster.request(leader, '/add/1', 'POST') == {'value': acknowledged + 1}
         self.cluster.converged(acknowledged + 1)
+        resources = self.resource_sample()
         for node in list(self.cluster.children):
             self.cluster.stop(node, graceful=True)
-        self.record('cold_recovery', preserved=acknowledged, next_write=acknowledged + 1)
+        self.record('cold_recovery', preserved=acknowledged, next_write=acknowledged + 1,
+                    resources=resources)
 
     def drained_metrics(self):
         metrics = {node: self.cluster.request(node, '/metrics') for node in self.cluster.children}

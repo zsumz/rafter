@@ -92,7 +92,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check portable failure and ownership controls
-        run: python3 -m unittest scripts/tests/test_io_stall_volume.py scripts/tests/test_io_stall_controller.py scripts/tests/test_io_stall_runner.py scripts/tests/test_io_stall_counter.py scripts/tests/test_io_stall_crash.py scripts/tests/test_io_stall_majority.py
+        run: python3 -m unittest scripts/tests/test_io_stall_volume.py scripts/tests/test_io_stall_controller.py scripts/tests/test_io_stall_runner.py scripts/tests/test_io_stall_counter.py scripts/tests/test_io_stall_crash.py scripts/tests/test_io_stall_majority.py scripts/tests/test_io_stall_resources.py
       - name: Qualify the owned filesystem stall and cleanup
         run: |
           python3 scripts/check-io-stall --disposable-linux-vm \
