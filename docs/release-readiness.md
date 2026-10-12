@@ -110,7 +110,21 @@ scheduled only the final parent for synchronization. The fix synchronizes every
 new directory's parent. Existing-directory and failed-initial-open provisioning
 requirements are explicit in the [durability protocol](../crates/rafter-storage/DURABILITY_PROTOCOL.md#directory-provisioning).
 The regression checks the actual synchronization batch; it does not reproduce a
-physical power-loss failure.
+physical power-loss failure. The fix at `79f9a902` passes 321 local storage tests,
+30 guards, strict lint/docs and the 36-case process matrix. Its
+[Linux I/O run](https://github.com/zsumz/rafter/actions/runs/38194229986) passes all
+snapshot and TLS cases; readback verifies 138 snapshot inputs, 24 node-crash
+inputs, all 2,825 tracked source hashes and resource cleanup. Its separate
+exact-archive qualification remains tied to that immutable commit.
+
+The subsequent TLS handshake investigation reproduced an inner-I/O deadline gap:
+a 300 ms deadline allowed one encrypted record to trickle for 2.39 seconds before
+returning plaintext. The public transport likewise retained a connection beyond
+one second with a 500 ms handshake budget. Wrapping Rustls' underlying ciphertext
+I/O with the existing deadline socket bounds every inner read and write; the
+isolated correction cuts the same read off at 301 ms and releases the public
+transport slot on time. The regression uses valid mutual TLS and a valid encoded
+Rafter client hello, and joins both workers before reporting a failure.
 
 Stable-release qualification remains open. In priority order:
 

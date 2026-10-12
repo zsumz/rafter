@@ -120,13 +120,15 @@ jobs:
         with:
           toolchain: "1.88.0"
           components: rustfmt, clippy
-      - name: Build and smoke-test the exact checkout counter
+      - name: Qualify handshake deadlines and smoke-test the exact checkout counter
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/io-stall-counter-build"
           rustc --version --verbose > "$RUNNER_TEMP/io-stall-counter-build/rustc.txt"
           cargo --version > "$RUNNER_TEMP/io-stall-counter-build/cargo.txt"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/io-stall-transport-target"
+          scripts/cargo-test-exact 2 - --locked -p rafter-transport-tls --test handshake_deadline -- --nocapture 2>&1 | tee "$RUNNER_TEMP/io-stall-counter-build/handshake-deadline.log"
           export CARGO_TARGET_DIR="$RUNNER_TEMP/io-stall-counter-target"
           python3 scripts/check-counter-guide --mode checkout 2>&1 | tee "$RUNNER_TEMP/io-stall-counter-build/build.log"
       - name: Exercise write outcomes and recovery across an actual filesystem stall

@@ -38,6 +38,10 @@ release mechanics and exact publish lists live in [RELEASE.md](./RELEASE.md).
 - Creating a standalone snapshot store beneath missing directories now syncs
   every newly created directory's parent, preserving the full hierarchy after
   a successful open. Existing ancestors must be durably provisioned by callers.
+- The complete TLS/Rafter handshake deadline now applies to every underlying
+  ciphertext read and write. An authenticated peer trickling a TLS record can
+  no longer retain a connection slot beyond that deadline through Rustls' inner
+  I/O loop.
 - The public transport requires patched rustls `0.23.45`; the invariant
   verifier's test-only quick-xml dependency moves to `0.41.0`. Public API checks
   compare default and all-feature builds of all eleven public crates; dependency

@@ -1,12 +1,13 @@
-//! End-to-end deadline enforcement for unauthenticated handshakes.
+//! End-to-end deadline enforcement for TLS and Rafter handshakes.
 
 use std::{
     io::{self, Read, Write},
     net::TcpStream,
+    ops::DerefMut,
     time::{Duration, Instant},
 };
 
-use rustls::StreamOwned;
+use rustls::{ConnectionCommon, SideData, Stream, StreamOwned};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HandshakeDeadline {
@@ -75,32 +76,39 @@ impl Write for DeadlineSocket<'_> {
     }
 }
 
+// A TLS operation may perform multiple ciphertext reads or writes. The
+// underlying socket must enforce the same absolute deadline for each one.
 pub(crate) struct DeadlineStream<'a, C> {
     stream: &'a mut StreamOwned<C, TcpStream>,
     deadline: HandshakeDeadline,
 }
 
-impl<C> Read for DeadlineStream<'_, C>
+impl<C, S> Read for DeadlineStream<'_, C>
 where
-    StreamOwned<C, TcpStream>: Read,
+    C: DerefMut<Target = ConnectionCommon<S>>,
+    S: SideData,
 {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         self.deadline.configure(&self.stream.sock)?;
-        self.stream.read(output)
+        let mut socket = self.deadline.socket(&mut self.stream.sock);
+        Stream::new(&mut self.stream.conn, &mut socket).read(output)
     }
 }
 
-impl<C> Write for DeadlineStream<'_, C>
+impl<C, S> Write for DeadlineStream<'_, C>
 where
-    StreamOwned<C, TcpStream>: Write,
+    C: DerefMut<Target = ConnectionCommon<S>>,
+    S: SideData,
 {
     fn write(&mut self, input: &[u8]) -> io::Result<usize> {
         self.deadline.configure(&self.stream.sock)?;
-        self.stream.write(input)
+        let mut socket = self.deadline.socket(&mut self.stream.sock);
+        Stream::new(&mut self.stream.conn, &mut socket).write(input)
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.deadline.configure(&self.stream.sock)?;
-        self.stream.flush()
+        let mut socket = self.deadline.socket(&mut self.stream.sock);
+        Stream::new(&mut self.stream.conn, &mut socket).flush()
     }
 }

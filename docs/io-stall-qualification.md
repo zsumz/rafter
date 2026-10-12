@@ -64,6 +64,12 @@ or a successful stall.
 
 ## Existing TLS counter workload
 
+Before building the counter, its Linux job exactly selects both transport
+handshake-deadline regressions. They cover raw TLS trickling and a known
+certificate holder trickling a complete encrypted Rafter hello. The build
+artifact retains `handshake-deadline.log`; a failed or missing case stops the
+qualification before fault injection.
+
 The probe-only [Linux run at `60a496dd`](https://github.com/zsumz/rafter/actions/runs/38186801268)
 passed with a 3.03-second pending sync, a successful child exit, all owned
 resources released and all 2,818 source hashes preserved. The subsequent
