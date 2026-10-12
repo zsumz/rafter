@@ -146,12 +146,16 @@ def run_sample(binary, case, args, out, label, hard_state=None):
     started = time.monotonic()
     before_cpu = cpu_stat()
     timeout = None
+    launch_error = None
     with (out / f"{label}.json").open("w") as stdout, (out / f"{label}.stderr").open("w") as stderr:
         try:
             result = subprocess.run(command, stdout=stdout, stderr=stderr, timeout=args.timeout)
             exit_code = result.returncode
         except subprocess.TimeoutExpired as error:
             timeout = error
+            exit_code = None
+        except OSError as error:
+            launch_error = error
             exit_code = None
     elapsed = time.monotonic() - started
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -160,9 +164,14 @@ def run_sample(binary, case, args, out, label, hard_state=None):
                  "user_seconds": after.ru_utime - before.ru_utime,
                  "system_seconds": after.ru_stime - before.ru_stime,
                  "proc_stat_before": before_cpu, "proc_stat_after": cpu_stat()}
+    if launch_error is not None:
+        execution["launch_error"] = {"type": type(launch_error).__name__,
+                                     "errno": launch_error.errno, "message": str(launch_error)}
     save(out / f"{label}.execution.json", execution)
     if timeout:
         raise timeout
+    if launch_error is not None:
+        raise launch_error
     result.check_returncode()
     return validate(json.loads((out / f"{label}.json").read_text()), case, args.batches, args.snapshot_bytes, hard_state)
 

@@ -138,6 +138,10 @@ process user/system CPU time, host identity, binary hashes, execution order,
 and Linux `/proc/stat` snapshots. Results are medians of run metrics, including
 each run's percentiles; raw samples remain available. Output directories must
 be new, and failed or timed-out trials retain their output and execution record.
+A launch failure also retains stdout/stderr files and an execution record with
+`launch_error` (type, OS error number, and message), a null exit code, and
+`timed_out: false`. It is not a child-process result or a performance sample;
+the runner re-raises the launch error and stops the sweep.
 
 For a comparison, build both revisions with the same compiler, lockfile,
 features, and harness, preserve their binaries, and run:
@@ -186,6 +190,40 @@ traces. `bench-hard-state` isolates publication; `scripts/check-hard-state-sysca
 checks one data sync per write, with zero journal renames or directory syncs
 inside the measured region. The journal is opt-in and checkpoints its bounded
 record history; this comparison remains separate from the shared WAL.
+
+### Local release-readiness baseline
+
+A local run at `0eb06666480f5a46579046ee176f5df805a9d0b0` used Rust 1.88.0
+(`aarch64-apple-darwin`), an Apple M2 with eight CPU cores and 8 GiB RAM, and the
+same release binary built with `--locked --no-default-features` for both arms.
+Four alternating rounds used 1,000 batches per proposal case, 256-byte payloads,
+and a 128 MiB snapshot, with fresh stores under `/private/tmp` on the host's APFS
+Data volume. No telemetry features, builds, correctness tests, artifact downloads
+or hash-readback work ran alongside the timed sweep. This is a development host,
+not a reserved performance machine; unrelated system activity is uncontrolled.
+
+| Workload | Replacement median [min–max] | Journal median [min–max] |
+| --- | --- | --- |
+| Batch 1, proposals/s | 37.824 [37.184–39.204] | 65.680 [64.930–66.150] |
+| Batch 8, proposals/s | 298.528 [283.251–301.835] | 513.815 [508.424–517.281] |
+| Batch 32, proposals/s | 1,170.116 [1,131.662–1,195.112] | 1,983.374 [1,932.566–2,001.958] |
+| Batch 128, proposals/s | 4,353.425 [4,294.005–4,419.652] | 7,317.674 [7,256.158–7,505.307] |
+| Snapshot transfer, MiB/s | 6.303 [6.150–6.583] | 6.169 [6.142–6.775] |
+
+The journal's proposal-rate medians are 1.68–1.74 times replacement's on this
+host; snapshot-transfer ranges overlap. These synchronous, closed-loop file-store
+measurements do not cover TLS, application-store durability, independent disks,
+arrival queues, service-tail latency, power loss, or other Raft libraries.
+They do not change the default backend or define a release performance threshold.
+
+All 40 timing reports, exit receipts, workload shapes, alternating order and
+aggregate values were read back. The binary SHA-256 remained
+`7a679ea6c9da8ee293d9af0edbf7e4a9b4047fe19ed5b2fcc217263ed5ebfb6a`, and all 2,823
+tracked source hashes were unchanged. An earlier 40-sample sweep overlapped
+artifact verification at startup; it is retained only as warm-up/report validation
+and excluded from this table. Raw local evidence is retained under
+`target/release-readiness/durable-baseline-0eb06666/`; `timing-results/` contains
+the timed samples, while `results/` contains that excluded first sweep.
 
 ### WAL reclamation qualification
 

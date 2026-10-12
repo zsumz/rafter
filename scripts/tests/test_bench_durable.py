@@ -1,8 +1,14 @@
-"""Evidence validation rejects incomplete, mismatched, and non-finite reports."""
+"""Validate workload reports and preserve evidence across execution failures."""
 
 import copy
+import errno
+import json
+import os
 from pathlib import Path
 import runpy
+import subprocess
+import tempfile
+from types import SimpleNamespace
 import unittest
 
 BENCH = runpy.run_path(str(Path(__file__).resolve().parents[1] / "bench-durable"))
@@ -169,6 +175,65 @@ class DurableEvidenceTests(unittest.TestCase):
         self.assertEqual(result["proposals_per_s"], 7000.0)
         self.assertEqual(result["commit_latency_ms"]["p99"], 4.0)
         self.assertEqual(result["commit_latency_ms"]["samples"], 32000)
+
+    @unittest.skipUnless(os.name == "posix", "executable permission and format controls require POSIX")
+    def test_failed_launch_retains_outputs_and_execution_receipt(self):
+        for kind, expected_errno in [("missing", errno.ENOENT), ("denied", errno.EACCES),
+                                     ("invalid", errno.ENOEXEC)]:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binary = root / "benchmark"
+                if kind != "missing":
+                    binary.write_text("not an executable format\n")
+                    binary.chmod(0o600 if kind == "denied" else 0o700)
+                args = SimpleNamespace(directory=root, batches=1000, snapshot_bytes=1024, timeout=1)
+                with self.assertRaises(OSError) as raised:
+                    BENCH["run_sample"](binary, "batch-32", args, root, "trial")
+                self.assertEqual(raised.exception.errno, expected_errno)
+                receipt = json.loads((root / "trial.execution.json").read_text())
+                self.assertEqual(receipt["command"][0], str(binary))
+                self.assertIsNone(receipt["exit_code"])
+                self.assertFalse(receipt["timed_out"])
+                self.assertEqual(receipt["launch_error"]["errno"], expected_errno)
+                self.assertEqual(receipt["launch_error"]["type"], type(raised.exception).__name__)
+                self.assertEqual(receipt["launch_error"]["message"], str(raised.exception))
+                self.assertEqual((root / "trial.json").read_bytes(), b"")
+                self.assertEqual((root / "trial.stderr").read_bytes(), b"")
+
+    @unittest.skipUnless(os.name == "posix", "executable fixture requires a POSIX shebang")
+    def test_started_children_keep_success_failure_and_timeout_receipts(self):
+        for outcome in ["success", "failure", "timeout"]:
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                binary = root / "benchmark"
+                body = "#!/usr/bin/env python3\nimport sys, time\n"
+                body += "print('trial diagnostic', file=sys.stderr, flush=True)\n"
+                if outcome == "success":
+                    body += f"print({json.dumps(self.report)!r})\n"
+                elif outcome == "failure":
+                    body += "raise SystemExit(7)\n"
+                else:
+                    body += "time.sleep(60)\n"
+                binary.write_text(body)
+                binary.chmod(0o700)
+                args = SimpleNamespace(directory=root, batches=1000, snapshot_bytes=1024, timeout=1)
+                if outcome == "success":
+                    result = BENCH["run_sample"](binary, "batch-32", args, root, "trial")
+                    self.assertEqual(result, self.report["workloads"][0])
+                else:
+                    exception = (subprocess.CalledProcessError if outcome == "failure"
+                                 else subprocess.TimeoutExpired)
+                    with self.assertRaises(exception):
+                        BENCH["run_sample"](binary, "batch-32", args, root, "trial")
+                receipt = json.loads((root / "trial.execution.json").read_text())
+                expected_exit = {"success": 0, "failure": 7, "timeout": None}[outcome]
+                self.assertEqual(receipt["exit_code"], expected_exit)
+                self.assertEqual(receipt["timed_out"], outcome == "timeout")
+                self.assertNotIn("launch_error", receipt)
+                self.assertTrue((root / "trial.json").is_file())
+                self.assertTrue((root / "trial.stderr").is_file())
+                if outcome != "timeout":
+                    self.assertEqual((root / "trial.stderr").read_text(), "trial diagnostic\n")
 
 
 if __name__ == "__main__":

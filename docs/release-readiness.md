@@ -41,9 +41,9 @@ persists peer retirement and authorization policy. The feature remains default-o
 | Integrated workspace with durable feature | `66bf4f43`: all-target build, 3,344 tests (zero failed, 58 ignored), strict all-target Clippy and strict rustdoc pass on Rust 1.88; all 2,808 tracked source hashes remain unchanged. |
 | Ledger readiness ownership | `70420368`: the follower reaches its durable baseline and exits cleanly before the contender recovers. All nine checkout process cases, 64 isolated readiness repetitions, strict reference lint/docs, architecture and final source/staging checks pass. Journal repair policy and dedicated abrupt-crash cases remain unchanged. |
 | Ready-query fairness | `9c08dd5a`: 440 service tests, 47 guards, strict lint/docs and all nine canonical file/TLS cases pass. The identical public production sources also pass nine isolated TLS cases with 96 mixed-load/compaction/cold-recovery cycles. The original scheduler and a partial fix fail deterministic regressions. |
-| Permanent owner-soak lane | `b540a714`: the exact ignored inventory is checked on PRs and runs in Nightly and `zcheck run full`. Locally, all 96 cycles, 543 normal reference tests, six runner checks and 47 guards pass, with strict lint/docs and source/staging preservation. Its Linux nightly execution is pending. |
+| Permanent owner-soak lane | `b540a714`: the exact ignored inventory is checked on PRs and runs in Nightly and `zcheck run full`. Locally, all 96 cycles, 543 normal reference tests, six runner checks and 47 guards pass, with strict lint/docs and source/staging preservation. The [Linux run at `66bf4f43`](https://github.com/zsumz/rafter/actions/runs/38180408405) also passes all 96 cycles in 231.02 seconds: 12,288 load writes and 12,288 mixed reads, final balance 12,288. Downloaded logs and the generated resolved lock were checked; this lane does not retain a full source-hash inventory. |
 | Retained-log short reads | `fa2c3bf2`: all 317 storage tests, nine normal file/TLS cases, 47 guards, strict lint/docs and architecture checks pass. The original reader fails the allocation regression; a five-byte source with a 64 MiB claim retains 64 KiB with the fix. Error/prefix behavior and source/staging preservation pass. |
-| Durable benchmark report integrity | `552616c2`: 16 Python tests and four Rust configuration tests pass. Four malformed reports accepted by the previous checker are rejected; seven synthetic reports emitted by the actual Rust formatter pass. No new performance result is claimed. |
+| Durable benchmark report integrity | `552616c2`: 16 Python tests and four Rust configuration tests pass. Four malformed reports accepted by the previous checker are rejected; seven synthetic reports emitted by the actual Rust formatter pass. The launch-failure correction adds real missing/non-executable/invalid-format controls and successful, failed and timed-out child controls; all 18 Python checks pass. The separate [local durable baseline](../bench-compare/METHODOLOGY.md#local-release-readiness-baseline) at `0eb06666` validates 40 isolated timing samples and preserves the binary and all 2,823 tracked source hashes. |
 | Storage recovery, corruption and publication | `2717e88e`: all 315 storage tests pass; the allocation gate rejects the previous checkpoint reader and passes the fix. |
 | Public API compatibility | `2717e88e`: all 22 default/all-feature comparisons against `0.0.2-alpha.1` pass. |
 | Exact packages and Rust 1.88 MSRV | The two-file candidate committed as `70420368` passes all seven phases, including all 56 reviewed process cases and storage, wire and rolling TLS upgrades. The candidate's tracked source is preserved and matches the committed tree. |
@@ -97,9 +97,13 @@ Stable-release qualification remains open. In priority order:
 
 1. Freeze one final candidate and finish its complete hosted Linux qualification,
    including dedicated process profiles and the authenticated invariant aggregate.
-   The successful full nightlies at `961d621e` and `04ce0772` qualify earlier
-   checkpoints. The latter completed all 15 jobs and all 44 invariants; neither
-   contains the new ready-query fairness fix. Obtain the repository's architecture
+   The successful full nightlies at `961d621e`, `04ce0772`, and
+   [`4d20785d`](https://github.com/zsumz/rafter/actions/runs/38174175786) qualify earlier
+   checkpoints. The latest completed all 15 jobs and all 44 invariants; downloaded
+   aggregate reports and authenticated verifier replay evidence were checked,
+   but the full raw producer artifact set was not downloaded again. These runs
+   predate the ready-query fairness fix. The full `66bf4f43` run remains in progress
+   despite its successful process and owner-soak jobs. Obtain the repository's architecture
    review and reconcile the overlapping PR #13.
 2. Set the supported integration scope explicitly. Automatic membership-plan
    execution, committed-change tracking, general peer policy and retirement-history
