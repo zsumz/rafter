@@ -1378,9 +1378,18 @@ to 0.9.24. Strict comparator Clippy and all three release workloads pass on Rust
 1.88 (2,000 serial, 20,000 pipelined and 256 large-payload proposals). This is
 execution qualification, with no new published performance comparison.
 The yanked warning is cleared without exclusions. Protobuf and fxhash are in
-the active raft-rs comparator tree; rkyv is an optional rust_decimal dependency
-retained in the lock but absent from the current all-feature/all-target build
-tree. Those remaining findings require separate comparator dependency work.
+the active raft-rs comparator tree. The later benchmark-only update to
+[`rust_decimal` 1.43.0](https://github.com/paupino/rust-decimal/releases/tag/1.43.0)
+removes its unused optional rkyv 0.7 dependency and the obsolete dependency chain,
+reducing that lock from 211 to 195 packages. The fresh before/after audit against
+RustSec database `25a288f68f2d5ebe658b243a334110c7217a2569` confirms that
+RUSTSEC-2026-0235 is removed. It still refuses the complete benchmark graph for
+protobuf's RUSTSEC-2024-0437 and fxhash's RUSTSEC-2025-0057, with no exclusions.
+The affected OpenRaft comparator passes strict Clippy, a release build, and all
+three workloads on Rust 1.88 (22,256 proposals). Comparator versions, Rafter
+library source, and the root workspace lock are unchanged. This closes one
+benchmark dependency finding; it does not supply a clean benchmark audit or a
+new performance comparison.
 
 ## Suggested sequence
 
