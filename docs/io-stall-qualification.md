@@ -121,6 +121,25 @@ nodes have new identities. Sparse samples can miss transient thread/descriptor
 peaks. No fixed resource ceiling, physical-host memory bound, or performance
 threshold is established by this instrumentation.
 
+The [Linux resource run at `fa6533b0`](https://github.com/zsumz/rafter/actions/runs/38265739912)
+passes all 63 portable/native controls, both handshake cases, four I/O scenarios
+and the 36-case snapshot matrix. Readback verifies all 2,827 source hashes and
+90 individual process samples across the three counter scenarios. Sampled RSS
+maxima are 10.5–10.7 MiB per node, with at most 14 threads and 14 descriptors at
+the selected points. Each node uses less than 0.5 CPU seconds from baseline to
+the held observation in either 53-second whole-cluster stall. Those observations
+belong to this fixed workload and process identities; they are not release limits.
+
+The tutorial HTTP acceptor needs a separate resource policy. An isolated macOS
+loopback probe using its exact `tiny_http 0.12.0` dependency grows from six to 67
+process threads with 64 idle connections; threads release after disconnect. This
+is a dependency-boundary reproduction, not a full Rafter or Linux fault run.
+The counter's managed admission credits do not govern the HTTP library's workers
+or queued requests. The [counter guide](examples/counter/README.md) explicitly
+limits this listener to trusted local use and identifies front-end limits needed
+by deployed applications. Neither serial managed waits nor loopback binding is
+a whole-process resource bound.
+
 Cleanup resumes storage before trying every child, even if one cannot be reaped.
 Failed child cleanup retains the volume and fails the receipt. Node logs and
 per-request outcomes are uploaded with source, binary and resource receipts.

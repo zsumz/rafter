@@ -11,6 +11,15 @@ come from a pinned Git revision, with no dependency on the surrounding checkout.
 Generated certificates and data stay under `certs/` and `data/` in the directory
 you run it from. The client HTTP listeners bind to loopback only.
 
+The HTTP acceptor is a teaching front end, separate from Raft admission. Its
+`tiny_http` connection workers and request queue are not bounded by the owner's
+eight read/write slots. Serial handling limits concurrent managed waits; it does
+not cap accepted connections, queued HTTP requests or their memory. Keep this
+listener for trusted local use. A deployed service needs a front end with explicit
+connection, queue, request-size and timeout limits before managed admission.
+The five-second operation wait starts after HTTP parsing and dispatch; it is not
+an end-to-end network deadline.
+
 Run the additional checks with Rust 1.88, OpenSSL, and Python 3 installed:
 
 ```sh

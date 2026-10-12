@@ -28,7 +28,7 @@ pub fn serve(
         let Some(request) = server.recv_timeout(Duration::from_millis(50))? else {
             continue;
         };
-        // One request at a time keeps the tutorial's client work bounded.
+        // Serialize managed waits; the HTTP acceptor has separate resource costs.
         if let Err(error) = respond(
             request,
             &handle,

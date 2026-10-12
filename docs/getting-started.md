@@ -254,7 +254,13 @@ They are independent observations, not an atomic snapshot, a capacity reservatio
 or a whole-host memory bound. None proves a quorum read. Commit minus applied is
 not an application backlog count because the Raft log also contains protocol entries.
 
-The HTTP API redirects followers and bounds request waiting. Its error response
+The HTTP API redirects followers and gives each dispatched managed operation a
+five-second wait budget. HTTP parsing, accepted connections and the `tiny_http`
+request queue are outside that budget and the owner's read/write credits. Serial
+handling bounds concurrent managed waits, not the HTTP front end. Keep the
+loopback listener for trusted local use; deployed integrations need explicit
+connection, queue, request-size and network-timeout limits before admission.
+Its error response
 sets `write_may_have_committed` to false only when the managed write error proves
 the command was not appended. On timeout, dropping the future abandons the
 waiter; a submitted increment may still commit. Safe
@@ -1398,7 +1404,7 @@ pub fn serve(
         let Some(request) = server.recv_timeout(Duration::from_millis(50))? else {
             continue;
         };
-        // One request at a time keeps the tutorial's client work bounded.
+        // Serialize managed waits; the HTTP acceptor has separate resource costs.
         if let Err(error) = respond(
             request,
             &handle,
