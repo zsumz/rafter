@@ -73,6 +73,34 @@ class ProbeProtocol(unittest.TestCase):
         self.assertEqual(self.assert_reaped()['status'], 'passed')
         self.assertEqual((self.mount / 'fsync-probe').read_bytes(), b'R' * 4096)
 
+    def test_workload_runs_only_while_probe_is_pending(self):
+        calls = []
+        def workload():
+            self.assertFalse((self.mount / 'release').exists())
+            calls.append('held')
+        events = run_probe(self.volume, self.script, self.artifacts, .08, 2.0, workload)
+        self.assertEqual(calls, ['held'])
+        self.assertEqual([e['event'] for e in events][-3:],
+                         ['workload_complete', 'mapping_resumed', 'synced'])
+        self.assert_reaped()
+
+    def test_failed_workload_still_resumes_and_reaps(self):
+        def workload():
+            raise RuntimeError('workload failed')
+        with self.assertRaisesRegex(RuntimeError, 'workload failed'):
+            run_probe(self.volume, self.script, self.artifacts, .08, 2.0, workload)
+        self.assertTrue((self.mount / 'release').exists())
+        self.assert_reaped()
+
+    def test_workload_cannot_release_stall_and_claim_success(self):
+        def workload():
+            self.volume.resume()
+            import time
+            time.sleep(.1)
+        with self.assertRaisesRegex(RuntimeError, 'probe completed before workload'):
+            run_probe(self.volume, self.script, self.artifacts, .08, 2.0, workload)
+        self.assert_reaped()
+
     def test_real_fsync_without_stall_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, 'did not remain blocked'):
             run_probe(self.volume, PROBE, self.artifacts, .25, 2.0)

@@ -66,7 +66,7 @@ def cleanup_child(volume, child, events, artifacts, wait_seconds):
         raise RuntimeError('probe cleanup incomplete: ' + '; '.join(errors))
 
 
-def run_probe(volume, script, artifacts, hold_seconds=3.0, wait_seconds=15.0):
+def run_probe(volume, script, artifacts, hold_seconds=3.0, wait_seconds=15.0, while_stalled=None):
     """Require fsync to stay pending until the owned mapping is resumed."""
     if any(not math.isfinite(x) or x <= 0 for x in (hold_seconds, wait_seconds)):
         raise ValueError('probe deadlines must be positive and finite')
@@ -104,6 +104,16 @@ def run_probe(volume, script, artifacts, hold_seconds=3.0, wait_seconds=15.0):
                 observed = still_pending
             if observed is not still_pending or child.poll() is not None:
                 raise RuntimeError(f'probe did not remain blocked: {observed!r}')
+            if while_stalled is not None:
+                while_stalled()
+                # The workload must not silently release the fault mechanism.
+                try:
+                    observed = pending.next(.001)
+                except TimeoutError:
+                    observed = still_pending
+                if observed is not still_pending or child.poll() is not None:
+                    raise RuntimeError('probe completed before workload released the stall')
+                events.append({'event': 'workload_complete', 'monotonic_ns': time.monotonic_ns()})
             volume.resume()
             events.append({'event': 'mapping_resumed', 'monotonic_ns': time.monotonic_ns()})
             synced = expect('synced')

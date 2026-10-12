@@ -72,8 +72,12 @@ profile does not run or replace the authenticated invariant aggregate or owner s
 
 The next [Linux I/O stall qualification](io-stall-qualification.md) slice establishes
 a private loop/ext4 fault mechanism and its cleanup before applying it to Rafter.
-Portable protocol, resource-ownership and failed-receipt controls pass; real Linux
-execution and the subsequent counter workload remain to be qualified.
+The [probe run at `60a496dd`](https://github.com/zsumz/rafter/actions/runs/38186801268)
+passes a 3.03-second held sync, successful child completion, verified resource
+release and all 2,818 source hashes. The next job applies that same mechanism to
+the existing three-node TLS counter. Portable controls and a real unstalled
+counter negative control pass; its hosted stalled-counter execution remains to
+be qualified.
 
 Stable-release qualification remains open. In priority order:
 

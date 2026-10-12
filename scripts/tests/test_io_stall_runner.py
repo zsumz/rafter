@@ -69,6 +69,50 @@ class QualificationReceipt(unittest.TestCase):
                 if defect != 'preflight':
                     self.volume.close.assert_called_once()
 
+    def test_counter_cleanup_precedes_volume_release(self):
+        from io_stall_counter import CounterWorkload
+        binary = self.root / 'binary'
+        binary.write_bytes(b'fixture')
+        for fail in [False, True]:
+            with self.subTest(cleanup_failure=fail):
+                order = []
+                self.volume.close.reset_mock(side_effect=True)
+                self.volume.resume.side_effect = lambda: order.append('resume')
+                self.volume.close.side_effect = lambda: order.append('volume')
+                counter = Mock(spec=CounterWorkload)
+                def close():
+                    order.append('counter')
+                    if fail:
+                        raise RuntimeError('unreaped counter')
+                counter.close.side_effect = close
+                with patch.object(runner, 'Commands'), \
+                        patch.object(runner, 'DisposableVolume', return_value=self.volume), \
+                        patch.object(runner, 'run_probe', return_value=['modeled']), \
+                        patch.object(runner, 'source_snapshot', return_value=self.snapshot), \
+                        patch.object(runner.tempfile, 'mkdtemp', return_value=str(self.root)), \
+                        patch('io_stall_counter.CounterWorkload', return_value=counter):
+                    receipt = runner.qualify(self.root / f'counter-{fail}', binary)
+                self.assertEqual(order, ['resume', 'counter'] if fail else ['resume', 'counter', 'volume'])
+                self.assertEqual(receipt['status'], 'failed' if fail else 'passed')
+                self.assertTrue(receipt['binary_preserved'])
+                counter.start.assert_called_once()
+                counter.finish.assert_called_once()
+
+    def test_changed_counter_binary_fails_receipt(self):
+        binary = self.root / 'binary'
+        binary.write_bytes(b'before')
+        counter = Mock()
+        counter.finish.side_effect = lambda: binary.write_bytes(b'after')
+        with patch.object(runner, 'Commands'), \
+                patch.object(runner, 'DisposableVolume', return_value=self.volume), \
+                patch.object(runner, 'run_probe', return_value=['modeled']), \
+                patch.object(runner, 'source_snapshot', return_value=self.snapshot), \
+                patch.object(runner.tempfile, 'mkdtemp', return_value=str(self.root)), \
+                patch('io_stall_counter.CounterWorkload', return_value=counter):
+            receipt = runner.qualify(self.root / 'changed-binary', binary)
+        self.assertEqual(receipt['status'], 'failed')
+        self.assertFalse(receipt['binary_preserved'])
+
     def test_vm_selection_required_before_side_effects(self):
         artifacts = self.root / 'must-not-exist'
         result = subprocess.run([sys.executable, str(SCRIPTS / 'check-io-stall'),

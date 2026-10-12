@@ -7,12 +7,28 @@ on:
       - 'scripts/check-io-stall'
       - 'scripts/io_stall_*.py'
       - 'scripts/tests/*io_stall*.py'
+      - 'scripts/check-counter-guide'
+      - 'scripts/counter_guide_deps.py'
+      - 'docs/examples/counter/**'
+      - 'docs/getting-started.md'
+      - 'crates/**'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/actions/setup-rust/**'
   pull_request:
     paths:
       - '.github/workflows/io-stall.yml'
       - 'scripts/check-io-stall'
       - 'scripts/io_stall_*.py'
       - 'scripts/tests/*io_stall*.py'
+      - 'scripts/check-counter-guide'
+      - 'scripts/counter_guide_deps.py'
+      - 'docs/examples/counter/**'
+      - 'docs/getting-started.md'
+      - 'crates/**'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/actions/setup-rust/**'
   workflow_dispatch:
 
 permissions:
@@ -34,7 +50,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check portable failure and ownership controls
-        run: python3 -m unittest scripts/tests/test_io_stall_volume.py scripts/tests/test_io_stall_controller.py scripts/tests/test_io_stall_runner.py
+        run: python3 -m unittest scripts/tests/test_io_stall_volume.py scripts/tests/test_io_stall_controller.py scripts/tests/test_io_stall_runner.py scripts/tests/test_io_stall_counter.py
       - name: Qualify the owned filesystem stall and cleanup
         run: |
           python3 scripts/check-io-stall --disposable-linux-vm \
@@ -44,5 +60,41 @@ jobs:
         with:
           name: io-stall-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/io-stall-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  tls-counter:
+    needs: fsync-probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - name: Build and smoke-test the exact checkout counter
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/io-stall-counter-build"
+          rustc --version --verbose > "$RUNNER_TEMP/io-stall-counter-build/rustc.txt"
+          cargo --version > "$RUNNER_TEMP/io-stall-counter-build/cargo.txt"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/io-stall-counter-target"
+          python3 scripts/check-counter-guide --mode checkout 2>&1 | tee "$RUNNER_TEMP/io-stall-counter-build/build.log"
+      - name: Exercise write outcomes and recovery across an actual filesystem stall
+        run: |
+          python3 scripts/check-io-stall --disposable-linux-vm \
+            --counter-binary "$RUNNER_TEMP/io-stall-counter-target/checkout/debug/rafter-counter" \
+            --artifacts "$RUNNER_TEMP/io-stall-counter-evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: io-stall-counter-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/io-stall-counter-build
+            ${{ runner.temp }}/io-stall-counter-evidence
           if-no-files-found: error
           retention-days: 30

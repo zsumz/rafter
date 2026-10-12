@@ -64,19 +64,25 @@ class Commands:
             write_json(self.artifacts / 'commands.json', self.records)
 
 
-def qualify(artifacts):
+def qualify(artifacts, counter_binary=None):
     artifacts.mkdir(parents=True, exist_ok=False)
     receipt = dict(schema=1, status='failed', scope='Linux loop/ext4 fsync stall probe only',
                    host=platform.uname()._asdict(), python=sys.version,
                    runner_image=os.environ.get('ImageVersion'),
                    runner_environment=os.environ.get('RUNNER_ENVIRONMENT'))
     volume = None
+    counter = None
+    binary_hash = None
     before = None
     failures = []
     try:
         before = source_snapshot()
         write_json(artifacts / 'source-before.json', before)
         receipt['source'] = before['head']
+        if counter_binary is not None:
+            binary_hash = hashlib.sha256(counter_binary.read_bytes()).hexdigest()
+            receipt['counter_binary'] = dict(path=str(counter_binary), sha256=binary_hash)
+            receipt['scope'] = 'Three local TLS counter nodes on one stalled Linux loop/ext4 filesystem'
         run = Commands(artifacts)
         for command in [['uname', '-a'], ['losetup', '--version'], ['sudo', '-n', 'dmsetup', 'version'],
                         ['findmnt', '--version'], ['mkfs.ext4', '-V'], ['sudo', '-n', 'true']]:
@@ -89,12 +95,33 @@ def qualify(artifacts):
                                  mapping=volume.name, uuid=volume.uuid, bytes=volume.sectors * 512)
         volume.create()
         receipt['volume']['loop'] = volume.loop
-        receipt['events'] = run_probe(volume, ROOT / 'scripts/io_stall_probe.py', artifacts)
+        if counter_binary is not None:
+            from io_stall_counter import CounterWorkload
+            counter = CounterWorkload(counter_binary, temporary / 'counter', volume.mount, artifacts)
+            counter.start()
+        receipt['events'] = run_probe(volume, ROOT / 'scripts/io_stall_probe.py', artifacts,
+                                     while_stalled=counter.while_stalled if counter else None)
+        if counter is not None:
+            counter.finish()
     except BaseException as error:
         failures.append('qualification: ' + repr(error))
         (artifacts / 'qualification-error.txt').write_text(traceback.format_exc())
     finally:
         if volume is not None:
+            try:
+                volume.resume()
+            except BaseException as error:
+                failures.append('resume before workload cleanup: ' + repr(error))
+        if counter is not None:
+            try:
+                counter.close()
+                receipt['counter_cleanup'] = 'passed'
+            except BaseException as error:
+                failures.append('counter cleanup: ' + repr(error))
+                receipt['counter_cleanup'] = 'failed'
+        if receipt.get('counter_cleanup') == 'failed':
+            receipt['volume_cleanup'] = 'retained until counter children are reaped'
+        if volume is not None and receipt.get('counter_cleanup') != 'failed':
             try:
                 volume.close()
                 receipt['volume_cleanup'] = 'passed'
@@ -102,6 +129,14 @@ def qualify(artifacts):
                 failures.append('volume cleanup: ' + repr(error))
                 receipt['volume_cleanup'] = 'failed'
                 (artifacts / 'cleanup-error.txt').write_text(traceback.format_exc())
+        if binary_hash is not None:
+            try:
+                if hashlib.sha256(counter_binary.read_bytes()).hexdigest() != binary_hash:
+                    raise RuntimeError('counter binary changed during qualification')
+                receipt['binary_preserved'] = True
+            except BaseException as error:
+                failures.append('binary preservation: ' + repr(error))
+                receipt['binary_preserved'] = False
         if before is not None:
             try:
                 after = source_snapshot()
@@ -121,6 +156,8 @@ def qualify(artifacts):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--artifacts', type=Path, required=True)
+    parser.add_argument('--counter-binary', type=Path,
+                        help='also exercise this checkout-built standalone TLS counter')
     parser.add_argument('--disposable-linux-vm', action='store_true',
                         help='explicitly select a disposable VM with passwordless sudo')
     args = parser.parse_args()
@@ -129,7 +166,8 @@ def main():
     def interrupted(signum, _frame):
         raise SystemExit(f'interrupted by signal {signum}')
     signal.signal(signal.SIGTERM, interrupted)
-    receipt = qualify(args.artifacts.resolve())
+    receipt = qualify(args.artifacts.resolve(),
+                      args.counter_binary.resolve() if args.counter_binary else None)
     print(json.dumps({k: receipt.get(k) for k in
                       ['source', 'status', 'source_preserved', 'volume_cleanup', 'errors']}, indent=2))
     return 0 if receipt['status'] == 'passed' else 1
