@@ -11,6 +11,23 @@ from load import parse_json
 
 MAX_RECORD = 16 * 1024
 MAX_METADATA = 64 * 1024
+OUTCOMES = ("write_acknowledged", "read_succeeded", "write_refused", "read_refused",
+            "write_uncertain", "read_failed")
+
+
+def latency_distribution(samples):
+    """Exact empirical nearest-rank percentiles; each outcome keeps its own population."""
+    result = {}
+    for outcome in OUTCOMES:
+        ordered = sorted(samples[outcome])
+        count = len(ordered)
+        result[outcome] = {
+            "count": count, "sum": sum(ordered),
+            "min": ordered[0] if count else None, "max": ordered[-1] if count else None,
+            **{f"p{percentile}": ordered[(count * percentile + 99) // 100 - 1] if count else None
+               for percentile in (50, 95, 99)},
+        }
+    return result
 
 
 def require(condition, message):
@@ -40,7 +57,7 @@ def metadata(path):
     return value, hashlib.sha256(raw).hexdigest()
 
 
-def inspect(directory, baseline, final, run_id, expected_client, acknowledged, minimum_seconds, operations=None):
+def inspect(directory, baseline, final, run_id, expected_client, acknowledged, minimum_seconds, pooled_latencies, operations=None):
     invocation, invocation_hash = metadata(directory / "invocation.json")
     summary, summary_hash = metadata(directory / "summary.json")
     metrics, metrics_hash = metadata(directory / "initial-metrics.json")
@@ -65,6 +82,7 @@ def inspect(directory, baseline, final, run_id, expected_client, acknowledged, m
             "invalid elapsed time")
 
     counts = Counter()
+    samples = {outcome: [] for outcome in OUTCOMES}
     number = total_latency = length = 0
     minimum = maximum = first_invocation = None
     previous_end = 0
@@ -127,6 +145,7 @@ def inspect(directory, baseline, final, run_id, expected_client, acknowledged, m
                                    "start": pending["monotonic_ns"], "end": previous_end,
                                    "value": event.get("value")})
             counts[outcome] += 1
+            samples[outcome].append(latency)
             number += 1
             total_latency += latency
             minimum = latency if minimum is None else min(minimum, latency)
@@ -150,7 +169,10 @@ def inspect(directory, baseline, final, run_id, expected_client, acknowledged, m
     span = (previous_end - first_invocation) / 1e9
     require(span >= minimum_seconds, "recorded workload span is below the required duration")
     require(summary["elapsed_seconds"] >= span, "history span exceeds captured elapsed time")
+    for outcome in OUTCOMES:
+        pooled_latencies[outcome].extend(samples[outcome])
     return {"node": node, "host_label": invocation["host"], "operations": number,
+            "latency_ns_by_outcome": latency_distribution(samples),
             "outcomes": dict(counts), "history_span_seconds": span,
             "input_sha256": {"invocation.json": invocation_hash, "summary.json": summary_hash,
                              "initial-metrics.json": metrics_hash, "history.jsonl": checksum.hexdigest()}}
@@ -233,7 +255,8 @@ def verify(histories, baseline, final, run_id, minimum_seconds=0, shared_clock=F
     client_hash = hashlib.sha256(Path(__file__).with_name("load.py").read_bytes()).hexdigest()
     acknowledged = set()
     operations = [] if shared_clock else None
-    results = [inspect(Path(path), baseline, final, run_id, client_hash, acknowledged, minimum_seconds, operations) for path in histories]
+    pooled_latencies = {outcome: [] for outcome in OUTCOMES}
+    results = [inspect(Path(path), baseline, final, run_id, client_hash, acknowledged, minimum_seconds, pooled_latencies, operations) for path in histories]
     require({result["node"] for result in results} == {1, 2, 3}, "histories must cover distinct nodes 1, 2, 3")
     counts = Counter()
     for result in results:
@@ -245,6 +268,9 @@ def verify(histories, baseline, final, run_id, minimum_seconds=0, shared_clock=F
     report = {"schema": 1, "run_id": run_id, "status": "passed", "scope": "counter accounting and per-client observations",
             "baseline": baseline, "final": final, "allowed_final_range": [lower, upper],
             "outcomes": dict(counts), "client_sha256": client_hash,
+            "latency_ns_by_outcome": latency_distribution(pooled_latencies),
+            "latency_method": "Empirical nearest rank: sorted sample at ceil(percentile * count / 100). Pooled samples, not averages of node percentiles. Empty populations have count/sum zero and null order statistics.",
+            "latency_scope": "Observed client HTTP exchange durations, separated by outcome. Uncertain writes and failed reads are client observations, not server completion latencies. Finite recorded samples do not establish latency bounds, peak throughput, or a coordinated-omission correction.",
             "minimum_history_span_seconds": minimum_seconds, "nodes": results,
             "limits": "Boundary values must be quorum reads taken before and after all clients. Requires no other writers. Does not establish cross-host real-time ordering, complete linearizability, server identity, durability after future crashes, or resource bounds."}
     if shared_clock:

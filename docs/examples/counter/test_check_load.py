@@ -79,6 +79,49 @@ class WorkloadAccounting(unittest.TestCase):
                                             "write_refused": 2, "read_refused": 2})
         self.assertEqual({node["node"] for node in report["nodes"]}, {1, 2, 3})
 
+    def test_latency_populations_remain_separate_and_pool_samples_not_percentiles(self):
+        for node, count in ((1, 200), (2, 2), (3, 4)):
+            events = []
+            self.change_json(node, "invocation.json", "max_operations", count)
+            for number in range(1, count + 1):
+                writing = number % 2 == 1
+                events.append({"event": "invoke", "run_id": "run-one", "id": number, "node": node,
+                               "kind": "write" if writing else "read", "increment": 1 if writing else None,
+                               "monotonic_ns": number * 1_000_000})
+                result = {"event": "complete", "run_id": "run-one", "id": number, "node": node,
+                          "started_monotonic_ns": number * 1_000_000 + 10}
+                if node in (1, 2):
+                    value = (number + 1) // 2 if node == 1 else 101
+                    latency = (value if writing else 20_000) if node == 1 else (10_000 if writing else 30_000)
+                    result.update(outcome="write_acknowledged" if writing else "read_succeeded",
+                                  status=200, value=value, latency_ns=latency)
+                elif number <= 2:
+                    result.update(outcome="write_uncertain" if writing else "read_failed", status=None,
+                                  error="deadline", latency_ns=500_000 if writing else 600_000)
+                else:
+                    result.update(outcome="write_refused" if writing else "read_refused", status=307,
+                                  latency_ns=0 if writing else 7)
+                events.append(result)
+            self.seal(node, events)
+        report = self.verify(final=101)
+        pooled = report["latency_ns_by_outcome"]
+        self.assertEqual(pooled["write_acknowledged"],
+                         {"count": 101, "sum": 15_050, "min": 1, "max": 10_000,
+                          "p50": 51, "p95": 96, "p99": 100})
+        self.assertEqual(pooled["read_succeeded"],
+                         {"count": 101, "sum": 2_030_000, "min": 20_000, "max": 30_000,
+                          "p50": 20_000, "p95": 20_000, "p99": 20_000})
+        for outcome, duration in (("write_uncertain", 500_000), ("read_failed", 600_000),
+                                  ("write_refused", 0), ("read_refused", 7)):
+            self.assertEqual(pooled[outcome], {"count": 1, "sum": duration, "min": duration,
+                             "max": duration, "p50": duration, "p95": duration, "p99": duration})
+        nodes = {node["node"]: node["latency_ns_by_outcome"] for node in report["nodes"]}
+        self.assertEqual(nodes[1]["write_acknowledged"]["p95"], 95)
+        self.assertEqual(nodes[2]["write_acknowledged"]["p95"], 10_000)
+        self.assertEqual(nodes[1]["write_uncertain"],
+                         {"count": 0, "sum": 0, "min": None, "max": None,
+                          "p50": None, "p95": None, "p99": None})
+
     def test_uncertain_increment_may_commit_without_becoming_an_acknowledgement(self):
         events = self.events(2)
         events[1].update(outcome="write_uncertain", status=503, error="timeout")

@@ -173,6 +173,22 @@ It cannot include unexplained writes. `--minimum-seconds` requires each history'
 first-invocation-to-last-completion span to reach the requested duration; allow
 extra client runtime for the trailing pause when enforcing a duration floor.
 
+The report also retains client HTTP latency distributions in nanoseconds, separately
+for acknowledged writes, successful quorum reads, write/read refusals, uncertain
+writes, and failed reads. Each node and the pooled samples include a count, sum,
+minimum, maximum, and empirical p50/p95/p99. Percentiles use the nearest rank
+`ceil(percentile * count / 100)` in sorted samples; pooled values use all samples
+in that outcome, not averages of node percentiles. Empty populations have zero
+count/sum and null order statistics. This offline calculation retains the latency
+samples in memory and leaves the recorder's request path unchanged.
+
+Read the counts and uncertainty populations alongside success percentiles. A timed
+out write's duration measures the client's wait, not how long its eventual commit
+took. Serial clients stop dispatching during slow requests, and no
+coordinated-omission correction is applied. These are observed distributions for
+the recorded workload, not peak-throughput measurements, tail-latency guarantees,
+or a whole-host memory bound.
+
 The JSON report identifies these accounting checks and hashes every input file.
 Its boundary values are caller-supplied; the surrounding test must retain their
 quorum-read evidence, server identities and fault timeline. This is not a complete
