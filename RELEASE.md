@@ -54,7 +54,9 @@ For hosted Linux archive qualification before merging, use the
 [manual candidate archive profile](docs/reference-consumers.md#manual-candidate-archive-qualification).
 It runs the combined process/MSRV/upgrade lane and audits the same archive set,
 retaining source hashes and diagnostics. Full invariant and owner-soak evidence
-remain separate release requirements.
+remain separate release requirements. Review the [native target and filesystem
+qualification matrix](docs/platform-qualification.md) before selecting the
+release support scope.
 
 The public dependency audit requires cargo-audit 0.22.2 (installed with
 `cargo +1.97.1 install cargo-audit --version 0.22.2 --locked`), Python 3.11+,

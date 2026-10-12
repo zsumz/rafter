@@ -121,8 +121,10 @@ Stable-release qualification remains open. In priority order:
 3. Extend process-loss and Linux I/O-stall cases to physical power-loss publication,
    sustained multi-host TLS workloads and whole-host memory/latency bounds. Keep
    optional diagnostics disabled for timing comparisons.
-4. Record the OS/filesystem support and license policy. Resolve remaining benchmark
-   comparator dependency findings separately from the already-audited public graph.
+4. Decide OS/filesystem support commitments from the
+   [platform qualification matrix](platform-qualification.md), and record license
+   policy. Resolve remaining benchmark comparator dependency findings separately
+   from the already-audited public graph.
 
 The sections below retain the initial assessment and subsequent qualification
 history. Their test counts and hosted results belong to the stated checkpoints;
@@ -1290,8 +1292,9 @@ and Cargo identities. The current stable channel resolves to Rust 1.99.0 on
 October 11, 2026. Rust 1.88 remains the strict test/lint/documentation and
 exact-package baseline; this additive compiler lane does not change the MSRV.
 
-An explicit OS/filesystem support matrix for the shipped libraries remains
-required. The existing macOS 15 CI job now runs the complete locked storage
+The [platform qualification matrix](platform-qualification.md) records native
+target coverage and filesystem evidence; stable support commitments remain open.
+The existing macOS 15 CI job now runs the complete locked storage
 suite alongside strict lint and launcher checks. Storage failures propagate
 through the required `invariants-pr` aggregate, and the normal diagnostics
 artifact retains the storage log. Linux runs the same storage tests through
