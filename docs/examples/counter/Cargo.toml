@@ -8,13 +8,13 @@ rust-version = "1.88"
 [workspace]
 
 [dependencies]
-rafter = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
-rafter-app = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
-rafter-storage = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
-rafter-runtime = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
-rafter-service = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6", features = ["durable"] }
-rafter-transport-tls = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
-rafter-crc32 = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
+rafter = { git = "https://github.com/zsumz/rafter", rev = "7151197c051502173b387934000a2d1829047e17" }
+rafter-app = { git = "https://github.com/zsumz/rafter", rev = "7151197c051502173b387934000a2d1829047e17" }
+rafter-storage = { git = "https://github.com/zsumz/rafter", rev = "7151197c051502173b387934000a2d1829047e17" }
+rafter-runtime = { git = "https://github.com/zsumz/rafter", rev = "7151197c051502173b387934000a2d1829047e17" }
+rafter-service = { git = "https://github.com/zsumz/rafter", rev = "7151197c051502173b387934000a2d1829047e17", features = ["durable"] }
+rafter-transport-tls = { git = "https://github.com/zsumz/rafter", rev = "7151197c051502173b387934000a2d1829047e17" }
+rafter-crc32 = { git = "https://github.com/zsumz/rafter", rev = "7151197c051502173b387934000a2d1829047e17" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny_http = "0.12"

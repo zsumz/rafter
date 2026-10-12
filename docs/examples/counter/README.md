@@ -8,6 +8,8 @@ and a complete source reference follow the explanations.
 
 This folder is its own Cargo project. Copy it anywhere; its Rafter dependencies
 come from a pinned Git revision, with no dependency on the surrounding checkout.
+The pin includes the ciphertext-level TLS handshake deadline and nested snapshot
+directory synchronization fixes qualified in candidate `7151197c`.
 Generated certificates and data stay under `certs/` and `data/` in the directory
 you run it from. The client HTTP listeners bind to loopback only.
 
