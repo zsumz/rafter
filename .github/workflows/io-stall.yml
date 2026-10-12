@@ -75,6 +75,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.88.0"
+          components: rustfmt, clippy
       - name: Build and smoke-test the exact checkout counter
         shell: bash
         run: |
