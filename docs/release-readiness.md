@@ -1,8 +1,8 @@
-# Release readiness — 2026-10-11
+# Release readiness — 2026-10-12
 
 Initial review base: `021f4f9bb2f6960cb75b24f5a627f1872a12d430` (`origin/main`).
 Remote branches, pull requests, and workflow results were initially refreshed on
-October 10, 2026. An October 11 fetch confirms `origin/main` and the other branch
+October 10, 2026. An October 12 fetch confirms `origin/main` and the other branch
 tips are unchanged; only the release-work branches have advanced. The initial build
 changes added a Rust 1.88.0 toolchain pin and setup instructions, without changing
 consensus behavior or declaring a release.
@@ -23,7 +23,7 @@ burden for durable applications. More throughput work should follow those.
 ## Current code checkpoint
 
 The release work is on `codex/stable-release-slices`, with code through
-[`90a5de9b`](https://github.com/zsumz/rafter/commit/90a5de9b8405f9eaa3b698a100f0d203ff8c90c6)
+[`78382a8d`](https://github.com/zsumz/rafter/commit/78382a8d6a8b155e9af5a212ff8c14b664aa7983)
 in draft [PR #23](https://github.com/zsumz/rafter/pull/23). The transport already
 exists: durable composition reuses its authenticated TLS sender and inbound
 validation. No transport replacement, version bump, tag, or publication is part
@@ -38,113 +38,89 @@ persists peer retirement and authorization policy. The feature remains default-o
 
 | Qualification | Source checkpoint and result |
 | --- | --- |
-| Integrated workspace with durable feature | `66bf4f43`: all-target build, 3,344 tests (zero failed, 58 ignored), strict all-target Clippy and strict rustdoc pass on Rust 1.88; all 2,808 tracked source hashes remain unchanged. |
-| Ledger readiness ownership | `70420368`: the follower reaches its durable baseline and exits cleanly before the contender recovers. All nine checkout process cases, 64 isolated readiness repetitions, strict reference lint/docs, architecture and final source/staging checks pass. Journal repair policy and dedicated abrupt-crash cases remain unchanged. |
-| Ready-query fairness | `9c08dd5a`: 440 service tests, 47 guards, strict lint/docs and all nine canonical file/TLS cases pass. The identical public production sources also pass nine isolated TLS cases with 96 mixed-load/compaction/cold-recovery cycles. The original scheduler and a partial fix fail deterministic regressions. |
-| Permanent owner-soak lane | `b540a714`: the exact ignored inventory is checked on PRs and runs in Nightly and `zcheck run full`. Locally, all 96 cycles, 543 normal reference tests, six runner checks and 47 guards pass, with strict lint/docs and source/staging preservation. The [Linux run at `66bf4f43`](https://github.com/zsumz/rafter/actions/runs/38180408405) also passes all 96 cycles in 231.02 seconds: 12,288 load writes and 12,288 mixed reads, final balance 12,288. Downloaded logs and the generated resolved lock were checked; this lane does not retain a full source-hash inventory. |
-| Retained-log short reads | `fa2c3bf2`: all 317 storage tests, nine normal file/TLS cases, 47 guards, strict lint/docs and architecture checks pass. The original reader fails the allocation regression; a five-byte source with a 64 MiB claim retains 64 KiB with the fix. Error/prefix behavior and source/staging preservation pass. |
-| Durable benchmark report integrity | `552616c2`: 16 Python tests and four Rust configuration tests pass. Four malformed reports accepted by the previous checker are rejected; seven synthetic reports emitted by the actual Rust formatter pass. The launch-failure correction adds real missing/non-executable/invalid-format controls and successful, failed and timed-out child controls; all 18 Python checks pass. The separate [local durable baseline](../bench-compare/METHODOLOGY.md#local-release-readiness-baseline) at `0eb06666` validates 40 isolated timing samples and preserves the binary and all 2,823 tracked source hashes. |
-| Storage recovery, corruption and publication | `2717e88e`: all 315 storage tests pass; the allocation gate rejects the previous checkpoint reader and passes the fix. |
-| Public API compatibility | `2717e88e`: all 22 default/all-feature comparisons against `0.0.2-alpha.1` pass. |
-| Exact packages and Rust 1.88 MSRV | The two-file candidate committed as `70420368` passes all seven phases, including all 56 reviewed process cases and storage, wire and rolling TLS upgrades. The candidate's tracked source is preserved and matches the committed tree. |
-| Shipped archive dependency graph | That same archive set passes the strict audit of all 51 packages, including 40 registry dependencies, without exclusions. |
-| Durable runtime and service suites | `addc9d78`: 238 runtime and 437 durable-service tests pass. The two ignored runtime process entries have an explicit CI parent-process selection. |
-| Independent file/TLS composition | `1aee0c76`: all nine cases pass; eight concurrent repetitions cover 24 mixed-load/compaction/recovery cycles across all three leaders. The same consumer also passes in the `2717e88e` archive lane. |
-| Architecture and source preservation | `2717e88e`: no diagnostics, new grants or debt; candidate inventory/implementation identities are refreshed. Maintainer architecture approval remains open. |
+| Integrated workspace with durable feature | `78382a8d`: all-target build, 3,349 tests (zero failed, 59 ignored), strict all-target Clippy and strict rustdoc pass on Rust 1.88 on Apple Silicon macOS. All 2,825 tracked source hashes remain unchanged. Ignored cases have separate reviewed selections; they are not counted as executed here. |
+| PR invariant aggregate | [CI at `90a5de9b`](https://github.com/zsumz/rafter/actions/runs/38187404594): all runnable jobs and all 44 invariants pass. The aggregate uses merge commit `48d2409f`, whose tree matches that branch head. Architecture environment review remains waiting. This run predates the latest storage and TLS changes. |
+| Full nightly | [Nightly at `66bf4f43`](https://github.com/zsumz/rafter/actions/runs/38180408405): all 16 jobs and all 44 invariants pass, including process, owner-soak, fuzz, simulator, Maelstrom and TLA+ lanes. This older source includes query fairness but predates the latest fixture, workflow, storage and TLS changes. |
+| Linux I/O and snapshot faults | [Run at `78382a8d`](https://github.com/zsumz/rafter/actions/runs/38195565501): both handshake deadline regressions, all four I/O scenarios and all 36 snapshot process-loss cases pass. Downloaded evidence verifies all 2,825 source hashes, 138 snapshot pre-recovery inputs, 24 node-crash inputs and complete owned-resource cleanup. |
+| Exact packages and Rust 1.88 MSRV | [Archive run at `79f9a902`](https://github.com/zsumz/rafter/actions/runs/38194246613): all seven phases pass, including 56 reviewed process cases and storage, bidirectional wire and rolling TLS upgrades. All 2,825 tracked source hashes match that immutable Git tree. This run predates the handshake fix. |
+| Shipped archive dependency graph | The same `79f9a902` archive receipts pass the strict audit of all 51 packages, including 40 registry dependencies, with zero vulnerabilities, warnings or exclusions. Downloaded inputs reproduce the dependency projection and verify audit/upgrade hash links. Retained evidence contains archive hashes and receipts, not archive bytes. |
+| Permanent owner soak | The `66bf4f43` Linux nightly passes all 96 load/compaction/cold-recovery cycles in 231.02 seconds: 12,288 writes and 12,288 mixed reads, final balance 12,288. Downloaded logs and the generated resolved lock were checked. This lane does not retain a full source-hash inventory. |
+| Public API compatibility | `2717e88e`: all 22 default/all-feature comparisons against `0.0.2-alpha.1` pass. The later `90a5de9b` CI public-API gate also passes. A final candidate rerun remains required. |
+| Durable performance baseline | The [local baseline](../bench-compare/METHODOLOGY.md#local-release-readiness-baseline) at `0eb06666` validates 40 isolated timing samples and preserves the binary and all 2,823 source hashes. It compares checkpoint replacement with the optional journal on local APFS; it does not measure multi-host TLS service latency or competitors. |
+| Architecture and source preservation | The code slices through `78382a8d` pass local architecture and source/staging checks, with no new grants or debt. Maintainer architecture approval remains open. |
+
+Downloaded aggregate reports and verifier bundles for `90a5de9b` and `66bf4f43`
+verify 160 content-addressed members each, 77 executed fixtures, 79 evidence
+bindings, 33 fixture/detector source-file hashes, and the source tree and lock.
+The hosted aggregates verify their complete producer sets (219 and 1,072
+artifacts respectively); those raw producer sets were not downloaded or replayed
+again locally. These results qualify their recorded sources, not the final head.
 
 The original `66bf4f43` archive process run remains a failed receipt. Its readiness
 test killed a follower during application-journal publication, then required plain
 recovery despite a legitimate complete unsealed frame. The unchanged test
 reproduced that refusal. The correction isolates readiness from that crash window
 and requires a successful process exit and `STOPPED` marker before handoff.
+Strict journal repair policy and dedicated abrupt-crash cases remain intact.
 
 The [manual candidate archive profile](reference-consumers.md#manual-candidate-archive-qualification)
-now makes Linux process/MSRV/upgrade and advisory qualification available before
-merge. Its separate concurrency group preserves full Nightly runs. The workflow
-and failure-reporting guards pass all 47 cases, strict lint and actionlint; eight
-profile controls and seven source/failure controls give the expected results.
-The [Linux run at `52aadab0`](https://github.com/zsumz/rafter/actions/runs/38185568986)
-passes all seven phases, including 56 reviewed process cases, and the exact
-51-package advisory audit without exclusions. Downloaded evidence reproduces the
-dependency projection and verifies audit/upgrade hash links and all 2,808 tracked
-source hashes. It retains archive hashes and receipts, not archive bytes. This
-profile does not run or replace the authenticated invariant aggregate or owner soak.
+makes Linux process/MSRV/upgrade and advisory qualification available before
+merge. Its separate concurrency group preserves full Nightly runs. It does not
+replace the authenticated invariant aggregate or owner soak.
 
-The next [Linux I/O stall qualification](io-stall-qualification.md) slice establishes
-a private loop/ext4 fault mechanism and its cleanup before applying it to Rafter.
-The [probe run at `60a496dd`](https://github.com/zsumz/rafter/actions/runs/38186801268)
-passes a 3.03-second held sync, successful child completion, verified resource
-release and all 2,818 source hashes. The next job applies that same mechanism to
-the existing three-node TLS counter. Its [Linux run at `90a5de9b`](https://github.com/zsumz/rafter/actions/runs/38187400606)
-passes a 53.13-second kernel I/O stall, nine uncertain write timeouts, a pending
-quorum read, resumed progress and acknowledged state preserved through cold
-recovery. All owned resources are released and all 2,820 source hashes match.
-A separate [process-loss run at `f5a9a3c8`](https://github.com/zsumz/rafter/actions/runs/38188063513)
-passes a 53.06-second stall, three verified `SIGKILL` exits and strict recovery.
-Downloaded evidence verifies all 24 pre-recovery files, including hidden storage
-locks, all 2,821 source hashes and complete resource cleanup. Acknowledged value
-106 survives cold recovery and the next write reaches 107. This models process
-loss with the kernel and page cache present, not physical power loss.
-The live-credit counter slice at `3ccf9d3e` passes both Linux cases: one retained
-write/eight bytes remains visible throughout each stall while published pending
-writes stay zero. All credits drain after recovery. The isolated-leader case at
-`a07ae8e0` also passes: during an 8.07-second hold of node 1, node 3 becomes leader
-in term 2 and acknowledges value 106 before resume. All replicas then converge,
-value 107 survives cold recovery, and the next write reaches 108. Evidence verifies
-the three filesystem identities, all 2,823 source hashes and complete cleanup.
+The [Linux I/O qualification](io-stall-qualification.md) uses private loop/ext4
+filesystems with verified cleanup. At `78382a8d`, both whole-cluster stall cases
+hold I/O for about 53 seconds, retain one live write/eight bytes through nine
+uncertain timeouts, resume progress and preserve acknowledged state through cold
+recovery. One case also verifies three actual `SIGKILL` exits while I/O is held.
+Published pending-write metrics can remain stale at zero while the owner is
+blocked; live admission credits expose the retained charge. All credits drain.
+The isolated-leader case holds only node 1's filesystem for about eight seconds:
+node 3 becomes leader in term 2 and acknowledges value 106 before resume. All
+replicas converge; value 107 survives cold recovery and the next write reaches
+108. These are single-host kernel I/O stalls and process loss with the kernel and
+page cache present; they do not establish physical power-loss safety.
 
-The snapshot-store process-loss matrix adds 36 local cases at existing publication
-and cleanup boundaries, through streamed source publication and received-transfer
-promotion, with and without an old snapshot. Every case verifies an actual
-`SIGKILL`, preserves inputs before strict reopen and publishes again afterward;
-readback checks all 138 pre-recovery copies. The [Linux run at `c591bfff`](https://github.com/zsumz/rafter/actions/runs/38193176690)
-also passes all 36 cases and all TLS stall cases; downloaded evidence verifies
-the inputs, all 2,825 source hashes and complete owned-resource cleanup.
-Its dedicated Linux job and exact CI/local selections are described in
-[I/O qualification](io-stall-qualification.md#snapshot-publication-process-loss).
-It does not qualify physical power loss or application-database publication.
+The snapshot-store process-loss matrix covers nine existing publication/cleanup
+boundaries through streamed source publication and received-transfer promotion,
+with and without an old snapshot. All 36 cases require actual `SIGKILL`, copy
+inputs before strict reopen, validate old/new selection and payloads, and publish
+again afterward. The dedicated Linux job and exact CI/local selections are
+recorded in [I/O qualification](io-stall-qualification.md#snapshot-publication-process-loss).
+Application-database publication and physical power loss remain separate work.
 
-A subsequent deterministic regression exposed a directory-provisioning omission:
-opening a standalone snapshot store beneath three missing directory levels
-scheduled only the final parent for synchronization. The fix synchronizes every
-new directory's parent. Existing-directory and failed-initial-open provisioning
-requirements are explicit in the [durability protocol](../crates/rafter-storage/DURABILITY_PROTOCOL.md#directory-provisioning).
+A deterministic regression exposed a directory-provisioning omission: opening a
+standalone snapshot store beneath three missing directory levels scheduled only
+the final parent for synchronization. The fix synchronizes every new directory's
+parent. Existing-directory and failed-initial-open provisioning requirements are
+explicit in the [durability protocol](../crates/rafter-storage/DURABILITY_PROTOCOL.md#directory-provisioning).
 The regression checks the actual synchronization batch; it does not reproduce a
 physical power-loss failure. The fix at `79f9a902` passes 321 local storage tests,
-30 guards, strict lint/docs and the 36-case process matrix. Its
-[Linux I/O run](https://github.com/zsumz/rafter/actions/runs/38194229986) passes all
-snapshot and TLS cases; readback verifies 138 snapshot inputs, 24 node-crash
-inputs, all 2,825 tracked source hashes and resource cleanup. Its separate
-exact-archive qualification remains tied to that immutable commit.
+30 guards, strict lint/docs, the 36-case process matrix and the Linux runs above.
 
-The subsequent TLS handshake investigation reproduced an inner-I/O deadline gap:
-a 300 ms deadline allowed one encrypted record to trickle for 2.39 seconds before
-returning plaintext. The public transport likewise retained a connection beyond
-one second with a 500 ms handshake budget. Wrapping Rustls' underlying ciphertext
-I/O with the existing deadline socket bounds every inner read and write; the
-isolated correction cuts the same read off at 301 ms and releases the public
-transport slot on time. The regression uses valid mutual TLS and a valid encoded
-Rafter client hello, and joins both workers before reporting a failure.
+The TLS handshake investigation reproduced an inner-I/O deadline gap: a 300 ms
+deadline allowed one encrypted record to trickle for 2.39 seconds before returning
+plaintext. The public transport retained a connection beyond one second with a
+500 ms handshake budget. Wrapping Rustls' underlying ciphertext I/O with the
+existing deadline socket bounds every inner read and write; the isolated
+correction cuts the same read off at 301 ms and releases the public transport
+slot on time. The final regression fails against the original deadline code and
+passes the fix. All 160 local transport tests, 33 guards, strict lint/docs and
+both Linux handshake cases pass. The regression uses valid mutual TLS and a
+valid Rafter client hello, and joins both workers before reporting failure.
 
 Stable-release qualification remains open. In priority order:
 
-1. Freeze one final candidate and finish its complete hosted Linux qualification,
-   including dedicated process profiles and the authenticated invariant aggregate.
-   The successful full nightlies at `961d621e`, `04ce0772`, and
-   [`4d20785d`](https://github.com/zsumz/rafter/actions/runs/38174175786) qualify earlier
-   checkpoints. The latest completed all 15 jobs and all 44 invariants; downloaded
-   aggregate reports and authenticated verifier replay evidence were checked,
-   but the full raw producer artifact set was not downloaded again. These runs
-   predate the ready-query fairness fix. The full `66bf4f43` run remains in progress
-   despite its successful process and owner-soak jobs. Obtain the repository's architecture
-   review and reconcile the overlapping PR #13.
+1. Freeze the integrated candidate and run its complete hosted Linux qualification,
+   including the archive/process profiles and authenticated invariant aggregate.
+   Preserve the completed older runs as source-specific evidence. Obtain the
+   repository's architecture review and reconcile the overlapping PR #13.
 2. Set the supported integration scope explicitly. Automatic membership-plan
    execution, committed-change tracking, general peer policy and retirement-history
    recovery remain embedding work; bounded proposal admission is already available.
-3. Extend the process-loss and Linux I/O-stall cases to physical power-loss publication,
-   sustained multi-host TLS workloads and whole-host memory/latency bounds. The bounded
-   single-host correctness cases do not supply those measurements. Keep optional
-   diagnostics disabled for timing comparisons.
+3. Extend process-loss and Linux I/O-stall cases to physical power-loss publication,
+   sustained multi-host TLS workloads and whole-host memory/latency bounds. Keep
+   optional diagnostics disabled for timing comparisons.
 4. Record the OS/filesystem support and license policy. Resolve remaining benchmark
    comparator dependency findings separately from the already-audited public graph.
 
