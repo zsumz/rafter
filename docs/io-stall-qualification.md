@@ -166,6 +166,18 @@ reaped. Failed child cleanup retains all three volumes; independent volume clean
 is attempted even if another owned volume fails to close.
 
 Portable controls qualify these failure paths and reject three directories on
-one filesystem as isolation. Actual Linux execution remains required for this
-new case. It models separate virtual block devices on one host; it does not
-establish multi-host availability or physical disk/power-loss behavior.
+one filesystem as isolation. A failed cleanup diagnostic must not prevent cleanup
+of the other independently owned volumes; its failure remains in the receipt.
+
+The [Linux run at `a07ae8e0`](https://github.com/zsumz/rafter/actions/runs/38189432313)
+passes an 8.07-second isolated hold. Node 1's mapping remains suspended while node
+3 becomes leader in term 2, reads value 6 and acknowledges/read-checks value 106.
+The uncertain increment reached the healthy majority: the pipelined owner allows
+dependency-safe replication while local persistence is pending, but a timeout
+still cannot promise whether the write committed. After resume, all replicas
+converge, live credits drain, value 107 survives cold recovery, and the following
+write reaches 108. Downloaded evidence verifies all three device identities,
+all 2,823 source hashes, the acknowledgement before resume and complete cleanup.
+The shared-volume normal/crash cases also pass in that run. These are separate
+virtual block devices on one host; they do not establish multi-host availability
+or physical disk/power-loss behavior.

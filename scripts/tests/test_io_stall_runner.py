@@ -117,7 +117,8 @@ class QualificationReceipt(unittest.TestCase):
         from io_stall_majority import MajorityCounterWorkload
         binary = self.root / 'majority-binary'
         binary.write_bytes(b'fixture')
-        for defect in [None, 'second_create', 'first_close', 'counter_close', 'second_resume']:
+        for defect in [None, 'second_create', 'first_close', 'first_close_diagnostic',
+                       'counter_close', 'second_resume']:
             with self.subTest(defect=defect):
                 order, volumes = [], []
                 for node in (1, 2, 3):
@@ -133,13 +134,19 @@ class QualificationReceipt(unittest.TestCase):
                 counter.close.side_effect = lambda: order.append('counter-close')
                 if defect == 'second_create':
                     volumes[1].create.side_effect = RuntimeError('partial create')
-                elif defect == 'first_close':
+                elif defect in ('first_close', 'first_close_diagnostic'):
                     volumes[0].close.side_effect = RuntimeError('first close failed')
                 elif defect == 'counter_close':
                     counter.close.side_effect = RuntimeError('unreaped counter')
                 elif defect == 'second_resume':
                     volumes[1].resume.side_effect = RuntimeError('resume failed')
-                with patch.object(runner, 'Commands'), \
+                write = Path.write_text
+                def write_artifact(path, *args, **kwargs):
+                    if defect == 'first_close_diagnostic' and path.name == 'cleanup-error-1.txt':
+                        raise OSError('diagnostic store unavailable')
+                    return write(path, *args, **kwargs)
+                with patch.object(Path, 'write_text', write_artifact), \
+                        patch.object(runner, 'Commands'), \
                         patch.object(runner, 'DisposableVolume', side_effect=volumes), \
                         patch.object(runner, 'run_probe', return_value=['modeled']) as probe, \
                         patch.object(runner, 'source_snapshot', return_value=self.snapshot), \
@@ -168,9 +175,11 @@ class QualificationReceipt(unittest.TestCase):
                 if defect != 'counter_close':
                     self.assertLess(order.index('resume-3'), order.index('counter-close'))
                     self.assertLess(order.index('counter-close'), order.index('close-3'))
-                if defect == 'first_close':
+                if defect in ('first_close', 'first_close_diagnostic'):
                     self.assertEqual(receipt['volume_cleanup'], 'failed')
                     self.assertEqual(receipt['volumes'][2]['cleanup'], 'passed')
+                if defect == 'first_close_diagnostic':
+                    self.assertTrue(any('diagnostic store unavailable' in error for error in receipt['errors']))
 
     def test_leader_only_arguments_refuse_before_creating_evidence(self):
         for arguments in [dict(leader_only=True), dict(counter_binary=self.root / 'missing',

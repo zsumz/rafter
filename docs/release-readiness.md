@@ -14,7 +14,7 @@ these gate inputs require the repository's architecture environment review when
 submitted as a pull request; a candidate lock refresh does not grant that review.
 
 Rafter has a strong foundation: a dependency-free deterministic kernel,
-persist-before-output runtime, bounded persistence and application workers,
+runtime fences before dependent outputs, bounded persistence and application workers,
 authenticated transport, independent reference consumers, format vectors,
 simulation, and TLA+ evidence. The highest-value next work is reproducible
 release qualification, executable upgrade contracts, and a smaller integration
@@ -87,9 +87,11 @@ locks, all 2,821 source hashes and complete resource cleanup. Acknowledged value
 loss with the kernel and page cache present, not physical power loss.
 The live-credit counter slice at `3ccf9d3e` passes both Linux cases: one retained
 write/eight bytes remains visible throughout each stall while published pending
-writes stay zero. All credits drain after recovery. The next isolated-leader
-case requires the two healthy replicas to acknowledge work before storage resumes;
-its Linux qualification is still pending.
+writes stay zero. All credits drain after recovery. The isolated-leader case at
+`a07ae8e0` also passes: during an 8.07-second hold of node 1, node 3 becomes leader
+in term 2 and acknowledges value 106 before resume. All replicas then converge,
+value 107 survives cold recovery, and the next write reaches 108. Evidence verifies
+the three filesystem identities, all 2,823 source hashes and complete cleanup.
 
 Stable-release qualification remains open. In priority order:
 
@@ -102,8 +104,8 @@ Stable-release qualification remains open. In priority order:
 2. Set the supported integration scope explicitly. Automatic membership-plan
    execution, committed-change tracking, general peer policy and retirement-history
    recovery remain embedding work; bounded proposal admission is already available.
-3. Qualify physical stalled I/O, process/power-loss snapshot publication, sustained
-   multi-host TLS workloads and whole-host memory/latency bounds. The bounded
+3. Extend the Linux I/O-stall cases to process/power-loss snapshot publication,
+   sustained multi-host TLS workloads and whole-host memory/latency bounds. The bounded
    single-host correctness cases do not supply those measurements. Keep optional
    diagnostics disabled for timing comparisons.
 4. Record the OS/filesystem support and license policy. Resolve remaining benchmark

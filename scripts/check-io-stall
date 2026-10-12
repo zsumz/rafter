@@ -151,7 +151,10 @@ def qualify(artifacts, counter_binary=None, crash_while_stalled=False, leader_on
                     failures.append(f'volume {index + 1} cleanup: ' + repr(error))
                     receipt['volumes'][index]['cleanup'] = 'failed'
                     receipt['volume_cleanup'] = 'failed'
-                    (artifacts / f'cleanup-error-{index + 1}.txt').write_text(traceback.format_exc())
+                    try:
+                        (artifacts / f'cleanup-error-{index + 1}.txt').write_text(traceback.format_exc())
+                    except BaseException as diagnostic_error:
+                        failures.append(f'volume {index + 1} cleanup diagnostic: ' + repr(diagnostic_error))
         if binary_hash is not None:
             try:
                 if hashlib.sha256(counter_binary.read_bytes()).hexdigest() != binary_hash:
