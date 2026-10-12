@@ -819,7 +819,7 @@ jobs:
           git status --porcelain > "$RUNNER_TEMP/reference-owner/source-before.status"
           test ! -s "$RUNNER_TEMP/reference-owner/source-before.status"
           git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-owner/source-before.sha256"
-      - name: File-backed TLS owner load and cold recovery
+      - name: File-backed TLS owner load, continuous compaction, and cold recovery
         run: |
           mkdir -p "$RUNNER_TEMP/reference-owner"
           scripts/reference-owner-soak 2>&1 | tee "$RUNNER_TEMP/reference-owner/soak.log"

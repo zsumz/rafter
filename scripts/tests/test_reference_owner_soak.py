@@ -10,7 +10,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-NAME = (ROOT / "verification/reference-owner-soak-inventory.txt").read_text().strip()
+NAMES = (ROOT / "verification/reference-owner-soak-inventory.txt").read_text().splitlines()
 
 
 class OwnerSoakRunnerTests(unittest.TestCase):
@@ -36,7 +36,7 @@ class OwnerSoakRunnerTests(unittest.TestCase):
 if [[ "$1" == --version ]]; then echo test-cargo; exit 0; fi
 printf '%s\\n' "$@" >> "$CALLS"
 if [[ " $* " == *" --list "* ]]; then
-    printf '%s: test\\n' "$LISTED_TEST"
+    while IFS= read -r name; do printf '%s: test\\n' "$name"; done <<< "$LISTED_TEST"
 else
     touch "$EXECUTED"
     exit "${EXECUTION_EXIT:-0}"
@@ -45,7 +45,7 @@ fi
         self.env = dict(
             os.environ,
             PATH=str(self.root / "bin") + os.pathsep + os.environ["PATH"],
-            LISTED_TEST=NAME,
+            LISTED_TEST="\n".join(NAMES),
             CALLS=str(self.root / "calls"),
             EXECUTED=str(self.root / "executed"),
         )
@@ -83,10 +83,29 @@ fi
         self.assertTrue((self.root / "executed").exists())
 
     def test_wrong_inventory_never_executes(self):
-        self.env["LISTED_TEST"] = "different_test_with_the_same_count"
+        self.env["LISTED_TEST"] = "\n".join([NAMES[0], "different_test_with_the_same_count"])
         result = self.run_soak()
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / "executed").exists())
+
+    def test_each_missing_member_never_executes(self):
+        for missing in NAMES:
+            with self.subTest(missing=missing):
+                self.env["LISTED_TEST"] = "\n".join(name for name in NAMES if name != missing)
+                result = self.run_soak()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / "executed").exists())
+
+    def test_extra_member_never_executes(self):
+        self.env["LISTED_TEST"] = "\n".join([*NAMES, "unexpected_soak"])
+        result = self.run_soak()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "executed").exists())
+
+    def test_both_members_execute(self):
+        result = self.run_soak()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.root / "executed").exists())
 
     def test_empty_selection_never_executes(self):
         self.script("bin/cargo", 'echo "0 tests, 0 benchmarks"')

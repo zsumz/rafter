@@ -9,6 +9,7 @@ type Write = DriverFuture<Result<WriteReceipt<ApplyResult<ApplyOutcome>>, WriteE
 type Read = DriverFuture<Result<QueryReceipt<u64, LedgerQueryResult>, ReadError>>;
 const REQUESTS: usize = 128;
 const WINDOW: usize = 2;
+mod continuous;
 mod soak;
 
 #[derive(Default)]
@@ -141,6 +142,10 @@ impl Load {
         assert_eq!(retained.control_payload_bytes, 0);
     }
     fn run(&mut self, cluster: &mut Managed) -> LogIndex {
+        let refusals_before = cluster.nodes[self.leader]
+            .0
+            .sender()
+            .backpressure_refusals();
         let deadline = Instant::now() + Duration::from_secs(60);
         while !self.done() {
             self.collect();
@@ -162,9 +167,15 @@ impl Load {
             .0
             .sender()
             .backpressure_refusals();
-        assert_eq!(refusals.writes, self.overlapping_turns);
-        assert_eq!(refusals.reads, Some(self.overlapping_turns));
-        assert_eq!(refusals.controls, 0);
+        assert_eq!(
+            refusals.writes - refusals_before.writes,
+            self.overlapping_turns
+        );
+        assert_eq!(
+            refusals.reads.unwrap() - refusals_before.reads.unwrap(),
+            self.overlapping_turns
+        );
+        assert_eq!(refusals.controls, refusals_before.controls);
         *self.history.last_key_value().unwrap().0
     }
     fn done(&self) -> bool {

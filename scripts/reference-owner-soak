@@ -34,7 +34,7 @@ rustc --version --verbose
 cargo --version
 cd "${repo_root}/reference"
 # The inventory rejects missing, renamed, unignored, or extra selected cases.
-"${repo_root}/scripts/cargo-test-exact" 1 - \
+"${repo_root}/scripts/cargo-test-exact" 2 - \
     --inventory "${repo_root}/verification/reference-owner-soak-inventory.txt" \
     "${list_only[@]+"${list_only[@]}"}" "${patch[@]}" \
     -p rafter-reference-ledger --test service_owner_tls -- \

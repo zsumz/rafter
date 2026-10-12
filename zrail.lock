@@ -1265,7 +1265,7 @@ sha256 = "7ae4cdd9c7d91b6d352fdc68d1e1daaa8780c803f1cadedb09245efc5084fa5a"
 
 [[gate.input]]
 path = ".github/workflows/nightly.yml"
-sha256 = "18d3aead0221965935b1116dfbb79a11159672feac8337e556e2849b0bf088f8"
+sha256 = "5a76a24d7672cffae51a78919273e0681947e7f13517cb725f7dbff733db8c1a"
 
 [[gate.input]]
 path = "scripts/archive_dependencies.py"
@@ -1301,7 +1301,7 @@ sha256 = "3dbd02f4f2dcfc9576c0a0a345664ec253684c0d84c092ce9ac81297047deecd"
 
 [[gate.input]]
 path = "scripts/reference-owner-soak"
-sha256 = "6cb50a604734c9b964b938a10b59fac9b2c1a87fcfc1f5decde093d7a5f5081f"
+sha256 = "ea1d4ab30bc5ec891f9ef9ddaebbb363a0cc781749e1e7796eaab2aabe7c5476"
 
 [[gate.input]]
 path = "scripts/reference-package-check"
@@ -1337,7 +1337,7 @@ sha256 = "15b9bbee2fde6cf5d0800b14ab9a7e3152c4f41861df0e67cf832855c3de67b4"
 
 [[gate.input]]
 path = "scripts/tests/test_reference_owner_soak.py"
-sha256 = "e5922ad4fea64e8e56e3cd3ad93d90ddee2fae9363c92f07ff196aeaef8d9602"
+sha256 = "768e3b06ad963bd676d13764efa046ccb95dc1fb96a8f1caf845232875e64809"
 
 [[gate.input]]
 path = "scripts/tests/test_storage_environment.py"
@@ -1353,11 +1353,11 @@ sha256 = "d9cdce68c892ba18e227f77106f64df324df02ace62c727d02de89a6453a3561"
 
 [[gate.input]]
 path = "verification/reference-owner-soak-inventory.txt"
-sha256 = "19e1ed5247dad8e14aa399a179d4c350651cd1d08bdacd021fa6da39b385ac96"
+sha256 = "629f298ce8e746c8a259c1213c7d51128d2dfde1eac6c5bece31928753b96e6d"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "72d6b667866002c93590315f4f672c448aded801d3f800c3763796608b04d97c"
+sha256 = "1bfe523788a23568c77d147442e8e92f872831dd5c5682ef78778a996436ab54"
 
 [[gate]]
 name = "rustdoc"

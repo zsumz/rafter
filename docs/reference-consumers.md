@@ -622,7 +622,7 @@ it does not inherit the managed transport driver's checkpoint implementation.
 | Every PR | Source and exact-package deterministic tests, process and owner-soak inventory membership, published-shape Rust 1.88 build/test plus process smoke, the counter-fast profile, and the deterministic invariant aggregate | `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` in `ci.yml` |
 | Main | All reviewed process tests in source mode and against exact archives | `reference-process` and `reference-package-process` in `ci.yml` |
 | Manual candidate archives | All reviewed archive process tests, published-shape MSRV, storage/wire/rolling TLS upgrades, exact dependency audit, and source preservation | `candidate-archives` in `nightly.yml`, selected with `archives_only: true` |
-| Nightly | All reviewed source process tests, 96 file/TLS owner load and recovery cycles, burn-in, real pinned Maelstrom, randomized/replayable invariant evidence, bounded multi-gigabyte snapshot streaming, and the 1,024-group counter profile | `reference-process`, `reference-owner-soak`, `burn-in`, `invariants-maelstrom`, `invariants-nightly`, `multi-gigabyte-test`, and `counter-reference-nightly` in `nightly.yml` |
+| Nightly | All reviewed source process tests, 96 file/TLS owner load and recovery cycles plus 256 compactions without owner restart, burn-in, real pinned Maelstrom, randomized/replayable invariant evidence, bounded multi-gigabyte snapshot streaming, and the 1,024-group counter profile | `reference-process`, `reference-owner-soak`, `burn-in`, `invariants-maelstrom`, `invariants-nightly`, `multi-gigabyte-test`, and `counter-reference-nightly` in `nightly.yml` |
 | Weekly | Deep tests/model checking, storage and snapshot histories, three-trial pinned Maelstrom, and the 4,096-group randomized counter profile with slow groups, snapshot/bulk pressure, poison, and lifecycle churn | `invariants-weekly`, `invariants-maelstrom`, and `counter-reference-weekly` in `weekly.yml` |
 | Release | Exact package archives, full same-version process suite, published-shape MSRV, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md` runs source, exact-package, process, and MSRV lanes, including published-baseline storage, wire, and rolling TLS upgrades. The pinned-Git counter guide has its own checked lane. A tag-gating release workflow and independent production-consumer canary remain open |
 
@@ -665,13 +665,19 @@ fails on the pull request that does it. Full execution remains on main/nightly;
 the manual candidate archive profile below also makes archive process execution
 available before merge.
 
-`scripts/reference-owner-soak` (or `zcheck run reference-owner-soak`) runs one
-reviewed ignored case through 96 consecutive load, compaction, shutdown, and
-cold-recovery cycles. Each cycle retains the ordinary TLS owner's fairness,
-receipt, deduplication, and quorum-read assertions; the default test still runs
-three cycles. `verification/reference-owner-soak-inventory.txt` pins the exact
-ignored name. The PR source lane and `zcheck run reference-owner-soak-inventory`
-validate its selection without executing the soak. Nightly executes it on Linux
+`scripts/reference-owner-soak` (or `zcheck run reference-owner-soak`) runs two
+reviewed ignored cases. The first performs 96 load, compaction, shutdown, and
+cold-recovery cycles. The second retains the same three owners across 256
+load and compaction cycles, checks that each compaction releases the retained
+log suffix, and serves quorum reads through the original client handle. Only
+then does it cold-recover the full balance, verify a deduplicated retry, and
+acknowledge a fresh write. Each cycle checks bounded client credits, fairness,
+receipts, and quorum views. Compaction runs between client windows; these cases
+do not claim concurrent maintenance admission or a whole-process memory bound.
+Both default tests run three cycles. `verification/reference-owner-soak-inventory.txt`
+pins both exact ignored names. The PR source lane and
+`zcheck run reference-owner-soak-inventory` validate their selection without
+executing the soaks. Nightly executes both on Linux
 and retains the resolved dependency lock alongside a log of the source revision,
 toolchain, and per-cycle progress.
 `zcheck run full` includes the soak. This is sampled same-version correctness

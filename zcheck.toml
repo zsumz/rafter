@@ -317,14 +317,14 @@ run = ["python3", "-m", "unittest", "scripts/tests/test_reference_owner_soak.py"
 tools = ["python3", "bash"]
 
 [tasks.reference-owner-soak-inventory]
-description = "Verify the ignored owner TLS soak inventory without running its 96 cycles."
+description = "Verify both ignored owner TLS soak selections without running them."
 needs = ["reference-owner-soak-runner-tests"]
 run = ["scripts/reference-owner-soak", "--list-only"]
 tools = ["cargo", "rustc", "git"]
 resources = ["reference-target"]
 
 [tasks.reference-owner-soak]
-description = "Exercise 96 file/TLS owner load, compaction, and cold-recovery cycles."
+description = "Exercise 96 cold-recovery cycles and 256 compactions without owner restart over file/TLS."
 needs = ["reference-owner-soak-runner-tests"]
 run = ["scripts/reference-owner-soak"]
 timeout = "60m"

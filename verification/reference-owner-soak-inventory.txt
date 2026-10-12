@@ -1,1 +1,2 @@
 owner_tls::client::managed::mixed_load::soak::ninety_six_load_compaction_and_cold_recovery_cycles
+owner_tls::client::managed::mixed_load::soak::two_hundred_fifty_six_compactions_preserve_live_owners
