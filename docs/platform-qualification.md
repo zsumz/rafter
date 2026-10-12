@@ -54,6 +54,34 @@ remain unchanged throughout a test or that a filesystem/controller/device stack
 honors synchronization after power loss. Support decisions still require the
 recorded test results and the storage contract below.
 
+## Observed hosted Linux storage
+
+The first completed capture at source `9296d80d` is retained in
+[Linux I/O run 38312228874](https://github.com/zsumz/rafter/actions/runs/38312228874).
+Its counter and snapshot jobs each record Ubuntu 24.04, x86-64,
+Linux `6.17.0-1022-azure`, and Rust 1.88. Their workspace, Rust temporary directory
+(`/tmp`), and runner temporary directory all resolve to the job's root ext4 mount:
+
+| Job | Receipt within its artifact | Root filesystem source | Device major:minor |
+| --- | --- | --- | --- |
+| TLS counter | `io-stall-counter-build/storage-environment.json` | `/dev/sda1` | `8:1` |
+| Snapshot process loss | `storage-environment.json` | `/dev/nvme0n1p1` | `259:1` |
+
+Both receipts report
+`rw,relatime,discard,journal_async_commit,nobarrier,errors=remount-ro,commit=30,data=writeback`.
+These observations describe those two jobs; they do not establish the configuration
+of earlier jobs or other hosted runners. The private loop/ext4 I/O-stall volumes
+are separate mounts and retain separate ownership evidence.
+
+The [Linux 6.17 ext4 documentation](https://www.kernel.org/doc/html/v6.17/admin-guide/ext4.html#options)
+explains that `nobarrier` disables journal write barriers and `data=writeback`
+allows file data to reach the filesystem after the associated metadata journal
+commit. The receipts do not establish the virtual disk's cache or power-loss
+guarantees. Passing process-loss tests under these options therefore supplies no
+physical-power-loss qualification, and performance observed here cannot establish
+performance under different mount and cache policies. Deployment qualification
+must record and exercise the intended storage stack against the contract below.
+
 ## Storage contract and qualification boundary
 
 File-backed Raft stores and durable TLS session state depend on successful file
