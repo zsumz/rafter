@@ -47,3 +47,81 @@ fn parent_directory_sync_batch_deduplicates_common_parents() {
 
     assert_eq!(batch.pending_count(), 2);
 }
+
+#[test]
+fn nested_snapshot_creation_schedules_every_new_directory_parent() {
+    let anchor = std::env::temp_dir().join(format!(
+        "rafter-storage-nested-sync-{}-{}",
+        std::process::id(),
+        TEST_FILE_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&anchor).expect("existing test anchor creates");
+    let directory = anchor.join("group/node/snapshots");
+    let mut batch = ParentDirectorySyncBatch::new();
+    let store = crate::FileRaftSnapshotStore::open_with_parent_sync_batch(&directory, &mut batch)
+        .expect("nested snapshot store opens");
+    assert_eq!(
+        batch.parents,
+        BTreeSet::from([
+            anchor.clone(),
+            anchor.join("group"),
+            anchor.join("group/node")
+        ]),
+        "every newly created directory entry needs its own parent synchronized"
+    );
+    batch
+        .flush()
+        .expect("all new directory parents synchronize");
+    assert_eq!(batch.pending_count(), 0);
+    drop(store);
+    fs::remove_dir_all(anchor).expect("test hierarchy removes");
+}
+
+#[test]
+fn nested_snapshot_creation_stops_at_existing_ancestor_and_reopen_schedules_nothing() {
+    let anchor = std::env::temp_dir().join(format!(
+        "rafter-storage-existing-sync-{}-{}",
+        std::process::id(),
+        TEST_FILE_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let existing = anchor.join("group");
+    fs::create_dir_all(&existing).expect("existing hierarchy creates");
+    let directory = existing.join("node/snapshots");
+    let mut batch = ParentDirectorySyncBatch::new();
+    let store = crate::FileRaftSnapshotStore::open_with_parent_sync_batch(&directory, &mut batch)
+        .expect("nested snapshot store opens");
+    assert_eq!(
+        batch.parents,
+        BTreeSet::from([existing.clone(), existing.join("node")])
+    );
+    batch.flush().expect("new directory parents synchronize");
+    drop(store);
+    let reopened =
+        crate::FileRaftSnapshotStore::open_with_parent_sync_batch(&directory, &mut batch)
+            .expect("existing snapshot store reopens");
+    assert_eq!(batch.pending_count(), 0);
+    drop(reopened);
+    fs::remove_dir_all(anchor).expect("test hierarchy removes");
+}
+
+#[test]
+fn nested_snapshot_creation_refuses_file_ancestors_without_changing_them() {
+    let anchor = std::env::temp_dir().join(format!(
+        "rafter-storage-file-sync-{}-{}",
+        std::process::id(),
+        TEST_FILE_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&anchor).expect("test anchor creates");
+    let file = anchor.join("occupied");
+    fs::write(&file, b"keep me").expect("existing file creates");
+    for directory in [file.clone(), file.join("node/snapshots")] {
+        let mut batch = ParentDirectorySyncBatch::new();
+        assert!(
+            crate::FileRaftSnapshotStore::open_with_parent_sync_batch(directory, &mut batch)
+                .is_err()
+        );
+        assert_eq!(batch.pending_count(), 0);
+        assert_eq!(fs::read(&file).expect("existing file reads"), b"keep me");
+    }
+    fs::remove_dir_all(anchor).expect("test hierarchy removes");
+}

@@ -217,7 +217,9 @@ before and after, case logs, outcomes and pre-recovery copies, including hidden
 files. Its uploads retain evidence for 30 days even on failure.
 
 The initial local matrix passes all 36 cases, and readback verifies all 138
-pre-recovery file copies. Hosted execution remains separately qualified. These
-are snapshot-store process-loss checks with the kernel and page cache present;
+pre-recovery file copies. The [Linux run at `c591bfff`](https://github.com/zsumz/rafter/actions/runs/38193176690)
+also passes all 36 cases; downloaded evidence verifies the same 138 copies and
+all 2,825 tracked source hashes before and after execution. These are
+snapshot-store process-loss checks with the kernel and page cache present;
 they do not model physical power loss, the application database's publication,
 or an entire Raft node's recovery across all stores.

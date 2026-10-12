@@ -41,6 +41,22 @@ writers use predictable sibling temporary paths.
 These guarantees are filesystem and platform dependent. Deployments should
 validate them for their selected storage stack.
 
+## Directory provisioning
+
+Callers supply durably provisioned existing store directories and ancestors.
+`FileRaftNodeStores` requires its replica directory to exist before opening.
+The standalone `FileRaftSnapshotStore` constructor can create a missing nested
+hierarchy; a successful open synchronizes the parent of every newly created
+directory. Bundle construction batches those synchronizations before exposing
+its stores.
+
+Directory creation is not atomic. If an initial open fails during creation or
+synchronization, it may leave directories behind. Before retrying, the caller
+must durably provision any such residue: sync each affected directory's parent
+under the filesystem contract. Existing directories are assumed durable and
+are not resynchronized by snapshot open. This is separate from reopening an
+already provisioned store after a mutating I/O error.
+
 ## General mutation rule
 
 A mutation follows three conceptual phases:

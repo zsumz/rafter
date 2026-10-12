@@ -97,9 +97,20 @@ The snapshot-store process-loss matrix adds 36 local cases at existing publicati
 and cleanup boundaries, through streamed source publication and received-transfer
 promotion, with and without an old snapshot. Every case verifies an actual
 `SIGKILL`, preserves inputs before strict reopen and publishes again afterward;
-readback checks all 138 pre-recovery copies. Its dedicated Linux job and exact
-CI/local selections are described in [I/O qualification](io-stall-qualification.md#snapshot-publication-process-loss).
+readback checks all 138 pre-recovery copies. The [Linux run at `c591bfff`](https://github.com/zsumz/rafter/actions/runs/38193176690)
+also passes all 36 cases and all TLS stall cases; downloaded evidence verifies
+the inputs, all 2,825 source hashes and complete owned-resource cleanup.
+Its dedicated Linux job and exact CI/local selections are described in
+[I/O qualification](io-stall-qualification.md#snapshot-publication-process-loss).
 It does not qualify physical power loss or application-database publication.
+
+A subsequent deterministic regression exposed a directory-provisioning omission:
+opening a standalone snapshot store beneath three missing directory levels
+scheduled only the final parent for synchronization. The fix synchronizes every
+new directory's parent. Existing-directory and failed-initial-open provisioning
+requirements are explicit in the [durability protocol](../crates/rafter-storage/DURABILITY_PROTOCOL.md#directory-provisioning).
+The regression checks the actual synchronization batch; it does not reproduce a
+physical power-loss failure.
 
 Stable-release qualification remains open. In priority order:
 
@@ -116,7 +127,7 @@ Stable-release qualification remains open. In priority order:
 2. Set the supported integration scope explicitly. Automatic membership-plan
    execution, committed-change tracking, general peer policy and retirement-history
    recovery remain embedding work; bounded proposal admission is already available.
-3. Extend the Linux I/O-stall cases to process/power-loss snapshot publication,
+3. Extend the process-loss and Linux I/O-stall cases to physical power-loss publication,
    sustained multi-host TLS workloads and whole-host memory/latency bounds. The bounded
    single-host correctness cases do not supply those measurements. Keep optional
    diagnostics disabled for timing comparisons.

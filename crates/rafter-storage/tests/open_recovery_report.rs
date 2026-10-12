@@ -33,6 +33,26 @@ fn open_report_records_directory_creation() {
 }
 
 #[test]
+fn nested_directory_open_publishes_and_reopens_a_snapshot() {
+    let anchor = test_directory("nested-directory");
+    let directory = anchor.join("group/node/snapshots");
+    let opened = FileRaftSnapshotStore::open_with_report(&directory).expect("nested store opens");
+    assert!(opened.report().created_directory);
+    let mut store = opened.into_store();
+    let snapshot = snapshot(7, 3, b"nested application snapshot");
+    let expected =
+        RaftSnapshot::from_payload(snapshot.metadata.clone(), &snapshot.application_payload);
+    store.write_snapshot(snapshot).expect("snapshot publishes");
+    drop(store);
+    let reopened =
+        FileRaftSnapshotStore::open_with_report(&directory).expect("nested store reopens");
+    assert!(!reopened.report().created_directory);
+    assert_eq!(reopened.store().current_snapshot(), Some(expected));
+    drop(reopened);
+    remove_test_directory(anchor);
+}
+
+#[test]
 fn open_report_records_missing_pending_body_discard() {
     let directory = test_directory("missing-pending-body");
     stage_partial_transfer(&directory, b"abcdefgh", 4);

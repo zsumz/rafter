@@ -10,7 +10,7 @@ use super::{
     OpenedFileRaftSnapshotStore, PendingSnapshotTransferRecovery, StagedTransfer,
 };
 use crate::{
-    durable_fs::{sync_parent_directory, ParentDirectorySyncBatch},
+    durable_fs::{create_directory_tree, sync_parent_directory, ParentDirectorySyncBatch},
     file_store_health::FileStoreHealth,
 };
 
@@ -36,6 +36,12 @@ fn read_staged_transfer(
 
 impl FileRaftSnapshotStore {
     /// Opens a durable snapshot store rooted at `directory`.
+    ///
+    /// Missing directories are created recursively, and each new directory's
+    /// parent is synchronized before a successful return. Existing ancestors
+    /// must already be durably provisioned. A failed initial open may leave
+    /// directories behind; callers must durably provision that residue before
+    /// retrying, since existing directories are not synchronized by open.
     ///
     /// The current snapshot's envelope is verified in one streaming pass —
     /// header parse, payload and envelope checksums — without materializing
@@ -154,20 +160,27 @@ fn ensure_directory(
             });
         }
     }
-    fs::create_dir_all(directory).map_err(|error| OpenRaftSnapshotStoreError::Io {
-        operation: "create raft snapshot directory",
-        path: directory.to_path_buf(),
-        source: error.into(),
-    })?;
+    let created =
+        create_directory_tree(directory).map_err(|error| OpenRaftSnapshotStoreError::Io {
+            operation: "create raft snapshot directory",
+            path: directory.to_path_buf(),
+            source: error.into(),
+        })?;
     match creation_sync {
         CreationSync::Immediate => {
-            sync_parent_directory(directory).map_err(|error| OpenRaftSnapshotStoreError::Io {
-                operation: "sync raft snapshot parent directory",
-                path: directory.to_path_buf(),
-                source: error.into(),
-            })?;
+            for path in created {
+                sync_parent_directory(&path).map_err(|error| OpenRaftSnapshotStoreError::Io {
+                    operation: "sync raft snapshot parent directory",
+                    path,
+                    source: error.into(),
+                })?;
+            }
         }
-        CreationSync::Batched(batch) => batch.record_parent_of(directory),
+        CreationSync::Batched(batch) => {
+            for path in created {
+                batch.record_parent_of(&path);
+            }
+        }
     }
     Ok(true)
 }

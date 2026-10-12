@@ -5,10 +5,34 @@
 
 use std::{
     collections::BTreeSet,
-    fs::File,
+    fs::{self, File},
     io,
     path::{Path, PathBuf},
 };
+
+/// Creates a directory tree and reports every entry whose parent needs a sync.
+/// Existing ancestors are supplied by the caller; creation itself is not atomic.
+pub(crate) fn create_directory_tree(directory: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut missing = Vec::new();
+    let mut current = directory.to_path_buf();
+    loop {
+        match fs::metadata(&current) {
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let parent = parent_directory(&current);
+                if parent == current {
+                    return Err(error);
+                }
+                missing.push(current);
+                current = parent;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    fs::create_dir_all(directory)?;
+    missing.reverse();
+    Ok(missing)
+}
 
 pub(crate) fn sync_parent_directory(path: &Path) -> io::Result<()> {
     let parent = parent_directory(path);
