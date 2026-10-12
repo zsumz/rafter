@@ -7,6 +7,8 @@ on:
       - 'scripts/check-io-stall'
       - 'scripts/io_stall_*.py'
       - 'scripts/tests/*io_stall*.py'
+      - 'scripts/record-storage-environment'
+      - 'scripts/tests/test_storage_environment.py'
       - 'scripts/check-counter-guide'
       - 'scripts/counter_guide_deps.py'
       - 'docs/examples/counter/**'
@@ -21,6 +23,8 @@ on:
       - 'scripts/check-io-stall'
       - 'scripts/io_stall_*.py'
       - 'scripts/tests/*io_stall*.py'
+      - 'scripts/record-storage-environment'
+      - 'scripts/tests/test_storage_environment.py'
       - 'scripts/check-counter-guide'
       - 'scripts/counter_guide_deps.py'
       - 'docs/examples/counter/**'
@@ -59,6 +63,7 @@ jobs:
           git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/snapshot-process-evidence/source-before.sha256"
           rustc --version --verbose > "$RUNNER_TEMP/snapshot-process-evidence/rustc.txt"
           cargo --version > "$RUNNER_TEMP/snapshot-process-evidence/cargo.txt"
+          python3 scripts/record-storage-environment --output "$RUNNER_TEMP/snapshot-process-evidence/storage-environment.json"
       - name: Kill snapshot writers at every selected publication boundary
         run: |
           set -euo pipefail
@@ -92,7 +97,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check portable failure and ownership controls
-        run: python3 -m unittest scripts/tests/test_io_stall_volume.py scripts/tests/test_io_stall_controller.py scripts/tests/test_io_stall_runner.py scripts/tests/test_io_stall_counter.py scripts/tests/test_io_stall_crash.py scripts/tests/test_io_stall_majority.py scripts/tests/test_io_stall_resources.py
+        run: python3 -m unittest scripts/tests/test_io_stall_volume.py scripts/tests/test_io_stall_controller.py scripts/tests/test_io_stall_runner.py scripts/tests/test_io_stall_counter.py scripts/tests/test_io_stall_crash.py scripts/tests/test_io_stall_majority.py scripts/tests/test_io_stall_resources.py scripts/tests/test_storage_environment.py
       - name: Qualify the owned filesystem stall and cleanup
         run: |
           python3 scripts/check-io-stall --disposable-linux-vm \
@@ -130,6 +135,7 @@ jobs:
           git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/io-stall-counter-build/source-before.sha256"
           rustc --version --verbose > "$RUNNER_TEMP/io-stall-counter-build/rustc.txt"
           cargo --version > "$RUNNER_TEMP/io-stall-counter-build/cargo.txt"
+          python3 scripts/record-storage-environment --output "$RUNNER_TEMP/io-stall-counter-build/storage-environment.json"
           export CARGO_TARGET_DIR="$RUNNER_TEMP/io-stall-transport-target"
           scripts/cargo-test-exact 2 - --locked -p rafter-transport-tls --test handshake_deadline -- --nocapture 2>&1 | tee "$RUNNER_TEMP/io-stall-counter-build/handshake-deadline.log"
           export CARGO_TARGET_DIR="$RUNNER_TEMP/io-stall-counter-target"

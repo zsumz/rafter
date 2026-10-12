@@ -39,8 +39,13 @@ only at the ordinary process step therefore does not establish ledger coverage.
 The macOS job also runs the complete locked storage suite, including integration
 and documentation tests, and retains `macos-storage.log` with its diagnostics.
 Its failure propagates through the existing required `invariants-pr` aggregate.
-These native tests cover recovery semantics on the hosted runners; supported
-filesystem and physical power-loss qualification remain separate release work.
+The native Linux test and macOS storage jobs also retain a storage-environment
+receipt before execution, including the filesystem and mount options for the
+workspace, Rust-selected temporary directory, and runner temporary directory.
+The recorder queries the active Rust toolchain for its temporary path, rather
+than inferring it from another language. These observations identify the tested
+environment at capture time; supported filesystem and physical power-loss
+qualification remain separate release work.
 
 The sharded-counter process inventory also fails closed on missing application
 records for active, Removed, and Tombstoned slots; sweeps every directed
@@ -151,6 +156,7 @@ not display names.
 script scripts/rustdoc-check
 script scripts/check-public-api
 script scripts/check-counter-guide
+script scripts/record-storage-environment
 script scripts/audit-published-dependencies
 script scripts/reference-source-check
 script scripts/reference-package-check

@@ -9,8 +9,8 @@ remain to be selected. The [release checklist](../RELEASE.md) and
 
 | Target | Recurring qualification | Filesystem evidence |
 | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | Ubuntu 24.04 CI runs workspace tests, strict lint, published API checks, exact-package/MSRV consumers, and the invariant producers. Dedicated Linux jobs run TLS process failures, I/O stalls, and snapshot process loss; Nightly runs the longer owner soak and invariant profiles. | The I/O-stall fixtures explicitly create private loop-backed ext4 filesystems. Ordinary hosted storage tests do not retain filesystem type or mount options. |
-| `aarch64-apple-darwin` | The macOS 15 CI lane runs strict workspace and optional durable-service lint, the complete storage suite, and the portable launcher checks. The integrated local checkpoint also passed the workspace build, tests, strict lint, and rustdoc with the durable feature. | Local durability/performance observations use APFS. The hosted storage lane does not retain filesystem type or mount options. |
+| `x86_64-unknown-linux-gnu` | Ubuntu 24.04 CI runs workspace tests, strict lint, published API checks, exact-package/MSRV consumers, and the invariant producers. Dedicated Linux jobs run TLS process failures, I/O stalls, and snapshot process loss; Nightly runs the longer owner soak and invariant profiles. | The I/O-stall fixtures explicitly create private loop-backed ext4 filesystems. The native test job now records filesystem type and mount options for the workspace and temporary directories before execution. |
+| `aarch64-apple-darwin` | The macOS 15 CI lane runs strict workspace and optional durable-service lint, the complete storage suite, and the portable launcher checks. The integrated local checkpoint also passed the workspace build, tests, strict lint, and rustdoc with the durable feature. | Local durability/performance observations use APFS. The hosted storage lane now records its containing volumes and native mount options before execution. |
 | Other architectures, Linux libc variants, and Windows targets | No native execution evidence in this qualification matrix. Cross-platform APIs or compilation on another target do not establish recovery or transport behavior on that target. | No filesystem qualification recorded here. |
 
 The strict build and exact-package baseline is Rust 1.88. The additional
@@ -27,6 +27,32 @@ checkout is merge commit `4d0f1850`, whose tree matches the candidate. These
 individual job results do not replace the candidate's final invariant aggregate
 or architecture review. The earlier complete local workspace result is recorded
 in the [release-readiness checkpoint](release-readiness.md#current-code-checkpoint).
+
+## Native environment receipts
+
+`scripts/record-storage-environment --output NEW_FILE.json` captures the current
+OS, compiler, source head/status, and filesystem identity of the workspace,
+`std::env::temp_dir()` selected by that exact Rust toolchain, and `RUNNER_TEMP`
+when present. `--path DIRECTORY` adds a known existing test directory. The output
+file must be new; failures retain a failed receipt and available observations.
+
+Linux capture uses `findmnt` and checks the returned device against the directory.
+macOS capture correlates POSIX `df` with the native mount table and verifies the
+volume's device. This handles APFS firmlinks without assuming that the textual
+path is beneath the reported mountpoint. Raw commands and their outputs accompany
+the structured filesystem and mount-option fields.
+
+CI keeps `linux-storage-environment.json` and `macos-storage-environment.json`
+inside the existing native-test diagnostics artifacts. The Linux I/O lane also
+keeps a receipt with its counter build and snapshot process artifacts; its private
+loop/ext4 fault volumes retain their own separate mount evidence. Older candidate
+jobs, including the `7151197c` and `bc6d1677` native runs, predate these receipts.
+Their filesystem details must not be inferred from a newer run.
+
+Capture is an observation at one point in time. It does not prove that mounts
+remain unchanged throughout a test or that a filesystem/controller/device stack
+honors synchronization after power loss. Support decisions still require the
+recorded test results and the storage contract below.
 
 ## Storage contract and qualification boundary
 

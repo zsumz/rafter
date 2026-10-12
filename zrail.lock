@@ -2,7 +2,7 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "d9a86d212020eb114c08770b0152830cadee6a67e7fcb7147b220b177d867979"
+contract_sha256 = "3cc6d173e3ca2244df273d1fdca1e8b77a0cf76031a02e4dee7055c5d501f656"
 
 [analysis]
 inventory_sha256 = "4bd9b29a147c69add8a78cb9e8878b7887348f0d96ff581128939baca14724f5"
@@ -28,7 +28,7 @@ sha256 = "9259ae9e9f531ebd96eb0f449385e3dd80c795aef987588b244eb06b2bb5bb0e"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "d739bf68bfb6dd197ebd81a269662b6e95d767ec8dc2cc0b0317dfd8f231732f"
+sha256 = "1b76f1251ea589aeb13f23c44b69c7610e11313e23300152276429929239f168"
 
 [[package]]
 name = "rafter"
@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "75610bf08babeb95c4bf66553350db5b5870467d699767311aaeed046b361b95"
+sha256 = "57603b40d81898c00cf988bc5ee8cb8d1df7de70d92b797462177f151b59693e"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1296,6 +1296,10 @@ path = "scripts/published_dependency_audit.py"
 sha256 = "63ec18c9e87e0d5ca730b57f3a2ae5eadeff7498749e2fd12cfdc7c041d1c48c"
 
 [[gate.input]]
+path = "scripts/record-storage-environment"
+sha256 = "3dbd02f4f2dcfc9576c0a0a345664ec253684c0d84c092ce9ac81297047deecd"
+
+[[gate.input]]
 path = "scripts/reference-owner-soak"
 sha256 = "6cb50a604734c9b964b938a10b59fac9b2c1a87fcfc1f5decde093d7a5f5081f"
 
@@ -1336,6 +1340,10 @@ path = "scripts/tests/test_reference_owner_soak.py"
 sha256 = "e5922ad4fea64e8e56e3cd3ad93d90ddee2fae9363c92f07ff196aeaef8d9602"
 
 [[gate.input]]
+path = "scripts/tests/test_storage_environment.py"
+sha256 = "04d601a58b3ccd275f8fb0e8adf78ee90d0f7224afc7e61bd59428b0877509b8"
+
+[[gate.input]]
 path = "scripts/zrail-reconcile"
 sha256 = "47fbd7ddc88fbd309c3e061261a2a7de8278b925f93e4fd1984f4f2224edb2ec"
 
@@ -1349,7 +1357,7 @@ sha256 = "19e1ed5247dad8e14aa399a179d4c350651cd1d08bdacd021fa6da39b385ac96"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "0e5e53d6aeac3b86d9b1e699b08152ec604691b2a327c93e99e10b38ab7dd52a"
+sha256 = "72d6b667866002c93590315f4f672c448aded801d3f800c3763796608b04d97c"
 
 [[gate]]
 name = "rustdoc"

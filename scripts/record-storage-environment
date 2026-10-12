@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Record native filesystem evidence for the directories used by storage tests."""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+PROBE = '''use std::os::unix::ffi::OsStrExt;
+fn main() {
+    for byte in std::env::temp_dir().as_os_str().as_bytes() {
+        print!("{byte:02x}");
+    }
+    println!();
+}
+'''
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def query(report, command, **kwargs):
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=45, **kwargs)
+    require(len(result.stdout) + len(result.stderr) <= 256 * 1024, "oversized environment observation")
+    report["commands"].append({"argv": command, "returncode": result.returncode,
+                               "stdout": result.stdout, "stderr": result.stderr})
+    result.check_returncode()
+    return result.stdout
+
+
+def linux_filesystem(raw, path_device, stat=os.stat):
+    rows = json.loads(raw).get("filesystems")
+    require(isinstance(rows, list) and len(rows) == 1, "expected one containing Linux mount")
+    row = rows[0]
+    require(all(isinstance(row.get(key), str) and row[key] for key in
+                ("target", "source", "fstype", "options", "maj:min")), "incomplete Linux mount observation")
+    require("children" not in row, "ambiguous Linux mount tree")
+    require(row["maj:min"] == f"{os.major(path_device)}:{os.minor(path_device)}",
+            "Linux mount device does not match observed directory")
+    require(stat(row["target"]).st_dev == path_device, "Linux mount changed during observation")
+    return {"mountpoint": row["target"], "source": row["source"],
+            "filesystem": row["fstype"], "options": row["options"].split(",")}
+
+
+def darwin_filesystem(df, mounts, path_device, stat=os.stat):
+    lines = df.splitlines()
+    require(len(lines) == 2, "expected one POSIX df row")
+    row = re.fullmatch(r"(.+?)\s+\d+\s+\d+\s+\d+\s+\d+%\s+(.+)", lines[1])
+    require(row is not None, "malformed POSIX df row")
+    source, mountpoint = row.groups()
+    prefix = f"{source} on {mountpoint} ("
+    matches = [line[len(prefix):-1] for line in mounts.splitlines()
+               if line.startswith(prefix) and line.endswith(")")]
+    require(len(matches) == 1, "df volume has no unique matching macOS mount")
+    fields = matches[0].split(", ")
+    require(len(fields) >= 2 and all(fields), "incomplete macOS mount observation")
+    # APFS firmlinks can place /Users on /System/Volumes/Data even though the
+    # textual path is not below that mountpoint. Compare the actual device.
+    require(stat(mountpoint).st_dev == path_device, "macOS mount device does not match observed directory")
+    return {"mountpoint": mountpoint, "source": source,
+            "filesystem": fields[0], "options": fields[1:]}
+
+
+def collect(report, extra_paths):
+    system = platform.system()
+    require(system in ("Linux", "Darwin"), "native storage environment capture supports Linux and macOS")
+    report["host"] = dict(platform.uname()._asdict())
+    report["source"] = {"head": query(report, ["git", "rev-parse", "HEAD"]).strip(),
+                        "status": query(report, ["git", "status", "--porcelain"]),
+                        "recorder_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    report["rustc"] = query(report, ["rustc", "--version", "--verbose"])
+    report["cargo"] = query(report, ["cargo", "--version"])
+    if system == "Darwin":
+        report["os_release"] = query(report, ["/usr/bin/sw_vers"])
+        mounts = query(report, ["/sbin/mount"])
+    else:
+        with Path("/etc/os-release").open() as stream:
+            release = stream.read(64 * 1024 + 1)
+        require(len(release) <= 64 * 1024, "oversized OS release metadata")
+        report["os_release"] = release
+    # Ask the qualified Rust toolchain itself. In particular, macOS can use
+    # confstr when TMPDIR is absent; Python's temporary-directory choice is not
+    # evidence of the path selected by std::env::temp_dir().
+    with tempfile.TemporaryDirectory(prefix="rafter-environment-probe-") as temporary:
+        binary = Path(temporary) / "temp-path"
+        query(report, ["rustc", "--edition=2021", "--crate-name", "storage_environment_probe",
+                       "-", "-o", str(binary)], input=PROBE)
+        encoded = query(report, [str(binary)]).strip()
+        temporary_path = os.fsdecode(bytes.fromhex(encoded))
+        report["rust_temp_probe"] = {"source": PROBE,
+            "source_sha256": hashlib.sha256(PROBE.encode()).hexdigest(),
+            "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "path": temporary_path}
+    paths = [("workspace", str(ROOT)), ("rust-temp", temporary_path)]
+    if "RUNNER_TEMP" in os.environ:
+        paths.append(("runner-temp", os.environ["RUNNER_TEMP"]))
+    paths.extend((f"extra-{index}", str(path)) for index, path in enumerate(extra_paths, 1))
+    report["paths"] = []
+    for label, requested in paths:
+        path = Path(requested).resolve(strict=True)
+        require(path.is_dir(), "storage environment path is not a directory")
+        device = path.stat().st_dev
+        if system == "Linux":
+            raw = query(report, ["findmnt", "--json", "--target", str(path),
+                                 "--output", "TARGET,SOURCE,FSTYPE,OPTIONS,MAJ:MIN"])
+            filesystem = linux_filesystem(raw, device)
+        else:
+            raw = query(report, ["/bin/df", "-P", str(path)], env=dict(os.environ, LC_ALL="C"))
+            filesystem = darwin_filesystem(raw, mounts, device)
+        require(path.stat().st_dev == device, "directory device changed during observation")
+        report["paths"].append({"label": label, "requested": requested, "resolved": str(path),
+                                "device": device, **filesystem})
+
+
+def capture(output, extra_paths):
+    report = {"schema": 1, "status": "failed", "commands": [],
+              "observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "scope": "Native directory/filesystem observations at capture time. Does not establish hardware power-loss durability, filesystem support, or mount stability throughout subsequent tests."}
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x") as stream:
+        try:
+            collect(report, extra_paths)
+            report["status"] = "captured"
+        except Exception as error:
+            report["error"] = f"{type(error).__name__}: {error}"
+            raise
+        finally:
+            json.dump(report, stream, indent=2)
+            stream.write("\n")
+    return report
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--path", action="append", default=[], type=Path)
+    args = parser.parse_args()
+    result = capture(args.output, args.path)
+    print(f"Captured {len(result['paths'])} native storage directory observations in {args.output}")

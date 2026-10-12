@@ -363,6 +363,10 @@ jobs:
           cache-on-failure: true
       - name: Prefetch locked registry for offline source identity
         run: cargo fetch --locked
+      - name: Check native filesystem evidence controls
+        run: python3 -m unittest scripts/tests/test_storage_environment.py
+      - name: Record native Linux storage environment
+        run: python3 scripts/record-storage-environment --output target/rafter-invariants/ci-diagnostics/linux-storage-environment.json
       - name: dependency boundary tests
         run: scripts/cargo-test-exact 6 dependency_boundary --workspace
       - name: source boundary tests
@@ -470,6 +474,8 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: durable client Clippy
         run: cargo clippy --locked -p rafter-service --features durable --all-targets -- -D warnings
+      - name: Record native macOS storage environment
+        run: python3 scripts/record-storage-environment --output target/rafter-invariants/ci-diagnostics/macos-storage-environment.json
       - name: Qualify durable storage on macOS
         env:
           CARGO_TERM_COLOR: never

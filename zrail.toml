@@ -1364,6 +1364,8 @@ inputs = [
   ".github/actions/setup-invariant-runtime/action.yml",
   ".github/actions/setup-invariant-runtime/install-packages.sh",
   "scripts/tests/test_invariant_runtime_setup.py",
+  "scripts/record-storage-environment",
+  "scripts/tests/test_storage_environment.py",
   "scripts/tests/invariant_runtime_fixture.py",
   "verification/github-actions.lock",
   "zcheck.toml",

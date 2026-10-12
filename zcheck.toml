@@ -115,6 +115,11 @@ description = "Exercise disposable-volume ownership, bounded probe failure, clea
 run = ["python3", "-m", "unittest", "scripts/tests/test_io_stall_volume.py", "scripts/tests/test_io_stall_controller.py", "scripts/tests/test_io_stall_runner.py", "scripts/tests/test_io_stall_counter.py", "scripts/tests/test_io_stall_crash.py", "scripts/tests/test_io_stall_majority.py", "scripts/tests/test_io_stall_resources.py"]
 tools = ["python3"]
 
+[tasks.storage-environment-tests]
+description = "Refuse ambiguous native filesystem identity and preserve failed capture evidence."
+run = ["python3", "-m", "unittest", "scripts/tests/test_storage_environment.py"]
+tools = ["python3"]
+
 [tasks.counter-guide-tests]
 description = "Refuse stale/mixed counter dependency graphs and leaked smoke-test children. Requires Python 3.11+."
 run = ["python3", "-m", "unittest", "scripts/tests/test_counter_guide.py"]
@@ -160,6 +165,7 @@ needs = [
   "policy-tools",
   "runtime-setup-tests",
   "io-stall-tests",
+  "storage-environment-tests",
   "public-api-tests",
   "counter-guide",
   "counter-guide-pinned",
