@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify the teaching excerpts and build the guide's complete source reference."""
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -54,6 +55,8 @@ def main():
                         help="qualify checkout libraries (default) or the standalone Git pin")
     parser.add_argument("--pressure", action="store_true",
                         help="run blocked-publication and full-client-queue qualification (POSIX)")
+    parser.add_argument("--soak-artifacts", type=Path,
+                        help="retain a 60-second local leader-loss/cold-restart run and its build evidence in a new directory")
     args = parser.parse_args()
     text = GUIDE.read_text()
     matches = list(BLOCK.finditer(text))
@@ -90,6 +93,8 @@ def main():
         shutil.copyfile(PROJECT / "test_load.py", copied / "test_load.py")
         shutil.copyfile(PROJECT / "check_load.py", copied / "check_load.py")
         shutil.copyfile(PROJECT / "test_check_load.py", copied / "test_check_load.py")
+        shutil.copyfile(PROJECT / "soak.py", copied / "soak.py")
+        shutil.copyfile(PROJECT / "test_soak.py", copied / "test_soak.py")
         shutil.copytree(PROJECT / "tests", copied / "tests")
         env = dict(os.environ)
         target = Path(env.get("CARGO_TARGET_DIR", ROOT / "target/counter-guide")).resolve() / args.mode
@@ -102,8 +107,20 @@ def main():
         metadata = json.loads(subprocess.check_output(metadata_command, cwd=copied, env=env))
         used = validate_graph(metadata, crates, revision, required, args.mode, copied)
         print(f"PASS: {len(used)} Rafter crates resolve to {args.mode}; standalone pin {revision}", flush=True)
+        artifacts = args.soak_artifacts.resolve() if args.soak_artifacts else None
+        if artifacts is not None:
+            artifacts.mkdir()
+            shutil.copyfile(copied / "Cargo.lock", artifacts / "resolved-Cargo.lock")
+            (artifacts / "cargo-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+            (artifacts / "build-inputs.json").write_text(json.dumps({
+                "mode": args.mode, "library_git_pin": revision, "metadata_command": metadata_command,
+                "checkout_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                "checkout_status": subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True),
+                "copied_source_sha256": {str(path.relative_to(copied)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                         for path in sorted(copied.rglob("*")) if path.is_file()},
+            }, indent=2) + "\n")
         commands = [
-            [sys.executable, "-m", "unittest", "test_load.py", "test_check_load.py"],
+            [sys.executable, "-m", "unittest", "test_load.py", "test_check_load.py", "test_soak.py"],
             ["rustc", "--version"],
             ["cargo", "fmt", "--all", "--", "--check"],
             ["cargo", "clippy", *config_args, "--locked", "--all-targets", "--", "-D", "warnings"],
@@ -115,6 +132,9 @@ def main():
         if not args.pressure:
             commands.append([sys.executable, "smoke.py",
                              str(target / "debug/rafter-counter"), "--explicit-peers"])
+        if artifacts is not None:
+            commands.append([sys.executable, "soak.py", "--binary", str(target / "debug/rafter-counter"),
+                             "--output", str(artifacts / "run")])
         for command in commands:
             print("Running:", " ".join(command), flush=True)
             subprocess.run(command, cwd=copied, env=env, check=True)

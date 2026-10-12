@@ -181,3 +181,43 @@ this check and must remain available for diagnosis; they must not be edited into
 complete captures. Run `python3 -m unittest test_load.py test_check_load.py` to
 exercise the recorder and the verifier's rehashed counterexamples. The guide smoke
 suite also checks three real node histories against before/after quorum reads.
+
+
+## Retain a coordinated local fault run
+
+`soak.py` starts three owned server processes and three simultaneous load clients,
+then kills the current leader with `SIGKILL`. It preserves that node's files before
+reopening them and requires the surviving majority to acknowledge new client work.
+After the clients finish, it checks their histories, shuts down the servers with
+backend release, preserves their state, and performs a cold restart. The recovered
+quorum value must match the measured final value, and a new increment must work.
+
+```sh
+python3 soak.py --binary target/debug/rafter-counter --output /tmp/counter-soak-001
+```
+
+The default workload is 60 seconds; `--seconds` accepts a finite value of at least
+30. Output must be a new directory beneath an existing parent. The fixture copies
+and hashes the executed binary and retains the run ID, events, all client histories,
+server logs, history report, and pre-recovery file hashes and contents. Its receipt
+requires source/binary preservation and successful owned-process cleanup. Failure
+keeps the available evidence. It only signals processes it started.
+
+The all-server cold restart follows graceful shutdown; the earlier leader loss is
+an actual abrupt kill under load. This is a local operational fixture using the
+existing TLS transport. It does not qualify multiple hosts, physical power loss,
+full cross-host linearizability or whole-host resource bounds. Binary hashes alone
+do not establish compiler or library-source provenance.
+
+From the repository root, bind the run to the checked build with:
+
+```sh
+python3 scripts/check-counter-guide --mode checkout --soak-artifacts /tmp/counter-qualified-001
+```
+
+This retains the copied source hashes, dependency metadata and resolved lock beside
+the 60-second run. The Linux I/O lane uses this option and preserves the complete
+checkout inventory before and after build and workload execution. The isolated
+standalone Git pin can be checked with `--mode pinned` and another new output path.
+`python3 -m unittest test_load.py test_check_load.py test_soak.py` also covers the
+recorder, accounting checks, process cleanup and recovery-input preservation.
