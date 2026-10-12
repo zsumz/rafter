@@ -75,9 +75,12 @@ a private loop/ext4 fault mechanism and its cleanup before applying it to Rafter
 The [probe run at `60a496dd`](https://github.com/zsumz/rafter/actions/runs/38186801268)
 passes a 3.03-second held sync, successful child completion, verified resource
 release and all 2,818 source hashes. The next job applies that same mechanism to
-the existing three-node TLS counter. Portable controls and a real unstalled
-counter negative control pass; its hosted stalled-counter execution remains to
-be qualified.
+the existing three-node TLS counter. Its [Linux run at `90a5de9b`](https://github.com/zsumz/rafter/actions/runs/38187400606)
+passes a 53.13-second kernel I/O stall, nine uncertain write timeouts, a pending
+quorum read, resumed progress and acknowledged state preserved through cold
+recovery. All owned resources are released and all 2,820 source hashes match.
+A separate process-loss extension retains node data before strict recovery;
+its hosted qualification remains pending.
 
 Stable-release qualification remains open. In priority order:
 

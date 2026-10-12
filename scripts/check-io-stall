@@ -64,9 +64,12 @@ class Commands:
             write_json(self.artifacts / 'commands.json', self.records)
 
 
-def qualify(artifacts, counter_binary=None):
+def qualify(artifacts, counter_binary=None, crash_while_stalled=False):
+    if crash_while_stalled and counter_binary is None:
+        raise ValueError('crash qualification requires a counter binary')
     artifacts.mkdir(parents=True, exist_ok=False)
     receipt = dict(schema=1, status='failed', scope='Linux loop/ext4 fsync stall probe only',
+                   crash_while_stalled=crash_while_stalled,
                    host=platform.uname()._asdict(), python=sys.version,
                    runner_image=os.environ.get('ImageVersion'),
                    runner_environment=os.environ.get('RUNNER_ENVIRONMENT'))
@@ -97,7 +100,8 @@ def qualify(artifacts, counter_binary=None):
         receipt['volume']['loop'] = volume.loop
         if counter_binary is not None:
             from io_stall_counter import CounterWorkload
-            counter = CounterWorkload(counter_binary, temporary / 'counter', volume.mount, artifacts)
+            counter = CounterWorkload(counter_binary, temporary / 'counter', volume.mount, artifacts,
+                                      crash_while_stalled=crash_while_stalled)
             counter.start()
         receipt['events'] = run_probe(volume, ROOT / 'scripts/io_stall_probe.py', artifacts,
                                      while_stalled=counter.while_stalled if counter else None)
@@ -158,16 +162,21 @@ def main():
     parser.add_argument('--artifacts', type=Path, required=True)
     parser.add_argument('--counter-binary', type=Path,
                         help='also exercise this checkout-built standalone TLS counter')
+    parser.add_argument('--crash-while-stalled', action='store_true',
+                        help='SIGKILL the counter nodes while I/O is held; preserve inputs before recovery')
     parser.add_argument('--disposable-linux-vm', action='store_true',
                         help='explicitly select a disposable VM with passwordless sudo')
     args = parser.parse_args()
+    if args.crash_while_stalled and args.counter_binary is None:
+        parser.error('--crash-while-stalled requires --counter-binary')
     if not args.disposable_linux_vm or sys.platform != 'linux':
         parser.error('run only in a disposable Linux VM with --disposable-linux-vm')
     def interrupted(signum, _frame):
         raise SystemExit(f'interrupted by signal {signum}')
     signal.signal(signal.SIGTERM, interrupted)
     receipt = qualify(args.artifacts.resolve(),
-                      args.counter_binary.resolve() if args.counter_binary else None)
+                      args.counter_binary.resolve() if args.counter_binary else None,
+                      args.crash_while_stalled)
     print(json.dumps({k: receipt.get(k) for k in
                       ['source', 'status', 'source_preserved', 'volume_cleanup', 'errors']}, indent=2))
     return 0 if receipt['status'] == 'passed' else 1

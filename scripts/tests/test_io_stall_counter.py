@@ -23,6 +23,7 @@ class CounterOracle(unittest.TestCase):
         self.counter.leader = 1
         self.counter.baseline = {'applied': 2}
         self.counter.unknown = 0
+        self.counter.crash_while_stalled = False
         self.counter.cluster = Mock()
         self.cluster = self.counter.cluster
         self.cluster.children = {}

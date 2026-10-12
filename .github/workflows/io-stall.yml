@@ -50,7 +50,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check portable failure and ownership controls
-        run: python3 -m unittest scripts/tests/test_io_stall_volume.py scripts/tests/test_io_stall_controller.py scripts/tests/test_io_stall_runner.py scripts/tests/test_io_stall_counter.py
+        run: python3 -m unittest scripts/tests/test_io_stall_volume.py scripts/tests/test_io_stall_controller.py scripts/tests/test_io_stall_runner.py scripts/tests/test_io_stall_counter.py scripts/tests/test_io_stall_crash.py
       - name: Qualify the owned filesystem stall and cleanup
         run: |
           python3 scripts/check-io-stall --disposable-linux-vm \
@@ -92,6 +92,11 @@ jobs:
           python3 scripts/check-io-stall --disposable-linux-vm \
             --counter-binary "$RUNNER_TEMP/io-stall-counter-target/checkout/debug/rafter-counter" \
             --artifacts "$RUNNER_TEMP/io-stall-counter-evidence"
+      - name: Exercise process loss while the filesystem is stalled
+        run: |
+          python3 scripts/check-io-stall --disposable-linux-vm --crash-while-stalled \
+            --counter-binary "$RUNNER_TEMP/io-stall-counter-target/checkout/debug/rafter-counter" \
+            --artifacts "$RUNNER_TEMP/io-stall-crash-evidence"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -99,5 +104,7 @@ jobs:
           path: |
             ${{ runner.temp }}/io-stall-counter-build
             ${{ runner.temp }}/io-stall-counter-evidence
+            ${{ runner.temp }}/io-stall-crash-evidence
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 30

@@ -98,9 +98,35 @@ following recovery. The exact binary hash is checked before and after execution.
 Cleanup resumes storage before trying every child, even if one cannot be reaped.
 Failed child cleanup retains the volume and fails the receipt. Node logs and
 per-request outcomes are uploaded with source, binary and resource receipts.
-Portable controls and a real unstalled three-process negative control qualify the
-oracles; hosted execution must still pass before claiming the counter stall case.
+The [Linux run at `90a5de9b`](https://github.com/zsumz/rafter/actions/runs/38187400606)
+passes a 53.13-second stall: nine uncertain write timeouts, a pending quorum read,
+resumed value 6 after baseline 5, then acknowledged value 106 preserved through
+cold recovery and a following write to 107. Both jobs release every owned
+resource, and downloaded evidence verifies all 2,820 tracked source hashes.
+Portable controls and a real unstalled three-process negative control check the
+oracles.
 The existing counter pressure test separately qualifies all eight retained credits
 and prompt full-queue refusal while application publication is blocked.
 This single-host, shared-volume case does not establish whole-host memory bounds,
 independent multi-host failures, device corruption or physical power-loss safety.
+
+## Process loss during the stall
+
+`--crash-while-stalled` requires `--counter-binary` and adds a separate process-loss
+case after the ordinary stall workload. It sends `SIGKILL` to all three live
+counter processes while the independent sync probe still proves I/O is held.
+The controller resumes storage before waiting for those processes, and requires
+actual `SIGKILL` exits before starting recovery.
+
+Every regular node-data file is copied and hashed into `pre-recovery-data/` and
+`pre-recovery-data.json` before any reopen. Symbolic links, special files, an empty
+inventory, changed inputs or a mismatching copy fail qualification. Recovery uses
+the counter's unchanged strict store-opening policy. A refusal remains a failed
+receipt with preserved inputs and logs for diagnosis; the harness never silently
+substitutes uncommitted-tail repair. Successful recovery must satisfy the same
+bounded unknown-write result, fresh acknowledgement and cold-recovery checks.
+
+Portable controls cover ordering, real disposable-process signal exits, input
+preservation and failure handling. This new crash case still requires hosted
+qualification. It tests OS process loss with the host kernel and page cache still
+present; it does not simulate physical power loss.
