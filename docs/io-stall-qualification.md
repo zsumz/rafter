@@ -85,13 +85,15 @@ may acknowledge success. Queued cancellations can safely release capacity before
 append even while the persistence worker is blocked; the oracle allows this and
 counts uncertain attempts separately from requests known not to have appended.
 At least one write must reach the uncertain timeout path. Passive metrics remain reachable and a quorum
-read must time out in this workload. Metrics are the last published owner
-observation, which can be stale during synchronous consensus I/O; they are not
-used as current admission counters.
+read must time out in this workload. Progress metrics are last published and
+can stay stale during synchronous consensus I/O. Separate live retained-credit
+counters must stay within the configured count and byte budgets; write refusal
+counters must match the requests known not to have appended. Read budget refusal
+counters must remain unchanged for the timed-out quorum read.
 
 After resume, the aggregate unknown increments must remain within zero through
 the recorded number of uncertain attempts (at most nine). The runner never retries an uncertain increment. It requires a fresh
-acknowledged write, convergence and drained observed proposal queues, then orderly
+acknowledged write, convergence and drained live write/read credits, then orderly
 shutdown and cold recovery of that acknowledged value. Another write must succeed
 following recovery. The exact binary hash is checked before and after execution.
 
@@ -127,6 +129,10 @@ substitutes uncommitted-tail repair. Successful recovery must satisfy the same
 bounded unknown-write result, fresh acknowledgement and cold-recovery checks.
 
 Portable controls cover ordering, real disposable-process signal exits, input
-preservation and failure handling. This new crash case still requires hosted
-qualification. It tests OS process loss with the host kernel and page cache still
-present; it does not simulate physical power loss.
+preservation and failure handling. The [Linux run at `f5a9a3c8`](https://github.com/zsumz/rafter/actions/runs/38188063513)
+passes the crash case with a 53.06-second hold and three verified `SIGKILL` exits.
+Downloaded evidence verifies all 24 pre-recovery files (including hidden storage
+locks), all 2,821 source hashes and complete resource cleanup. Acknowledged value
+106 survives cold recovery; the next write reaches 107. The live-credit metric
+assertions added afterward require a new run. This tests OS process loss with the
+host kernel and page cache still present; it does not simulate physical power loss.

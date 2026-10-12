@@ -243,11 +243,16 @@ The diagnostic `/status` endpoint uses a local read, which may be stale on a
 follower. Its `ready` field describes admission after recovery, not a quorum
 proof or a promise that the replica has caught up to the leader.
 
-For operations, `/metrics` reads the managed observation without querying the
-application. It exposes commit, durable application and snapshot indexes, pending
-writes, reserved reads, and connection count even while application I/O is blocked. These
-are observations, not quorum proofs; commit minus applied is not an application
-backlog count because the Raft log also contains protocol entries.
+For operations, `/metrics` observes the owner without querying the application.
+Commit, applied and snapshot indexes, pending writes and reserved reads are the
+last published progress; they can stay stale during synchronous storage I/O.
+`retained_writes`, `retained_reads` and their `_bytes` fields read current admission
+credits, including canceled work still owned by the driver and uncollected results.
+`write_refusals` and `read_refusals` count budget refusals since owner construction
+and reset on restart. These counters remain accessible while storage is blocked.
+They are independent observations, not an atomic snapshot, a capacity reservation
+or a whole-host memory bound. None proves a quorum read. Commit minus applied is
+not an application backlog count because the Raft log also contains protocol entries.
 
 The HTTP API redirects followers and bounds request waiting. Its error response
 sets `write_may_have_committed` to false only when the managed write error proves
@@ -410,13 +415,13 @@ rust-version = "1.88"
 [workspace]
 
 [dependencies]
-rafter = { git = "https://github.com/zsumz/rafter", rev = "37ee508ae92de48ce3c590518be25cb904f67095" }
-rafter-app = { git = "https://github.com/zsumz/rafter", rev = "37ee508ae92de48ce3c590518be25cb904f67095" }
-rafter-storage = { git = "https://github.com/zsumz/rafter", rev = "37ee508ae92de48ce3c590518be25cb904f67095" }
-rafter-runtime = { git = "https://github.com/zsumz/rafter", rev = "37ee508ae92de48ce3c590518be25cb904f67095" }
-rafter-service = { git = "https://github.com/zsumz/rafter", rev = "37ee508ae92de48ce3c590518be25cb904f67095", features = ["durable"] }
-rafter-transport-tls = { git = "https://github.com/zsumz/rafter", rev = "37ee508ae92de48ce3c590518be25cb904f67095" }
-rafter-crc32 = { git = "https://github.com/zsumz/rafter", rev = "37ee508ae92de48ce3c590518be25cb904f67095" }
+rafter = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
+rafter-app = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
+rafter-storage = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
+rafter-runtime = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
+rafter-service = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6", features = ["durable"] }
+rafter-transport-tls = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
+rafter-crc32 = { git = "https://github.com/zsumz/rafter", rev = "90a5de9b8405f9eaa3b698a100f0d203ff8c90c6" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny_http = "0.12"
@@ -519,7 +524,7 @@ use rafter::{NodeConfig, NodeId};
 use rafter_app::state_machine::ApplyResult;
 use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage};
 use rafter_service::{
-    durable::{DurableRaftDriver, DurableRaftHandle},
+    durable::{DurableCommandSender, DurableRaftDriver, DurableRaftHandle},
     PeerControlPlaneCheckpoint,
 };
 use rafter_storage::{
@@ -559,6 +564,7 @@ pub type Driver = DurableRaftDriver<
     u64,
 >;
 pub type Handle = DurableRaftHandle<u64, ApplyResult<u64>, u64>;
+pub type Sender = DurableCommandSender<u64, ApplyResult<u64>, u64>;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -660,8 +666,9 @@ fn run(id: u64) -> Result<()> {
     let ready = Arc::new(AtomicBool::new(true));
     let connections = Arc::new(AtomicUsize::new(0));
     let worker = {
-        let (handle, stop, ready, connections) = (
+        let (handle, sender, stop, ready, connections) = (
             driver.handle(),
+            driver.sender(),
             stop.clone(),
             ready.clone(),
             connections.clone(),
@@ -669,7 +676,7 @@ fn run(id: u64) -> Result<()> {
         thread::spawn(move || {
             // Close the owner even if the HTTP worker unwinds before returning.
             let _stop_on_exit = StopOnExit(&stop);
-            http::serve(server, handle, &stop, &ready, &connections)
+            http::serve(server, handle, sender, &stop, &ready, &connections)
         })
     };
     println!(
@@ -1362,7 +1369,7 @@ impl GroupIdCodec<u64> for GroupCodec {
 <!-- counter-file: src/http.rs -->
 ```rust
 //! A small loopback-only client API, independent of the TLS peer connections.
-use crate::{peers, Handle, Result};
+use crate::{peers, Handle, Result, Sender};
 use rafter::Role;
 use rafter_service::{ReadConsistency, WriteError};
 use serde_json::json;
@@ -1382,6 +1389,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 pub fn serve(
     server: Server,
     handle: Handle,
+    sender: Sender,
     stop: &AtomicBool,
     ready: &AtomicBool,
     connections: &AtomicUsize,
@@ -1394,6 +1402,7 @@ pub fn serve(
         if let Err(error) = respond(
             request,
             &handle,
+            &sender,
             stop,
             ready.load(Ordering::Acquire),
             connections.load(Ordering::Acquire),
@@ -1407,6 +1416,7 @@ pub fn serve(
 fn respond(
     request: Request,
     handle: &Handle,
+    sender: &Sender,
     stop: &AtomicBool,
     ready: bool,
     connections: usize,
@@ -1419,7 +1429,9 @@ fn respond(
         return send(request, 200, json!({"stopping": metrics.node_id.0}));
     }
     if request.method() == &Method::Get && request.url() == "/metrics" {
-        // Observe the owner without waiting for a busy application store.
+        // Credits stay observable even while published progress is stale.
+        let retained = sender.retained();
+        let refusals = sender.backpressure_refusals();
         return send(
             request,
             200,
@@ -1432,6 +1444,12 @@ fn respond(
                 "pending_reads": metrics.pending_query_reads,
                 "reserved_reads": metrics.reserved_reads,
                 "tls_connections": connections,
+                "retained_writes": retained.writes.writes,
+                "retained_write_bytes": retained.writes.payload_bytes,
+                "write_refusals": refusals.writes,
+                "retained_reads": retained.reads.map(|reads| reads.reads),
+                "retained_read_bytes": retained.reads.map(|reads| reads.payload_bytes),
+                "read_refusals": refusals.reads,
             }),
         );
     }

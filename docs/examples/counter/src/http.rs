@@ -1,5 +1,5 @@
 //! A small loopback-only client API, independent of the TLS peer connections.
-use crate::{peers, Handle, Result};
+use crate::{peers, Handle, Result, Sender};
 use rafter::Role;
 use rafter_service::{ReadConsistency, WriteError};
 use serde_json::json;
@@ -19,6 +19,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 pub fn serve(
     server: Server,
     handle: Handle,
+    sender: Sender,
     stop: &AtomicBool,
     ready: &AtomicBool,
     connections: &AtomicUsize,
@@ -31,6 +32,7 @@ pub fn serve(
         if let Err(error) = respond(
             request,
             &handle,
+            &sender,
             stop,
             ready.load(Ordering::Acquire),
             connections.load(Ordering::Acquire),
@@ -44,6 +46,7 @@ pub fn serve(
 fn respond(
     request: Request,
     handle: &Handle,
+    sender: &Sender,
     stop: &AtomicBool,
     ready: bool,
     connections: usize,
@@ -56,7 +59,9 @@ fn respond(
         return send(request, 200, json!({"stopping": metrics.node_id.0}));
     }
     if request.method() == &Method::Get && request.url() == "/metrics" {
-        // Observe the owner without waiting for a busy application store.
+        // Credits stay observable even while published progress is stale.
+        let retained = sender.retained();
+        let refusals = sender.backpressure_refusals();
         return send(
             request,
             200,
@@ -69,6 +74,12 @@ fn respond(
                 "pending_reads": metrics.pending_query_reads,
                 "reserved_reads": metrics.reserved_reads,
                 "tls_connections": connections,
+                "retained_writes": retained.writes.writes,
+                "retained_write_bytes": retained.writes.payload_bytes,
+                "write_refusals": refusals.writes,
+                "retained_reads": retained.reads.map(|reads| reads.reads),
+                "retained_read_bytes": retained.reads.map(|reads| reads.payload_bytes),
+                "read_refusals": refusals.reads,
             }),
         );
     }

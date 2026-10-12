@@ -48,6 +48,9 @@ def exercise(binary, root):
             assert "timed out" in error["error"], error
             metrics = cluster.request(leader, "/metrics")
             assert metrics["pending_writes"] == count, metrics
+            assert metrics["retained_writes"] == count, metrics
+            assert metrics["retained_write_bytes"] == count * 8, metrics
+            assert metrics["write_refusals"] == baseline["write_refusals"], metrics
             assert metrics["applied"] == baseline["applied"], metrics
             assert metrics["role"] == "Leader" and metrics["term"] == baseline["term"], metrics
             cluster.wait("healthy followers apply committed work", lambda:
@@ -59,12 +62,17 @@ def exercise(binary, root):
         error = refused(cluster, leader, "/add/1")
         assert time.monotonic() - started < 2, "full queue blocked instead of refusing"
         assert not error["write_may_have_committed"], error
+        assert "write admission is full" in error["error"], error
         metrics = cluster.request(leader, "/metrics")
         assert metrics["pending_writes"] == 8 and metrics["role"] == "Leader", metrics
+        assert metrics["retained_writes"] == 8 and metrics["retained_write_bytes"] == 64, metrics
+        assert metrics["write_refusals"] == baseline["write_refusals"] + 1, metrics
         error = refused(cluster, leader, "/value", "GET")
         assert "timed out" in error["error"], error
         metrics = cluster.request(leader, "/metrics")
         assert metrics["reserved_reads"] == 1 and metrics["applied"] == baseline["applied"], metrics
+        assert metrics["retained_reads"] == 1 and metrics["retained_read_bytes"] == 0, metrics
+        assert metrics["read_refusals"] == baseline["read_refusals"], metrics
         print("PASS: full writes refuse promptly; quorum read remains behind application durability", flush=True)
 
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -98,7 +106,10 @@ def exercise(binary, root):
         assert cluster.request(active, "/add/1", "POST") == {"value": 9}
         cluster.converged(9)
         for node in cluster.children:
-            assert cluster.request(node, "/metrics")["pending_writes"] == 0
+            metrics = cluster.request(node, "/metrics")
+            assert all(metrics[field] == 0 for field in (
+                "pending_writes", "retained_writes", "retained_write_bytes",
+                "retained_reads", "retained_read_bytes", "write_refusals", "read_refusals")), metrics
         for node in list(cluster.children):
             cluster.stop(node, graceful=True)
         print("PASS: recovery replays all eight committed writes and new admission succeeds", flush=True)

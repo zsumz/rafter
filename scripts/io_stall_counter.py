@@ -75,14 +75,22 @@ class CounterWorkload:
                 refused_before_append += 1
             metrics = self.cluster.request(self.leader, '/metrics')
             assert metrics['applied'] == self.baseline['applied'], metrics
-            # Queued cancellations can release credits before append. Metrics
-            # are last-published observations, not current admission counters.
+            # Canceled queued work may refund capacity before append. The live
+            # counters are independent observations; never infer one from another.
+            assert 0 <= metrics['retained_writes'] <= 8, metrics
+            assert 0 <= metrics['retained_write_bytes'] <= 64, metrics
+            assert metrics['write_refusals'] == self.baseline['write_refusals'] + refused_before_append, metrics
             self.record('pending', attempts=attempt, uncertain=self.unknown,
-                        not_appended=refused_before_append, last_published_metrics=metrics)
+                        not_appended=refused_before_append, metrics=metrics)
         assert self.unknown > 0, 'no write reached the uncertain timeout path'
         error, _ = self.refused('/value', 'GET')
         assert 'timed out' in error['error'], error
-        self.record('held', timed_out_writes=self.unknown, not_appended=refused_before_append)
+        metrics = self.cluster.request(self.leader, '/metrics')
+        assert 0 <= metrics['retained_reads'] <= 8, metrics
+        assert 0 <= metrics['retained_read_bytes'] <= 8, metrics
+        assert metrics['read_refusals'] == self.baseline['read_refusals'], metrics
+        self.record('held', timed_out_writes=self.unknown, not_appended=refused_before_append,
+                    metrics=metrics)
         if self.crash_while_stalled:
             self.kill_while_stalled()
 
@@ -96,10 +104,9 @@ class CounterWorkload:
         acknowledged = self.cluster.request(leader, '/add/100', 'POST')['value']
         assert 105 <= acknowledged <= 105 + self.unknown, acknowledged
         self.cluster.converged(acknowledged)
-        self.cluster.wait('owner queues drain after resumed I/O', lambda:
-            all(self.cluster.request(node, '/metrics')['pending_writes'] == 0
-                for node in self.cluster.children))
-        self.record('resumed', value_before_new_write=value, acknowledged=acknowledged)
+        drained = self.cluster.wait('owner credits drain after resumed I/O', self.drained_metrics)
+        self.record('resumed', value_before_new_write=value, acknowledged=acknowledged,
+                    drained_metrics=drained)
         for node in list(self.cluster.children):
             self.cluster.stop(node, graceful=True)
         for node in (1, 2, 3):
@@ -111,6 +118,12 @@ class CounterWorkload:
         for node in list(self.cluster.children):
             self.cluster.stop(node, graceful=True)
         self.record('cold_recovery', preserved=acknowledged, next_write=acknowledged + 1)
+
+    def drained_metrics(self):
+        metrics = {node: self.cluster.request(node, '/metrics') for node in self.cluster.children}
+        fields = ('pending_writes', 'retained_writes', 'retained_write_bytes',
+                  'retained_reads', 'retained_read_bytes')
+        return metrics if all(view[field] == 0 for view in metrics.values() for field in fields) else None
 
     def kill_while_stalled(self):
         children = self.cluster.children

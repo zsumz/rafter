@@ -13,7 +13,7 @@ use rafter::{NodeConfig, NodeId};
 use rafter_app::state_machine::ApplyResult;
 use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage};
 use rafter_service::{
-    durable::{DurableRaftDriver, DurableRaftHandle},
+    durable::{DurableCommandSender, DurableRaftDriver, DurableRaftHandle},
     PeerControlPlaneCheckpoint,
 };
 use rafter_storage::{
@@ -53,6 +53,7 @@ pub type Driver = DurableRaftDriver<
     u64,
 >;
 pub type Handle = DurableRaftHandle<u64, ApplyResult<u64>, u64>;
+pub type Sender = DurableCommandSender<u64, ApplyResult<u64>, u64>;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -154,8 +155,9 @@ fn run(id: u64) -> Result<()> {
     let ready = Arc::new(AtomicBool::new(true));
     let connections = Arc::new(AtomicUsize::new(0));
     let worker = {
-        let (handle, stop, ready, connections) = (
+        let (handle, sender, stop, ready, connections) = (
             driver.handle(),
+            driver.sender(),
             stop.clone(),
             ready.clone(),
             connections.clone(),
@@ -163,7 +165,7 @@ fn run(id: u64) -> Result<()> {
         thread::spawn(move || {
             // Close the owner even if the HTTP worker unwinds before returning.
             let _stop_on_exit = StopOnExit(&stop);
-            http::serve(server, handle, &stop, &ready, &connections)
+            http::serve(server, handle, sender, &stop, &ready, &connections)
         })
     };
     println!(

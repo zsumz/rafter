@@ -38,11 +38,16 @@ recovery, missing/corrupt or unsafe checkpoint state, quorum loss, failed
 application publication with committed replay after restart, and clean shutdown. It only
 stops processes it started.
 
-`GET /metrics` reads the managed observation without borrowing the application.
-It remains available while application I/O is blocked; `GET /status` also reads
-the local value and can wait for that store. Metrics are observations, not read
-proofs. Commit and applied indexes include different kinds of work, so their
-numerical difference is not an application backlog count.
+`GET /metrics` observes the owner without borrowing the application. Progress
+indexes and pending counts are last published and can stay stale during storage
+I/O. `retained_writes`, `retained_reads` and their `_bytes` fields read current
+admission credits; `write_refusals` and `read_refusals` count budget refusals since
+owner construction and reset on restart. Credits include canceled work still
+owned by the driver and results awaiting collection. The counters remain available
+while storage is blocked, but do not form an atomic snapshot, reserve capacity or
+bound whole-host memory. `GET /status` also reads the local value and can wait for
+that store. Metrics do not prove a quorum read. Commit and applied indexes include
+different kinds of work, so their difference is not an application backlog count.
 
 On POSIX hosts, `python3 pressure.py target/debug/rafter-counter` deliberately
 blocks the leader's application publication on a FIFO. It takes about a minute:

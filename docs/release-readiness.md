@@ -3,7 +3,7 @@
 Initial review base: `021f4f9bb2f6960cb75b24f5a627f1872a12d430` (`origin/main`).
 Remote branches, pull requests, and workflow results were initially refreshed on
 October 10, 2026. An October 11 fetch confirms `origin/main` and the other branch
-tips are unchanged; only this release-work branch has advanced. The initial build
+tips are unchanged; only the release-work branches have advanced. The initial build
 changes added a Rust 1.88.0 toolchain pin and setup instructions, without changing
 consensus behavior or declaring a release.
 CI's shared setup action explicitly selects each job's requested toolchain so
@@ -23,7 +23,7 @@ burden for durable applications. More throughput work should follow those.
 ## Current code checkpoint
 
 The release work is on `codex/stable-release-slices`, with code through
-[`52aadab0`](https://github.com/zsumz/rafter/commit/52aadab07f0526b5cb65d8c7e7d85cd168d8e6f3)
+[`90a5de9b`](https://github.com/zsumz/rafter/commit/90a5de9b8405f9eaa3b698a100f0d203ff8c90c6)
 in draft [PR #23](https://github.com/zsumz/rafter/pull/23). The transport already
 exists: durable composition reuses its authenticated TLS sender and inbound
 validation. No transport replacement, version bump, tag, or publication is part
@@ -79,8 +79,12 @@ the existing three-node TLS counter. Its [Linux run at `90a5de9b`](https://githu
 passes a 53.13-second kernel I/O stall, nine uncertain write timeouts, a pending
 quorum read, resumed progress and acknowledged state preserved through cold
 recovery. All owned resources are released and all 2,820 source hashes match.
-A separate process-loss extension retains node data before strict recovery;
-its hosted qualification remains pending.
+A separate [process-loss run at `f5a9a3c8`](https://github.com/zsumz/rafter/actions/runs/38188063513)
+passes a 53.06-second stall, three verified `SIGKILL` exits and strict recovery.
+Downloaded evidence verifies all 24 pre-recovery files, including hidden storage
+locks, all 2,821 source hashes and complete resource cleanup. Acknowledged value
+106 survives cold recovery and the next write reaches 107. This models process
+loss with the kernel and page cache present, not physical power loss.
 
 Stable-release qualification remains open. In priority order:
 
@@ -177,8 +181,9 @@ is a maintainer gate, not something a lockfile refresh can satisfy.
 
 The release branch now carries PR #13's counter, guide, and extraction checker
 without importing its stale root README, CI, or architecture lock. The standalone
-project pins the full qualified commit `37ee508ae92de48ce3c590518be25cb904f67095`.
-The pin includes typed managed-admission errors and the patched rustls minimum.
+project now pins `90a5de9b8405f9eaa3b698a100f0d203ff8c90c6` to use the existing
+live retained-credit and budget-refusal APIs; the previous `37ee508a` pin predates
+those APIs. Typed managed-admission errors and the patched rustls minimum remain.
 This revision update changes only the nine Rafter Git identities; the preceding
 security slice already updated the standalone rustls lock to 0.23.45. Both guide
 modes still exercise the same application and on-disk schema.
@@ -202,7 +207,8 @@ before verifying client-certificate refusal. CI and zcheck run both modes and
 the controls; the repository checker requires Python 3.11 or newer.
 
 The counter now explicitly enables `rafter-service/durable`, retains the existing
-TLS sender and inbound validator, and gives HTTP only a managed handle. The main
+TLS sender and inbound validator, and gives HTTP a managed handle and observable
+command sender. The main
 thread uniquely owns the driver and uses bounded event turns. Eight writes and
 eight reads have independent admission budgets; writes enter as encoded bytes,
 linearizable reads use the real quorum/application fence, and local status reads
