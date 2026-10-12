@@ -184,5 +184,133 @@ class WorkloadAccounting(unittest.TestCase):
             self.verify(final=0)
 
 
+    def test_shared_clock_rejects_cross_client_stale_read(self):
+        events = self.events(2)
+        events[3].update(outcome="read_succeeded", status=200, value=0)
+        self.seal(2, events)
+        self.assertEqual(self.verify()["status"], "passed")
+        with self.assertRaisesRegex(ValueError, "no shared-clock linearization"):
+            self.verify(shared_clock=True)
+
+    def test_uncertain_write_can_linearize_after_its_client_timeout(self):
+        events = self.events(2)
+        events[1].update(outcome="write_uncertain", status=503, error="timeout")
+        events[3].update(outcome="read_succeeded", status=200, value=2)
+        self.seal(2, events)
+        report = self.verify(final=2, shared_clock=True)["shared_clock_linearizability"]
+        selected = [step for step in report["witness"] if step.get("uncertain")]
+        self.assertEqual(len(selected), 1)
+        self.assertGreater(selected[0]["monotonic_ns"], 120)
+
+    def test_future_uncertain_invocation_cannot_explain_an_earlier_read(self):
+        events = self.events(2)
+        events[1].update(outcome="write_uncertain", status=503, error="timeout")
+        for event in events:
+            key = "monotonic_ns" if event["event"] == "invoke" else "started_monotonic_ns"
+            event[key] += 200
+        self.seal(2, events)
+        events = self.events(3)
+        events[3].update(outcome="read_succeeded", status=200, value=2)
+        self.seal(3, events)
+        self.assertEqual(self.verify(final=2)["status"], "passed")
+        with self.assertRaisesRegex(ValueError, "no shared-clock linearization"):
+            self.verify(final=2, shared_clock=True)
+
+    def test_shared_clock_rejects_acknowledgements_in_impossible_real_time_order(self):
+        events = self.events(1)
+        for event in events:
+            key = "monotonic_ns" if event["event"] == "invoke" else "started_monotonic_ns"
+            event[key] += 200
+        self.seal(1, events)
+        events = self.events(2)
+        events[1].update(outcome="write_acknowledged", status=200, value=2)
+        events[3].update(outcome="read_succeeded", status=200, value=2)
+        self.seal(2, events)
+        self.assertEqual(self.verify(final=2)["status"], "passed")
+        with self.assertRaisesRegex(ValueError, "no shared-clock linearization"):
+            self.verify(final=2, shared_clock=True)
+
+
+class SharedClockOracle(unittest.TestCase):
+    @staticmethod
+    def exhaustive(operations, baseline, final):
+        # Deliberately independent: enumerate pending subsets and every sequential
+        # order, replay the counter, then fit that order into operation intervals.
+        import itertools
+        required = [op for op in operations if op["outcome"] in ("write_acknowledged", "read_succeeded")]
+        pending = [op for op in operations if op["outcome"] == "write_uncertain"]
+        needed = final - baseline - sum(op["outcome"] == "write_acknowledged" for op in required)
+        if not 0 <= needed <= len(pending):
+            return False
+        for chosen in itertools.combinations(pending, needed):
+            for order in itertools.permutations(required + list(chosen)):
+                value, moment = baseline, 0
+                for op in order:
+                    moment = max(moment, op["start"])
+                    if op["outcome"] != "write_uncertain" and moment > op["end"]:
+                        break
+                    if op["outcome"].startswith("write_"):
+                        value += 1
+                    if op["outcome"] != "write_uncertain" and value != op["value"]:
+                        break
+                else:
+                    if value == final:
+                        return True
+        return False
+
+    def replay(self, operations, baseline, final, report):
+        source = {(op["node"], op["id"]): op for op in operations}
+        seen, value, moment = set(), baseline, 0
+        for step in report["witness"]:
+            identity = step["node"], step["id"]
+            self.assertNotIn(identity, seen)
+            seen.add(identity)
+            op = source[identity]
+            self.assertGreaterEqual(step["monotonic_ns"], max(moment, op["start"]))
+            moment = step["monotonic_ns"]
+            if op["outcome"] != "write_uncertain":
+                self.assertLessEqual(moment, op["end"])
+            if step["kind"] == "write":
+                self.assertIn(op["outcome"], ("write_acknowledged", "write_uncertain"))
+                self.assertEqual(step["uncertain"], op["outcome"] == "write_uncertain")
+                value += 1
+            else:
+                self.assertEqual(op["outcome"], "read_succeeded")
+            self.assertEqual(step["value"], value)
+            if op["outcome"] != "write_uncertain":
+                self.assertEqual(op["value"], value)
+        self.assertEqual(value, final)
+        required = {key for key, op in source.items() if op["outcome"] in ("write_acknowledged", "read_succeeded")}
+        self.assertTrue(required <= seen)
+
+    def test_rank_solver_matches_exhaustive_orders_and_replayable_witnesses(self):
+        import random
+        rng = random.Random(0x52414654)
+        passes = failures = 0
+        for case in range(3000):
+            baseline = rng.randrange(4)
+            final = baseline + rng.randrange(5)
+            operations = []
+            for index in range(rng.randrange(1, 7)):
+                start = rng.randrange(12)
+                operations.append({"node": index % 3 + 1, "id": index + 1,
+                    "outcome": rng.choice(("write_acknowledged", "read_succeeded", "write_uncertain")),
+                    "start": start, "end": start + rng.randrange(5),
+                    "value": baseline + rng.randrange(6)})
+            expected = self.exhaustive(operations, baseline, final)
+            try:
+                report = check_load.linearize(operations, baseline, final)
+            except ValueError:
+                actual = False
+                failures += 1
+            else:
+                actual = True
+                passes += 1
+                self.replay(operations, baseline, final, report)
+            self.assertEqual(actual, expected, (case, baseline, final, operations))
+        self.assertGreater(passes, 100)
+        self.assertGreater(failures, 100)
+
+
 if __name__ == "__main__":
     unittest.main()

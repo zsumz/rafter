@@ -180,7 +180,7 @@ def run(args):
         final = cluster.request(leader, "/value")["value"]
         cluster.converged(final)
         record("final_quorum_read", node=leader, value=final)
-        report = verify(histories, baseline, final, run_id, minimum_seconds=args.seconds - 1)
+        report = verify(histories, baseline, final, run_id, minimum_seconds=args.seconds - 1, shared_clock=True)
         save(args.output / "history-check.json", report)
         stopped = dict(cluster.children)
         for node in list(cluster.children):
@@ -223,7 +223,7 @@ def run(args):
             "error": failure, "cleanup_errors": errors, "source_and_binary_preserved": preserved,
             "baseline": baseline, "final": final, "cold_recovered": recovered,
             "events_sha256": digest(args.output / "events.jsonl") if events else None,
-            "scope": "Local three-process TLS leader loss and graceful cold restart. History accounting is partial; this is not a multi-host or power-loss qualification.",
+            "scope": "Local three-process TLS leader loss and graceful cold restart. Shared-clock increment/read histories are checked; this is not a multi-host or power-loss qualification.",
         })
         if complete and not passed:
             raise RuntimeError("cleanup or source preservation failed")

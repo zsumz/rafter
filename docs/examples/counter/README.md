@@ -183,12 +183,49 @@ exercise the recorder and the verifier's rehashed counterexamples. The guide smo
 suite also checks three real node histories against before/after quorum reads.
 
 
+### Check ordering when clients share a clock
+
+Add `--shared-monotonic-clock` only when the caller has established that every
+client uses the same monotonic clock, such as the processes started by `soak.py`.
+A matching host label is not proof of this condition. The default remains the
+clock-independent accounting check for histories collected on separate hosts.
+
+This mode decides whether the recorded increment-by-one and quorum-read intervals
+admit a sequential counter execution. It rejects a read older than another
+client's already completed write, reads of increments not yet invoked, and
+acknowledgements in an impossible order. It retains a witness identifying each
+selected operation, its counter value and a permissible monotonic timestamp.
+Equal clock samples may overlap; the check cannot resolve ordering below the
+clock's resolution. The before/after quorum values and absence of other writers
+remain required external facts.
+
+A timed-out write is a pending operation whose eventual effect is unknown. It may
+linearize after the client timeout, or remain unapplied through the final quorum
+observation. The witness chooses only as many uncertain increments as the final
+value requires; it does not relabel their client outcomes as acknowledgements.
+This follows the pending-operation distinction in
+[Herlihy and Wing's linearizability model](https://cs.brown.edu/people/mph/HerlihyW90/p463-herlihy.pdf)
+and its [clarification for pending invocations](https://arxiv.org/abs/2105.06737).
+
+The solver uses the counter's ranks: each acknowledged increment fixes one rank;
+a read of value `v` bounds increment `v` above by its completion and increment
+`v+1` below by its invocation. Missing ranks consume the earliest-invoked unused
+uncertain writes. These are identical increments with no observed completion
+bound, so selecting an earlier invocation cannot remove a valid placement.
+Choosing each rank's earliest permitted time leaves maximal room for later ranks.
+Tests compare this solver with an independent enumeration of pending subsets and
+all sequential orders for 3,000 deterministic small histories, then replay every
+accepted witness. This model covers this counter workload; it is not a verifier
+for arbitrary application commands or a multi-host clock protocol.
+
+
 ## Retain a coordinated local fault run
 
 `soak.py` starts three owned server processes and three simultaneous load clients,
 then kills the current leader with `SIGKILL`. It preserves that node's files before
 reopening them and requires the surviving majority to acknowledge new client work.
-After the clients finish, it checks their histories, shuts down the servers with
+After the clients finish, it checks their histories with the shared-clock solver,
+shuts down the servers with
 backend release, preserves their state, and performs a cold restart. The recovered
 quorum value must match the measured final value, and a new increment must work.
 
@@ -206,7 +243,7 @@ keeps the available evidence. It only signals processes it started.
 The all-server cold restart follows graceful shutdown; the earlier leader loss is
 an actual abrupt kill under load. This is a local operational fixture using the
 existing TLS transport. It does not qualify multiple hosts, physical power loss,
-full cross-host linearizability or whole-host resource bounds. Binary hashes alone
+cross-host real-time ordering or whole-host resource bounds. Binary hashes alone
 do not establish compiler or library-source provenance.
 
 From the repository root, bind the run to the checked build with:

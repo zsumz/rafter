@@ -40,7 +40,7 @@ def metadata(path):
     return value, hashlib.sha256(raw).hexdigest()
 
 
-def inspect(directory, baseline, final, run_id, expected_client, acknowledged, minimum_seconds):
+def inspect(directory, baseline, final, run_id, expected_client, acknowledged, minimum_seconds, operations=None):
     invocation, invocation_hash = metadata(directory / "invocation.json")
     summary, summary_hash = metadata(directory / "summary.json")
     metrics, metrics_hash = metadata(directory / "initial-metrics.json")
@@ -122,6 +122,10 @@ def inspect(directory, baseline, final, run_id, expected_client, acknowledged, m
                     require(code in ((307, 503) if writing else (307,)), "unsupported refusal status")
                 else:
                     require(isinstance(event.get("error"), str), "missing failure observation")
+            if operations is not None:
+                operations.append({"node": node, "id": event["id"], "outcome": outcome,
+                                   "start": pending["monotonic_ns"], "end": previous_end,
+                                   "value": event.get("value")})
             counts[outcome] += 1
             number += 1
             total_latency += latency
@@ -152,14 +156,84 @@ def inspect(directory, baseline, final, run_id, expected_client, acknowledged, m
                              "initial-metrics.json": metrics_hash, "history.jsonl": checksum.hexdigest()}}
 
 
-def verify(histories, baseline, final, run_id, minimum_seconds=0):
+def linearize(operations, baseline, final):
+    """Find an increment-only witness after accounting and shared-clock validation.
+
+    Each increment owns its resulting counter rank. A read of rank r places an
+    upper bound on increment r and a lower bound on increment r+1. Successful
+    writes also have invocation/response bounds. Uncertain writes have only an
+    invocation bound: client timeout is not a server-side abort or completion.
+
+    Fill missing ranks with the earliest-invoked unused uncertain writes. They
+    are identical +1 operations with no response deadline, so exchanging a later
+    invocation for an earlier one cannot invalidate a witness. Placing each rank
+    as early as its constraints permit leaves every later rank maximal room.
+    """
+    count = final - baseline
+    lower, upper = [0] * (count + 1), [math.inf] * (count + 1)
+    acknowledged, reads, uncertain = {}, {}, []
+    for operation in operations:
+        outcome = operation["outcome"]
+        if outcome == "write_uncertain":
+            uncertain.append(operation)
+        elif outcome == "write_acknowledged":
+            rank = operation["value"] - baseline
+            require(1 <= rank <= count and rank not in acknowledged,
+                    "invalid acknowledged rank for shared-clock linearizability")
+            acknowledged[rank] = operation
+            lower[rank] = max(lower[rank], operation["start"])
+            upper[rank] = min(upper[rank], operation["end"])
+        elif outcome == "read_succeeded":
+            rank = operation["value"] - baseline
+            require(0 <= rank <= count, "invalid read rank for shared-clock linearizability")
+            reads.setdefault(rank, []).append(operation)
+            if rank:
+                upper[rank] = min(upper[rank], operation["end"])
+            if rank < count:
+                lower[rank + 1] = max(lower[rank + 1], operation["start"])
+    uncertain.sort(key=lambda operation: (operation["start"], operation["node"], operation["id"]))
+    positions, writes, used = [0], {}, 0
+    for rank in range(1, count + 1):
+        operation = acknowledged.get(rank)
+        if operation is None:
+            require(used < len(uncertain), "missing increment for shared-clock linearizability")
+            operation = uncertain[used]
+            used += 1
+        moment = max(positions[-1], lower[rank], operation["start"])
+        require(moment <= upper[rank], f"no shared-clock linearization at counter value {baseline + rank}")
+        positions.append(moment)
+        writes[rank] = operation
+
+    witness = []
+    for rank in range(count + 1):
+        if rank:
+            operation = writes[rank]
+            witness.append({"node": operation["node"], "id": operation["id"], "kind": "write",
+                            "value": baseline + rank, "monotonic_ns": positions[rank],
+                            "uncertain": operation["outcome"] == "write_uncertain"})
+        observations = []
+        for operation in reads.get(rank, []):
+            moment = max(positions[rank], operation["start"])
+            require(moment <= operation["end"] and (rank == count or moment <= positions[rank + 1]),
+                    "no shared-clock linearization for a read")
+            observations.append({"node": operation["node"], "id": operation["id"], "kind": "read",
+                                 "value": baseline + rank, "monotonic_ns": moment})
+        witness.extend(sorted(observations, key=lambda operation: (operation["monotonic_ns"], operation["node"], operation["id"])))
+    return {"status": "passed", "model": "increment-by-one and quorum read",
+            "uncertain_writes_selected": used, "uncertain_writes_omitted": len(uncertain) - used,
+            "witness": witness,
+            "assumptions": "Caller establishes one shared monotonic clock, no other writers, and before/after quorum boundaries. Equal clock samples may overlap. Uncertain writes may take effect after the client timeout; omitted ones may remain pending beyond the final boundary."}
+
+
+def verify(histories, baseline, final, run_id, minimum_seconds=0, shared_clock=False):
     require(isinstance(run_id, str) and run_id, "missing expected run identity")
     require(counter_value(baseline) and counter_value(final) and final >= baseline, "invalid quorum boundaries")
     require(math.isfinite(minimum_seconds) and minimum_seconds >= 0, "invalid minimum duration")
     require(len(histories) == 3, "supply exactly three node histories")
     client_hash = hashlib.sha256(Path(__file__).with_name("load.py").read_bytes()).hexdigest()
     acknowledged = set()
-    results = [inspect(Path(path), baseline, final, run_id, client_hash, acknowledged, minimum_seconds) for path in histories]
+    operations = [] if shared_clock else None
+    results = [inspect(Path(path), baseline, final, run_id, client_hash, acknowledged, minimum_seconds, operations) for path in histories]
     require({result["node"] for result in results} == {1, 2, 3}, "histories must cover distinct nodes 1, 2, 3")
     counts = Counter()
     for result in results:
@@ -168,11 +242,16 @@ def verify(histories, baseline, final, run_id, minimum_seconds=0):
     lower = baseline + counts["write_acknowledged"]
     upper = lower + counts["write_uncertain"]
     require(lower <= final <= upper, "final counter loses an acknowledgement or has unexplained increments")
-    return {"schema": 1, "run_id": run_id, "status": "passed", "scope": "counter accounting and per-client observations",
+    report = {"schema": 1, "run_id": run_id, "status": "passed", "scope": "counter accounting and per-client observations",
             "baseline": baseline, "final": final, "allowed_final_range": [lower, upper],
             "outcomes": dict(counts), "client_sha256": client_hash,
             "minimum_history_span_seconds": minimum_seconds, "nodes": results,
             "limits": "Boundary values must be quorum reads taken before and after all clients. Requires no other writers. Does not establish cross-host real-time ordering, complete linearizability, server identity, durability after future crashes, or resource bounds."}
+    if shared_clock:
+        report["shared_clock_linearizability"] = linearize(operations, baseline, final)
+        report["scope"] = "counter accounting and shared-clock increment/read linearizability"
+        report["limits"] = "Requires caller-established common monotonic time, before/after quorum boundaries, and no other writers. Decides the recorded closed operation intervals only; equal timestamps may overlap. Does not establish a shared clock across hosts, server identity, durability after future crashes, or resource bounds."
+    return report
 
 
 def main():
@@ -181,9 +260,11 @@ def main():
     parser.add_argument("--baseline", type=int, required=True)
     parser.add_argument("--final", type=int, required=True)
     parser.add_argument("--minimum-seconds", type=float, default=0)
+    parser.add_argument("--shared-monotonic-clock", action="store_true",
+                        help="also decide increment-only linearizability; requires caller-established common clock for all clients")
     parser.add_argument("histories", type=Path, nargs=3)
     args = parser.parse_args()
-    result = verify(args.histories, args.baseline, args.final, args.run_id, args.minimum_seconds)
+    result = verify(args.histories, args.baseline, args.final, args.run_id, args.minimum_seconds, args.shared_monotonic_clock)
     print(json.dumps(result, indent=2, allow_nan=False))
 
 
