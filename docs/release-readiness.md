@@ -22,9 +22,15 @@ burden for durable applications. More throughput work should follow those.
 
 ## Current code checkpoint
 
-The release work is on `codex/stable-release-slices`, with code through
+The release work is on `codex/stable-release-slices`, with library code through
 [`78382a8d`](https://github.com/zsumz/rafter/commit/78382a8d6a8b155e9af5a212ff8c14b664aa7983)
-in draft [PR #23](https://github.com/zsumz/rafter/pull/23). The transport already
+qualified by the complete runnable CI and Nightly profiles at `7151197c`, in draft
+[PR #23](https://github.com/zsumz/rafter/pull/23). Eight validated follow-ups through
+`6034dc9c` add source-preservation receipts, process-resource observations, the
+updated standalone counter pin, benchmark dependency cleanup, and capability and
+platform documentation. They leave the library sources, root workspace manifest,
+root lockfile, and toolchain unchanged. Their integrated hosted qualification is
+still required. The transport already
 exists: durable composition reuses its authenticated TLS sender and inbound
 validation. No transport replacement, version bump, tag, or publication is part
 of this checkpoint.
@@ -39,22 +45,49 @@ persists peer retirement and authorization policy. The feature remains default-o
 | Qualification | Source checkpoint and result |
 | --- | --- |
 | Integrated workspace with durable feature | `78382a8d`: all-target build, 3,349 tests (zero failed, 59 ignored), strict all-target Clippy and strict rustdoc pass on Rust 1.88 on Apple Silicon macOS. All 2,825 tracked source hashes remain unchanged. Ignored cases have separate reviewed selections; they are not counted as executed here. |
-| PR invariant aggregate | [CI at `90a5de9b`](https://github.com/zsumz/rafter/actions/runs/38187404594): all runnable jobs and all 44 invariants pass. The aggregate uses merge commit `48d2409f`, whose tree matches that branch head. Architecture environment review remains waiting. This run predates the latest storage and TLS changes. |
-| Full nightly | [Nightly at `66bf4f43`](https://github.com/zsumz/rafter/actions/runs/38180408405): all 16 jobs and all 44 invariants pass, including process, owner-soak, fuzz, simulator, Maelstrom and TLA+ lanes. This older source includes query fairness but predates the latest fixture, workflow, storage and TLS changes. |
-| Linux I/O and snapshot faults | [Run at `78382a8d`](https://github.com/zsumz/rafter/actions/runs/38195565501): both handshake deadline regressions, all four I/O scenarios and all 36 snapshot process-loss cases pass. Downloaded evidence verifies all 2,825 source hashes, 138 snapshot pre-recovery inputs, 24 node-crash inputs and complete owned-resource cleanup. |
-| Exact packages and Rust 1.88 MSRV | [Archive run at `79f9a902`](https://github.com/zsumz/rafter/actions/runs/38194246613): all seven phases pass, including 56 reviewed process cases and storage, bidirectional wire and rolling TLS upgrades. All 2,825 tracked source hashes match that immutable Git tree. This run predates the handshake fix. |
-| Shipped archive dependency graph | The same `79f9a902` archive receipts pass the strict audit of all 51 packages, including 40 registry dependencies, with zero vulnerabilities, warnings or exclusions. Downloaded inputs reproduce the dependency projection and verify audit/upgrade hash links. Retained evidence contains archive hashes and receipts, not archive bytes. |
-| Permanent owner soak | The `66bf4f43` Linux nightly passes all 96 load/compaction/cold-recovery cycles in 231.02 seconds: 12,288 writes and 12,288 mixed reads, final balance 12,288. Downloaded logs and the generated resolved lock were checked. This lane does not retain a full source-hash inventory. |
-| Public API compatibility | `2717e88e`: all 22 default/all-feature comparisons against `0.0.2-alpha.1` pass. The later `90a5de9b` CI public-API gate also passes. A final candidate rerun remains required. |
+| PR invariant aggregate | [CI at `7151197c`](https://github.com/zsumz/rafter/actions/runs/38264606712): all runnable jobs and all 44 invariants pass. The aggregate uses merge commit `4d0f1850`, whose tree matches that branch head. Architecture environment review remains waiting. |
+| Full nightly | [Nightly at `7151197c`](https://github.com/zsumz/rafter/actions/runs/38264626527): all 16 applicable jobs and all 44 invariants pass, including process, owner-soak, fuzz, simulator, Maelstrom and TLA+ profiles. The optional archive job is skipped in this full profile and qualified separately below. |
+| Linux I/O and snapshot faults | [Run at `0160bf63`](https://github.com/zsumz/rafter/actions/runs/38275151755): both handshake deadline regressions, all four I/O scenarios and all 36 snapshot process-loss cases pass with the updated counter pin. Readback verifies all 2,828 source hashes, 138 snapshot pre-recovery inputs, 24 node-crash inputs, 90 process-resource samples and complete owned-resource cleanup. Samples observe resource use; they do not establish whole-host limits. |
+| Exact packages and Rust 1.88 MSRV | [Archive run at `7151197c`](https://github.com/zsumz/rafter/actions/runs/38264629968): all seven phases pass, including 56 reviewed process cases and storage, bidirectional wire and rolling TLS upgrades. All 2,825 tracked source hashes match that immutable Git tree. |
+| Shipped archive dependency graph | The same `7151197c` archive receipts pass the strict audit of all 51 packages, including 40 registry dependencies, with zero vulnerabilities, warnings or exclusions. Downloaded inputs reproduce the dependency projection and verify audit/upgrade hash links. Retained evidence contains archive hashes and receipts, not archive bytes. |
+| Permanent owner soak | The `7151197c` Linux nightly passes all 96 load/compaction/cold-recovery cycles in 236.19 seconds: 12,288 writes and 12,288 mixed reads, final balance 12,288. Downloaded logs and the generated resolved lock were checked. This workflow revision predates the new full source inventory. |
+| Public API compatibility | [CI at `7151197c`](https://github.com/zsumz/rafter/actions/runs/38264606712/job/114863550418): all 22 default/all-feature comparisons across 11 public crates pass against `0.0.2-alpha.1`. Readback verifies exact commands, package coverage, reports and all 2,825 source hashes against the merge tree and candidate tree. |
+| Native platforms | The same CI records Ubuntu 24.04.5 on x86-64 and macOS 15.7.9 on Apple Silicon, using Rust 1.88. The macOS lane passes all 321 storage tests; process-loss selection is separate on Linux. Hosted filesystem type and mount options were not retained. See the [platform matrix](platform-qualification.md). |
 | Durable performance baseline | The [local baseline](../bench-compare/METHODOLOGY.md#local-release-readiness-baseline) at `0eb06666` validates 40 isolated timing samples and preserves the binary and all 2,823 source hashes. It compares checkpoint replacement with the optional journal on local APFS; it does not measure multi-host TLS service latency or competitors. |
-| Architecture and source preservation | The code slices through `78382a8d` pass local architecture and source/staging checks, with no new grants or debt. Maintainer architecture approval remains open. |
+| Architecture and source preservation | The slices through `6034dc9c` pass local architecture and source/staging checks, with no new grants or debt. Maintainer architecture approval remains open. |
 
-Downloaded aggregate reports and verifier bundles for `90a5de9b` and `66bf4f43`
-verify 160 content-addressed members each, 77 executed fixtures, 79 evidence
-bindings, 33 fixture/detector source-file hashes, and the source tree and lock.
-The hosted aggregates verify their complete producer sets (219 and 1,072
+Downloaded PR and Nightly aggregate reports at `7151197c` verify all 44 invariant
+identities and 125 required clauses, 160 content-addressed verifier members each,
+77 executed fixtures, 79 evidence bindings, 33 fixture/detector source-file hashes,
+and the source tree and lock. The hosted aggregates verify their complete producer
+sets (219 and 1,097
 artifacts respectively); those raw producer sets were not downloaded or replayed
-again locally. These results qualify their recorded sources, not the final head.
+again locally. These results qualify their recorded sources, not later commits.
+
+The PR TLA+ profile requires exhaustive completion of its primary bounded model.
+Nightly instead combines four mandatory exhaustive proof obligations with a larger
+reporting continuation. Its primary frontier was still growing at the budget
+limit: the final retained telemetry sample records 44,644,282 distinct states and
+29,459,513 queued states. The downloaded telemetry archive matches its published
+hash. Those sampled counts do not establish exhaustive completion of the larger
+model; a green Nightly result must retain that distinction.
+
+The integrated follow-ups preserve source inventories and generated dependency
+locks around the owner soak and all three counter profiles. The new owner guard
+passes a real 96-cycle local soak; the counter guards pass all 33 negative/positive
+controls and actual 64-, 1,024- and 4,096-group local profiles, with all 2,828 tracked
+source hashes unchanged. Hosted execution of the new guards remains required.
+The standalone counter pins `7151197c`; both checkout and pinned modes pass smoke
+and blocked-publication pressure checks. Its managed admission limits do not
+bound the separate HTTP server's connections, queues or threads.
+
+At integration, [Weekly at `0160bf63`](https://github.com/zsumz/rafter/actions/runs/38276509325)
+has passed its counter, test, Maelstrom and simulator producers; TLA+ and the final
+aggregate remain pending. Independent raw readbacks verify 115 exact test
+executions, 18 successful Maelstrom process receipts, 77 simulator detector tests,
+14 exhausted bounded simulator models and 18 seeded soaks. The simulator uses the
+reviewed Nightly bounds; this is not qualification of a larger-memory deep Weekly
+profile. Completed producers do not substitute for the Weekly aggregate.
 
 The original `66bf4f43` archive process run remains a failed receipt. Its readiness
 test killed a follower during application-journal publication, then required plain
@@ -111,9 +144,10 @@ valid Rafter client hello, and joins both workers before reporting failure.
 
 Stable-release qualification remains open. In priority order:
 
-1. Freeze the integrated candidate and run its complete hosted Linux qualification,
-   including the archive/process profiles and authenticated invariant aggregate.
-   Preserve the completed older runs as source-specific evidence. Obtain the
+1. Freeze the follow-up integration and run its complete hosted Linux qualification,
+   including the new source-preservation guards, archive/process profiles and
+   authenticated invariant aggregate. Preserve `7151197c` and the individually
+   qualified follow-ups as source-specific evidence. Obtain the
    repository's architecture review and reconcile the overlapping PR #13.
 2. Set the supported integration scope explicitly. Automatic membership-plan
    execution, committed-change tracking, general peer policy and retirement-history
@@ -203,9 +237,10 @@ is a maintainer gate, not something a lockfile refresh can satisfy.
 
 The release branch now carries PR #13's counter, guide, and extraction checker
 without importing its stale root README, CI, or architecture lock. The standalone
-project now pins `90a5de9b8405f9eaa3b698a100f0d203ff8c90c6` to use the existing
-live retained-credit and budget-refusal APIs; the previous `37ee508a` pin predates
-those APIs. Typed managed-admission errors and the patched rustls minimum remain.
+project now pins `7151197c051502173b387934000a2d1829047e17`, retaining the existing
+live retained-credit and budget-refusal APIs and adding the qualified storage
+directory and TLS handshake fixes. Typed managed-admission errors and the patched
+rustls minimum remain.
 This revision update changes only the nine Rafter Git identities; the preceding
 security slice already updated the standalone rustls lock to 0.23.45. Both guide
 modes still exercise the same application and on-disk schema.
