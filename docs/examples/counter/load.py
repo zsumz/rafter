@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 import time
 
@@ -109,7 +110,7 @@ async def run(args):
     args.output.mkdir()  # Existing results are never replaced, even after failure.
     port = args.http_base + args.node
     save(args.output / "invocation.json", {
-        "schema": 1, "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "schema": 1, "run_id": args.run_id, "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "host": platform.node(), "platform": platform.platform(), "python": sys.version,
         "client_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "node": args.node, "endpoint": f"127.0.0.1:{port}", "seconds": args.seconds,
@@ -147,11 +148,11 @@ async def run(args):
                     break
                 invoked += 1
                 writing = invoked % args.read_every != 0
-                emit({"event": "invoke", "id": invoked, "node": args.node,
+                emit({"event": "invoke", "id": invoked, "node": args.node, "run_id": args.run_id,
                       "kind": "write" if writing else "read", "increment": 1 if writing else None,
                       "monotonic_ns": time.monotonic_ns()})
                 result = await operation(port, writing, args.timeout)
-                emit(dict(result, event="complete", id=invoked, node=args.node))
+                emit(dict(result, event="complete", id=invoked, node=args.node, run_id=args.run_id))
                 completed += 1
                 counts[result["outcome"]] += 1
                 latency = result["latency_ns"]
@@ -169,7 +170,7 @@ async def run(args):
             history.flush()
             os.fsync(history.fileno())
             save(args.output / "summary.json", {
-                "schema": 1, "status": status, "qualification": "not_evaluated", "error": failure,
+                "schema": 1, "run_id": args.run_id, "status": status, "qualification": "not_evaluated", "error": failure,
                 "node": args.node, "elapsed_seconds": time.monotonic() - started,
                 "invoked": invoked, "completed": completed, "unresolved_invocations": invoked - completed,
                 "outcomes": dict(counts), "latency_ns": {"sum": total_latency, "min": minimum, "max": maximum},
@@ -180,6 +181,7 @@ async def run(args):
 
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-id", required=True, help="one shared identifier for all clients in this test attempt")
     parser.add_argument("--node", type=int, choices=(1, 2, 3), required=True)
     parser.add_argument("--output", type=Path, required=True, help="new directory beneath an existing parent")
     parser.add_argument("--http-base", type=int, default=8000)
@@ -189,6 +191,8 @@ def arguments(argv=None):
     parser.add_argument("--pause-ms", type=float, default=10, help="pause after each completion; no catch-up bursts")
     parser.add_argument("--read-every", type=int, default=5, help="every Nth operation is a quorum read")
     args = parser.parse_args(argv)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.run_id):
+        parser.error("run-id must be 1..128 ASCII letters, digits, dots, underscores or hyphens, starting with a letter or digit")
     if not 1 <= args.http_base <= 65532 or args.read_every < 2:
         parser.error("http-base must be 1..65532 and read-every must be at least 2")
     if any(not math.isfinite(value) or value <= 0 for value in (args.seconds, args.timeout)):

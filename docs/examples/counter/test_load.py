@@ -49,7 +49,7 @@ class CounterLoad(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
 
     def args(self, **changes):
-        args = load.arguments(["--node", "1", "--output", str(Path(self.temporary.name) / "run"),
+        args = load.arguments(["--run-id", "recorder-test", "--node", "1", "--output", str(Path(self.temporary.name) / "run"),
                                "--seconds", "2",
                                "--max-operations", "2", "--read-every", "2", "--pause-ms", "0"])
         args.http_base = self.port - 1

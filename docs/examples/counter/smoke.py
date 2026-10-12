@@ -190,14 +190,17 @@ class Cluster:
 
     def check_load_capture(self, baseline):
         leader = self.leader()
-        follower = next(node for node in self.children if node != leader)
-        for node, label, expected in [
-            (leader, "load-leader", {"write_acknowledged": 3, "read_succeeded": 3}),
-            (follower, "load-follower", {"write_refused": 3, "read_refused": 3}),
-        ]:
+        assert self.request(leader, "/value") == {"value": baseline}
+        histories = []
+        run_id = secrets.token_hex(16)
+        plans = [(leader, "load-leader", {"write_acknowledged": 3, "read_succeeded": 3})]
+        plans.extend((node, f"load-follower-{node}", {"write_refused": 3, "read_refused": 3})
+                     for node in self.children if node != leader)
+        for node, label, expected in plans:
             output = self.root / label
+            histories.append(output)
             subprocess.run([sys.executable, str(Path(__file__).with_name("load.py")),
-                            "--node", str(node), "--http-base", str(self.http_base),
+                            "--run-id", run_id, "--node", str(node), "--http-base", str(self.http_base),
                             "--output", str(output), "--seconds", "30", "--max-operations", "6",
                             "--pause-ms", "0", "--read-every", "2"],
                            check=True, timeout=40, stdout=subprocess.PIPE, text=True)
@@ -215,7 +218,17 @@ class Cluster:
                 assert [event["value"] for event in events if event["event"] == "complete"] == [
                     baseline + (number + 1) // 2 for number in range(1, 7)]
         self.converged(baseline + 3)
+        final = self.request(self.leader(), "/value")["value"]
+        checked = subprocess.run([sys.executable, str(Path(__file__).with_name("check_load.py")),
+                                  "--run-id", run_id, "--baseline", str(baseline), "--final", str(final),
+                                  *map(str, histories)], check=True, capture_output=True,
+                                 text=True, timeout=10)
+        report = json.loads(checked.stdout)
+        assert report["status"] == "passed" and report["allowed_final_range"] == [final, final], report
+        assert {node["node"] for node in report["nodes"]} == {1, 2, 3}, report
+        (self.root / "load-check.json").write_text(checked.stdout)
         print("PASS: load histories bind exact outcomes; follower redirects never replay writes", flush=True)
+        print("PASS: three-node workload accounting agrees with before/after quorum reads", flush=True)
 
     def close(self):
         for child in self.children.values():
