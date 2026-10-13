@@ -227,7 +227,12 @@ pub trait ReplicatedStateMachine {
 
     /// Installs an application snapshot and makes its effects durable.
     ///
-    /// Rafter calls this when the local node accepts a leader's snapshot. After
+    /// Rafter calls this when the local node accepts a leader's snapshot. The
+    /// group rejects a boundary below the application's reported durable index
+    /// or its own recorded applied floor before calling this method. Failure to
+    /// read that durable index also refuses installation and poisons the group.
+    /// Equal boundaries are allowed; validating schema and payload remains the
+    /// application's responsibility. After
     /// it returns `Ok`, the state machine must be able to recover with all
     /// snapshot effects and applied-index progress through the installed
     /// snapshot boundary; returning `Ok` without incorporating the payload

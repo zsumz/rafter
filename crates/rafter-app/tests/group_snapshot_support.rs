@@ -298,3 +298,94 @@ fn snapshot_support_is_readable_without_an_instance() {
     assert_eq!(RECORDING, SnapshotSupport::Supported);
     assert_eq!(UNSUPPORTED, SnapshotSupport::Unsupported);
 }
+
+fn snapshot_output(index: u64) -> RaftOutput {
+    RaftOutput::ApplySnapshot {
+        snapshot: test_snapshot(index),
+    }
+}
+
+#[test]
+fn snapshot_floor_refuses_regression_before_calling_the_installer() {
+    for (group_floor, app_floor, incoming) in [(0, 10, 9), (10, 10, 9), (12, 10, 11)] {
+        let app = RecordingStateMachine {
+            applied_index: LogIndex(app_floor),
+            applied: vec![b"durable state".to_vec()],
+            ..RecordingStateMachine::default()
+        };
+        let mut group = RaftGroup::with_applied_index(
+            7,
+            NodeId(1),
+            scripted_runtime(),
+            app.clone(),
+            LogIndex(group_floor),
+        );
+        let result = group.apply_raft_outputs(vec![snapshot_output(incoming)]);
+        assert_eq!(
+            group.state_machine(),
+            &app,
+            "a stale descriptor reached the installer"
+        );
+        assert!(matches!(result, Err(GroupError::MalformedSnapshot { .. })));
+        assert!(matches!(
+            group.fatal_state(),
+            GroupFatalState::Poisoned { .. }
+        ));
+    }
+}
+
+#[test]
+fn snapshot_floor_refuses_descending_snapshots_within_one_output_batch() {
+    let mut group = scripted_group(RecordingStateMachine::default());
+    let result = group.apply_raft_outputs(vec![snapshot_output(12), snapshot_output(8)]);
+    assert_eq!(group.state_machine().applied_index, LogIndex(12));
+    assert_eq!(group.state_machine().installed_snapshots.len(), 1);
+    assert_eq!(
+        group.state_machine().operations,
+        vec![RecordedOperation::InstallSnapshot(LogIndex(12))]
+    );
+    assert!(matches!(result, Err(GroupError::MalformedSnapshot { .. })));
+    assert!(matches!(
+        group.fatal_state(),
+        GroupFatalState::Poisoned { .. }
+    ));
+}
+
+#[test]
+fn snapshot_floor_query_failure_never_calls_the_installer() {
+    let app = RecordingStateMachine {
+        fail_applied_index: true,
+        ..RecordingStateMachine::default()
+    };
+    let mut group = scripted_group(app.clone());
+    let result = group.apply_raft_outputs(vec![snapshot_output(8)]);
+    assert_eq!(group.state_machine(), &app);
+    assert!(matches!(
+        result,
+        Err(GroupError::StateMachine {
+            operation: StateMachineOperation::AppliedIndex,
+            ..
+        })
+    ));
+    assert_eq!(
+        group
+            .poison_cause()
+            .and_then(ErrorCause::downcast_ref::<RecordingStateMachineError>),
+        Some(&RecordingStateMachineError::AppliedIndex),
+    );
+}
+
+#[test]
+fn snapshot_floor_accepts_equal_and_advancing_boundaries() {
+    let mut group = scripted_group(RecordingStateMachine {
+        applied_index: LogIndex(8),
+        ..RecordingStateMachine::default()
+    });
+    let report = group
+        .apply_raft_outputs(vec![snapshot_output(8), snapshot_output(9)])
+        .expect("equal and advancing snapshots remain valid");
+    assert_eq!(group.state_machine().applied_index, LogIndex(9));
+    assert_eq!(group.state_machine().installed_snapshots.len(), 2);
+    assert_eq!(report.snapshot_events.len(), 2);
+    assert!(matches!(group.fatal_state(), GroupFatalState::Healthy));
+}
