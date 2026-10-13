@@ -18,15 +18,22 @@ The strict build and exact-package baseline is Rust 1.88. The additional
 The full invariant evidence executor requires Linux. Its macOS tests exercise
 portable process handling and the required refusal of Linux-only execution.
 
-At candidate `7151197c`, the completed native jobs in
-[CI run 38264606712](https://github.com/zsumz/rafter/actions/runs/38264606712)
+At candidate `b2847c07`, the completed native jobs in
+[CI run 38326474147](https://github.com/zsumz/rafter/actions/runs/38326474147)
 record Ubuntu 24.04.5 on x86-64 and macOS 15.7.9 on Apple Silicon, both using
-Rust 1.88. The macOS storage command passes 321 tests with one process-loss
-case intentionally ignored; that case has a separate Linux selection. The
-checkout is merge commit `4d0f1850`, whose tree matches the candidate. These
-individual job results do not replace the candidate's final invariant aggregate
-or architecture review. The earlier complete local workspace result is recorded
-in the [release-readiness checkpoint](release-readiness.md#current-code-checkpoint).
+Rust 1.88. Linux passes 3,255 workspace tests (53 ignored) and the separate
+440-test durable selection. These counts overlap. The macOS storage command
+passes 321 tests with one process-loss case intentionally ignored; that case has
+a separate Linux selection. Its strict workspace/durable lint and reviewed
+launcher selections also pass.
+
+The checkout is merge commit `d62dc853`, whose tree matches the candidate. The
+retained logs verify that checkout, compiler and exact test outcomes; the native
+receipts below additionally verify a clean checkout at capture time. They do not
+supply a before/after source inventory for these two jobs or replace the pending
+final invariant aggregates and maintainer architecture approval. The earlier
+complete local workspace result is recorded in the
+[release-readiness checkpoint](release-readiness.md#current-code-checkpoint).
 
 ## Native environment receipts
 
@@ -53,6 +60,30 @@ Capture is an observation at one point in time. It does not prove that mounts
 remain unchanged throughout a test or that a filesystem/controller/device stack
 honors synchronization after power loss. Support decisions still require the
 recorded test results and the storage contract below.
+
+## Observed candidate test storage
+
+The `b2847c07` [Linux test job](https://github.com/zsumz/rafter/actions/runs/38326474147/job/115066227482)
+and [macOS storage/launcher job](https://github.com/zsumz/rafter/actions/runs/38326474147/job/115066227371)
+retain their own native receipts. Independent readback checks the downloaded
+artifact hashes, recorded Git/compiler identity, recorder source hash, raw mount
+queries and selection of all three directories: workspace, Rust temporary path
+and runner temporary path. Both receipts are under
+`target/rafter-invariants/ci-diagnostics/` within their respective artifacts.
+
+| Job | Receipt in the diagnostics artifact | Observed filesystem and volume | Mountpoint and options |
+| --- | --- | --- | --- |
+| Linux test | `linux-storage-environment.json` | ext4 on `/dev/nvme0n1p1` | `/`; `rw,relatime,discard,journal_async_commit,nobarrier,errors=remount-ro,commit=30,data=writeback` |
+| macOS storage/launcher | `macos-storage-environment.json` | APFS on `/dev/disk2s5` | `/System/Volumes/Data`; `local,journaled,nobrowse,root data` |
+
+Each job's three directories resolve to its listed volume. On macOS, the
+workspace under `/Users` and resolved Rust temporary path under `/private/var`
+share that Data volume through APFS firmlinks; textual path-prefix matching would
+not establish that. The source-bound native recorder checks device equality at
+capture time. Readback verifies its queries and retained selections without
+claiming a new stat of the remote host. These observations do not qualify other
+runner volumes, mount stability during the subsequent tests or hardware power
+loss.
 
 ## Observed hosted Linux storage
 
