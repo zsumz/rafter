@@ -8,7 +8,8 @@ The same consumer source, application format, and test credentials are used for
 both builds. This qualifies library interoperability; it does not represent a
 historical application executable or an application-schema migration.
 
-The scenario starts three published replicas and replaces them with candidate
+Each run executes an orderly scenario and a process-loss scenario using the
+same two binaries. Each scenario starts three published replicas and replaces them with candidate
 replicas in their existing directories, using ordinary `open` recovery. Writes,
 linearizable reads, cached command replay, and local application-state agreement
 are checked across the replacements. With both versions still present, a fourth
@@ -47,10 +48,23 @@ recovery phase clears queued pre-compaction append messages that would otherwise
 allow ordinary log catch-up. It temporarily removes quorum availability; the
 scenario does not claim uninterrupted service during this phase.
 
-Every requested stop requires the `BYE` reply, successful process exit, and the
-durable `STOPPED` lifecycle event. No repair, reseeding, or durable-directory
-replacement is allowed during the scenario. Final state is copied to the
-evidence directory only after all processes have stopped.
+In the orderly scenario, every requested stop requires the `BYE` reply,
+successful process exit, and durable `STOPPED` lifecycle event. The process-loss
+scenario instead requires actual `SIGKILL` and reaping at six selected boundaries:
+each of the three published-to-candidate replacements, followed by each of the
+three final candidate restarts. It copies the killed replica's entire directory
+before a replacement can open it, retaining identity, transport replay, Raft and
+application recovery inputs. The receipt requires all six ordered crash records,
+their process IDs and signal 9, and nonempty recovery data for every case.
+Snapshot-sender cohort stops and final cleanup still require checked orderly
+shutdown in both scenarios. Both scenarios keep every original read, snapshot,
+membership, retirement and bounded-history assertion, including the deliberately
+lost reply. Their histories are checked independently with the same limits.
+
+No repair, reseeding, or durable-directory replacement is allowed. Final state
+for each scenario is copied only after all its processes have stopped. A killed
+process leaves the operating system and page cache alive; these boundaries do
+not establish physical-power-loss safety or interrupted application migration.
 
 ## Running and reviewing evidence
 
@@ -70,16 +84,17 @@ cached first.
 
 The [baseline lock](../verification/rolling-upgrade-baseline.json) pins the
 published archive SHA-256 digests. Each dependency graph must resolve every
-Rafter library from its own exact archive set and only the four expected public
+Rafter library from its own exact archive set and only the three expected public
 consumer workspace members. Checkout paths, other unpublished local crates,
 registry substitutions for Rafter, and internal test hooks are refused. The
 existing package manifest scanner also checks dormant forbidden declarations.
 
 Receipts retain source/TLS-fixture hashes, runner hashes, archive hashes,
 compiler identity, both dependency metadata files and lockfiles, binary hashes,
-commands, complete stdout/stderr, six stages of three replica observations, and
-the final durable state with a file inventory. The test inventory must contain
-exactly the expected test. Missing stages, duplicate or unready observations,
+commands, complete stdout/stderr, six stages of three replica observations per
+scenario, six pre-recovery directory inventories, and each scenario's final
+durable state. The test inventory must contain exactly the expected test, which
+must pass separately in each mode. Missing stages, duplicate or unready observations,
 an empty test selection, and a failed process cannot produce a passing receipt.
 Changing fixture or runner inputs during qualification also invalidates the
 receipt, so the two builds cannot silently use different revisions.
@@ -94,6 +109,6 @@ does not supply published baseline binaries.
 This bounded localhost scenario complements the [codec matrix](wire-compatibility.md)
 and [file-store recovery matrix](storage-upgrades.md). It does not establish
 general downgrade support, mixed application schemas, journal/shared-WAL
-migration, multi-host network behavior, crash-during-upgrade safety, or long-run
-availability/performance bounds. Those require explicit support policies and
+migration, multi-host network behavior, crashes at other upgrade points, or
+long-run availability/performance bounds. Those require explicit support policies and
 additional qualification before a stable-release promise.

@@ -17,6 +17,8 @@ mod process;
 mod production_process;
 #[path = "support/rolling_client.rs"]
 mod rolling_client;
+#[path = "support/rolling_crash.rs"]
+mod rolling_crash;
 #[path = "support/scratch.rs"]
 mod scratch;
 #[allow(
@@ -55,6 +57,7 @@ fn published_nodes_roll_to_candidate_with_tls_snapshots_and_membership() {
             .canonicalize()
             .unwrap()
     );
+    let replacements = rolling_crash::Replacements::from_env();
     let bounds = config(4, 4);
     let mut cluster = ProductionCluster::start_with_binary("rolling-upgrade", bounds, &baseline);
     assert_eq!(cluster.wait_for_leader(), NodeId(1));
@@ -74,7 +77,7 @@ fn published_nodes_roll_to_candidate_with_tls_snapshots_and_membership() {
 
     // The old leader publishes and compacts while replica 3 is absent. A new
     // binary must fetch that snapshot, not recover by replaying the removed log.
-    cluster.stop_checked(NodeId(3));
+    replacements.stop(&mut cluster, NodeId(3), "published-to-candidate");
     let old_floor = advance(&mut cluster, &mut client, token, &mut sequence);
     let old_boundary = cold_checkpoint(&mut cluster, &baseline);
     assert!(old_boundary > old_floor);
@@ -84,7 +87,7 @@ fn published_nodes_roll_to_candidate_with_tls_snapshots_and_membership() {
 
     // Stop the old leader and keep serving with an old/new quorum before its
     // replacement reopens exactly the durable directory it left behind.
-    cluster.stop_checked(NodeId(1));
+    replacements.stop(&mut cluster, NodeId(1), "published-to-candidate");
     let last = write(&mut cluster, &mut client, token, &mut sequence);
     cluster.restart_with_binary(NodeId(1), &NODE_IDS, &candidate);
     require_replay(&mut cluster, &mut client, last);
@@ -103,7 +106,7 @@ fn published_nodes_roll_to_candidate_with_tls_snapshots_and_membership() {
 
     change_membership_while_mixed(&mut cluster, &candidate);
     let last = write(&mut cluster, &mut client, token, &mut sequence);
-    cluster.stop_checked(NodeId(2));
+    replacements.stop(&mut cluster, NodeId(2), "published-to-candidate");
     cluster.restart_with_binary(NodeId(2), &NODE_IDS, &candidate);
     require_replay(&mut cluster, &mut client, last);
     observe(&mut cluster, "all-candidate", token);
@@ -115,7 +118,7 @@ fn published_nodes_roll_to_candidate_with_tls_snapshots_and_membership() {
     // application result or assuming whether the first attempt committed.
     client.lose_next_reply();
     for node in NODE_IDS {
-        cluster.stop_checked(node);
+        replacements.stop(&mut cluster, node, "candidate-restart");
         cluster.restart_with_binary(node, &NODE_IDS, &candidate);
         write(&mut cluster, &mut client, token, &mut sequence);
         wait_until("retired identity high-water to survive restart", || {

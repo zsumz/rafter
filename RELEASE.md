@@ -97,8 +97,8 @@ in both directions, typed refusals, and a mixed-version cluster through writes,
 quorum reads, membership changes, and snapshot catch-up. Retain all three
 receipts with the exact-package evidence. The rolling scenario covers its stated
 single-host fixture and upgrade path; other versions, application schema changes,
-downgrades, multi-host operation, and crashes during replacement need separate
-qualification.
+downgrades, multi-host operation, and crashes outside the six qualified
+replacement boundaries need separate qualification.
 
 ## 0.0.2-alpha.1 Product Preview
 

@@ -567,6 +567,21 @@ impl ProductionCluster {
         process.shutdown_checked();
     }
 
+    #[allow(
+        dead_code,
+        reason = "only rolling-upgrade fault cases require an observed crash status"
+    )]
+    pub fn crash_checked(&mut self, node_id: NodeId) -> (u32, std::process::ExitStatus) {
+        let mut process = self.nodes.remove(&node_id).expect("replica is running");
+        let pid = process.child.id();
+        process.client.disconnect();
+        let status = process
+            .child
+            .kill_and_reap()
+            .expect("crashed replica is reaped");
+        (pid, status)
+    }
+
     pub fn restart(&mut self, node_id: NodeId, voters: &[NodeId]) -> LogIndex {
         self.restart_with_binary(
             node_id,

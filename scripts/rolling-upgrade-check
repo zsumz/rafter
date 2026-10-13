@@ -19,6 +19,9 @@ STAGES = ("all-published", "candidate-received-published-snapshot", "leader-upgr
 # fixture. Ledger-only candidate APIs are qualified by the exact-package lane;
 # resolving them against historical releases would demand nonexistent features.
 MEMBERS = ("fenced-lock", "harness", "sharded-counter")
+CRASHES = (("published-to-candidate", 3), ("published-to-candidate", 1),
+           ("published-to-candidate", 2), ("candidate-restart", 1),
+           ("candidate-restart", 2), ("candidate-restart", 3))
 PACKAGES = frozenset(("rafter", "rafter-app", "rafter-codec", "rafter-crc32", "rafter-runtime",
                       "rafter-runtime-api", "rafter-service", "rafter-storage", "rafter-multiraft",
                       "rafter-transport-tcp-insecure", "rafter-transport-tls"))
@@ -41,8 +44,44 @@ def copy_consumer(fixture, consumer):
                         ignore=shutil.ignore_patterns("target", "Cargo.lock", ".cargo"))
 
 
-def observations(transcript):
+def crash_records(transcript, mode):
+    if mode not in ("graceful", "sigkill") or re.findall(
+            r"UPGRADE_REPLACEMENTS mode=(\S+)", transcript) != [mode]:
+        raise ValueError("rolling-upgrade replacement mode is missing or ambiguous")
+    records = [{"stage": stage, "node": int(node), "pid": int(pid), "signal": int(signal)}
+               for stage, node, pid, signal in re.findall(
+                   r"UPGRADE_CRASH stage=(\S+) node=(\d+) pid=(\d+) signal=(\d+)", transcript)]
+    expected = list(CRASHES) if mode == "sigkill" else []
+    if ([(r["stage"], r["node"]) for r in records] != expected
+            or transcript.count("UPGRADE_CRASH ") != len(records)
+            or any(r["pid"] == 0 or r["signal"] != 9 for r in records)):
+        raise ValueError("rolling-upgrade requires the exact ordered SIGKILL replacements")
+    return records
+
+
+def crash_inventory(directory):
+    inventory = tree_inventory(directory)
+    expected = {f"{stage}-node-{node}" for stage, node in CRASHES}
+    if {Path(name).parts[0] for name in inventory} != expected:
+        raise ValueError("rolling-upgrade pre-recovery cases are incomplete or unexpected")
+    for case in expected:
+        for name in ("replica-identity", "control-plane", "transport-replay",
+                     "raft/hard-state"):
+            item = inventory.get(f"{case}/{name}", {})
+            if item.get("kind") != "file" or item.get("bytes", 0) == 0:
+                raise ValueError(f"rolling-upgrade pre-recovery input missing: {case}/{name}")
+        # Prefix compaction can leave a valid empty retained log.
+        if inventory.get(f"{case}/raft/log", {}).get("kind") != "file":
+            raise ValueError(f"rolling-upgrade pre-recovery input missing: {case}/raft/log")
+        if not any(inventory.get(f"{case}/app/lock-state.{slot}", {}).get("bytes", 0)
+                   for slot in (0, 1)):
+            raise ValueError(f"rolling-upgrade pre-recovery application state missing: {case}")
+    return inventory
+
+
+def observations(transcript, mode="graceful"):
     """Refuse empty, incomplete, duplicated, or unready process evidence."""
+    crash_records(transcript, mode)
     result = []
     seen = set()
     for match in re.finditer(r"UPGRADE_OBSERVATION stage=(\S+) node=(\d+) (\{[^\n]+\})", transcript):
@@ -75,7 +114,7 @@ def observations(transcript):
 
 class Run(ArchiveRun):
     label = "rolling-upgrade"
-    scope = "published/candidate libraries; same current public consumer; real TLS, snapshots, membership, restart"
+    scope = "published/candidate libraries; same current public consumer; real TLS, snapshots, membership, orderly and SIGKILL replacement"
     packages = PACKAGES
     fixture = ROOT / "reference"
     baseline = ROOT / "verification/rolling-upgrade-baseline.json"
@@ -149,16 +188,29 @@ class Run(ArchiveRun):
         listing = self.command("test-inventory", [self.test_binary, "--list", "--format=terse"], ROOT)
         if listing.read_text().strip() != f"{TEST}: test":
             raise ValueError("rolling-upgrade test inventory is not the expected singleton")
-        env = os.environ.copy()
-        env.update(RAFTER_BASELINE_NODE=str(baseline), RAFTER_CANDIDATE_NODE=str(candidate),
-                   RAFTER_UPGRADE_STATE=str(self.artifacts / "durable-state"))
-        output = self.command("rolling-processes", [self.test_binary, "--exact", TEST, "--ignored",
-                              "--nocapture", "--test-threads=1"], ROOT, env)
-        self.receipt["cases"] = observations(output.read_text())
-        inventory = tree_inventory(self.artifacts / "durable-state")
-        if not inventory:
-            raise ValueError("rolling-upgrade durable state was not retained")
-        self.receipt["durable_state"] = inventory
+        cases = []
+        for mode in ("graceful", "sigkill"):
+            env = os.environ.copy()
+            env.pop("RAFTER_UPGRADE_CRASH_STATE", None)
+            state = "durable-state" if mode == "graceful" else "crash-durable-state"
+            command = "rolling-processes" if mode == "graceful" else "rolling-crash-processes"
+            env.update(RAFTER_BASELINE_NODE=str(baseline), RAFTER_CANDIDATE_NODE=str(candidate),
+                       RAFTER_UPGRADE_STATE=str(self.artifacts / state))
+            if mode == "sigkill":
+                env["RAFTER_UPGRADE_CRASH_STATE"] = str(self.artifacts / "crash-inputs")
+            output = self.command(command, [self.test_binary, "--exact", TEST, "--ignored",
+                                  "--nocapture", "--test-threads=1"], ROOT, env)
+            transcript = output.read_text()
+            cases.extend({"replacement_mode": mode, **case} for case in observations(transcript, mode))
+            inventory = tree_inventory(self.artifacts / state)
+            if not inventory:
+                raise ValueError("rolling-upgrade durable state was not retained")
+            key = "durable_state" if mode == "graceful" else "crash_durable_state"
+            self.receipt[key] = inventory
+            if mode == "sigkill":
+                self.receipt["replacement_crashes"] = crash_records(transcript, mode)
+                self.receipt["pre_recovery_state"] = crash_inventory(self.artifacts / "crash-inputs")
+        self.receipt["cases"] = cases
 
 
 if __name__ == "__main__":

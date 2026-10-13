@@ -204,7 +204,8 @@ class RollingBoundary(unittest.TestCase):
         self.lines = [f'UPGRADE_OBSERVATION stage={stage} node={node} '
                       + json.dumps({"node": node, "ready": True})
                       for stage in self.runner["STAGES"] for node in (1, 2, 3)]
-        self.lines += ["UPGRADE_MEMBERSHIP mixed-versions learner-promoted-and-retired",
+        self.lines += ["UPGRADE_REPLACEMENTS mode=graceful",
+                       "UPGRADE_MEMBERSHIP mixed-versions learner-promoted-and-retired",
                        "UPGRADE_LOST_REPLY node=1",
                        "UPGRADE_RETRY attempt=1 command=fixture outcome=unknown",
                        "UPGRADE_HISTORY searched=25 discharged=0 events=[]",
@@ -272,6 +273,67 @@ class RollingBoundary(unittest.TestCase):
         full += ["UPGRADE_RETRY attempt=9 command=fixture outcome=unknown"]
         with self.assertRaises(ValueError):
             self.runner["observations"]("\n".join(full))
+
+    def test_crash_replacements_require_exact_mode_order_and_signal(self):
+        lines = [line.replace("mode=graceful", "mode=sigkill") for line in self.lines]
+        markers = [f"UPGRADE_CRASH stage={stage} node={node} pid={100 + index} signal=9"
+                   for index, (stage, node) in enumerate(self.runner["CRASHES"])]
+        transcript = "\n".join(lines + markers)
+        self.assertEqual(len(self.runner["observations"](transcript, "sigkill")), 18)
+        self.assertEqual(len(self.runner["crash_records"](transcript, "sigkill")), 6)
+        cases = [
+            "\n".join(lines + markers[:-1]),
+            "\n".join(lines + markers + markers[:1]),
+            "\n".join(lines + list(reversed(markers))),
+            transcript.replace("signal=9", "signal=15", 1),
+            transcript.replace("pid=100", "pid=0", 1),
+            transcript.replace("mode=sigkill", "mode=graceful"),
+            transcript.replace("UPGRADE_REPLACEMENTS mode=sigkill", ""),
+            transcript + "\nUPGRADE_REPLACEMENTS mode=sigkill",
+            transcript + "\nUPGRADE_CRASH malformed-record",
+        ]
+        for case in cases:
+            with self.subTest(case=case[-150:]), self.assertRaises(ValueError):
+                self.runner["observations"](case, "sigkill")
+        with self.assertRaises(ValueError):
+            self.runner["observations"](transcript, "graceful")
+        with self.assertRaises(ValueError):
+            self.runner["observations"]("\n".join(self.lines + markers))
+
+    def test_every_crashed_replica_retains_recovery_inputs_before_reopen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for stage, node in self.runner["CRASHES"]:
+                case = root / f"{stage}-node-{node}"
+                for name in ("replica-identity", "control-plane", "transport-replay",
+                             "raft/hard-state", "raft/log", "app/lock-state.0"):
+                    path = case / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"retained bytes")
+            inventory = self.runner["crash_inventory"](root)
+            self.assertEqual(sum(item["kind"] == "file" for item in inventory.values()), 36)
+            removed = root / "published-to-candidate-node-3/raft/log"
+            saved = removed.read_bytes()
+            removed.unlink()
+            with self.assertRaisesRegex(ValueError, "pre-recovery input missing"):
+                self.runner["crash_inventory"](root)
+            removed.write_bytes(b"")
+            compacted = self.runner["crash_inventory"](root)
+            self.assertEqual(compacted["published-to-candidate-node-3/raft/log"]["bytes"], 0)
+            removed.write_bytes(saved)
+            hard_state = root / "candidate-restart-node-1/raft/hard-state"
+            hard_state.write_bytes(b"")
+            with self.assertRaisesRegex(ValueError, "pre-recovery input missing"):
+                self.runner["crash_inventory"](root)
+            hard_state.write_bytes(saved)
+            application = root / "candidate-restart-node-3/app/lock-state.0"
+            application.unlink()
+            with self.assertRaisesRegex(ValueError, "application state missing"):
+                self.runner["crash_inventory"](root)
+            application.write_bytes(saved)
+            (root / "unexpected-case").mkdir()
+            with self.assertRaisesRegex(ValueError, "incomplete or unexpected"):
+                self.runner["crash_inventory"](root)
 
     def test_multi_consumer_workspace_cannot_hide_an_extra_private_member(self):
         case = DependencyBoundary()
