@@ -1388,6 +1388,7 @@ inputs = [
   "verification/reference-owner-soak-inventory.txt",
   ".github/workflows/nightly.yml",
   "scripts/archive_dependencies.py",
+  "scripts/archive_retention.py",
   "scripts/tests/test_archive_dependencies.py",
 ]
 requires = ["rustdoc"]
