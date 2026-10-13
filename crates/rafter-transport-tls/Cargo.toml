@@ -16,7 +16,7 @@ rafter = { path = "../rafter", version = "=0.0.2-alpha.1" }
 rafter-codec = { path = "../rafter-codec", version = "=0.0.2-alpha.1" }
 rafter-crc32 = { path = "../rafter-crc32", version = "=0.0.2-alpha.1" }
 rafter-service = { path = "../rafter-service", version = "=0.0.2-alpha.1" }
-rustls = { version = "0.23.42", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 sha2 = "0.10.9"
 
 [dev-dependencies]

@@ -6,14 +6,13 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
 
 use crate::{
-    decode_raft_hard_state, durable_fs::sync_parent_directory, encode_raft_hard_state,
-    file_store_health::FileStoreHealth, file_store_ownership::SharedFileStoreOwnership,
-    RaftHardState,
+    durable_fs::sync_parent_directory, encode_raft_hard_state, file_store_health::FileStoreHealth,
+    file_store_ownership::SharedFileStoreOwnership, RaftHardState,
 };
 
 use crate::telemetry::{measure, Stage};
@@ -21,6 +20,7 @@ use crate::telemetry::{measure, Stage};
 use super::{
     contract::RaftHardStateStore,
     error::{OpenRaftHardStateStoreError, RaftHardStateStoreWriteError},
+    read::{read_hard_state, ReadHardStateError},
 };
 
 /// File-backed hard-state store using temp-file replace plus parent sync.
@@ -42,7 +42,7 @@ impl FileRaftHardStateStore {
     /// opened or read.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, OpenRaftHardStateStoreError> {
         let path = path.as_ref().to_path_buf();
-        let mut file = match File::open(&path) {
+        let file = match File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self::empty(path));
@@ -55,15 +55,14 @@ impl FileRaftHardStateStore {
                 });
             }
         };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|error| OpenRaftHardStateStoreError::Io {
+        let current = read_hard_state(file).map_err(|error| match error {
+            ReadHardStateError::Io(error) => OpenRaftHardStateStoreError::Io {
                 operation: "read raft hard state",
                 path: path.clone(),
                 source: error.into(),
-            })?;
-        let current =
-            decode_raft_hard_state(&bytes).map_err(OpenRaftHardStateStoreError::Decode)?;
+            },
+            ReadHardStateError::Decode(error) => OpenRaftHardStateStoreError::Decode(error),
+        })?;
         Ok(Self {
             path,
             current,

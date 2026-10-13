@@ -337,7 +337,7 @@ fn held_the_waiter_bound_accounts_exactly_across_abandon_and_release() {
     let mut third = Box::pin(handle.read("c".to_owned(), ReadConsistency::Linearizable));
     let refused = poll_once(&mut third).expect("the third read is refused in place");
     assert!(
-        matches!(refused, Err(ReadError::Transport { .. })),
+        matches!(refused, Err(ReadError::Backpressure)),
         "{refused:?}"
     );
 

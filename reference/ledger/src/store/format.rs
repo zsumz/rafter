@@ -29,8 +29,9 @@ pub(super) const SEALED_FRAME_MARK: u8 = BEGIN_MAGIC[0];
 /// every interrupted append leaves it behind. The converse does not hold, and
 /// assuming it was the defect this store was corrected for: a tail carrying
 /// this value may equally be a committed frame whose mark byte rotted to zero.
-/// Truncating needs [`TornTail::is_interrupted_append`], which asks a second
-/// question beside this byte, not this byte alone.
+/// Truncating needs
+/// [`TornTail::is_interrupted_append`](super::TornTail::is_interrupted_append),
+/// which asks a second question beside this byte, not this byte alone.
 ///
 /// It is zero because that is also what a filesystem leaves when a crash
 /// extended a file without persisting its data. The coincidence is convenient
@@ -39,7 +40,7 @@ pub(super) const SEALED_FRAME_MARK: u8 = BEGIN_MAGIC[0];
 /// retracts, because it made zeros landing over a *committed* frame read as
 /// residue too. What the value earns is a place in `verify_identity`'s first
 /// test. Everything past that is decided by `read_frame`'s ordering and by
-/// [`TornTail::is_truncatable_residue`].
+/// [`TornTail::is_truncatable_residue`](super::TornTail::is_truncatable_residue).
 pub(super) const UNSEALED_FRAME_MARK: u8 = 0x00;
 
 /// Version byte of every record this build writes.
@@ -60,23 +61,39 @@ pub(super) const CRC32_POLYNOMIAL: u32 = 0xEDB8_8320;
 
 /// CRC-32/IEEE over `bytes`.
 ///
-/// This is the bitwise reference form rather than a table-driven one. The store
-/// commits bounded images, so the byte-scanning cost is irrelevant next to
-/// being auditable at a glance, and `checksums_match_the_published_vector`
-/// pins it to the standard check value.
+/// This consumer keeps the bitwise reference form independently auditable.
+/// Its incremental form handles chunks without retaining encoded images;
+/// `checksums_match_the_published_vector` pins it to the standard check value.
 pub(super) fn crc32(bytes: &[u8]) -> u32 {
-    let mut state = 0xFFFF_FFFF_u32;
-    for byte in bytes {
-        state ^= u32::from(*byte);
-        for _ in 0..8 {
-            state = if state & 1 == 1 {
-                (state >> 1) ^ CRC32_POLYNOMIAL
-            } else {
-                state >> 1
-            };
+    let mut checksum = Checksum::new();
+    checksum.update(bytes);
+    checksum.value()
+}
+
+/// Incremental form of the same independent bitwise reference checksum.
+pub(super) struct Checksum(u32);
+
+impl Checksum {
+    pub(super) const fn new() -> Self {
+        Self(u32::MAX)
+    }
+
+    pub(super) fn update(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u32::from(*byte);
+            for _ in 0..8 {
+                self.0 = if self.0 & 1 == 1 {
+                    (self.0 >> 1) ^ CRC32_POLYNOMIAL
+                } else {
+                    self.0 >> 1
+                };
+            }
         }
     }
-    !state
+
+    pub(super) const fn value(&self) -> u32 {
+        !self.0
+    }
 }
 
 pub(super) fn read_u32(bytes: &[u8]) -> u32 {

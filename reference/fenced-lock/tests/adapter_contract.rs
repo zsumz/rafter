@@ -740,6 +740,7 @@ fn write_errors_across_the_surface() -> Vec<WriteError> {
             reason: ProposalRejection::LeadershipTransferInProgress { target: NodeId(3) },
         },
         WriteError::PayloadTooLarge { max: 8, actual: 64 },
+        WriteError::Backpressure,
         WriteError::UnknownOutcome {
             local_proposal_id: LocalProposalId(1),
             client_request_id: None,

@@ -116,6 +116,8 @@ pub enum Request {
     Local(ResourceName),
     /// Return the complete machine-readable operations snapshot.
     Observe,
+    /// Publish an application snapshot and compact its durable log prefix.
+    Checkpoint,
     /// Execute one deployment-planned membership input.
     Membership(MembershipChange),
     /// Stop serving and exit cleanly.
@@ -146,6 +148,7 @@ pub fn parse_request(line: &str) -> Result<Request, RequestError> {
     match tokens.first().copied() {
         Some("STATUS") => Ok(Request::Status),
         Some("OBSERVE") => Ok(Request::Observe),
+        Some("CHECKPOINT") => Ok(Request::Checkpoint),
         Some("SHUTDOWN") => Ok(Request::Shutdown),
         Some("ADD_LEARNER") => Ok(Request::Membership(MembershipChange::AddLearner {
             node_id: NodeId(parse_u64(tokens.get(1), "learner node id")?),

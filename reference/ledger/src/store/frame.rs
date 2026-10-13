@@ -7,20 +7,30 @@
 //! section on which residue an opening may truncate, and pinned as a table by
 //! `the_recognition_order_matches_the_sibling_lock_store`.
 
+#[cfg(test)]
 use rafter::LogIndex;
 
-use crate::{adapter::codec::encode_snapshot, Ledger, LedgerConfig};
+use crate::LedgerConfig;
+#[cfg(test)]
+use crate::{adapter::codec::encode_snapshot, Ledger};
 
 use super::{
     damage::TornTail,
     error::LedgerStoreError,
     format::{
-        crc32, read_u32, read_u64, BEGIN_LEN, BEGIN_MAGIC, COMMIT_LEN, COMMIT_MAGIC, HEADER_LEN,
-        JOURNAL_FORMAT_VERSION, JOURNAL_MAGIC, SEALED_FRAME_MARK, UNSEALED_FRAME_MARK,
+        crc32, read_u32, read_u64, BEGIN_MAGIC, HEADER_LEN, JOURNAL_FORMAT_VERSION, JOURNAL_MAGIC,
+        SEALED_FRAME_MARK, UNSEALED_FRAME_MARK,
     },
 };
 
+#[cfg(test)]
+use super::{
+    format::{BEGIN_LEN, COMMIT_LEN, COMMIT_MAGIC},
+    frame_output::{begin_record, commit_record},
+};
+
 /// One committed frame's image and total length.
+#[cfg(test)]
 pub(super) struct Frame<'a> {
     pub(super) image: &'a [u8],
     pub(super) len: usize,
@@ -42,7 +52,7 @@ fn magic_of(bytes: &[u8]) -> [u8; 4] {
 /// mark decides anything. The ordering is the whole of the fix behind it. The
 /// older shape asked the mark first and reached the magic only underneath it, so
 /// a committed frame whose leading bytes were zeroed came back from
-/// [`classify_unsealed`] as a corrupt begin record, that answer was folded into
+/// `classify_unsealed` as a corrupt begin record, that answer was folded into
 /// [`TornTail::UnsealedAppend`], and `open` deleted the frame and every
 /// committed frame after it. Two adjacent zero bytes were enough — one 16-bit
 /// word, far under a sector — while one was correctly refused.
@@ -50,11 +60,11 @@ fn magic_of(bytes: &[u8]) -> [u8; 4] {
 /// Byte zero is the append mark and is checked here too, because it is the
 /// magic's leading byte: a tail beginning with neither mark is not a frame this
 /// build ever wrote. *Which* of the two marks it is decides nothing here — that
-/// question belongs to [`read_frame`], and answering it needs more than this
+/// question belongs to `read_frame`, and answering it needs more than this
 /// byte.
 ///
 /// The version byte is deliberately *not* tested here. It sits behind the seal
-/// test, and [`classify_unsealed`] explains why an unsealed frame's version is
+/// test, and `classify_unsealed` explains why an unsealed frame's version is
 /// reached through the same path as everything else it declares rather than
 /// ahead of it. It is still consulted at every length that carries it.
 ///
@@ -62,7 +72,7 @@ fn magic_of(bytes: &[u8]) -> [u8; 4] {
 /// The two stores are one design in two formats, and this is the function the
 /// fourth-generation hunt found them disagreeing on, one commit after they were
 /// aligned on the version byte beside it.
-fn verify_identity(bytes: &[u8]) -> Result<(), TornTail> {
+pub(super) fn verify_identity(bytes: &[u8]) -> Result<(), TornTail> {
     if bytes[0] != UNSEALED_FRAME_MARK && bytes[0] != SEALED_FRAME_MARK {
         return Err(TornTail::NotALedgerFrame {
             magic: magic_of(bytes),
@@ -123,6 +133,7 @@ fn verify_identity(bytes: &[u8]) -> Result<(), TornTail> {
 /// [`TornTail::UnsealedCompleteFrame`]. It refuses; it does not refuse *here*.
 ///
 /// `bytes` is never empty — the scan stops before calling this on nothing.
+#[cfg(test)]
 pub(super) fn read_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
     if bytes.iter().all(|byte| *byte == UNSEALED_FRAME_MARK) {
         return Err(TornTail::ZeroFilledToEnd {
@@ -166,10 +177,9 @@ pub(super) fn read_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
 ///   evidence of incompleteness, and with the unsealed mark beside it, it is
 ///   [`TornTail::UnsealedAppend`].
 ///
-/// The copy is deliberate rather than clever. Recovery has already read the
-/// whole journal into memory, this runs at most once per scan — the scan stops
-/// at the first frame it cannot read — and a byte-substituting checksum would
-/// buy nothing but a second implementation of the fold to keep honest.
+/// This whole-slice implementation is retained only as a test oracle for the
+/// bounded file reader. It deliberately restores the mark in a separate copy.
+#[cfg(test)]
 fn classify_unsealed(bytes: &[u8]) -> TornTail {
     let mut sealed = bytes.to_vec();
     sealed[0] = SEALED_FRAME_MARK;
@@ -197,6 +207,7 @@ fn classify_unsealed(bytes: &[u8]) -> TornTail {
 /// both callers, and neither can be reached without it. Repeating it here would
 /// make the ordering a coincidence of two tests agreeing instead of a property
 /// of the one path.
+#[cfg(test)]
 fn read_sealed_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
     // The version is read wherever the field is present, ahead of anything that
     // depends on how many bytes there are. The argument for refusing a foreign
@@ -301,33 +312,20 @@ pub(super) fn encode_header(config: LedgerConfig) -> Vec<u8> {
 }
 
 /// Encodes one whole transaction frame.
+#[cfg(test)]
 pub(super) fn encode_frame(
     ledger: &Ledger,
     applied_index: LogIndex,
 ) -> Result<Vec<u8>, LedgerStoreError> {
-    let image =
-        encode_snapshot(applied_index.0, &ledger.snapshot()).map_err(LedgerStoreError::Image)?;
+    let image = encode_snapshot(applied_index.0, ledger).map_err(LedgerStoreError::Image)?;
     let image_len = u32::try_from(image.len()).map_err(|_| LedgerStoreError::ImageTooLarge {
         length: image.len() as u64,
     })?;
 
     let mut frame = Vec::with_capacity(BEGIN_LEN + image.len() + COMMIT_LEN);
-    frame.extend_from_slice(&BEGIN_MAGIC);
-    frame.push(JOURNAL_FORMAT_VERSION);
-    frame.extend_from_slice(&image_len.to_be_bytes());
-    frame.extend_from_slice(&crc32(&image).to_be_bytes());
-    let begin_checksum = crc32(&frame);
-    frame.extend_from_slice(&begin_checksum.to_be_bytes());
+    frame.extend_from_slice(&begin_record(image_len, crc32(&image)));
     frame.extend_from_slice(&image);
-
-    let frame_checksum = crc32(&frame);
-    let mut commit = Vec::with_capacity(COMMIT_LEN);
-    commit.extend_from_slice(&COMMIT_MAGIC);
-    commit.push(JOURNAL_FORMAT_VERSION);
-    commit.extend_from_slice(&frame_checksum.to_be_bytes());
-    let commit_checksum = crc32(&commit);
-    commit.extend_from_slice(&commit_checksum.to_be_bytes());
-
+    let commit = commit_record(crc32(&frame));
     frame.extend_from_slice(&commit);
     Ok(frame)
 }

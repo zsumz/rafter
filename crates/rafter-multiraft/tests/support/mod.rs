@@ -178,10 +178,6 @@ impl GroupDriver<u64> for WatchedDriver {
     }
 }
 
-/// A command and result type that is deliberately not `Default`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NotDefault(pub u64);
-
 /// An empty report with no effects, for a group whose step did nothing.
 #[must_use]
 pub fn report(group_id: u64) -> GroupStepReport<u64, Vec<u8>> {

@@ -260,7 +260,7 @@ fn source() -> SourceReceipt {
 }
 
 fn temporary_root() -> Result<PathBuf, std::io::Error> {
-    let root = Path::new("target/rafter-invariants/tests").join(format!(
+    let root = crate::tests::scratch_path("tests").join(format!(
         "maelstrom-artifact-{}-{:?}",
         std::process::id(),
         std::thread::current().id()

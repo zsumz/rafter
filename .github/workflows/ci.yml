@@ -6,7 +6,7 @@
 # repository settings, not in this file. Branch protection on `main` must
 # list these required status checks:
 #
-#   lint, zrail, zcheck, test, reference-source, reference-package, reference-package-msrv,
+#   lint, current-stable, public-api, dependency-audit, zrail, zcheck, test, reference-source, reference-package, reference-package-msrv,
 #   fuzz-smoke, counter-reference-fast, invariants-pr
 #
 # `reference-process` is deliberately absent from that list: it only runs on
@@ -15,9 +15,10 @@
 # durable process tests to the main/nightly lane, and nightly.yml runs the
 # other half.
 #
-# The Rust toolchain is pinned to the workspace rust-version in Cargo.toml
+# The default Rust toolchain is pinned to the workspace rust-version in Cargo.toml
 # (currently 1.88). Keep .github/actions/setup-rust/action.yml's default in
-# sync with Cargo.toml when bumping rust-version.
+# sync with Cargo.toml when bumping rust-version. The independent current-stable
+# lane records its resolved compiler identity and checks forward compatibility.
 
 name: CI
 
@@ -44,6 +45,100 @@ defaults:
     shell: bash
 
 jobs:
+  public-api:
+    name: public-api
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Install the pinned source API checker
+        run: cargo install cargo-semver-checks --version 0.51.0 --locked
+      - name: Public API coverage and source identity controls
+        run: python3 -m unittest scripts/tests/test_public_api_check.py
+      - name: Compare every public crate with the published alpha
+        # Cargo cache restoration may recreate old evidence directories, even
+        # empty ones. Each attempt owns fresh evidence outside the cached target.
+        run: python3 scripts/check-public-api --artifacts "$RUNNER_TEMP/public-api-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: Upload source API evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: public-api-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/public-api-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  dependency-audit:
+    name: dependency-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Install the pinned advisory checker
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Public dependency coverage and advisory controls
+        run: python3 -m unittest scripts/tests/test_published_dependency_audit.py
+      - name: Audit public libraries and the separate workspace dependency graph
+        run: python3 scripts/audit-published-dependencies --include-workspace --artifacts artifacts/dependency-audit
+      - name: Upload dependency and advisory evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dependency-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/dependency-audit/
+          if-no-files-found: error
+          retention-days: 30
+
+  current-stable:
+    name: current-stable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Record resolved stable compiler
+        run: |
+          mkdir -p artifacts/current-stable
+          rustc +stable --version --verbose | tee artifacts/current-stable/rustc.txt
+          cargo +stable --version --verbose | tee artifacts/current-stable/cargo.txt
+      - name: Build every workspace target on current stable
+        run: cargo +stable build --locked --workspace --all-targets
+      - name: Build optional durable service on current stable
+        run: cargo +stable build --locked -p rafter-service --features durable --all-targets
+      - name: Upload stable compiler identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: current-stable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/current-stable/
+          if-no-files-found: error
+          retention-days: 30
+
   lint:
     name: lint
     runs-on: ubuntu-24.04
@@ -64,6 +159,8 @@ jobs:
         # Workspace lints set clippy::{all,pedantic} = warn; -D warnings
         # escalates them (and rustc warnings) to errors.
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: durable client Clippy
+        run: cargo clippy --locked -p rafter-service --features durable --all-targets -- -D warnings
       - name: rustdoc
         # The eleven crates in RELEASE.md's publish list reach docs.rs, and until
         # this step nothing built their documentation at all. The script
@@ -79,6 +176,16 @@ jobs:
         # can check it, so it is checked here against stubbed process and
         # filesystem tools: no TLC, no JVM, seconds instead of hours.
         run: scripts/tests/tla_continuation_telemetry_test.sh
+      - name: invariant runtime retrieval and failure checks
+        run: python3 -m unittest scripts/tests/test_invariant_runtime_setup.py
+      - name: counter guide dependency and cleanup controls
+        run: python3 -m unittest scripts/tests/test_counter_guide.py
+      - name: counter guide against this checkout
+        run: python3 scripts/check-counter-guide --mode checkout
+      - name: counter guide standalone Git pin
+        run: python3 scripts/check-counter-guide --mode pinned
+      - name: counter blocked publication and backpressure
+        run: python3 scripts/check-counter-guide --mode checkout --pressure
       - name: out-of-workspace manifests
         # `cargo fmt --all` and `cargo clippy --workspace` above stop at the
         # workspace members. fuzz/ and bench-compare/ keep their own manifests
@@ -96,6 +203,8 @@ jobs:
         run: |
           cargo run --manifest-path bench-compare/Cargo.toml --locked \
             --no-default-features --bin check-transport-receive-memory
+      - name: WAL recovery allocation gate
+        run: cargo run --manifest-path bench-compare/Cargo.toml --locked --no-default-features --bin check-wal-recovery-memory
       - name: reviewed action pins resolve upstream
         # `cargo test --workspace` already asserts that these workflows use
         # exactly the specifications in verification/github-actions.lock, and
@@ -254,6 +363,10 @@ jobs:
           cache-on-failure: true
       - name: Prefetch locked registry for offline source identity
         run: cargo fetch --locked
+      - name: Check native filesystem evidence controls
+        run: python3 -m unittest scripts/tests/test_storage_environment.py
+      - name: Record native Linux storage environment
+        run: python3 scripts/record-storage-environment --output target/rafter-invariants/ci-diagnostics/linux-storage-environment.json
       - name: dependency boundary tests
         run: scripts/cargo-test-exact 6 dependency_boundary --workspace
       - name: source boundary tests
@@ -268,10 +381,14 @@ jobs:
         run: python3 scripts/render-raft-invariants-doc --check
       - name: workspace tests
         run: scripts/ci-run-diagnosed workspace-tests target/rafter-invariants/ci-diagnostics/workspace-tests.log cargo test --workspace
+      - name: durable client tests
+        run: scripts/cargo-test-exact 440 - --locked -p rafter-service --features durable
       - name: insecure TCP transport loopback tests
         # Two #[ignore]d tests in a publishable crate that no lane ran. They
         # are ignored because they bind loopback, which every runner here has.
         run: scripts/cargo-test-exact 2 - -p rafter-transport-tcp-insecure --lib -- --ignored
+      - name: Snapshot publication process loss
+        run: scripts/cargo-test-exact 1 - --locked -p rafter-storage --lib -- --ignored --exact storage_failpoint_test::snapshot_process_test::snapshot_publication_survives_process_loss --nocapture
       - name: replicated KV process lifecycle
         run: scripts/cargo-test-exact 1 - -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture
       - name: Upload test process diagnostics
@@ -296,6 +413,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -335,13 +454,15 @@ jobs:
   invariants-launcher-macos:
     name: invariants-launcher-macos
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -349,6 +470,16 @@ jobs:
           cache-bin: false
       - name: Prefetch locked registry for offline source identity
         run: cargo fetch --locked
+      - name: Strict workspace lint on macOS
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: durable client Clippy
+        run: cargo clippy --locked -p rafter-service --features durable --all-targets -- -D warnings
+      - name: Record native macOS storage environment
+        run: python3 scripts/record-storage-environment --output target/rafter-invariants/ci-diagnostics/macos-storage-environment.json
+      - name: Qualify durable storage on macOS
+        env:
+          CARGO_TERM_COLOR: never
+        run: scripts/ci-run-diagnosed storage-macos target/rafter-invariants/ci-diagnostics/macos-storage.log cargo test --locked -p rafter-storage
       - name: Validate managed process launcher on macOS
         id: launcher-validation
         env:
@@ -357,7 +488,8 @@ jobs:
           set -o pipefail
           mkdir -p target/rafter-invariants/ci-diagnostics
           {
-            scripts/cargo-test-exact 64 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 1 verification::detector_replay::admission::tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 65 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1
             scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1
             scripts/cargo-test-exact 4 producer::test_exec::detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
             scripts/cargo-test-exact 1 producer::test_exec::process_tests --locked -p rafter-invariants -- --test-threads=1
@@ -408,6 +540,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -470,6 +604,8 @@ jobs:
           sha256: "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f"
       - name: Stage source-bound TLA+ tool
         run: install -D -m 0444 "$TLA2TOOLS_JAR" tools/cache/tla2tools.jar
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -545,6 +681,8 @@ jobs:
           sha256: "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f"
       - name: Stage source-bound TLA+ tool
         run: install -D -m 0444 "$TLA2TOOLS_JAR" tools/cache/tla2tools.jar
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -571,13 +709,17 @@ jobs:
   invariants-maelstrom:
     name: invariants-maelstrom
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
+        with:
+          analysis-tools: "true"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -621,9 +763,10 @@ jobs:
       - invariants-tla
       - invariants-tla-validation
       - invariants-maelstrom
-    if: always()
+    # Preserve failure reports, but let canceled runs release the CI queue.
+    if: always() && !cancelled()
     runs-on: ubuntu-24.04
-    timeout-minutes: 110
+    timeout-minutes: 120
     env:
       INVARIANT_EVIDENCE_DIR: rafter-invariants-pr-evidence-${{ github.run_id }}-${{ github.run_attempt }}
       INVARIANT_REPORT_DIR: rafter-invariants-pr-${{ github.run_id }}-${{ github.run_attempt }}
@@ -645,6 +788,8 @@ jobs:
           java-version: "21.0.11+10.0.LTS"
           architecture: x64
           check-latest: false
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         timeout-minutes: 8
         with:
@@ -962,6 +1107,11 @@ jobs:
         # tests/process_cluster.rs, so this is a cached `--list`.
         run: scripts/reference-process-check --list-only
 
+      - name: Owner TLS soak selection
+        run: |
+          python3 -m unittest scripts/tests/test_reference_owner_soak.py
+          scripts/reference-owner-soak --list-only
+
   reference-package:
     name: reference-package
     runs-on: ubuntu-24.04
@@ -981,7 +1131,9 @@ jobs:
         with:
           cache-on-failure: true
       - name: Exact-package boundary adversarial checks
-        run: scripts/tests/reference_package_boundary_test.sh
+        run: |
+          scripts/tests/reference_package_boundary_test.sh
+          python3 -m unittest scripts/tests/test_archive_compatibility.py scripts/tests/test_archive_dependencies.py
       - name: Reference consumers against exact package archives
         # This used to be the only lane that built `rafter` in its published
         # shape: every cargo invocation over the root workspace resolved
@@ -995,7 +1147,24 @@ jobs:
           # checkout, so the workdir must live outside it. runner.temp is a
           # sibling of the workspace, never a child.
           TMPDIR: ${{ runner.temp }}
-        run: scripts/reference-package-check
+        run: scripts/reference-package-check --artifacts artifacts/reference-package
+      - name: Select advisory checker toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.97.1"
+      - name: Install the pinned advisory checker
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit dependencies from the tested exact archives
+        run: python3 scripts/archive_dependencies.py --audit --artifacts artifacts/reference-package
+      - name: Upload exact-package and compatibility receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reference-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/reference-package/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
   reference-package-msrv:
     name: reference-package-msrv
@@ -1025,6 +1194,14 @@ jobs:
           scripts/reference-package-process-check --msrv-only \
             --artifacts artifacts/reference-package-msrv \
             2>&1 | tee artifacts/reference-package-msrv.log
+      - name: Select advisory checker toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.97.1"
+      - name: Install the pinned advisory checker
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit dependencies from the tested MSRV archives
+        run: python3 scripts/archive_dependencies.py --audit --artifacts artifacts/reference-package-msrv
       - name: Upload exact-package MSRV evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -1033,6 +1210,7 @@ jobs:
           path: |
             artifacts/reference-package-msrv/
             artifacts/reference-package-msrv.log
+          include-hidden-files: true
           if-no-files-found: error
 
   reference-package-process:
@@ -1124,12 +1302,35 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
+      - name: Record counter profile source identity
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-counter"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-counter/source-head.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-counter/source-before.status"
+          test ! -s "$RUNNER_TEMP/reference-counter/source-before.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-counter/source-before.sha256"
+          rustc --version --verbose > "$RUNNER_TEMP/reference-counter/rustc.txt"
+          cargo --version > "$RUNNER_TEMP/reference-counter/cargo.txt"
       - name: Counter reference fast profile
-        run: scripts/counter-profile counter-fast
+        run: |
+          scripts/counter-profile counter-fast --artifacts "$RUNNER_TEMP/reference-counter/workload" 2>&1 | tee "$RUNNER_TEMP/reference-counter/profile.log"
+      - name: Verify counter profile source preservation
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-counter"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-counter/source-head-after.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-counter/source-after.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-counter/source-after.sha256"
+          test ! -s "$RUNNER_TEMP/reference-counter/source-after.status"
+          cmp "$RUNNER_TEMP/reference-counter/source-head.txt" "$RUNNER_TEMP/reference-counter/source-head-after.txt"
+          cmp "$RUNNER_TEMP/reference-counter/source-before.sha256" "$RUNNER_TEMP/reference-counter/source-after.sha256"
+          printf 'preserved\n' > "$RUNNER_TEMP/reference-counter/source-preserved.txt"
       - name: Upload counter fast evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: counter-reference-fast-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/reference-counter/counter-fast/
+          path: |
+            ${{ runner.temp }}/reference-counter/
+            reference/Cargo.lock
           if-no-files-found: error

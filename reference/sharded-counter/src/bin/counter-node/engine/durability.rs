@@ -106,8 +106,10 @@ impl Engine {
             .collect::<Vec<_>>();
         for raw in 1..=intent.group_count {
             let slot_dir = groups_dir.join(raw.to_string());
-            fs::create_dir_all(&slot_dir)
-                .map_err(|error| format!("could not create {}: {error}", slot_dir.display()))?;
+            rafter_reference_harness::durable_directory::create_durable_directory(&slot_dir)
+                .map_err(|error| {
+                    format!("could not durably create {}: {error}", slot_dir.display())
+                })?;
             prepare_staged_raft(&slot_dir, GroupIncarnation::first(), true)?;
             let app_dir = slot_dir.join("app");
             if app_dir.join("state.rcap").exists() {

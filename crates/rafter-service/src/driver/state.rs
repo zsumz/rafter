@@ -108,8 +108,8 @@ where
     /// Puts the report's peer messages on the in-memory network and keeps the
     /// answer of any barrier the group ended in that step.
     ///
-    /// Read events are kept for the reason
-    /// [`TransportDriverState::route_report`] keeps them: the app layer ends a
+    /// Read events are kept for the reason the [transport driver](crate::driver::transport)
+    /// keeps them in `TransportDriverState::route_report`: the app layer ends a
     /// barrier in whichever step observes the cause, and for a leadership change
     /// that step is a delivery rather than the read call. A driver that dropped
     /// them would go around its loop and ask the group to re-reserve a spent

@@ -64,12 +64,14 @@
 //! - `reseed` deletes this replica's durable lock state outright and lets the
 //!   replicated log refill it.
 //!
-//! Each announces what it cost. `reseed` is the one that discards acknowledged
-//! fencing marks, and it is safe only because the marks are also in the
-//! replicated log this replica is about to re-apply — which is a fact about the
-//! cluster, not about this process. A replica reseeded while its own log had
-//! been compacted past the discarded floor does not recover, and nothing here
-//! pretends otherwise.
+//! Each announces what it cost. `reseed` discards this replica's application
+//! fencing marks and relies on retained Raft state to restore them. Recovery
+//! with a committed application suffix installs the local snapshot before
+//! replaying that suffix. A fully compacted replica with no application suffix
+//! and no recovery snapshot directive still refuses below its snapshot boundary;
+//! an absent or invalid snapshot also cannot reconstruct the compacted prefix.
+//! Reseeding never gives permission to serve with that gap or to reset the
+//! surviving quorum's state.
 
 use std::{
     collections::BTreeMap,
@@ -103,6 +105,9 @@ use rafter_storage::{
 use rafter_app::group::RaftGroup;
 
 use super::peer_link::{PeerDirectory, PeerPrincipal, TcpPeerTransport};
+
+#[path = "replica/checkpoint.rs"]
+mod checkpoint;
 
 /// Caller-defined identity of the single lock group each replica serves.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -388,11 +393,13 @@ fn readiness(caught_up: bool, service_state: DriverServiceState) -> bool {
 /// Ahead of the ownership lock, so a first boot has somewhere to take it.
 fn create_replica_directories(directories: &[&Path]) -> Result<(), OpenError> {
     for directory in directories {
-        std::fs::create_dir_all(directory).map_err(|source| OpenError::Io {
-            operation: "create a replica directory",
-            path: (*directory).to_path_buf(),
-            source,
-        })?;
+        rafter_reference_harness::durable_directory::create_durable_directory(directory).map_err(
+            |source| OpenError::Io {
+                operation: "durably create a replica directory",
+                path: (*directory).to_path_buf(),
+                source,
+            },
+        )?;
     }
     Ok(())
 }

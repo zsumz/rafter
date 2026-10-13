@@ -8,6 +8,9 @@
 //! that made every other byte durable. The `# Crash contract` section of the
 //! [module documentation](super) is what that order buys.
 
+mod output;
+mod rewrite;
+
 use std::{
     fs::{File, OpenOptions},
     io::{Seek, SeekFrom, Write},
@@ -16,19 +19,18 @@ use std::{
 
 use rafter::LogIndex;
 
-use crate::Ledger;
+use crate::{adapter::codec::SnapshotEncodingError, Ledger};
+
+use output::{write_unsealed, FileSink};
 
 use super::{
     domination::{deduplication_progress_of, verify_deduplication_dominates},
     error::LedgerStoreError,
-    fault::{WriteFault, WriteFaultSite},
-    format::{SEALED_FRAME_MARK, UNSEALED_FRAME_MARK},
-    frame::{encode_frame, encode_header},
-    journal_file::{staged_path, sync_directory},
+    fault::WriteFaultSite,
+    format::SEALED_FRAME_MARK,
+    frame_output::FramePlan,
     Health, LedgerStore,
 };
-
-use std::fs;
 
 impl LedgerStore {
     /// Returns the byte length one commit of `ledger` at `applied_index` would
@@ -45,7 +47,7 @@ impl LedgerStore {
         ledger: &Ledger,
         applied_index: LogIndex,
     ) -> Result<u64, LedgerStoreError> {
-        Ok(encode_frame(ledger, applied_index)?.len() as u64)
+        Ok(FramePlan::new(ledger, applied_index)?.len())
     }
 
     /// Commits one transaction, appending it to the journal.
@@ -58,7 +60,8 @@ impl LedgerStore {
     /// # Errors
     ///
     /// Returns an error when the handle is poisoned, when `applied_index` does
-    /// not advance, when the image cannot be encoded, or when the append or its
+    /// not advance, when the model's bounds differ from the journal's, when the
+    /// image cannot be encoded, or when the append or its
     /// durability barrier fails. After any of the latter the handle is
     /// poisoned and the caller must reopen to learn what committed.
     pub fn commit(
@@ -77,11 +80,12 @@ impl LedgerStore {
                 found: applied_index,
             });
         }
-        let frame = encode_frame(ledger, applied_index)?;
+        self.check_model_config(ledger)?;
+        let frame = FramePlan::new(ledger, applied_index)?;
         let plan = self.begin_plan();
         self.append(&frame, plan)?;
 
-        self.journal_len += frame.len() as u64;
+        self.journal_len += frame.len();
         self.adopt(ledger.clone(), applied_index);
         Ok(())
     }
@@ -100,7 +104,7 @@ impl LedgerStore {
     /// move the applied floor backwards, when republishing an unchanged applied
     /// index would move a client slot's deduplication state backwards, when the
     /// image cannot be encoded, or when staging, renaming, or a durability
-    /// barrier fails.
+    /// barrier fails. Model bounds must match the journal's resource contract.
     pub fn replace(
         &mut self,
         ledger: &Ledger,
@@ -113,6 +117,7 @@ impl LedgerStore {
                 found: applied_index,
             });
         }
+        self.check_model_config(ledger)?;
         if applied_index == self.applied_index {
             // The one publication the applied floor cannot judge. Two images at
             // one index can still disagree about which requests have completed,
@@ -128,12 +133,11 @@ impl LedgerStore {
             )?;
         }
 
-        let mut contents = encode_header(self.config);
-        contents.extend_from_slice(&encode_frame(ledger, applied_index)?);
+        let frame = FramePlan::new(ledger, applied_index)?;
         let plan = self.begin_plan();
-        self.rewrite(&contents, plan)?;
+        let length = self.rewrite(&frame, plan)?;
 
-        self.journal_len = contents.len() as u64;
+        self.journal_len = length;
         self.adopt(ledger.clone(), applied_index);
         Ok(())
     }
@@ -162,6 +166,19 @@ impl LedgerStore {
     fn check_health(&self) -> Result<(), LedgerStoreError> {
         if self.requires_reopen() {
             return Err(LedgerStoreError::StoreRequiresReopen);
+        }
+        Ok(())
+    }
+
+    fn check_model_config(&self, ledger: &Ledger) -> Result<(), LedgerStoreError> {
+        let requested = ledger.config();
+        if requested != self.config {
+            return Err(LedgerStoreError::ConfigMismatch {
+                journal_max_clients: self.config.max_clients(),
+                journal_max_accounts: self.config.max_accounts() as u64,
+                requested_max_clients: requested.max_clients(),
+                requested_max_accounts: requested.max_accounts() as u64,
+            });
         }
         Ok(())
     }
@@ -212,7 +229,7 @@ impl LedgerStore {
     /// append mode, because the seal goes back to the frame's own first byte.
     /// Recovery leaves the journal exactly its committed length, so that offset
     /// is the end of the file.
-    fn append(&mut self, frame: &[u8], plan: u64) -> Result<(), LedgerStoreError> {
+    fn append(&mut self, frame: &FramePlan<'_>, plan: u64) -> Result<(), LedgerStoreError> {
         if let Some(error) = self.take_fault(plan, WriteFaultSite::BeforeFirstByte) {
             return Err(self.publication_failed(error));
         }
@@ -230,15 +247,30 @@ impl LedgerStore {
         let offset = self.journal_len;
         self.seek(&mut file, offset, &journal_path)?;
 
-        let mut unsealed = frame.to_vec();
-        unsealed[0] = UNSEALED_FRAME_MARK;
-        let emitted = self.emit(&mut file, &unsealed, plan, &journal_path)?;
-        if emitted < frame.len() {
-            let error = self
-                .take_fault(plan, WriteFaultSite::AfterBytes)
-                .expect("a short emit only happens when a byte-boundary fault fired");
+        let mut sink = FileSink::new(
+            &mut file,
+            self.faults.fault_for(plan),
+            "write the ledger journal",
+        );
+        if let Err(error) = write_unsealed(&mut sink, frame) {
+            let error = if sink.injected {
+                self.take_fault(plan, WriteFaultSite::AfterBytes)
+                    .expect("only an armed byte boundary can interrupt append")
+            } else {
+                match error {
+                    SnapshotEncodingError::Codec(error) => LedgerStoreError::Image(error),
+                    SnapshotEncodingError::Sink(source) => LedgerStoreError::Io {
+                        operation: sink.operation,
+                        path: journal_path.clone(),
+                        source,
+                    },
+                }
+            };
             return Err(self.publication_failed(error));
         }
+
+        #[cfg(all(test, unix))]
+        super::process_test::pause(super::process_test::Point::AppendAfterWrite);
 
         if let Some(error) = self.take_fault(plan, WriteFaultSite::AtFileSync) {
             return Err(self.publication_failed(error));
@@ -250,6 +282,9 @@ impl LedgerStore {
                 source,
             })
         })?;
+
+        #[cfg(all(test, unix))]
+        super::process_test::pause(super::process_test::Point::AppendAfterFrameSync);
 
         self.seal_frame(&mut file, offset, plan, &journal_path)
     }
@@ -278,6 +313,9 @@ impl LedgerStore {
             })
         })?;
 
+        #[cfg(all(test, unix))]
+        super::process_test::pause(super::process_test::Point::AppendAfterSealWrite);
+
         if let Some(error) = self.take_fault(plan, WriteFaultSite::AtSealSync) {
             return Err(self.publication_failed(error));
         }
@@ -287,7 +325,11 @@ impl LedgerStore {
                 path: path.to_path_buf(),
                 source,
             })
-        })
+        })?;
+
+        #[cfg(all(test, unix))]
+        super::process_test::pause(super::process_test::Point::AppendAfterSealSync);
+        Ok(())
     }
 
     fn seek(&mut self, file: &mut File, offset: u64, path: &Path) -> Result<(), LedgerStoreError> {
@@ -300,99 +342,5 @@ impl LedgerStore {
                     source,
                 })
             })
-    }
-
-    /// Stages `contents`, syncs it, renames it over the journal, and syncs the
-    /// directory.
-    fn rewrite(&mut self, contents: &[u8], plan: u64) -> Result<(), LedgerStoreError> {
-        if let Some(error) = self.take_fault(plan, WriteFaultSite::BeforeFirstByte) {
-            return Err(self.publication_failed(error));
-        }
-
-        let staged_path = staged_path(&self.directory);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&staged_path)
-            .map_err(|source| LedgerStoreError::Io {
-                operation: "open the staged ledger journal",
-                path: staged_path.clone(),
-                source,
-            })?;
-
-        let emitted = self.emit(&mut file, contents, plan, &staged_path)?;
-        if emitted < contents.len() {
-            let error = self
-                .take_fault(plan, WriteFaultSite::AfterBytes)
-                .expect("a short emit only happens when a byte-boundary fault fired");
-            return Err(self.publication_failed(error));
-        }
-
-        if let Some(error) = self.take_fault(plan, WriteFaultSite::AtFileSync) {
-            return Err(self.publication_failed(error));
-        }
-        file.sync_data().map_err(|source| {
-            self.publication_failed(LedgerStoreError::Io {
-                operation: "sync the staged ledger journal",
-                path: staged_path.clone(),
-                source,
-            })
-        })?;
-        drop(file);
-
-        if let Some(error) = self.take_fault(plan, WriteFaultSite::BeforeRename) {
-            return Err(self.publication_failed(error));
-        }
-        fs::rename(&staged_path, &self.journal_path).map_err(|source| {
-            self.publication_failed(LedgerStoreError::Io {
-                operation: "publish the staged ledger journal",
-                path: self.journal_path.clone(),
-                source,
-            })
-        })?;
-
-        if let Some(error) = self.take_fault(plan, WriteFaultSite::AfterRename) {
-            return Err(self.publication_failed(error));
-        }
-        sync_directory(&self.directory).map_err(|error| self.publication_failed(error))
-    }
-
-    /// Writes `bytes` to `file`, honoring a byte-boundary fault.
-    ///
-    /// Returns how many bytes were emitted; a short return means a fault
-    /// stopped the plan, and the prefix was synced so recovery meets the worst
-    /// case where it reached the medium.
-    fn emit(
-        &mut self,
-        file: &mut File,
-        bytes: &[u8],
-        plan: u64,
-        path: &Path,
-    ) -> Result<usize, LedgerStoreError> {
-        let limit = match self.faults.fault_for(plan) {
-            Some(WriteFault::AfterBytes(stop)) => {
-                usize::try_from(stop).unwrap_or(usize::MAX).min(bytes.len())
-            }
-            _ => bytes.len(),
-        };
-
-        file.write_all(&bytes[..limit]).map_err(|source| {
-            self.publication_failed(LedgerStoreError::Io {
-                operation: "write the ledger journal",
-                path: path.to_path_buf(),
-                source,
-            })
-        })?;
-        if limit < bytes.len() {
-            file.sync_data().map_err(|source| {
-                self.publication_failed(LedgerStoreError::Io {
-                    operation: "sync an interrupted ledger write",
-                    path: path.to_path_buf(),
-                    source,
-                })
-            })?;
-        }
-        Ok(limit)
     }
 }

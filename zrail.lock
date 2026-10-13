@@ -2,33 +2,33 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "20e920843c8289957159973f9a2cbe3448f7f71e977f24ed24c8a6241589ca4a"
+contract_sha256 = "b0a0ba361dc9c01887fc911f175531e80a0b3bafc64fcd8038c32f7e09a3b100"
 
 [analysis]
-inventory_sha256 = "3fb2594e9f6eb6d5fdd10c3abb2a15c16f57ab4e9b0a4910dcfe6dcf7c30be40"
+inventory_sha256 = "d3695c92b00109b1259f7065c826d70a13d9e4651bbf4db398f43b7db11725ac"
 exclusions_sha256 = "938ddad6868e3a6a928a0720de503d2c6745c1ed05522321fd81e0d2a9f4c6ca"
-cargo_lock_sha256 = "842f09a5e4891422572b95ec5140da82b6b1c8278e29c9cf3e7f0ed6e41dcca5"
-cargo_features_sha256 = "24b61d47c1d7b3cd8877a438029133a089a7d479a1f0f5c247da70fa1064d7b2"
+cargo_lock_sha256 = "aebbcd6c51e01fb77b97c69e2304f3ad34c66cdf6f3b2cc4e0fdc89829a9581f"
+cargo_features_sha256 = "47c0921024bfff9f3940814f4bb24aefa991504628f7da720988c1c30e253694"
 feature_worlds_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 feature_worlds = 0
 packages = 16
-targets = 150
-physical_rust_files = 2025
-base_source_contexts = 3474
+targets = 167
+physical_rust_files = 2173
+base_source_contexts = 3706
 derived_source_contexts = 0
-source_facts = 751196
-projection_queries = 2936621
-projected_facts = 2512
+source_facts = 824346
+projection_queries = 3168025
+projected_facts = 2567
 unresolved_bindings = 0
 analyzer_semantics = 6
 
 [[analysis.contract_source]]
 path = "zrail-baseline.toml"
-sha256 = "06cd7dc6a8024ec417c78bccd806795ee496698e7c3e4d3868f1a8fcc91c25c8"
+sha256 = "9259ae9e9f531ebd96eb0f449385e3dd80c795aef987588b244eb06b2bb5bb0e"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "053bfc0321e9ae27167d46f103098c2beb136b1f14aa67d1d9914fbf90de34dd"
+sha256 = "49ac86ab52eed4327a63486794118ea69b48e2ba6d879c048d4211530426b86a"
 
 [[package]]
 name = "rafter"
@@ -444,7 +444,7 @@ default_features = true
 
 [package.dependency.source]
 kind = "registry"
-requirement = "0.39.4"
+requirement = "0.41.0"
 
 [[package.dependency]]
 alias = "rafter"
@@ -783,6 +783,20 @@ directory = "crates/rafter"
 requirement = "=0.0.2-alpha.1"
 
 [[package.dependency]]
+alias = "rafter-crc32"
+name = "rafter-crc32"
+crate_root = "rafter_crc32"
+kind = "normal"
+scope = "internal"
+optional = false
+default_features = true
+
+[package.dependency.source]
+kind = "workspace-member"
+directory = "crates/rafter-crc32"
+requirement = "=0.0.2-alpha.1"
+
+[[package.dependency]]
 alias = "rafter-invariant-test"
 name = "rafter-invariant-test"
 crate_root = "rafter_invariant_test"
@@ -889,6 +903,20 @@ requirement = "=0.0.2-alpha.1"
 alias = "rafter-runtime"
 name = "rafter-runtime"
 crate_root = "rafter_runtime"
+kind = "normal"
+scope = "internal"
+optional = true
+default_features = true
+
+[package.dependency.source]
+kind = "workspace-member"
+directory = "crates/rafter-runtime"
+requirement = "=0.0.2-alpha.1"
+
+[[package.dependency]]
+alias = "rafter-runtime"
+name = "rafter-runtime"
+crate_root = "rafter_runtime"
 kind = "development"
 scope = "internal"
 optional = false
@@ -911,6 +939,20 @@ default_features = true
 [package.dependency.source]
 kind = "workspace-member"
 directory = "crates/rafter-runtime-api"
+requirement = "=0.0.2-alpha.1"
+
+[[package.dependency]]
+alias = "rafter-storage"
+name = "rafter-storage"
+crate_root = "rafter_storage"
+kind = "normal"
+scope = "internal"
+optional = true
+default_features = true
+
+[package.dependency.source]
+kind = "workspace-member"
+directory = "crates/rafter-storage"
 requirement = "=0.0.2-alpha.1"
 
 [[package.dependency]]
@@ -1186,7 +1228,7 @@ features = [
 
 [package.dependency.source]
 kind = "registry"
-requirement = "0.23.42"
+requirement = "0.23.45"
 
 [[package.dependency]]
 alias = "sha2"
@@ -1203,23 +1245,115 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "1d5abc63621d649fe2a8069aec9ec343557f8d8895313a2c6aec0b419a174003"
+sha256 = "57603b40d81898c00cf988bc5ee8cb8d1df7de70d92b797462177f151b59693e"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
 sha256 = "d0bd42b67da87cd2aafabb4df2c3dc9a26bad783968911c44dc73b3aa7931559"
 
 [[gate.input]]
+path = ".github/actions/setup-invariant-runtime/action.yml"
+sha256 = "e816816d622c3bab74e3dbc1115530ac208a7264aa819795556c66d9819b676d"
+
+[[gate.input]]
+path = ".github/actions/setup-invariant-runtime/install-packages.sh"
+sha256 = "d92a9d14de5780c1cb4771a55f77a765f46a4fe14f8c2ab7191ddadde703a2a2"
+
+[[gate.input]]
 path = ".github/actions/setup-rust/action.yml"
-sha256 = "4adb8f2b8f881839631c73e4f3d759616b8f380489c7ea23e5b549ba8e422053"
+sha256 = "7ae4cdd9c7d91b6d352fdc68d1e1daaa8780c803f1cadedb09245efc5084fa5a"
+
+[[gate.input]]
+path = ".github/workflows/io-stall.yml"
+sha256 = "2506067790acdd0fddb705eaab52834df7caf5b65d4e4c0678230db7e9176985"
+
+[[gate.input]]
+path = ".github/workflows/nightly.yml"
+sha256 = "5a76a24d7672cffae51a78919273e0681947e7f13517cb725f7dbff733db8c1a"
+
+[[gate.input]]
+path = "scripts/archive_dependencies.py"
+sha256 = "061c7fb3d9763c7e193624e0fcc0597ef990919d5c32f8b95b5e7999c1259a77"
+
+[[gate.input]]
+path = "scripts/archive_retention.py"
+sha256 = "f32af7fe70ff2bad7a646f07ba05d9a8ddb5d8cda3c15b6b7054ace0217b49f0"
+
+[[gate.input]]
+path = "scripts/audit-published-dependencies"
+sha256 = "606d7bfd9710396ec7ce09dd6551f656eb5b011e5bb6ca88e9ecb31022e28b51"
+
+[[gate.input]]
+path = "scripts/cargo-test-exact"
+sha256 = "b175525ade2c69293fc459124d2aa296651cc2249ad7ea2df5626c7f55a3d636"
+
+[[gate.input]]
+path = "scripts/check-public-api"
+sha256 = "b39f0399a94640bfece882f33842854bb025393174d6dc1fc8a682cc99e691c7"
 
 [[gate.input]]
 path = "scripts/invariants-pr-preflight"
 sha256 = "a5f1d1036378a673269addb26223ee593eb340bd11a36e0aff4a177cabc996c5"
 
 [[gate.input]]
+path = "scripts/public_api_check.py"
+sha256 = "bef9fa7fd1fb1e554d3f1377c69e7dd1c3eae0abc0cc67d53d08b4c28ec37d95"
+
+[[gate.input]]
+path = "scripts/published_dependency_audit.py"
+sha256 = "63ec18c9e87e0d5ca730b57f3a2ae5eadeff7498749e2fd12cfdc7c041d1c48c"
+
+[[gate.input]]
+path = "scripts/record-storage-environment"
+sha256 = "3dbd02f4f2dcfc9576c0a0a345664ec253684c0d84c092ce9ac81297047deecd"
+
+[[gate.input]]
+path = "scripts/reference-ledger-publication"
+sha256 = "52c03a43433a9a6797949072662d7136974300f1798e97dfb8d05ba9e51475c1"
+
+[[gate.input]]
+path = "scripts/reference-owner-soak"
+sha256 = "ea1d4ab30bc5ec891f9ef9ddaebbb363a0cc781749e1e7796eaab2aabe7c5476"
+
+[[gate.input]]
+path = "scripts/reference-package-check"
+sha256 = "772867adcfa226f7a8f6f2458b4d9d4b018531faec856e1b602668ea923cc7c9"
+
+[[gate.input]]
+path = "scripts/reference-source-check"
+sha256 = "18982c0d6075c8a7e03d6eedb680cdee39d184e41afb75a72eee012e1b84088d"
+
+[[gate.input]]
+path = "scripts/tests/invariant_runtime_fixture.py"
+sha256 = "4cd9ecb4c6de558fa3e0e169d971cd02ad9cbbdb53191b5403e4995affc68956"
+
+[[gate.input]]
 path = "scripts/tests/review_policy_test.py"
 sha256 = "e82fc776949cd198e04885c066a33565fb1182f0e20b2aeac133b88175ea28e3"
+
+[[gate.input]]
+path = "scripts/tests/test_archive_dependencies.py"
+sha256 = "e98367ab9442f4d57b4e77de49923d3ce6c2b414a0ca14d03d69c0ce50e09dd1"
+
+[[gate.input]]
+path = "scripts/tests/test_invariant_runtime_setup.py"
+sha256 = "30e199304ad5cddd4f832d8ae4467d2cad6325653cbe9532dcbab95eebf31b72"
+
+[[gate.input]]
+path = "scripts/tests/test_public_api_check.py"
+sha256 = "d27403fa373882281008d8c7be8f13df719b48961fa5823f5453338672b822eb"
+
+[[gate.input]]
+path = "scripts/tests/test_published_dependency_audit.py"
+sha256 = "15b9bbee2fde6cf5d0800b14ab9a7e3152c4f41861df0e67cf832855c3de67b4"
+
+[[gate.input]]
+path = "scripts/tests/test_reference_owner_soak.py"
+sha256 = "768e3b06ad963bd676d13764efa046ccb95dc1fb96a8f1caf845232875e64809"
+
+[[gate.input]]
+path = "scripts/tests/test_storage_environment.py"
+sha256 = "04d601a58b3ccd275f8fb0e8adf78ee90d0f7224afc7e61bd59428b0877509b8"
 
 [[gate.input]]
 path = "scripts/zrail-reconcile"
@@ -1230,28 +1364,32 @@ path = "verification/github-actions.lock"
 sha256 = "d9cdce68c892ba18e227f77106f64df324df02ace62c727d02de89a6453a3561"
 
 [[gate.input]]
+path = "verification/reference-owner-soak-inventory.txt"
+sha256 = "629f298ce8e746c8a259c1213c7d51128d2dfde1eac6c5bece31928753b96e6d"
+
+[[gate.input]]
 path = "zcheck.toml"
-sha256 = "2e5ef6eece7fd7d1079a82023cc476a8cccdb3ae84f62e5507e0520a438bfd08"
+sha256 = "df47b4da80a70e8c115eb26ae707f177a36c05eb6dfd267d1fc62d3c9b61fd45"
 
 [[gate]]
 name = "rustdoc"
 path = "scripts/rustdoc-check"
-sha256 = "c45a71ad5c57a10df1d4329debff73612ec80a4f1413ce4d378fe3174bfb90d4"
+sha256 = "f3b8c10805a4942d4beffa293382c5e2da89d915c542981aac82057e27741936"
 
 [[macro_implementation]]
 package = "rafter-invariant-test"
 directory = "crates/rafter-invariant-test"
-inputs_sha256 = "d33a14fc45f06272ebe9cdfc49dc6efa4010f66a1dac5154097a64454cb92954"
+inputs_sha256 = "63d6d174b5eaa0e0bf722727d36823c30620a4d7c7b884df24f43f65ff4f945f"
 
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "1c9a1e06fb4859c0e708c43692716551cda70308e827b0b8d36b0d0f1f336680"
+inputs_sha256 = "0ebf215e62e4ef738c6adca79f3fad370c61f7217c6eab5886be56d0eb8086bd"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "12398adea0fe937641239f76e693ff305363bda3e46c0b02309a4edc2deba509"
+inputs_sha256 = "9477ff625baac2578091ccd45a7cdd8887a9e06e8011d7f01ec419d05bf41abc"
 
 [[macro_source]]
 allowance = "clap::Parser"
@@ -1419,7 +1557,7 @@ value = 698
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-invariants/src/producer/tla_exec_budget_tests.rs"
-value = 638
+value = 619
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1439,12 +1577,12 @@ value = 843
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-invariants/src/tests.rs"
-value = 702
+value = 643
 
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-invariants/src/verification/source/registry_snapshot/tests.rs"
-value = 603
+value = 602
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1479,7 +1617,7 @@ value = 434
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-multiraft/tests/audit_adversarial.rs"
-value = 623
+value = 610
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1599,7 +1737,7 @@ value = 745
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-service/tests/transport_waiters.rs"
-value = 914
+value = 911
 
 [[ratchet]]
 rule = "rust.file-size"
@@ -1705,11 +1843,6 @@ value = 424
 rule = "rust.file-size"
 target = "crates/rafter/src/node/tests/replication/follower.rs"
 value = 407
-
-[[ratchet]]
-rule = "rust.file-size"
-target = "crates/rafter/tests/dependency_boundary.rs"
-value = 423
 
 [[ratchet]]
 rule = "rust.file-size"

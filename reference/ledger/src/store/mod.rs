@@ -20,17 +20,17 @@
 //! Each frame carries the whole application state rather than a delta. The
 //! ledger's durable state is bounded by [`LedgerConfig`], so a whole image is
 //! affordable, and it buys the property that every committed frame is
-//! independently complete: recovery decodes the newest committed frame and
-//! stops. A delta journal would need a base image, a checkpoint protocol, and
-//! a rule for ordering the two on recovery — three mechanisms to audit instead
-//! of one, and three chances for a torn tail to strand a delta whose base is
-//! gone.
+//! independently complete: recovery validates every committed frame while
+//! retaining only the newest model. A delta journal would need a base image,
+//! a checkpoint protocol, and a rule for ordering the two on recovery — three
+//! mechanisms to audit instead of one, and three chances for a torn tail to
+//! strand a delta whose base is gone.
 //!
 //! The image is exactly the adapter's application snapshot frame. The contract
 //! enumerates the same facts for the durable transaction and for the
 //! application snapshot, so encoding them twice would be two chances to forget
-//! the deduplication cache. Recovery decodes an image through
-//! [`Ledger::from_snapshot`], which is the model's own validating restore path,
+//! the deduplication cache. Recovery decodes an image through the model-owned
+//! restore checks shared with [`Ledger::from_snapshot`],
 //! so a frame whose checksums verify still cannot produce a ledger that
 //! violates a resource or supply invariant.
 //!
@@ -444,6 +444,8 @@
 //!   first byte takes, and the checksum every record is sealed with.
 //! - `frame` — the codec over that layout, and the recognition order the
 //!   section above on which residue an opening may truncate describes.
+//! - `frame_output` — fixed-size records and two-pass streamed frame emission
+//!   over borrowed model state, used by replacement publication.
 //! - `scan` — reading the header and then every committed frame, stopping at
 //!   the first residue.
 //! - `damage` — [`TornTail`], the vocabulary that section is written in.
@@ -473,9 +475,13 @@ mod error;
 mod fault;
 mod format;
 mod frame;
+mod frame_input;
+mod frame_output;
 mod handle;
 mod journal_file;
 mod open;
+#[cfg(all(test, unix))]
+mod process_test;
 mod publication;
 pub mod raw_journal;
 mod report;

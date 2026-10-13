@@ -135,7 +135,7 @@ fn a_local_read_is_served_at_the_waiter_limit() {
     let refused = block_on(handle.read("alpha".to_owned(), ReadConsistency::Linearizable))
         .expect_err("a second barrier is over the bound");
     assert!(
-        matches!(refused, ReadError::Transport { .. }),
+        matches!(refused, ReadError::Backpressure),
         "got {refused:?}"
     );
 

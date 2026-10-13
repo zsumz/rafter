@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Compare peer messages emitted and decoded by published and candidate archives.
+
+Requires Python 3.11+ and rustup. Both archive sets compile the same independent
+public-API fixture. Checks cover both message directions, canonical v1 bytes,
+and typed refusals; they do not establish mixed-version cluster correctness.
+"""
+
+import sys
+import zlib
+
+from archive_compatibility import ArchiveRun, ROOT, run_matrix
+from archive_inputs import tree_inventory
+
+
+def refusal_frames(directory, valid_frames):
+    directory.mkdir()
+    vote = bytearray((valid_frames / "request-vote-wide.bin").read_bytes())
+    boolean = bytearray((valid_frames / "vote-response-true.bin").read_bytes())
+
+    def rewritten(original, offset, replacement):
+        changed = bytearray(original)
+        changed[offset:offset + len(replacement)] = replacement
+        changed[-4:] = zlib.crc32(changed[:-4]).to_bytes(4, "big")
+        return changed
+
+    frames = {
+        "future-version": rewritten(vote, 4, bytes([99])),
+        "reserved-tag": rewritten(vote, 5, bytes([5])),
+        "invalid-magic": rewritten(vote, 0, b"NOPE"),
+        "checksum": vote[:-1] + bytes([vote[-1] ^ 1]),
+        "truncated": vote[:5],
+        "trailing": vote + b"\0",
+        # RFPM magic/version/tag, term[u64], voter[u64], boolean[u8].
+        "invalid-boolean": rewritten(boolean, 22, bytes([2])),
+    }
+    for name, frame in frames.items():
+        (directory / f"{name}.bin").write_bytes(frame)
+
+
+class Run(ArchiveRun):
+    label = "wire-compatibility"
+    scope = "bidirectional RFPM v1 codec compatibility"
+    packages = frozenset({"rafter", "rafter-crc32", "rafter-codec"})
+    dependencies = ("rafter", "rafter-codec")
+    probe_name = "rafter-wire-compatibility-probe"
+    fixture = ROOT / "reference/fenced-lock/src/bin/wire-format-probe"
+    baseline = ROOT / "verification/wire-compatibility-baseline.json"
+    script = "wire-compatibility-check"
+
+    def matrix(self, baseline, candidate):
+        frames = self.artifacts / "frames"
+        frames.mkdir()
+        binaries = {"baseline": baseline, "candidate": candidate}
+        inventories = {}
+        for writer, binary in binaries.items():
+            directory = frames / writer
+            self.command(f"{writer}-write", [binary, "write", directory], frames)
+            inventories[writer] = tree_inventory(directory)
+            for reader, other in binaries.items():
+                self.command(f"{writer}-to-{reader}", [other, "read", directory], frames)
+                if tree_inventory(directory) != inventories[writer]:
+                    raise ValueError("wire inspection mutated its input frames")
+                self.receipt["cases"].append({"writer": writer, "reader": reader,
+                                               "frames": inventories[writer]})
+        if inventories["baseline"] != inventories["candidate"]:
+            raise ValueError("published and candidate codecs disagree on canonical v1 bytes")
+        self.receipt["canonical_bytes_identical"] = True
+        invalid = frames / "refusals"
+        refusal_frames(invalid, frames / "baseline")
+        before = tree_inventory(invalid)
+        for role, binary in binaries.items():
+            self.command(f"{role}-refusals", [binary, "refuse", invalid], frames)
+            if tree_inventory(invalid) != before:
+                raise ValueError("wire refusal mutated its input frames")
+            self.receipt["cases"].append({"reader": role, "operation": "refuse",
+                                           "frames": before, "whole_snapshot_refused": True})
+
+
+if __name__ == "__main__":
+    sys.exit(run_matrix(Run, __doc__))

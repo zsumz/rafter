@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::fmt::Write as _;
 #[cfg(unix)]
-use std::{fs, path::Path};
+use std::fs;
 
 #[cfg(unix)]
 use super::super::test_exec::TestOutcome;
@@ -137,7 +137,7 @@ fn passing_detector_outcome() -> TestOutcome {
 
 #[cfg(unix)]
 pub(super) fn timeout_fixture_output_dir(suffix: &str) -> std::path::PathBuf {
-    let path = Path::new("target/rafter-invariants/tests").join(format!(
+    let path = crate::tests::scratch_path("tests").join(format!(
         "simulator-producer-timeout-{suffix}-{}",
         std::process::id()
     ));

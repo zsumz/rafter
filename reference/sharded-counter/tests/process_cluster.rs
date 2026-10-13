@@ -902,19 +902,21 @@ fn completed_history_outranks_different_local_pending_operations() {
     }
 
     let host = cluster.leader_for_group(group);
-    assert_eq!(
-        cluster.request_on(host, &format!("SLOW {group} 2000")),
-        format!("OK SLOW group={group} milliseconds=2000")
-    );
+    // Hold the proposal behind other groups without delaying this group's
+    // consensus traffic. Authoritative admission and historical reads still
+    // need a live quorum while the proposal waits for worker capacity.
+    let blockers = occupy_all_workers(&mut cluster, host, group);
     let admitted = number_field(&cluster.request_on(host, "STATUS"), "client_admitted");
     let address = cluster.node_addr(host);
     let pending = thread::spawn(move || {
         let mut connection =
             LineConnection::connect(address, CONNECTION_TIMEOUTS).expect("leader connection opens");
-        connection.request(&format!("ADD {group} 1 {client} 1 3 1"))
+        let response = connection.request(&format!("ADD {group} 1 {client} 1 3 1"));
+        eprintln!("delayed proposal response on host {host}: {response:?}");
+        response
     });
     cluster.wait_status_above(host, "client_admitted", admitted);
-    cluster.wait_status_at_least(host, "workers", 1);
+    cluster.wait_status_at_least(host, "workers", 4);
     assert_eq!(
         cluster.request_on(host, &format!("ADD {group} 1 {client} 1 2 1")),
         "OK REPLAY ADDED value=2"
@@ -931,6 +933,10 @@ fn completed_history_outranks_different_local_pending_operations() {
         cluster.request_on(host, &format!("OPEN {group} 1 {client} 1")),
         "OK SESSION already_open"
     );
+    assert!(
+        !pending.is_finished(),
+        "the managed proposal must remain pending while completed history is checked"
+    );
     let pending_response = pending
         .join()
         .expect("pending proposal thread does not panic")
@@ -941,10 +947,12 @@ fn completed_history_outranks_different_local_pending_operations() {
             || pending_response.starts_with("ERR NOT_COMMITTED "),
         "the delayed proposal returned an unexpected outcome: {pending_response}"
     );
-    assert_eq!(
-        cluster.request_on(host, &format!("SLOW {group} 0")),
-        format!("OK SLOW group={group} milliseconds=0")
-    );
+    for blocker in blockers {
+        assert_eq!(
+            cluster.request_on(host, &format!("SLOW {blocker} 0")),
+            format!("OK SLOW group={blocker} milliseconds=0")
+        );
+    }
     if pending_response != "OK ADDED value=3" {
         let retry = cluster.request_leader(&format!("ADD {group} 1 {client} 1 3 1"));
         assert!(

@@ -123,6 +123,13 @@ fn every_operation_surface_projects_to_a_category_nameable_from_the_root() {
     assert_eq!(read, ReadErrorKind::ShuttingDown);
     assert_eq!(transfer, TransferLeadershipErrorKind::ShuttingDown);
     assert_eq!(shutdown, ShutdownErrorKind::AlreadyShutDown);
+    let write = WriteError::Backpressure;
+    let read = ReadError::Backpressure;
+    assert_eq!(write.kind(), WriteErrorKind::Backpressure);
+    assert_eq!(read.kind(), ReadErrorKind::Backpressure);
+    assert!(!write.fate().may_commit());
+    assert!(std::error::Error::source(&write).is_none());
+    assert!(std::error::Error::source(&read).is_none());
 }
 
 /// The options pair is constructible from outside the crate, which for two

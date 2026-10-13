@@ -4,6 +4,8 @@
 //! preserves the storage crate's established internal module path.
 
 pub use crate::format::v1::log_compaction::{
-    decode_raft_log_compaction_marker, encode_raft_log_compaction_marker,
-    DecodeRaftLogCompactionMarkerError,
+    encode_raft_log_compaction_marker, DecodeRaftLogCompactionMarkerError,
 };
+
+#[cfg(test)]
+pub use crate::format::v1::log_compaction::decode_raft_log_compaction_marker;

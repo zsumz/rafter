@@ -44,6 +44,9 @@ pub enum WriteErrorKind {
     LocalProposalIdExhausted,
     /// The managed driver violated its own invariant.
     ManagedInvariantViolation,
+    // Append new kinds so the published numeric categories keep their values.
+    /// Managed write admission is full.
+    Backpressure,
 }
 
 /// Stable category of a [`TransferLeadershipError`](super::TransferLeadershipError).
@@ -71,6 +74,10 @@ pub enum TransferLeadershipErrorKind {
     ShuttingDown,
     /// The group is permanently poisoned.
     Poisoned,
+    /// Managed transfer admission is full.
+    Backpressure,
+    /// Backend release prevented request confirmation.
+    Unconfirmed,
 }
 
 /// Stable category of a [`ShutdownError`](super::ShutdownError).
@@ -126,4 +133,6 @@ pub enum ReadErrorKind {
     ReadIdExhausted,
     /// The managed driver violated its own invariant.
     ManagedInvariantViolation,
+    /// Managed read admission is full.
+    Backpressure,
 }

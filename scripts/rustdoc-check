@@ -4,7 +4,7 @@
 # Usage:
 #   scripts/rustdoc-check
 #
-# Two builds, because neither one covers the other:
+# Separate builds cover the default, optional durable, and workspace surfaces:
 #
 #  1. RELEASE.md's publish list, selected by name. This is the HTML a crates.io
 #     reader lands on, so a doc that does not build or a public item without
@@ -85,6 +85,9 @@ cd "$repo_root"
 
 echo "rustdoc: published crates (${publish_crates[*]})"
 RUSTDOCFLAGS="-D warnings -D missing-docs" cargo doc --no-deps --locked "${package_args[@]}"
+
+echo "rustdoc: opt-in durable client"
+RUSTDOCFLAGS="-D warnings -D missing-docs" cargo doc --no-deps --locked -p rafter-service --features durable
 
 echo "rustdoc: whole workspace"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked --workspace

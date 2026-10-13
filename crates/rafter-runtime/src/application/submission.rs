@@ -9,6 +9,13 @@ use std::{error::Error, fmt};
 pub enum ApplicationSubmitRejection {
     /// An application batch must contain at least one entry.
     Empty,
+    /// An item's inclusive range ended before it began.
+    InvalidRange {
+        /// First log index claimed by the item.
+        first: LogIndex,
+        /// Final log index claimed by the item.
+        last: LogIndex,
+    },
     /// The first or a subsequent log index was not the required next index.
     NonContiguous {
         /// Index required at the refused position.

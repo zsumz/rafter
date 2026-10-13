@@ -4,6 +4,7 @@ use std::path::Path;
 
 use super::*;
 
+mod clause_coverage;
 mod support;
 
 use support::{
@@ -12,7 +13,7 @@ use support::{
 };
 pub(crate) use support::{
     aggregate_unverified, loaded, passing_bundles, passing_bundles_for_profile, plan_receipt,
-    synthetic_obligation_summary,
+    scratch_path, synthetic_obligation_summary,
 };
 
 #[test]
@@ -115,66 +116,6 @@ fn producer_invocation_cannot_claim_a_subprocess_launcher_chain() {
         .iter()
         .any(|issue| issue.message.contains("actual producer invocation"))));
 }
-#[test]
-fn missing_direct_clause_keeps_only_parent_red() {
-    let (mut catalog, manifest) = loaded();
-    let evidence = catalog
-        .evidence
-        .iter_mut()
-        .find(|evidence| evidence.clause_id == "RD-06.b" && evidence.strength == "direct")
-        .expect("RD-06.b direct evidence exists");
-    evidence.invariant_id = "RD-05".to_owned();
-    evidence.clause_id = "RD-05.a".to_owned();
-    let bundles = passing_bundles(&catalog, &manifest);
-
-    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
-    assert_only_parent_red(&report, "RD-06");
-    assert!(report.invariants.iter().any(|verdict| {
-        verdict.invariant_id == "RD-06"
-            && verdict
-                .issues
-                .iter()
-                .any(|issue| issue.evidence_id == "RD-06.b/coverage")
-    }));
-}
-
-#[test]
-fn e2e_does_not_satisfy_direct_clause() {
-    let (mut catalog, manifest) = loaded();
-    let evidence = catalog
-        .evidence
-        .iter_mut()
-        .find(|evidence| evidence.clause_id == "RD-06.b" && evidence.strength == "direct")
-        .expect("RD-06.b direct evidence exists");
-    evidence.strength = "e2e".to_owned();
-    let bundles = passing_bundles(&catalog, &manifest);
-
-    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
-    assert_only_parent_red(&report, "RD-06");
-    assert!(report.invariants.iter().any(|verdict| {
-        verdict.invariant_id == "RD-06"
-            && verdict
-                .issues
-                .iter()
-                .any(|issue| issue.message.contains("has no direct evidence"))
-    }));
-}
-
-#[test]
-fn sibling_clause_evidence_cannot_substitute() {
-    let (mut catalog, manifest) = loaded();
-    let evidence = catalog
-        .evidence
-        .iter_mut()
-        .find(|evidence| evidence.clause_id == "RD-06.b" && evidence.strength == "direct")
-        .expect("RD-06.b direct evidence exists");
-    evidence.clause_id = "RD-06.a".to_owned();
-    let bundles = passing_bundles(&catalog, &manifest);
-
-    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
-    assert_only_parent_red(&report, "RD-06");
-}
-
 #[test]
 fn incomplete_clause_result_fails_parent() {
     let (catalog, manifest) = loaded();

@@ -2,6 +2,25 @@
 
 ## Local qualification
 
+Install Rust through [rustup](https://rustup.rs/) and make its binaries available
+in your shell (`. "$HOME/.cargo/env"` on Unix). The checked-in
+[`rust-toolchain.toml`](../rust-toolchain.toml) selects Rust 1.88.0, rustfmt, and
+Clippy for this checkout, independently of your global default toolchain.
+CI's shared setup action exports `RUSTUP_TOOLCHAIN` so jobs that explicitly
+request newer packaging tools or nightly fuzzing retain their chosen compiler.
+
+Start with the locked workspace build and tests:
+
+```sh
+cargo build --locked --workspace --all-targets
+cargo test --locked --workspace
+```
+
+These commands include the examples and repository tooling. The invariant
+executor is also compiled and linted on macOS; its authoritative execution
+remains in Linux CI. The reference applications are a separate
+workspace and need the reference checks below.
+
 Install [zcheck](https://github.com/zsumz/zcheck) and the same
 [zrail release](https://github.com/zsumz/zrail/releases/tag/v0.0.3-rc.8) as CI:
 
@@ -15,10 +34,49 @@ zcheck
 Rafter remains qualified on Rust 1.88. These developer tools have a newer
 Rust source requirement; the explicit 1.97.1 install toolchain matches CI.
 The qualification scripts also require Python 3.11 or newer.
+Check `python3 --version` in the same shell before running `zcheck`; macOS's
+system Python can be older even when a newer Python is installed elsewhere.
+For an existing Homebrew Python 3.13 installation, select it with
+`export PATH="$(brew --prefix python@3.13)/libexec/bin:$PATH"`.
 
 The default graph in [`zcheck.toml`](../zcheck.toml) runs formatting, Clippy,
 rustdoc, proof-reference checks, the architecture contract, and workspace tests.
 `zcheck plan check` shows the graph. Each run records logs and a receipt.
+CI also builds every workspace target and the optional durable-service targets
+with the current stable Rust compiler. To reproduce that separate build check:
+
+```sh
+rustup toolchain install stable --profile minimal
+zcheck run current-stable
+```
+
+This records the resolved compiler version and uses the locked dependencies.
+It checks compilation; the Rust 1.88 test, lint, documentation, and exact-package
+lanes remain the release baseline. CI retains both Rust and Cargo identities.
+The current-stable task is included in `full`, and requires the additional
+toolchain above; ordinary `zcheck` continues to use the checkout's pinned MSRV.
+
+CI also audits all publishable libraries and every optional feature against a
+fresh RustSec advisory database. Run the same gate locally with:
+
+```sh
+cargo +1.97.1 install cargo-audit --version 0.22.2 --locked
+zcheck run dependency-audit
+```
+
+This gate is included in `full` and needs network access. It resolves an isolated
+consumer seeded by the workspace lock, then refuses changed third-party versions
+or checksums, missing public roots/features, private paths, and advisory ignores
+or target/severity filters. Vulnerabilities, informational advisories and yanked
+packages fail qualification. Receipts retain the exact audited lock, graph,
+checker/compiler identities and fetched advisory database commit. The root lock
+is never rewritten. CI and zcheck also pass `--include-workspace`, auditing the
+complete root lock (including test/verifier dependencies) with a separate lock,
+report and receipt entry. A clean public graph cannot mask a workspace advisory.
+The script without that option checks only public libraries. Source dependency
+evidence complements exact-archive tests; standalone benchmark/fuzz/reference
+locks and license policy remain separate assessments.
+
 `zcheck run full` adds the deeper local lanes; inspect the plan for platform
 requirements. Invariant evidence execution requires Linux, Python 3.11+, Java
 21, and the pinned TLC JAR at `tools/cache/tla2tools.jar`. Install the asset from
@@ -27,12 +85,32 @@ and verify it against `tools/tla/SHA256SUMS` before running
 `scripts/invariants-pr-preflight`. CI installs the reviewed asset through its
 pinned `zactionsz/tla-tools` action.
 
+Linux evidence jobs also run the shared
+[`setup-invariant-runtime` action](../.github/actions/setup-invariant-runtime/action.yml)
+after tool installation. It selects exact runtime packages from a dated, signed
+[Ubuntu archive snapshot](https://snapshot.ubuntu.com/), using isolated APT lists
+and leaving the host's configured repositories unchanged. This keeps producer
+and aggregate executable identities equal across hosted runner image updates.
+Metadata and package retrieval each get four attempts with 10/20/40-second
+backoffs, under one eight-minute deadline. APT requires every index update to
+succeed and retains downloaded archives in the action's private directory.
+Installation runs once with downloads disabled, followed by exact installed
+version checks; unsuccessful retrieval or installation stops evidence production.
+The helper's execution, cancellation, and refusal paths are exercised by
+`python3 -m unittest scripts/tests/test_invariant_runtime_setup.py`, in both
+CI lint and `zcheck run lint`. These use fake package tools locally; real APT
+signature/hash verification and executable identity remain hosted checks.
+When refreshing the snapshot, review all package versions together, update the
+candidate architecture lock, and rerun every producer and aggregate in the same
+workflow attempt. Preserve exact receipt authentication; a version label alone
+does not prove executable identity.
+
 The full invariant task allows eight hours: its required layers have sequential
 budgets of 40 minutes for tests, 40 for simulation, and 338 for TLA, plus an hour
 for compilation, aggregation, and finalization. The preflight checks this sum
 against the manifest so a profile change cannot silently outgrow its parent.
-The default `zcheck` graph remains the shorter development check. On macOS, the local
-Clippy task excludes the Linux-specific invariant executor; Linux CI checks it.
+The default `zcheck` graph remains the shorter development check. Both macOS
+and Linux Clippy tasks check the full workspace, including the invariant executor.
 
 The underlying commands remain directly runnable:
 
@@ -85,6 +163,11 @@ approving that deployment; a refreshed lock or an approval file in the same
 patch cannot supply that decision. A new PR push cancels the previous run.
 Repository settings require this environment review and the documented PR
 checks while retaining signed commits and linear history.
+
+Invariant aggregate jobs retain failure reports when a producer fails, but stop
+when the workflow is canceled. A job guarded only by `always()` can continue
+after cancellation and hold the concurrency queue; see GitHub's
+[cancellation rules](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-cancellation).
 
 zrail resolves dependency macro exports offline from Cargo's registry archives.
 On a fresh checkout, run `cargo fetch --locked` before invoking `zrail check`

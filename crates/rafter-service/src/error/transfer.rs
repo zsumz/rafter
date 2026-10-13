@@ -1,9 +1,8 @@
 //! The managed leadership-transfer failure surface.
 //!
-//! A transfer is a request rather than an outcome, so every variant here reports
-//! a refusal to start. It carries no fate and no unknown outcome because a
-//! transfer commits no entry of its own, and it renders through [`super`]'s
-//! shared leader-hint helper like the other two surfaces.
+//! A transfer request may be refused, accepted, or lose confirmation when its
+//! driver is released. None of these confirms the target became leader. A
+//! transfer commits no application entry and carries no write fate.
 
 #![allow(
     clippy::wildcard_imports,
@@ -15,10 +14,9 @@ use super::*;
 /// Errors returned by managed leadership transfer.
 ///
 /// A transfer is a request, not an outcome: `Ok(())` from the driver means the
-/// request was accepted and its immediate effects were routed, so every variant
-/// here reports a refusal to start rather than a transfer that failed part-way.
-/// There is no [`WriteFate`] and no unknown outcome, because a transfer commits
-/// no entry of its own.
+/// request was accepted and its immediate effects were routed. Most errors
+/// report refusal; [`Self::Unconfirmed`] preserves uncertainty after backend
+/// release. No variant confirms who is now leader or carries a [`WriteFate`].
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum TransferLeadershipError {
@@ -60,6 +58,13 @@ pub enum TransferLeadershipError {
         /// Preserved typed cause, when poisoning originated in a callback.
         cause: Option<ErrorCause>,
     },
+    /// The managed control slot is still retained by queued work or a result.
+    Backpressure,
+    /// The driver released the incarnation before confirming the request.
+    ///
+    /// A transfer may have begun. Observe actual leadership under a fresh
+    /// incarnation; this does not report a protocol refusal or successful handoff.
+    Unconfirmed,
 }
 
 impl TransferLeadershipError {
@@ -72,6 +77,8 @@ impl TransferLeadershipError {
         match self {
             Self::NotLeader { .. } => TransferLeadershipErrorKind::NotLeader,
             Self::Rejected { .. } => TransferLeadershipErrorKind::Rejected,
+            Self::Backpressure => TransferLeadershipErrorKind::Backpressure,
+            Self::Unconfirmed => TransferLeadershipErrorKind::Unconfirmed,
             Self::WrongGroup => TransferLeadershipErrorKind::WrongGroup,
             Self::Storage { .. } => TransferLeadershipErrorKind::Storage,
             Self::Transport { .. } => TransferLeadershipErrorKind::Transport,
@@ -98,6 +105,10 @@ impl fmt::Display for TransferLeadershipError {
                 write!(formatter, "leadership transfer rejected: {reason}")?;
                 write_leader_hint(formatter, *leader_hint)
             }
+            Self::Backpressure => formatter.write_str("leadership transfer admission is full"),
+            Self::Unconfirmed => formatter.write_str(
+                "leadership transfer request outcome was not confirmed before backend release",
+            ),
             Self::WrongGroup => formatter.write_str(
                 "leadership transfer rejected: this driver does not own the requested group",
             ),
@@ -123,6 +134,8 @@ impl Error for TransferLeadershipError {
             },
             Self::NotLeader { .. }
             | Self::Rejected { .. }
+            | Self::Backpressure
+            | Self::Unconfirmed
             | Self::WrongGroup
             | Self::ShuttingDown => None,
         }

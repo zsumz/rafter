@@ -9,7 +9,6 @@ mod status;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     net::TcpListener,
     num::NonZeroUsize,
     path::PathBuf,
@@ -148,12 +147,13 @@ struct Engine {
 }
 
 pub fn run(config: &Config) -> Result<(), String> {
-    fs::create_dir_all(config.host_dir()).map_err(|error| {
-        format!(
-            "could not create host directory {}: {error}",
-            config.host_dir().display()
-        )
-    })?;
+    rafter_reference_harness::durable_directory::create_durable_directory(&config.host_dir())
+        .map_err(|error| {
+            format!(
+                "could not durably create host directory {}: {error}",
+                config.host_dir().display()
+            )
+        })?;
     let client_listener =
         TcpListener::bind("127.0.0.1:0").map_err(|error| format!("client bind failed: {error}"))?;
     let client_addr = client_listener
@@ -236,8 +236,10 @@ pub fn run(config: &Config) -> Result<(), String> {
 impl Engine {
     fn open_groups(&mut self, host_dir: &std::path::Path) -> Result<(), String> {
         let groups_dir = host_dir.join("groups");
-        fs::create_dir_all(&groups_dir)
-            .map_err(|error| format!("could not create {}: {error}", groups_dir.display()))?;
+        rafter_reference_harness::durable_directory::create_durable_directory(&groups_dir)
+            .map_err(|error| {
+                format!("could not durably create {}: {error}", groups_dir.display())
+            })?;
         let registry = self.open_or_initialize_registry(&groups_dir)?;
         self.registry = Some(registry);
         let mut recoveries = Vec::new();

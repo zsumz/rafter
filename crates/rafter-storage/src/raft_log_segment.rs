@@ -9,6 +9,7 @@ mod contract;
 mod error;
 mod file;
 mod frames;
+mod marker;
 mod memory;
 mod open;
 mod rewrite;

@@ -6,16 +6,20 @@
 //! corresponding application update and applied floor are durable. This module
 //! supplies the reusable one-owner worker for that second fence.
 //!
-//! [`crate::application::ApplicationWorker`] accepts only contiguous log indexes, accounts for
+//! [`crate::application::ApplicationWorker`] accepts only contiguous log ranges, accounts for
 //! entries and retained bytes until completions are consumed, constructs
 //! ready-only batches under a separate application-work byte limit, and
 //! verifies the application's durable floor after every successful batch. It
 //! owns no admission, reply, snapshot, or recovery policy. An embedding must poison its live service on
 //! [`crate::application::ApplicationEvent::Failed`] and reopen both Raft and
 //! application state from their durable floors.
+//! Each item represents one log entry by default; an embedding may cover a
+//! known protocol-only prefix with the next command through
+//! [`crate::application::ApplicationEntry::first_log_index`], without allocating placeholders.
 
 mod contract;
 mod event;
+mod read;
 mod submission;
 mod worker;
 
@@ -23,6 +27,7 @@ pub use contract::{ApplicationEntry, ApplicationWorkerOptions, DurableApplicatio
 pub use event::{
     ApplicationCompletion, ApplicationEvent, ApplicationFailure, ApplicationFailureKind,
 };
+pub use read::{ApplicationRead, ApplicationReadError, ApplicationReadRejection};
 pub use submission::{ApplicationSubmitError, ApplicationSubmitRejection};
 pub use worker::{ApplicationWorker, ApplicationWorkerShutdownError, ApplicationWorkerStopped};
 

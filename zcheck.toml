@@ -7,10 +7,9 @@
 # are slow and, for the invariant evidence, Linux-authoritative — scheduled CI
 # remains the authority for those, per docs/work-completion.md.
 #
-# Platform honesty: workspace-wide clippy is Linux-only because the invariant
-# evidence executor's descriptor-bound launch path compiles only on Linux and
-# dead-codes elsewhere; macOS runs the same lints over every other crate. The
-# skipped branch stays visible in the plan instead of claiming Linux proof.
+# Both supported hosts lint the complete workspace. The invariant executor's
+# descriptor-bound replay still admits execution only on Linux; macOS lint and
+# launcher tests do not qualify the Linux-authoritative evidence lanes.
 
 schema = 1
 default = "check"
@@ -35,34 +34,22 @@ tools = ["cargo"]
 resources = ["fuzz-target"]
 
 [tasks.clippy]
-description = "Run workspace Clippy with warnings denied; Linux-only because the invariant launcher dead-codes on other hosts."
+description = "Run workspace Clippy with warnings denied on Linux."
 platforms = ["linux"]
 run = ["cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
 tools = ["cargo"]
 resources = ["cargo-target"]
 
 [tasks.clippy-macos]
-description = "Run Clippy with warnings denied over every crate except the Linux-gated invariant tooling."
+description = "Run workspace Clippy with warnings denied on macOS."
 platforms = ["macos"]
-run = [
-  "cargo", "clippy",
-  "-p", "rafter",
-  "-p", "rafter-app",
-  "-p", "rafter-codec",
-  "-p", "rafter-crc32",
-  "-p", "rafter-invariant-test",
-  "-p", "rafter-invariant-test-macros",
-  "-p", "rafter-maelstrom",
-  "-p", "rafter-multiraft",
-  "-p", "rafter-runtime",
-  "-p", "rafter-runtime-api",
-  "-p", "rafter-service",
-  "-p", "rafter-sim",
-  "-p", "rafter-storage",
-  "-p", "rafter-transport-tcp-insecure",
-  "-p", "rafter-transport-tls",
-  "--all-targets", "--", "-D", "warnings",
-]
+run = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.clippy-durable]
+description = "Lint the opt-in durable client owner and its tests."
+run = ["cargo", "clippy", "--locked", "-p", "rafter-service", "--features", "durable", "--all-targets", "--", "-D", "warnings"]
 tools = ["cargo"]
 resources = ["cargo-target"]
 
@@ -81,6 +68,12 @@ resources = ["bench-target"]
 [tasks.transport-memory]
 description = "Run the transport receive-memory allocation gate."
 run = ["cargo", "run", "--manifest-path", "bench-compare/Cargo.toml", "--locked", "--no-default-features", "--bin", "check-transport-receive-memory"]
+tools = ["cargo"]
+resources = ["bench-target"]
+
+[tasks.wal-recovery-memory]
+description = "Bound allocations while rejecting malformed shared-WAL entry counts."
+run = ["cargo", "run", "--manifest-path", "bench-compare/Cargo.toml", "--locked", "--no-default-features", "--bin", "check-wal-recovery-memory"]
 tools = ["cargo"]
 resources = ["bench-target"]
 
@@ -112,6 +105,47 @@ description = "Exercise fail-closed macro reconciliation and complete-profile bu
 run = ["python3", "scripts/tests/review_policy_test.py"]
 tools = ["python3"]
 
+[tasks.runtime-setup-tests]
+description = "Exercise bounded runtime retrieval, cached installation, and fail-closed setup."
+run = ["python3", "-m", "unittest", "scripts/tests/test_invariant_runtime_setup.py"]
+tools = ["python3"]
+
+[tasks.io-stall-tests]
+description = "Exercise disposable-volume ownership, bounded probe failure, cleanup and source evidence without privileged commands."
+run = ["python3", "-m", "unittest", "scripts/tests/test_io_stall_volume.py", "scripts/tests/test_io_stall_controller.py", "scripts/tests/test_io_stall_runner.py", "scripts/tests/test_io_stall_counter.py", "scripts/tests/test_io_stall_crash.py", "scripts/tests/test_io_stall_majority.py", "scripts/tests/test_io_stall_resources.py"]
+tools = ["python3"]
+
+[tasks.storage-environment-tests]
+description = "Refuse ambiguous native filesystem identity and preserve failed capture evidence."
+run = ["python3", "-m", "unittest", "scripts/tests/test_storage_environment.py"]
+tools = ["python3"]
+
+[tasks.counter-guide-tests]
+description = "Refuse stale/mixed counter dependency graphs and leaked smoke-test children. Requires Python 3.11+."
+run = ["python3", "-m", "unittest", "scripts/tests/test_counter_guide.py"]
+tools = ["python3"]
+
+[tasks.counter-guide]
+description = "Build the extracted counter guide against this checkout and exercise real TLS processes. Requires Python 3.11+."
+needs = ["counter-guide-tests"]
+run = ["python3", "scripts/check-counter-guide", "--mode", "checkout"]
+tools = ["python3", "cargo", "openssl"]
+resources = ["counter-guide-target"]
+
+[tasks.counter-guide-pinned]
+description = "Qualify the copied standalone counter using only its exact Git revision and canonical lock. Requires Python 3.11+."
+needs = ["counter-guide-tests"]
+run = ["python3", "scripts/check-counter-guide", "--mode", "pinned"]
+tools = ["python3", "cargo", "openssl"]
+resources = ["counter-guide-target"]
+
+[tasks.counter-pressure]
+description = "Qualify bounded client admission and shutdown during blocked application publication. Requires Python 3.11+ and POSIX FIFOs."
+needs = ["counter-guide-tests"]
+run = ["python3", "scripts/check-counter-guide", "--mode", "checkout", "--pressure"]
+tools = ["python3", "cargo", "openssl"]
+resources = ["counter-guide-target"]
+
 [tasks.lint]
 description = "Validate formatting, lints, documentation, and proof references."
 needs = [
@@ -119,14 +153,23 @@ needs = [
   "format-fuzz",
   "clippy",
   "clippy-macos",
+  "clippy-durable",
   "clippy-fuzz",
   "clippy-bench",
   "transport-memory",
+  "wal-recovery-memory",
   "rustdoc",
   "work-completion",
   "tla-telemetry",
   "durable-bench-tests",
   "policy-tools",
+  "runtime-setup-tests",
+  "io-stall-tests",
+  "storage-environment-tests",
+  "public-api-tests",
+  "counter-guide",
+  "counter-guide-pinned",
+  "counter-pressure",
 ]
 
 [tasks.durable-bench-tests]
@@ -168,9 +211,69 @@ timeout = "45m"
 tools = ["cargo"]
 resources = ["cargo-target"]
 
+[tasks.durable-client]
+description = "Exercise managed writes, reads, maintenance, and lifecycle fences through the opt-in durable owner."
+run = ["scripts/cargo-test-exact", "440", "-", "--locked", "-p", "rafter-service", "--features", "durable"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.snapshot-process]
+description = "Kill snapshot writers at 36 publication/cleanup cases and verify strict recovery and later writes."
+platforms = ["linux", "macos"]
+run = ["scripts/cargo-test-exact", "1", "-", "--locked", "-p", "rafter-storage", "--lib", "--", "--ignored", "--exact", "storage_failpoint_test::snapshot_process_test::snapshot_publication_survives_process_loss", "--nocapture"]
+timeout = "10m"
+tools = ["cargo"]
+resources = ["cargo-target"]
+
 [tasks.check]
 description = "Qualify the checkout with the pull-request-tier local gates."
-needs = ["lint", "architecture", "test"]
+needs = ["lint", "architecture", "test", "durable-client", "snapshot-process"]
+
+[tasks.current-stable-identity]
+description = "Record the resolved compiler for the separately installed stable toolchain."
+run = ["rustc", "+stable", "--version", "--verbose"]
+tools = ["rustc"]
+
+[tasks.dependency-audit-tests]
+description = "Reject incomplete public dependency graphs and narrowed advisory reports. Requires Python 3.11+."
+run = ["python3", "-m", "unittest", "scripts/tests/test_published_dependency_audit.py"]
+tools = ["python3"]
+
+[tasks.public-api-tests]
+description = "Reject missing API comparisons, narrowed lints and changed source inputs. Requires Python 3.11+."
+run = ["python3", "-m", "unittest", "scripts/tests/test_public_api_check.py"]
+tools = ["python3"]
+
+[tasks.public-api]
+description = "Compare all public default/all-feature APIs with published 0.0.2-alpha.1. Requires Rust 1.97.1, cargo-semver-checks 0.51.0, Python 3.11+ and network."
+needs = ["public-api-tests"]
+run = ["python3", "scripts/check-public-api"]
+tools = ["rustup", "cargo", "cargo-semver-checks", "python3"]
+
+[tasks.dependency-audit]
+description = "Audit all public features and separately the complete workspace lock against fresh RustSec data. Requires cargo-audit 0.22.2, Python 3.11+, and network access."
+needs = ["dependency-audit-tests"]
+run = ["python3", "scripts/audit-published-dependencies", "--include-workspace"]
+tools = ["cargo", "cargo-audit", "python3"]
+resources = ["advisory-db"]
+
+[tasks.current-stable-workspace]
+description = "Build every workspace target with current stable Rust and the locked dependencies."
+needs = ["current-stable-identity"]
+run = ["cargo", "+stable", "build", "--locked", "--workspace", "--all-targets"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.current-stable-durable]
+description = "Build the opt-in durable service and its targets with current stable Rust."
+needs = ["current-stable-identity"]
+run = ["cargo", "+stable", "build", "--locked", "-p", "rafter-service", "--features", "durable", "--all-targets"]
+tools = ["cargo"]
+resources = ["cargo-target"]
+
+[tasks.current-stable]
+description = "Check forward compiler compatibility without changing the pinned MSRV."
+needs = ["current-stable-workspace", "current-stable-durable"]
 
 # --- deeper evidence lanes (not in the default graph) ----------------------
 
@@ -208,16 +311,49 @@ timeout = "60m"
 tools = ["cargo"]
 resources = ["reference-target"]
 
+[tasks.reference-owner-soak-runner-tests]
+description = "Refuse failed source patching and stale or empty owner-soak selections."
+run = ["python3", "-m", "unittest", "scripts/tests/test_reference_owner_soak.py"]
+tools = ["python3", "bash"]
+
+[tasks.reference-owner-soak-inventory]
+description = "Verify both ignored owner TLS soak selections without running them."
+needs = ["reference-owner-soak-runner-tests"]
+run = ["scripts/reference-owner-soak", "--list-only"]
+tools = ["cargo", "rustc", "git"]
+resources = ["reference-target"]
+
+[tasks.reference-owner-soak]
+description = "Exercise 96 cold-recovery cycles and 256 compactions without owner restart over file/TLS."
+needs = ["reference-owner-soak-runner-tests"]
+run = ["scripts/reference-owner-soak"]
+timeout = "60m"
+tools = ["cargo", "rustc", "git"]
+resources = ["reference-target"]
+
+[tasks.reference-ledger-publication]
+description = "Kill ledger writers at 13 creation, append, replacement and compaction cases; verify refusal, explicit repair and recovery."
+run = ["scripts/reference-ledger-publication"]
+timeout = "10m"
+tools = ["cargo", "rustc", "git"]
+resources = ["reference-target"]
+
 [tasks.reference-package]
-description = "Run the exact-package reference-consumer acceptance systems."
+description = "Run exact-package consumers, storage/wire compatibility, and mixed-version TLS rolling upgrades."
+needs = ["archive-compatibility-runner-tests"]
 run = ["scripts/reference-package-check"]
 timeout = "60m"
-tools = ["cargo", "tar"]
+tools = ["cargo", "tar", "python3", "rustup"]
 resources = ["reference-target"]
+
+[tasks.archive-compatibility-runner-tests]
+description = "Verify archive compatibility and retained public dependency boundaries."
+run = ["python3", "-m", "unittest", "scripts/tests/test_archive_compatibility.py", "scripts/tests/test_archive_dependencies.py"]
+tools = ["python3"]
 
 [tasks.full]
 description = "Qualify the checkout and every locally runnable deeper evidence lane."
-needs = ["check", "invariants-pr", "model-check", "reference-source", "reference-package"]
+needs = ["check", "current-stable", "public-api", "dependency-audit", "invariants-pr", "model-check", "reference-source", "reference-package", "reference-owner-soak", "reference-ledger-publication"]
 
 # Performance evidence stays opt-in, separate from concurrent correctness work.
 [tasks.build-durable-bench]

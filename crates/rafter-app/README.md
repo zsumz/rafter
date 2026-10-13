@@ -16,6 +16,10 @@ Restart recovery must pair the durable Raft applied floor with the
 application state's durable applied floor, and application state writes must be
 atomic before their corresponding Raft outputs are considered handled.
 
+Stored payloads can be read with bounded, cancellable verification through
+`rafter_runtime::snapshot_io::SnapshotPayloadReader`. The application owns
+schema validation and atomic durable publication of state plus applied floor.
+
 ## Restart recovery
 
 On restart, recover the Raft runtime and the application state machine with the

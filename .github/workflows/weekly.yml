@@ -32,6 +32,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -75,6 +77,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -138,6 +142,8 @@ jobs:
           sha256: "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f"
       - name: Stage source-bound TLA+ tool
         run: install -D -m 0444 "$TLA2TOOLS_JAR" tools/cache/tla2tools.jar
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -151,10 +157,9 @@ jobs:
         with:
           path: target/rafter-invariants/tla-checkpoint/weekly
           key: tla-weekly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          # The final key is an exact one-time bridge from the last compatible v1 checkpoint.
+          # Restore only checkpoints bound to the current model and profile.
           restore-keys: |
             tla-weekly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-
-            tla-weekly-checkpoint-v1-29a3f0314bb9f76fd5b185b22bc614eeb0823ab58c4bae4ff7fe8e60eade1d79-31246803259-1
       # TLC writes its successor checkpoint beside the recovered one before
       # retiring it, so peak disk is the restored bytes plus a full successor
       # plus that successor's growth. A restore that already fills the runner
@@ -286,6 +291,10 @@ jobs:
           sha256: "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799"
           java-version: "21.0.11+10.0.LTS"
           analysis-tools: "true"
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
+        with:
+          analysis-tools: "true"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -335,9 +344,10 @@ jobs:
       - invariants-simulator
       - invariants-tla
       - invariants-maelstrom
-    if: always()
+    # Preserve failure reports, but let canceled runs release the CI queue.
+    if: always() && !cancelled()
     runs-on: ubuntu-24.04
-    timeout-minutes: 110
+    timeout-minutes: 120
     env:
       INVARIANT_EVIDENCE_DIR: rafter-invariants-weekly-evidence-${{ github.run_id }}-${{ github.run_attempt }}
       INVARIANT_REPORT_DIR: rafter-invariants-weekly-${{ github.run_id }}-${{ github.run_attempt }}
@@ -359,6 +369,10 @@ jobs:
           version: "0.2.4"
           sha256: "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799"
           java-version: "21.0.11+10.0.LTS"
+          analysis-tools: "true"
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
+        with:
           analysis-tools: "true"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         timeout-minutes: 8
@@ -611,12 +625,35 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
+      - name: Record counter profile source identity
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-counter"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-counter/source-head.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-counter/source-before.status"
+          test ! -s "$RUNNER_TEMP/reference-counter/source-before.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-counter/source-before.sha256"
+          rustc --version --verbose > "$RUNNER_TEMP/reference-counter/rustc.txt"
+          cargo --version > "$RUNNER_TEMP/reference-counter/cargo.txt"
       - name: Counter reference weekly profile
-        run: scripts/counter-profile counter-weekly
+        run: |
+          scripts/counter-profile counter-weekly --artifacts "$RUNNER_TEMP/reference-counter/workload" 2>&1 | tee "$RUNNER_TEMP/reference-counter/profile.log"
+      - name: Verify counter profile source preservation
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-counter"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-counter/source-head-after.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-counter/source-after.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-counter/source-after.sha256"
+          test ! -s "$RUNNER_TEMP/reference-counter/source-after.status"
+          cmp "$RUNNER_TEMP/reference-counter/source-head.txt" "$RUNNER_TEMP/reference-counter/source-head-after.txt"
+          cmp "$RUNNER_TEMP/reference-counter/source-before.sha256" "$RUNNER_TEMP/reference-counter/source-after.sha256"
+          printf 'preserved\n' > "$RUNNER_TEMP/reference-counter/source-preserved.txt"
       - name: Upload counter weekly evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: counter-reference-weekly-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/reference-counter/counter-weekly/
+          path: |
+            ${{ runner.temp }}/reference-counter/
+            reference/Cargo.lock
           if-no-files-found: error

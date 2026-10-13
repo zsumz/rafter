@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Qualify an fsync stall on a private loop/ext4 mapping in a disposable Linux VM."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
+
+from io_stall_controller import run_probe
+from io_stall_volume import DisposableVolume
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def write_json(path, value):
+    path.write_text(json.dumps(value, indent=2) + '\n')
+
+
+def source_snapshot():
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(ROOT), *args])
+    if git('status', '--porcelain'):
+        raise RuntimeError('qualification requires a clean source checkout')
+    paths = git('ls-files', '-z').decode().rstrip('\0').split('\0')
+    return dict(head=git('rev-parse', 'HEAD').decode().strip(),
+                sha256={p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in paths})
+
+
+class Commands:
+    def __init__(self, artifacts):
+        self.artifacts = artifacts
+        self.records = []
+
+    def __call__(self, argv, check=True):
+        name = f'command-{len(self.records):03}'
+        record = dict(argv=argv, stdout=name + '.stdout', stderr=name + '.stderr')
+        self.records.append(record)
+        started = time.monotonic()
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            (self.artifacts / record['stdout']).write_text(result.stdout)
+            (self.artifacts / record['stderr']).write_text(result.stderr)
+            record['exit_code'] = result.returncode
+            if check:
+                result.check_returncode()
+            return result
+        except BaseException as error:
+            record['error'] = repr(error)
+            if isinstance(error, subprocess.TimeoutExpired):
+                for stream in ['stdout', 'stderr']:
+                    data = getattr(error, stream) or b''
+                    (self.artifacts / record[stream]).write_bytes(
+                        data.encode() if isinstance(data, str) else data)
+            raise
+        finally:
+            record['elapsed_seconds'] = round(time.monotonic() - started, 6)
+            write_json(self.artifacts / 'commands.json', self.records)
+
+
+def qualify(artifacts, counter_binary=None, crash_while_stalled=False, leader_only=False):
+    if crash_while_stalled and counter_binary is None:
+        raise ValueError('crash qualification requires a counter binary')
+    if leader_only and (counter_binary is None or crash_while_stalled):
+        raise ValueError('leader-only qualification requires a counter binary and excludes crash mode')
+    artifacts.mkdir(parents=True, exist_ok=False)
+    receipt = dict(schema=1, status='failed', scope='Linux loop/ext4 fsync stall probe only',
+                   crash_while_stalled=crash_while_stalled, leader_only=leader_only, volumes=[],
+                   host=platform.uname()._asdict(), python=sys.version,
+                   runner_image=os.environ.get('ImageVersion'),
+                   runner_environment=os.environ.get('RUNNER_ENVIRONMENT'))
+    volumes = []
+    counter = None
+    binary_hash = None
+    before = None
+    failures = []
+    try:
+        before = source_snapshot()
+        write_json(artifacts / 'source-before.json', before)
+        receipt['source'] = before['head']
+        if counter_binary is not None:
+            binary_hash = hashlib.sha256(counter_binary.read_bytes()).hexdigest()
+            receipt['counter_binary'] = dict(path=str(counter_binary), sha256=binary_hash)
+            receipt['scope'] = 'Three local TLS counter nodes on one stalled Linux loop/ext4 filesystem'
+        run = Commands(artifacts)
+        for command in [['uname', '-a'], ['losetup', '--version'], ['sudo', '-n', 'dmsetup', 'version'],
+                        ['findmnt', '--version'], ['mkfs.ext4', '-V'], ['sudo', '-n', 'true']]:
+            run(command)
+        run(['sudo', '-n', 'dmsetup', 'targets'])
+        # A fresh directory owns every resource. Never accept an existing block path.
+        temporary = Path(tempfile.mkdtemp(prefix='rafter-io-stall-'))
+        for index in range(3 if leader_only else 1):
+            volume = DisposableVolume(temporary / f'volume-{index + 1}', run)
+            volumes.append(volume)  # Own partial setup before attempting any create.
+            info = dict(root=str(volume.root), image=str(volume.image),
+                        mapping=volume.name, uuid=volume.uuid, bytes=volume.sectors * 512)
+            receipt['volumes'].append(info)
+            volume.create()
+            info['loop'] = volume.loop
+        volume = volumes[0]
+        if counter_binary is not None:
+            from io_stall_counter import CounterWorkload
+            if leader_only:
+                from io_stall_majority import MajorityCounterWorkload
+                counter = MajorityCounterWorkload(counter_binary, temporary / 'counter',
+                    {node: owned.mount for node, owned in enumerate(volumes, 1)}, artifacts)
+                receipt['scope'] = 'One stalled leader and two healthy local TLS counter nodes on separate Linux loop/ext4 filesystems'
+            else:
+                counter = CounterWorkload(counter_binary, temporary / 'counter', volume.mount, artifacts,
+                                          crash_while_stalled=crash_while_stalled)
+            counter.start()
+            if leader_only:
+                volume = volumes[counter.leader - 1]
+                receipt['fault_node'] = counter.leader
+        receipt['volume'] = receipt['volumes'][volumes.index(volume)]
+        receipt['events'] = run_probe(volume, ROOT / 'scripts/io_stall_probe.py', artifacts,
+                                     while_stalled=counter.while_stalled if counter else None)
+        if counter is not None:
+            counter.finish()
+    except BaseException as error:
+        failures.append('qualification: ' + repr(error))
+        (artifacts / 'qualification-error.txt').write_text(traceback.format_exc())
+    finally:
+        for volume in volumes:
+            try:
+                volume.resume()
+            except BaseException as error:
+                failures.append('resume before workload cleanup: ' + repr(error))
+        if counter is not None:
+            try:
+                counter.close()
+                receipt['counter_cleanup'] = 'passed'
+            except BaseException as error:
+                failures.append('counter cleanup: ' + repr(error))
+                receipt['counter_cleanup'] = 'failed'
+        if receipt.get('counter_cleanup') == 'failed':
+            receipt['volume_cleanup'] = 'retained until counter children are reaped'
+        if volumes and receipt.get('counter_cleanup') != 'failed':
+            receipt['volume_cleanup'] = 'passed'
+            for index, volume in enumerate(volumes):
+                try:
+                    volume.close()
+                    receipt['volumes'][index]['cleanup'] = 'passed'
+                except BaseException as error:
+                    failures.append(f'volume {index + 1} cleanup: ' + repr(error))
+                    receipt['volumes'][index]['cleanup'] = 'failed'
+                    receipt['volume_cleanup'] = 'failed'
+                    try:
+                        (artifacts / f'cleanup-error-{index + 1}.txt').write_text(traceback.format_exc())
+                    except BaseException as diagnostic_error:
+                        failures.append(f'volume {index + 1} cleanup diagnostic: ' + repr(diagnostic_error))
+        if binary_hash is not None:
+            try:
+                if hashlib.sha256(counter_binary.read_bytes()).hexdigest() != binary_hash:
+                    raise RuntimeError('counter binary changed during qualification')
+                receipt['binary_preserved'] = True
+            except BaseException as error:
+                failures.append('binary preservation: ' + repr(error))
+                receipt['binary_preserved'] = False
+        if before is not None:
+            try:
+                after = source_snapshot()
+                write_json(artifacts / 'source-after.json', after)
+                if before != after:
+                    raise RuntimeError('source changed during qualification')
+                receipt['source_preserved'] = True
+            except BaseException as error:
+                failures.append('source preservation: ' + repr(error))
+                receipt['source_preserved'] = False
+        receipt['errors'] = failures
+        receipt['status'] = 'failed' if failures else 'passed'
+        write_json(artifacts / 'receipt.json', receipt)
+    return receipt
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--artifacts', type=Path, required=True)
+    parser.add_argument('--counter-binary', type=Path,
+                        help='also exercise this checkout-built standalone TLS counter')
+    parser.add_argument('--crash-while-stalled', action='store_true',
+                        help='SIGKILL the counter nodes while I/O is held; preserve inputs before recovery')
+    parser.add_argument('--leader-only', action='store_true',
+                        help='stall only the leader mapping; require the healthy majority to make progress')
+    parser.add_argument('--disposable-linux-vm', action='store_true',
+                        help='explicitly select a disposable VM with passwordless sudo')
+    args = parser.parse_args()
+    if args.crash_while_stalled and args.counter_binary is None:
+        parser.error('--crash-while-stalled requires --counter-binary')
+    if args.leader_only and (args.counter_binary is None or args.crash_while_stalled):
+        parser.error('--leader-only requires --counter-binary and excludes --crash-while-stalled')
+    if not args.disposable_linux_vm or sys.platform != 'linux':
+        parser.error('run only in a disposable Linux VM with --disposable-linux-vm')
+    def interrupted(signum, _frame):
+        raise SystemExit(f'interrupted by signal {signum}')
+    signal.signal(signal.SIGTERM, interrupted)
+    receipt = qualify(args.artifacts.resolve(),
+                      args.counter_binary.resolve() if args.counter_binary else None,
+                      args.crash_while_stalled, args.leader_only)
+    print(json.dumps({k: receipt.get(k) for k in
+                      ['source', 'status', 'source_preserved', 'volume_cleanup', 'errors']}, indent=2))
+    return 0 if receipt['status'] == 'passed' else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

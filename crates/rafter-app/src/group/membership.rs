@@ -9,6 +9,7 @@ use super::{
     Debug, GroupStepReport, MembershipChange, MembershipEvent, PersistedRaftRuntime,
     ProposalRejection, RaftGroup, RaftInput, ReplicatedStateMachine,
 };
+use rafter::MembershipValidationError;
 
 impl<G, A, R> RaftGroup<G, A, R>
 where
@@ -17,31 +18,11 @@ where
     A::CommandResult: Clone,
     R: PersistedRaftRuntime,
 {
-    pub(super) fn membership_change_input(change: MembershipChange) -> RaftInput {
-        match change {
-            MembershipChange::AddLearner { node_id, info: _ } => RaftInput::AddLearner {
-                learner_id: node_id,
-            },
-            MembershipChange::PromoteLearner { node_id, barrier } => RaftInput::PromoteLearner {
-                learner_id: node_id,
-                promotion_barrier: barrier,
-            },
-            MembershipChange::RemoveNode { node_id } => {
-                RaftInput::RemoveVoter { voter_id: node_id }
-            }
-            MembershipChange::EnterJoint {
-                target,
-                promotion_barriers,
-            } => RaftInput::EnterJoint {
-                target,
-                promotion_barriers,
-            },
-            MembershipChange::LeaveJoint => RaftInput::LeaveJoint,
-            MembershipChange::ChangeVoters { target } => RaftInput::ChangeMembership {
-                target,
-                promotion_barriers: Vec::new(),
-            },
-        }
+    pub(super) fn membership_change_input(
+        &self,
+        change: MembershipChange,
+    ) -> Result<RaftInput, MembershipValidationError> {
+        change.into_raft_input(&self.raft.membership())
     }
 
     pub(super) fn record_membership_rejection(

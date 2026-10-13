@@ -177,6 +177,93 @@ model's validating restore path. An install whose payload index disagrees with
 the declared index is refused, as is an install that would move the applied
 index backwards.
 
+Collection counts are untrusted. Before decoding and allocating their records,
+the decoder verifies that the remaining payload can contain every declared
+record: at least 16 bytes per account plus the following four-byte session
+count, and at least 13 bytes per session. Checked arithmetic refuses a minimum
+extent that is not addressable. Configured account/session limits are checked
+at their count fields, before model insertion. The decoder builds one temporary
+ledger directly, using the same model-owned validator as `Ledger::from_snapshot`;
+it does not collect an intermediate vector of snapshot records. The same field
+grammar protects inline installation, promoted snapshot files, and journal
+images. A refusal publishes neither application state nor a new applied floor.
+
+Promoted installation decodes through `SnapshotPayloadReader`, whose own buffer
+retains at most one 16 KiB encoded chunk. The source backend owns any separate
+caching or opening buffers. Before opening a snapshot store, admission checks the
+descriptor's `ledger` kind, version 1, exact applied index, and configured byte
+limit. The schema's maximum is 33 fixed bytes, 16 per account, and 63 per cached
+session; account counts are also capped by their u32 wire field. The decoder
+validates record syntax, bounds, uniqueness, supply, and complete consumption;
+the reader's final receipt verifies length and CRC32 before the temporary ledger
+can be published. Current live state remains present during validation, so
+model memory is still proportional to the configured state bounds.
+
+Both adapters also expose `write_snapshot_to`: they borrow stable ledger state
+and encode directly into caller-owned private staging through
+`SnapshotPayloadWriter`, using one 16 KiB encoder buffer. There is no full model
+clone or full encoded image on this path. Command fields, cached results, and
+inline snapshots share the version-1 output grammar. The descriptor must name
+kind `ledger`, version 1, and exactly the application's applied floor. A durable
+store requiring recovery refuses both streaming and inline snapshot builders.
+
+Success returns the flushed sink and its length/checksum descriptor; the caller
+still owns fsync, immutable chunk-source construction, cleanup, and publication.
+Cancellation, a failed write or flush, and sink unwinding cannot yield a usable
+descriptor. Buffered bytes are not retried from drop after failure. Partial
+staging must be discarded. Public tests preserve independent v1 vectors and
+encode a 131,072-account ledger into a counting sink in at most 130 calls, each
+at most 16 KiB, with an independently computed length and CRC32.
+
+Journal replacement for installation and compaction now streams as well. The
+v1 begin record needs the image's length and checksum first, so one pass measures
+the borrowed model and a second emits it through one 16 KiB staging buffer.
+The model cannot change between passes. A frame that exceeds its u32 length field
+is refused before a write plan begins. Fixed-size begin/commit records are shared
+with append encoding, and valid v1 bytes are unchanged.
+
+Replacement still drains staged bytes, syncs the file, renames the one staging
+name, and syncs the directory before adopting state and floor. Every byte cut of
+a small real image, cuts across multiple buffer boundaries, and the existing
+sync/rename cuts exercise old-or-new recovery. A failed attempt poisons the store
+and requires reopening, including a failure after rename. These deterministic
+faults and ordinary reopen checks do not simulate physical power loss.
+
+Both store publication entry points also require the incoming model's resource
+configuration to equal the journal's. Even an empty foreign model is refused:
+adopting it would change the bounds governing future mutations. A reproduced
+pre-fix case acknowledged a foreign client slot, then could not reopen the
+journal. Refusal now preserves the file, floor, health, and next write-plan
+ordinal. Existing format/configuration errors remain the public taxonomy.
+
+Journal append now uses the same measured frame and 16 KiB buffer, without a
+complete encoded image, frame, or unsealed copy. A sink beneath the checksumming
+encoder changes only the first byte to the unsealed mark. The buffer drains and
+the file syncs before the existing one-byte seal and second sync; the model and
+floor are adopted only after success. The append fault budget counts frame bytes
+across all writes. Multi-buffer cuts preserve exact prefixes and reopening at
+the previous committed end, while a complete unsealed frame remains a refusal
+without modifying the journal. Zero/partial/interrupted sink writes and failure
+without drop-time retries are covered alongside the original exhaustive crash
+sweep. A 2 MiB frame has an independent expected length and checksum, with every
+sink call bounded by 16 KiB.
+
+Journal recovery now reads fixed-size framing and verifies each image through
+16 KiB chunks, then seeks back to decode the verified image through a 16 KiB
+buffer. Checksums still precede schema/model errors, so corruption and repair
+classification do not depend on which invalid field a decoder reaches first.
+Decoding checks the image checksum again before adoption; changed bytes or an
+I/O failure refuse recovery rather than authorize truncation. Offsets and loss
+accounting use `u64`. The original whole-slice classifier remains a test oracle
+for the streamed reader's exhaustive corruption and recognition-order cases.
+No complete encoded image, journal, or unsealed-tail copy is retained. The cost
+is a second read of each committed image; directory ownership remains the
+embedder's responsibility.
+
+The inline snapshot builder still constructs a complete encoded buffer. Model
+adoption and compaction retain state clones proportional to configured bounds. Streaming
+those remaining paths and broader crash qualification remain separate work.
+
 The durable adapter's application transaction must atomically persist:
 
 ```text
@@ -219,6 +306,28 @@ Two state machines serve this application. They differ in where state lives and
 in nothing else. Every ledger, session, and deduplication decision is the pure
 model's, and the applied-index, read-barrier, and snapshot-admission rules are
 shared code rather than two implementations that agree today.
+
+### Directory provisioning
+
+`LedgerStore::open` and the ledger node's startup paths durably provision their
+directories before opening application or Raft files. The shared reference helper
+creates one directory at a time and synchronizes its parent before creating the
+next child. A synchronization error stops opening; it cannot be followed by an
+application acknowledgement.
+
+An existing target or nearest existing ancestor has its parent synchronized too.
+That covers the one directory entry an earlier failed creation/synchronization
+attempt may have left behind. A retry persists that entry before creating any
+more children. The helper never removes directories or application files and
+does not replace the replica's separate ownership lock.
+
+Ancestors supplied by external code must already be durably provisioned. The
+helper cannot discover arbitrary unsynchronized directories created outside this
+ordered protocol. The host filesystem must support directory synchronization;
+this closes a missing synchronization obligation, not a physical power-loss
+qualification. The six helper regressions exercise actual directory topology,
+parent-sync failures and retry, existing state, a creation race, invalid
+components and relative paths.
 
 ### Transaction boundary
 
@@ -980,3 +1089,72 @@ Three limits stay, and none of them is an oversight:
    failover rather than the shortest.
 3. The ledger journal still has no lock of its own. One process per replica
    directory is enforced by the Raft store's lock and by opening it first.
+
+### Poll-driven durable owner adoption
+
+`tests/service_owner.rs` exercises `rafter-runtime::service::DurableService`
+without copying its persistence/application scheduling loop into the consumer.
+The ledger supplies only its command codec, range-aware application entry,
+transactional store, and descriptor installation policy. Three committed
+commands recover through a single application credit; a tracked write's result
+is consumed after its transaction becomes durable; shutdown preserves that
+completion. Real Raft files and the ledger journal then reopen. The owner lends the
+quiescent application to `compact_snapshot_with`, encodes through
+`write_snapshot_to` into private file staging, fsyncs it, and exposes an immutable
+file-backed source. Existing runtime compaction publishes its descriptor and
+returns retired entries to the bounded retirement worker. A separate blank
+application installs that exact promoted snapshot
+before admission opens.
+The same source is built against extracted archives in the package lane.
+
+This proves the owner/application boundary, not network deployment or latency.
+Worker completion wakes and bounded application credits are exercised here.
+
+`tests/service_owner_tls.rs` adds three same-process replicas using real mutual
+TLS sockets, Raft files, ledger journals, and durable transport session stores.
+It binds the existing transport paused, installs exact certificate/node/group
+mappings and endpoints, then starts its workers. No protocol message is injected
+directly into another replica. The application owner has one entry credit;
+transport admission has finite frame, byte, connection, and weighted decode
+budgets. A turn drains at most 64 owner steps and one authenticated inbound frame,
+and removes that frame only while its owner accepts input.
+
+A channel pauses the leader's first application transaction after a real quorum
+commit. The test observes a successful TLS response in the read's fresh heartbeat
+round and polls the owner until its grant is held behind application durability.
+Neither write completion nor read result is exposed before releasing the channel.
+After writes and reads converge, every owner and transport shuts down. Reopening
+the same files, electing a different leader, and retrying the same application
+request preserves the balance. New volatile correlation IDs do not provide
+deduplication; the persisted ledger request identity does. The new leader's
+protocol-only commit is translated to the application floor before querying.
+
+The same fixture also transfers a 65,632-byte snapshot in two chunks. It provisions
+identical nonempty application genesis before starting Raft: those accounts are
+fixture input, not evidence of replicated creation. Real replicated deposits
+then change the balance while one follower is offline. After compacting, it
+reopens the majority to discard queued appends, so the stale follower must use
+the snapshot. The wire and queue byte limits accommodate the kernel's fixed
+64 KiB payload chunk plus metadata; the 128 KiB wire cap includes both.
+
+The follower stops after its first durable chunk and reopens with the same
+transfer identity, descriptor, and 64 KiB offset. Its application floor remains
+unchanged until the full snapshot is installed. The embedding treats staging
+outputs as observations of already-persisted work. During application handoff,
+the owner refuses inputs and queries; only a completed descriptor install allows
+resumption. Another full reopen elects this follower leader, then verifies the
+new balance and snapshot-restored request deduplication. These are orderly
+restarts at a deterministic partial-transfer boundary, not process-kill tests.
+
+This same source also runs against extracted package archives. It qualifies
+fixed-membership composition in one OS process, not process crashes, multi-host
+latency, or full-queue liveness. The fixture polls TLS's bounded inbound queue;
+TLS does not currently expose an inbound wake callback. Managed client ownership
+and process fault isolation remain separate qualification work.
+
+`tests/managed_metrics.rs` separately checks the managed watch's cancellation
+contract through public APIs. Replacing a task wakeup releases the old task;
+canceling the future releases the current one while the watch and publisher
+remain open and idle. Repeated cancellation does not consume a subsequent
+published update. Weak task references make retention observable without reading
+private driver state, and the same test runs in the exact-package lane.

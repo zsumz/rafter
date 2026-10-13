@@ -2,6 +2,7 @@
 
 use rafter::{LogIndex, NodeId, Output};
 use rafter_storage::SnapshotRetention;
+use std::collections::VecDeque;
 
 use super::super::{
     application::AppliedCommand, codec::decode_snapshot, storage::read_snapshot_payload,
@@ -10,7 +11,8 @@ use super::{Cluster, Envelope, PEER_QUEUE_CAPACITY};
 
 impl Cluster {
     pub(super) fn handle_outputs(&mut self, node_id: NodeId, outputs: Vec<Output>) {
-        for output in outputs {
+        let mut outputs = outputs.into_iter().peekable();
+        while let Some(output) = outputs.next() {
             match output {
                 Output::Send { to, message } => self.enqueue_peer(node_id, to, message),
                 Output::Apply {
@@ -26,25 +28,47 @@ impl Cluster {
                         .checked_add(1)
                         .expect("reference log index remains advanceable");
                     assert!(next <= index.0, "application outputs remain ordered");
-                    let mut entries: Vec<_> = (next..index.0)
-                        .map(|marker| AppliedCommand {
-                            index: LogIndex(marker),
-                            payload: None,
-                            proposal_id: None,
-                        })
-                        .collect();
-                    entries.push(AppliedCommand {
+                    // The complete ordered Apply stream proves that positions
+                    // before this command contain only protocol entries. One
+                    // range covers them without allocating gap-sized markers.
+                    let mut entries = VecDeque::from([AppliedCommand {
+                        first_index: LogIndex(next),
                         index,
                         payload: Some(payload.as_slice().to_vec()),
                         proposal_id: local_proposal_id,
-                    });
-                    replica
-                        .application
-                        .as_ref()
-                        .expect("application worker is running")
-                        .try_submit(entries)
-                        .expect("reference application admission remains within bounds");
-                    replica.dispatched = index;
+                    }]);
+                    let mut through = index;
+                    // Bound conversion scratch independently of the full
+                    // recovery output batch. Control outputs keep their order.
+                    while entries.len() < 64 && matches!(outputs.peek(), Some(Output::Apply { .. }))
+                    {
+                        let Some(Output::Apply {
+                            index,
+                            payload,
+                            local_proposal_id,
+                            ..
+                        }) = outputs.next()
+                        else {
+                            unreachable!("the peeked output is an application command");
+                        };
+                        entries.push_back(AppliedCommand {
+                            first_index: LogIndex(
+                                through
+                                    .0
+                                    .checked_add(1)
+                                    .expect("advanceable application range"),
+                            ),
+                            index,
+                            payload: Some(payload.as_slice().to_vec()),
+                            proposal_id: local_proposal_id,
+                        });
+                        through = index;
+                    }
+                    self.dispatch_application(node_id, entries);
+                    self.replicas
+                        .get_mut(&node_id)
+                        .expect("replica exists")
+                        .dispatched = through;
                 }
                 Output::ApplySnapshot { snapshot } => {
                     self.drain_application(node_id);

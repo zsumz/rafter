@@ -1,5 +1,6 @@
 execution::process::bounded::tests::process_policy_clamps_target_time_to_the_absolute_lifecycle_deadline
 execution::process::bounded::tests::process_policy_rejects_an_outer_deadline_without_lifecycle_reserve
+execution::process::internal_command::test_support::tests::late_completion_boundary_requires_the_exited_childs_lineage_to_release
 execution::process::tests::deadlines::a_window_edge_reached_between_observations_is_a_timeout
 execution::process::tests::deadlines::delayed_process_group_publication_cannot_escape_the_lifecycle_deadline
 execution::process::tests::deadlines::late_termination_preserves_the_receipt_finalization_boundary

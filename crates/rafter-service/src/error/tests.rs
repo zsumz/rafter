@@ -30,6 +30,7 @@ fn every_write_error() -> Vec<WriteError> {
             client_request_id: None,
             reason: UnknownOutcomeReason::EmptyNetwork,
         },
+        WriteError::Backpressure,
         WriteError::WrongGroup,
         WriteError::StateMachine {
             operation: StateMachineOperation::EncodeCommand,
@@ -86,6 +87,7 @@ fn every_read_error() -> Vec<ReadError> {
             read_id: ReadId(1),
             reason: ReadAbandonReason::DriveBoundReached,
         },
+        ReadError::Backpressure,
         ReadError::WrongGroup,
         ReadError::StateMachine {
             operation: StateMachineOperation::Read,
@@ -194,6 +196,8 @@ fn every_transfer_leadership_error() -> Vec<TransferLeadershipError> {
             reason: LeadershipTransferRejection::TargetNotVoter,
             leader_hint: None,
         },
+        TransferLeadershipError::Backpressure,
+        TransferLeadershipError::Unconfirmed,
         TransferLeadershipError::WrongGroup,
         TransferLeadershipError::Storage {
             cause: ErrorCause::new(TestCause("disk full")),
@@ -286,6 +290,7 @@ fn fate_is_not_appended_for_every_refusal_variant() {
             WriteErrorKind::NotLeader
                 | WriteErrorKind::Rejected
                 | WriteErrorKind::PayloadTooLarge
+                | WriteErrorKind::Backpressure
                 | WriteErrorKind::WrongGroup
                 | WriteErrorKind::ShuttingDown
                 | WriteErrorKind::LocalProposalIdExhausted

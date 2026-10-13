@@ -6,6 +6,7 @@
 
 use std::{
     collections::BTreeMap,
+    fmt,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::Command as OsCommand,
@@ -44,6 +45,12 @@ const CONNECTION_TIMEOUTS: ConnectionTimeouts = ConnectionTimeouts::new(
 #[derive(Clone, Debug)]
 pub struct Observation {
     raw: String,
+}
+
+impl fmt::Display for Observation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.raw)
+    }
 }
 
 impl Observation {
@@ -156,6 +163,24 @@ impl ProductionNode {
         config: LockConfig,
         mode: &str,
     ) -> Self {
+        Self::spawn_binary(
+            root,
+            node_id,
+            voters,
+            config,
+            mode,
+            Path::new(env!("CARGO_BIN_EXE_lock-production-node")),
+        )
+    }
+
+    pub fn spawn_binary(
+        root: &Path,
+        node_id: NodeId,
+        voters: &[NodeId],
+        config: LockConfig,
+        mode: &str,
+        binary: &Path,
+    ) -> Self {
         let fixtures = fixture_dir();
         let identity = ReplicaIdentity::path(root, node_id);
         let members = voters
@@ -178,7 +203,7 @@ impl ProductionNode {
             3 => 40,
             _ => 50,
         };
-        let mut command = OsCommand::new(env!("CARGO_BIN_EXE_lock-production-node"));
+        let mut command = OsCommand::new(binary);
         command
             .arg("--id")
             .arg(node_id.0.to_string())
@@ -306,6 +331,33 @@ impl ProductionNode {
         drop(self.child.kill_and_reap());
     }
 
+    #[allow(
+        dead_code,
+        reason = "only the rolling-upgrade suite requires successful stops"
+    )]
+    pub fn shutdown_checked(&mut self) {
+        assert_eq!(self.ask("SHUTDOWN").expect("shutdown answers"), "BYE");
+        self.client.disconnect();
+        let status = self
+            .child
+            .wait_for_exit(WAIT)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            status.success(),
+            "replica {} exited with {status}",
+            self.node_id.0
+        );
+        let stopped = self.node_id.0.to_string();
+        self.child
+            .wait_for_stdout("durable shutdown completion", WAIT, |lines| {
+                lines.iter().find_map(|line| {
+                    (lifecycle_detail(line, "STOPPED").as_deref() == Some(stopped.as_str()))
+                        .then_some(())
+                })
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
     pub fn shutdown(&mut self) {
         drop(self.ask("SHUTDOWN"));
         self.client.disconnect();
@@ -327,6 +379,14 @@ pub struct ProductionCluster {
 
 impl ProductionCluster {
     pub fn start(label: &str, config: LockConfig) -> Self {
+        Self::start_with_binary(
+            label,
+            config,
+            Path::new(env!("CARGO_BIN_EXE_lock-production-node")),
+        )
+    }
+
+    pub fn start_with_binary(label: &str, config: LockConfig, binary: &Path) -> Self {
         let root = ScratchDir::new(label);
         for expected in NODE_IDS {
             let allocated = allocate_replica(root.path(), GROUP_ID, AllocationCrashPoint::None)
@@ -341,7 +401,14 @@ impl ProductionCluster {
             next_operation_id: 1,
         };
         for node_id in NODE_IDS {
-            let process = ProductionNode::spawn(cluster.root(), node_id, &NODE_IDS, config);
+            let process = ProductionNode::spawn_binary(
+                cluster.root(),
+                node_id,
+                &NODE_IDS,
+                config,
+                "open",
+                binary,
+            );
             cluster.nodes.insert(node_id, process);
         }
         for node_id in NODE_IDS {
@@ -409,8 +476,13 @@ impl ProductionCluster {
         let line = render_command(command);
         let outcome = wait_until("a production leader to settle a command", || {
             let leader = self.wait_for_leader();
-            let response = self.node_mut(leader).ask(&line).ok()?;
-            let outcome = parse_submit_response(&response);
+            // A connection failure cannot prove that the request was refused.
+            // Preserve it for the caller and history instead of silently
+            // retrying a potentially committed command inside this interval.
+            let outcome = match self.node_mut(leader).ask(&line) {
+                Ok(response) => parse_submit_response(&response),
+                Err(detail) => SubmitOutcome::Unknown { detail },
+            };
             (!matches!(
                 outcome,
                 SubmitOutcome::NotCommitted { .. } | SubmitOutcome::NotReady { .. }
@@ -419,6 +491,38 @@ impl ProductionCluster {
         });
         self.history
             .push(process_history::submit_terminal(operation_id, &outcome));
+        outcome
+    }
+
+    /// Sends one real request, closes its connection without reading a reply,
+    /// and records an unknown outcome. Neither append nor commit is inferred.
+    #[allow(
+        dead_code,
+        reason = "only the rolling-upgrade suite injects a lost reply"
+    )]
+    pub fn submit_losing_reply(&mut self, command: Command) -> SubmitOutcome {
+        use std::{io::Write, net::TcpStream};
+        let operation_id = self.allocate_operation_id();
+        self.history.push(HistoryEvent::Invoked {
+            operation_id,
+            command,
+        });
+        let leader = self.wait_for_leader();
+        let address = self.node_mut(leader).client_addr();
+        let mut connection = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+            .expect("the reply-loss client connects");
+        connection
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        writeln!(connection, "{}", render_command(command))
+            .expect("the request reaches the socket");
+        drop(connection);
+        let outcome = SubmitOutcome::Unknown {
+            detail: String::from("client closed its connection without reading the reply"),
+        };
+        self.history
+            .push(process_history::submit_terminal(operation_id, &outcome));
+        println!("UPGRADE_LOST_REPLY node={}", leader.0);
         outcome
     }
 
@@ -454,9 +558,47 @@ impl ProductionCluster {
         process.shutdown();
     }
 
+    #[allow(
+        dead_code,
+        reason = "only the rolling-upgrade suite requires successful stops"
+    )]
+    pub fn stop_checked(&mut self, node_id: NodeId) {
+        let mut process = self.nodes.remove(&node_id).expect("replica is running");
+        process.shutdown_checked();
+    }
+
+    #[allow(
+        dead_code,
+        reason = "only rolling-upgrade fault cases require an observed crash status"
+    )]
+    pub fn crash_checked(&mut self, node_id: NodeId) -> (u32, std::process::ExitStatus) {
+        let mut process = self.nodes.remove(&node_id).expect("replica is running");
+        let pid = process.child.id();
+        process.client.disconnect();
+        let status = process
+            .child
+            .kill_and_reap()
+            .expect("crashed replica is reaped");
+        (pid, status)
+    }
+
     pub fn restart(&mut self, node_id: NodeId, voters: &[NodeId]) -> LogIndex {
+        self.restart_with_binary(
+            node_id,
+            voters,
+            Path::new(env!("CARGO_BIN_EXE_lock-production-node")),
+        )
+    }
+
+    pub fn restart_with_binary(
+        &mut self,
+        node_id: NodeId,
+        voters: &[NodeId],
+        binary: &Path,
+    ) -> LogIndex {
         assert!(!self.nodes.contains_key(&node_id));
-        let mut process = ProductionNode::spawn(self.root(), node_id, voters, self.config);
+        let mut process =
+            ProductionNode::spawn_binary(self.root(), node_id, voters, self.config, "open", binary);
         let applied = process.wait_ready();
         self.nodes.insert(node_id, process);
         applied

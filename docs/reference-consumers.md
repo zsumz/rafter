@@ -152,7 +152,12 @@ The acceptance job:
 9. verifies required package contents, including README and format documents.
 
 `scripts/reference-package-check` runs that deterministic job and reports every
-boundary it finds violated. `scripts/reference-package-process-check` uses the
+boundary it finds violated. Its deterministic and MSRV modes also execute the
+[published-to-candidate file-store matrix](storage-upgrades.md), using the same
+candidate archives and a checksum-pinned published baseline, followed by the
+[bidirectional peer-codec matrix](wire-compatibility.md). This phase requires
+Python 3.11+ and retains separate compatibility receipts.
+`scripts/reference-package-process-check` uses the
 same materialization and rejection phases; it does not carry a second publish
 list or construct its own patch table.
 
@@ -181,22 +186,72 @@ There are four distinct evidence boundaries:
 - **Source process** runs the reviewed ignored process inventories against those
   checkout-patched crates.
 - **Exact-package deterministic/process** builds ordinary targets or executes
-  all 34 reviewed process tests against one set of unpacked `.crate` archives.
+  all reviewed process tests against one set of unpacked `.crate` archives.
 - **Published-shape MSRV** creates archives with the current packaging Cargo,
   then regenerates the copied consumer lockfile, builds every target, runs the
   deterministic suites, and runs a ledger process smoke with Rust/Cargo 1.88.
 
 The exact-package process and MSRV phases can be run separately in CI, or
 together with the default `scripts/reference-package-process-check`; the
-combined command uses the same archive set for both. None of these lanes proves
-mixed-version compatibility.
+combined command uses the same archive set for both. Deterministic, MSRV and
+combined modes also run the documented storage, wire and rolling TLS upgrade
+scenarios against the pinned published baseline.
 
 The `reference-package-process` and `reference-package-msrv` jobs pass an
-explicit artifact directory. Each upload contains archive SHA-256 values, the
-generated patch table and lockfile, Cargo metadata, the boundary verdict,
-toolchain versions, inventory counts and copies, and per-suite logs. A failed
-runner retains its temporary workdir and preserves the original exit status;
-the artifact directory contains every diagnostic produced before the failure.
+explicit artifact directory. Each upload contains the tested `.crate` files in
+`archives/`, their `package-sha256.txt` inventory, the generated patch table and
+lockfile, Cargo metadata, the boundary verdict, toolchain versions, inventory
+counts and copies, and per-suite logs. The runner copies the first packaging
+output and verifies its hashes immediately and after all qualification phases;
+it never packages a second set for upload. Retention refuses changed bytes,
+missing or extra archives, symlinks, and an existing destination. A failed runner
+retains its temporary workdir and preserves the original exit status; the
+artifact directory contains every diagnostic produced before the failure.
+Retained files alone do not indicate that the qualification phases passed.
+
+After downloading an artifact, verify the retained bytes without unpacking or
+executing them:
+
+```sh
+python3 scripts/archive_retention.py --artifacts /path/to/package-artifacts
+```
+
+Older runs that retained only hashes cannot supply their archive bytes through
+this check. Their existing receipts remain evidence for those named runs.
+
+`Cargo.resolved.lock` is the final consumer lock paired with
+`consumer-metadata.json`; `resolved-inputs.sha256` binds those two retained
+files. Use that pair for dependency analysis. The earlier `Cargo.lock` records
+the initial resolution, while a combined process/MSRV run can regenerate its
+lock for the MSRV build and retain it as `Cargo.msrv.lock`. Retaining the final
+pair performs no new resolution or network request and also works with
+`--offline`.
+
+When artifacts are requested, `public-dependencies/Cargo.lock` projects that
+final resolution onto the normal/build dependency closure of all public archives.
+The check requires every declared public feature, including the service's
+`durable` feature, and preserves the original versions, checksums and dependency
+records. It refuses missing archives, private paths, unexpected sources and
+lock/metadata disagreement. Its receipt binds the retained inputs and archive
+hash inventory. This offline projection does not itself check advisories; it
+provides the exact tested public graph for a separate audit.
+
+The per-PR `reference-package` and `reference-package-msrv` jobs then audit
+their respective retained graph with pinned cargo-audit 0.22.2. This separate
+step fetches current advisories and checks yanked dependencies; it never runs
+Cargo resolution. It verifies the projection against its source artifacts
+before and after the audit, rejects advisory exclusions and warnings, and
+retains tool identities, policy, raw diagnostics and a success receipt under
+`public-dependencies/audit/`. To run it locally after a successful package run:
+
+```sh
+python3 scripts/archive_dependencies.py --audit --artifacts /path/to/package-artifacts
+```
+
+Install the pinned checker first with `cargo install cargo-audit --version
+0.22.2 --locked`. The package runner's `--offline` behavior is unchanged; only
+the separate `--audit` command requires network access. An existing audit
+directory is never overwritten.
 
 This mode tests the artifact users receive, not merely the source tree that
 produced it.
@@ -495,10 +550,26 @@ structurally different bounded process consumers. The fenced-lock
 
 `tests/process_production.rs` exercises authenticated service, unknown and
 mismatched credentials, replay and removed-peer refusal, checkpoint
-loss/corruption, readiness under incomplete recovery, connection overflow,
+loss/corruption, strict refusal and explicit repair of an unsealed renewal,
+readiness under incomplete recovery, connection overflow,
 monotonic replacement, and both independent lock/guarded-resource checkers.
-`scripts/reference-process-check` selects it through a reviewed five-test
-inventory. Its frozen version-1 adversarial client hand-encodes the outer hello
+`scripts/reference-process-check` selects it through a reviewed eight-test
+inventory. The repair case requires two unchanged-byte strict refusals without
+readiness or a peer listener, explicit mark-checked repair, authenticated catch-up,
+and cold recovery of the full application state, fencing floor and session cache.
+A complementary acquisition fault requires explicit repair to refuse twice,
+without readiness or a peer listener, preserving both application slots, Raft
+log/hard state, peer policy and transport replay bytes. The surviving TLS quorum
+then issues a higher fencing token and its independent guarded-resource history
+rejects the stale token. Neither case implicitly reseeds the replica.
+The explicit reseed case separately compacts a follower, commits a higher fencing
+mark in its retained suffix, and clears that mark’s seal after a checked stop.
+Reseeding must restore the local snapshot before replaying the suffix, catch up
+over TLS, preserve the session cache across an ordinary restart, and retain
+monotonic fencing against the independent guarded resource. Its Raft, identity
+and transport metadata are retained; no replacement directory is substituted.
+These deliberate seal-byte faults do not establish automatic recovery from all
+application publication interruptions. Its frozen version-1 adversarial client hand-encodes the outer hello
 and peer frame before talking to the current runtime over real mutual TLS.
 
 The sharded-counter process uses one stable physical `PeerId` per host and one
@@ -567,22 +638,24 @@ exercises it is a path nobody has run. What a *removal* costs across a restart i
 proven where a driver can be destroyed and rebuilt at all,
 `crates/rafter-service/tests/transport_service_state.rs`.
 
-**A consumer that drives `rafter-app` directly has no control plane to persist.**
-The ledger is deliberately built on `rafter`, `rafter-app`, `rafter-runtime`, and
-`rafter-storage` and not on `rafter-service`, which is what makes it independent
-acceptance evidence for the app layer. Peer authorization policy and identity
-retirement are the managed driver's, so none of this section's driver-level obligations
-reach it; its process composition owns the equivalent decisions itself.
+**A direct `rafter-app` consumer owns its control-plane policy.**
+The ledger library and `ledger-node` process composition use `rafter`,
+`rafter-app`, `rafter-runtime`, and `rafter-storage` directly, providing independent
+acceptance evidence for the app layer. `rafter-service` and the TLS transport are
+separate dev-dependencies for the durable-owner acceptance cases. The direct
+process composition owns its equivalent authorization and retirement decisions;
+it does not inherit the managed transport driver's checkpoint implementation.
 
 ## Verification Lanes
 
 | Lane | Required work | Executed by |
 | --- | --- | --- |
-| Every PR | Source and exact-package deterministic tests, process-inventory membership, published-shape Rust 1.88 build/test plus process smoke, the counter-fast profile, and the deterministic invariant aggregate | `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` in `ci.yml` |
+| Every PR | Source and exact-package deterministic tests, process and owner-soak inventory membership, published-shape Rust 1.88 build/test plus process smoke, the counter-fast profile, and the deterministic invariant aggregate | `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` in `ci.yml` |
 | Main | All reviewed process tests in source mode and against exact archives | `reference-process` and `reference-package-process` in `ci.yml` |
-| Nightly | All reviewed source process tests, burn-in, real pinned Maelstrom, randomized/replayable invariant evidence, bounded multi-gigabyte snapshot streaming, and the 1,024-group counter profile | `reference-process`, `burn-in`, `invariants-maelstrom`, `invariants-nightly`, `multi-gigabyte-test`, and `counter-reference-nightly` in `nightly.yml` |
+| Manual candidate archives | All reviewed archive process tests, published-shape MSRV, storage/wire/rolling TLS upgrades, exact dependency audit, and source preservation | `candidate-archives` in `nightly.yml`, selected with `archives_only: true` |
+| Nightly | All reviewed source process tests, 96 file/TLS owner load and recovery cycles plus 256 compactions without owner restart, burn-in, real pinned Maelstrom, randomized/replayable invariant evidence, bounded multi-gigabyte snapshot streaming, and the 1,024-group counter profile | `reference-process`, `reference-owner-soak`, `burn-in`, `invariants-maelstrom`, `invariants-nightly`, `multi-gigabyte-test`, and `counter-reference-nightly` in `nightly.yml` |
 | Weekly | Deep tests/model checking, storage and snapshot histories, three-trial pinned Maelstrom, and the 4,096-group randomized counter profile with slow groups, snapshot/bulk pressure, poison, and lifecycle churn | `invariants-weekly`, `invariants-maelstrom`, and `counter-reference-weekly` in `weekly.yml` |
-| Release | Exact package archives, full same-version process suite, published-shape MSRV, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md`'s pre-publish block runs the source, exact-package, process, and MSRV lanes by hand; there is no release workflow, no mixed-version coverage, and no pinned downstream canary |
+| Release | Exact package archives, full same-version process suite, published-shape MSRV, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md` runs source, exact-package, process, and MSRV lanes, including published-baseline storage, wire, and rolling TLS upgrades. The pinned-Git counter guide has its own checked lane. A tag-gating release workflow and independent production-consumer canary remain open |
 
 The third column is the whole point of the table. Until the two lanes were
 wired, the "required work" column described work that nothing performed:
@@ -591,10 +664,13 @@ wired, the "required work" column described work that nothing performed:
 `.github/`. A row here is a claim about a job that exists, or it says which
 jobs do not exist yet.
 
-The release row remains intentionally incomplete. Mixed-version package
-coverage, a pinned downstream canary, and a tag-gating release workflow are
-separate release-integration slices and are not inferred from the same-version
-exact-package lanes.
+The release row remains intentionally incomplete. Mixed-version package coverage
+now executes the stated [storage](storage-upgrades.md),
+[wire](wire-compatibility.md), and [rolling TLS](rolling-upgrades.md) scenarios
+against the pinned published alpha. Those scenarios define the tested upgrade
+matrix. The pinned counter guide checks a teaching consumer; qualification of an
+independent production consumer and a tag-gating release workflow remain separate
+release-integration work.
 
 Both process dependency modes read
 `verification/reference-process-suites.txt` and run each `#[ignore]`d selection
@@ -616,12 +692,57 @@ runs on every pull request, now also runs `scripts/reference-process-check
 --list-only`: it compiles nothing extra -- that job already builds
 `tests/process_cluster.rs` -- lists the selection, and compares it to the
 inventory without running it. Adding, removing, or renaming a process test now
-fails on the pull request that does it. What still only happens after merge is
-the suite actually passing, which is the part that genuinely costs half an hour.
+fails on the pull request that does it. Full execution remains on main/nightly;
+the manual candidate archive profile below also makes archive process execution
+available before merge.
+
+`scripts/reference-owner-soak` (or `zcheck run reference-owner-soak`) runs two
+reviewed ignored cases. The first performs 96 load, compaction, shutdown, and
+cold-recovery cycles. The second retains the same three owners across 256
+load and compaction cycles, checks that each compaction releases the retained
+log suffix, and serves quorum reads through the original client handle. Only
+then does it cold-recover the full balance, verify a deduplicated retry, and
+acknowledge a fresh write. Each cycle checks bounded client credits, fairness,
+receipts, and quorum views. Compaction runs between client windows; these cases
+do not claim concurrent maintenance admission or a whole-process memory bound.
+Both default tests run three cycles. `verification/reference-owner-soak-inventory.txt`
+pins both exact ignored names. The PR source lane and
+`zcheck run reference-owner-soak-inventory` validate their selection without
+executing the soaks. Nightly executes both on Linux
+and retains the resolved dependency lock alongside a log of the source revision,
+toolchain, and per-cycle progress.
+`zcheck run full` includes the soak. This is sampled same-version correctness
+evidence, not a throughput benchmark or a physical power-loss qualification.
 
 Randomized jobs must always print and retain their seed and minimized failing
 history. A sampled green run supplements deterministic proofs; it does not
 replace them.
+
+### Manual candidate archive qualification
+
+Push the candidate branch, then request its archive-only Linux profile:
+
+```sh
+gh workflow run nightly.yml --ref "$(git branch --show-current)" -F archives_only=true
+```
+
+This selects `candidate-archives` in the existing dispatchable Nightly workflow.
+It uses one archive set for all reviewed process cases, the Rust 1.88.0 build,
+deterministic suites and process smoke, and published storage, wire and rolling
+TLS upgrades. Packaging and the pinned cargo-audit checker use Rust 1.97.1.
+The separate advisory step audits the exact tested dependency graph.
+
+The run is named **Candidate archive qualification** and has its own concurrency
+group. Omitting the input, selecting `false`, and scheduled events retain the
+full Nightly jobs and their existing concurrency group. Archive-only runs do not
+execute the invariant aggregate or owner soak and cannot qualify those profiles.
+
+The upload records the checked-out GitHub SHA, every tracked source file's
+SHA-256, toolchain identities, archive and upgrade receipts, audit evidence and
+raw logs. Source identity and a clean checkout are checked before and after the
+run, including on failure. Uploads retain partial diagnostics when a phase fails;
+a source-preservation marker alone is not a successful qualification receipt.
+This is a pre-merge evidence lane, not a publishing or architecture-approval gate.
 
 ## API Promotion Rule
 

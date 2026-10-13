@@ -13714,3 +13714,108 @@ any one of the three lands alone.
     implements both public traits over its own transactional store, and the
     exact-package lane proves bounded completion and reopen without any
     benchmark dependency or checkout-only hook. This step is additive.
+30. **Range-aware application dispatch.**
+    `ApplicationEntry::first_log_index` defaults to `log_index`, preserving
+    existing implementations. An item can cover a known protocol-only prefix
+    with its command instead of allocating no-op placeholders. Admission
+    validates both ends and contiguous coverage, returning the new
+    `ApplicationSubmitRejection::InvalidRange` for reversed ranges. Limits and
+    outcomes count items; retained-byte estimates still include all owned
+    data, and completion requires the final covered index to be durable.
+    The embedding must include every application command in the covered range.
+    The durable reference service uses this contract during live output routing
+    and recovery; storage and wire formats are unchanged.
+31. **Budgeted application prefix dispatch.**
+    `ApplicationWorker::try_submit_prefix` accepts at most one batch from a
+    caller-owned `VecDeque`, selecting by both per-batch limits and available
+    credits. Successful calls remove only accepted items; every refusal
+    preserves the queue and its order. The owner still bounds outstanding
+    committed work and chooses how to consume completions. This additive
+    operation reuses ordinary range, size, and worker-lifecycle validation.
+    The durable reference uses it to recover a backlog larger than the worker's
+    credit limit without a queue-pressure panic. Full asynchronous owner-loop
+    scheduling and admission remain separate composition work.
+
+32. **Poll-driven durable owner with independent ledger adoption.**
+    `rafter-runtime::service::DurableService` composes the existing threaded
+    pipeline and ordered application worker. It derives recovery from the
+    application store, retains ordered outputs through backpressure, and owns
+    application/read completion fences, descriptor handoff, and draining
+    shutdown. Refused admission returns the unchanged input; fatal steps expose
+    an unknown durable disposition. A fallible, range-checked adapter preserves
+    application schema ownership. Snapshot bytes and atomic installation remain
+    application responsibilities. This is an additive public module, with no
+    storage/wire-format change and no new transport. The ledger independently
+    adopts it over file-backed Raft and its transactional journal. This first
+    composition uses periodic polling, leaves ordinary consensus I/O synchronous,
+    and does not yet wrap local compaction or manage bounded client waiters.
+
+33. **Quiescent streamed snapshot compaction on the durable owner.**
+    `DurableService::compact_snapshot_with` lends the application store to a
+    builder only after all worker completions and earlier outputs are consumed.
+    The builder returns a descriptor and stable chunk source. The owner checks
+    the application floor before publication, delegates metadata validation and
+    publication/compaction ordering to the existing runtime, restarts the worker
+    at the unchanged floor, and returns retired entries for bounded disposal.
+    Snapshot-floor and kernel-boundary refusals are nonfatal and publish
+    nothing; build errors, mutated application floors, storage failures, caught
+    panics, and failed worker restarts fence the incarnation. The ledger adopts
+    the public operation and retirement worker over real files. A source larger
+    than its application credits is published in bounded chunks and reopened.
+    This additive method imposes no new snapshot schema or whole-payload buffer;
+    `rafter-app::ApplicationSnapshot` streaming policy is still a separate API
+    decision, and the maintenance operation itself remains synchronous.
+
+34. **Managed handle over the durable owner and existing transport.**
+    The default-off service `durable` feature adds `DurableRaftDriver`,
+    `DurableCommandSender`, and the `DurableRaftHandle` alias. Attachment consumes
+    the unique client owner and an already configured `RaftTransport`; the typed
+    `DurableDriverAttachError` returns both on refusal. Encoded write/read bounds
+    and durable receipts stay with that owner. Group validation precedes admission,
+    and proof remapping preserves the actual grant term and application floor.
+    A single retained transfer slot reports additive `Backpressure` and
+    `Unconfirmed` errors rather than inventing acceptance or refusal. Raw transfer
+    input is refused while the driver owns correlation. Shutdown coalesces its
+    lifetime through the metrics close signal: duplicates await backend release
+    before `AlreadyShutDown`, and cancellation cannot revoke shutdown. Watches
+    retain genuine observations through ownership gaps; subscriber counts remain
+    embedding-owned. Panic isolation spans backend disposal and all notifications.
+    Real-worker/quorum regressions and a public TLS ledger consumer adopt the
+    complete handle through durable writes, queries, transfer, shutdown, and
+    reopen. Authentication, membership policy, snapshot installation, and link
+    lifecycle remain explicit embedding duties. Storage and wire formats are
+    unchanged; process-consumer adoption remains separate work.
+
+35. **Local compaction through managed durable clients.**
+    `DurableClientOwner::compact_snapshot_with` and
+    `DurableRaftDriver::compact_snapshot_with` forward the existing quiescent
+    runtime operation while retaining queued requests and uncollected results.
+    Builders preserve the application floor and return a descriptor with a
+    stable chunk source. Ordinary busy, descriptor-floor, and boundary refusals
+    preserve admission according to the backend's actual disposition. Fatal
+    errors and caught callback/source-drop panics fence the incarnation; client
+    fates remain deferred until backend release. The grouped driver applies any
+    pending handle shutdown before maintenance and fences metrics notification
+    panics after publication. A file-backed TLS consumer compacts every replica,
+    retires entries through the bounded worker, transfers leadership, and cold
+    reopens the same state. Creation/publication/restart remain synchronous and
+    source staging, chunks, and retired entries require embedding budgets. No
+    snapshot schema, storage format, or transport changes are introduced.
+
+36. **Typed managed admission pressure.**
+    `WriteError::Backpressure` and `ReadError::Backpressure`, with matching
+    low-cardinality kinds, distinguish exhausted client budgets from transport
+    failures. The durable owner uses them for request counts and retained
+    encoded-vector capacities; the existing transport driver uses them for
+    unresolved and total retained waiters. Refusal happens before allocating an
+    operation ID, appending, reserving a barrier, or invoking a query. A write
+    therefore proves `NotAppended`, including for an encoded buffer whose
+    capacity exceeds the entire byte budget. Retained results still hold credit
+    until consumed or dropped, and canceled accepted operations retain their
+    existing ownership rules. No automatic retry or retry delay is promised.
+    These are additive variants on non-exhaustive enums. Callers that previously
+    bucketed budget exhaustion as `Transport` must handle the new category;
+    actual transport faults preserve their causes and fate. The independent
+    file-backed TLS consumer matches both errors through public senders, checks
+    slot and byte refusal, then serves writes/reads and reopens the same stores.
+    Storage, peer wire, and application schemas are unchanged.

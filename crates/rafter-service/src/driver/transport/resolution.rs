@@ -109,8 +109,9 @@ where
     /// Resolving rather than removing: a caller that abandons may still hold the
     /// future, and a future that answered `ManagedInvariantViolation` because its
     /// own caller abandoned it would be a worse answer than the one it asked
-    /// for. The slot is freed either way, because `max_pending_waiters` counts
-    /// unresolved waiters.
+    /// for. Its pending slot is freed because `max_pending_waiters` counts
+    /// unresolved waiters. The retained-result credit remains until the client
+    /// consumes or drops the future.
     pub(super) fn abandon_write(&mut self, local_proposal_id: LocalProposalId) -> bool {
         let Some(waiter) = self.write_waiters.get(&local_proposal_id) else {
             return false;

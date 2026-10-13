@@ -10,8 +10,7 @@ use std::{
 use super::{HeldDirectory, OperationDeadline, TreeLimits, TREE_LIMITS};
 
 fn test_path(label: &str) -> PathBuf {
-    PathBuf::from("target/rafter-invariants/filesystem-tests")
-        .join(format!("{label}-{}", std::process::id()))
+    crate::tests::scratch_path("filesystem-tests").join(format!("{label}-{}", std::process::id()))
 }
 
 fn limits_with(nodes: usize, depth: usize) -> TreeLimits {

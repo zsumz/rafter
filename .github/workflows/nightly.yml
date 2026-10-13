@@ -15,6 +15,7 @@
 # the dtolnay/rust-toolchain refs in sync when bumping it.
 
 name: Nightly
+run-name: ${{ inputs.archives_only && 'Candidate archive qualification' || 'Nightly' }} (${{ github.ref_name }})
 
 on:
   schedule:
@@ -30,11 +31,17 @@ on:
     # Invariant: scheduled TLA+ continuation jobs must not overlap.
     - cron: "0 9 * * 0-5" # 09:00 UTC Sunday-Friday
   workflow_dispatch:
+    inputs:
+      archives_only:
+        description: Qualify exact candidate archives only (processes, MSRV, upgrades, audit)
+        type: boolean
+        default: false
 
 # One nightly at a time; a manual dispatch queues behind a running one
-# instead of cancelling multi-hour work.
+# instead of cancelling multi-hour work. Archive-only requests have their own
+# group; the normal nightly group is unchanged even while older runs are active.
 concurrency:
-  group: nightly-${{ github.ref }}
+  group: ${{ inputs.archives_only && 'candidate-archives' || 'nightly' }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -51,6 +58,7 @@ defaults:
 
 jobs:
   model-check:
+    if: ${{ !inputs.archives_only }}
     name: model-check (${{ matrix.profile }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -80,6 +88,7 @@ jobs:
           retention-days: 30
 
   invariants-tests:
+    if: ${{ !inputs.archives_only }}
     name: invariants-tests-nightly
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -89,6 +98,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -123,6 +134,7 @@ jobs:
           retention-days: 30
 
   invariants-simulator:
+    if: ${{ !inputs.archives_only }}
     name: invariants-simulator-nightly
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -132,6 +144,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -167,6 +181,7 @@ jobs:
           retention-days: 30
 
   invariants-tla:
+    if: ${{ !inputs.archives_only }}
     name: invariants-tla-nightly
     # Standard GitHub-hosted jobs hard-cap at six hours. The internal layer
     # deadline leaves 30 minutes for setup, checkpointing, and evidence upload.
@@ -195,6 +210,8 @@ jobs:
           sha256: "ab323b79802aedc3203b3f9af37c6aca3ed43f4e0225b36f2aa77b26de46c05f"
       - name: Stage source-bound TLA+ tool
         run: install -D -m 0444 "$TLA2TOOLS_JAR" tools/cache/tla2tools.jar
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -208,10 +225,9 @@ jobs:
         with:
           path: target/rafter-invariants/tla-checkpoint/nightly
           key: tla-nightly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          # The final key is an exact one-time bridge from the last compatible v1 checkpoint.
+          # Restore only checkpoints bound to the current model and profile.
           restore-keys: |
             tla-nightly-checkpoint-v2-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-
-            tla-nightly-checkpoint-v1-d4d58ccf520c9f3dd1f7fb27fcd7f1a99ad3b54d2d83ffb5eeb983c48420c3d4-31306738996-1
       # TLC writes its successor checkpoint beside the recovered one before
       # retiring it, so peak disk is the restored bytes plus a full successor
       # plus that successor's growth. A restore that already fills the runner
@@ -327,6 +343,7 @@ jobs:
           retention-days: 30
 
   burn-in:
+    if: ${{ !inputs.archives_only }}
     name: burn-in
     runs-on: ubuntu-24.04
     # The nightly burn-in mode runs the raft-nightly model-check profile in a
@@ -355,6 +372,7 @@ jobs:
           retention-days: 30
 
   invariants-maelstrom:
+    if: ${{ !inputs.archives_only }}
     name: invariants-maelstrom-nightly
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -374,6 +392,10 @@ jobs:
           version: "0.2.4"
           sha256: "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799"
           java-version: "21.0.11+10.0.LTS"
+          analysis-tools: "true"
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
+        with:
           analysis-tools: "true"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         timeout-minutes: 8
@@ -425,9 +447,10 @@ jobs:
       - invariants-simulator
       - invariants-tla
       - invariants-maelstrom
-    if: always()
+    # Preserve failure reports, but let canceled runs release the CI queue.
+    if: ${{ !inputs.archives_only && always() && !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 110
+    timeout-minutes: 120
     env:
       INVARIANT_EVIDENCE_DIR: rafter-invariants-nightly-evidence-${{ github.run_id }}-${{ github.run_attempt }}
       INVARIANT_REPORT_DIR: rafter-invariants-nightly-${{ github.run_id }}-${{ github.run_attempt }}
@@ -449,6 +472,10 @@ jobs:
           version: "0.2.4"
           sha256: "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799"
           java-version: "21.0.11+10.0.LTS"
+          analysis-tools: "true"
+      - uses: ./.github/actions/setup-invariant-runtime
+        timeout-minutes: 8
+        with:
           analysis-tools: "true"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         timeout-minutes: 8
@@ -690,6 +717,7 @@ jobs:
             "$RUNNER_TEMP/$INVARIANT_REPORT_DIR/nightly.json" >/dev/null
 
   fuzz-long:
+    if: ${{ !inputs.archives_only }}
     name: fuzz-long (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90 # 30 min of fuzzing + toolchain, cargo-fuzz install, and sanitizer build
@@ -739,6 +767,7 @@ jobs:
           if-no-files-found: ignore
 
   reference-process:
+    if: ${{ !inputs.archives_only }}
     name: reference-process-nightly
     # docs/reference-consumers.md assigns durable process tests to the
     # main/nightly tier. ci.yml runs the same suite on pushes to main; this is
@@ -770,7 +799,53 @@ jobs:
           path: artifacts/reference-counter/process-suite-nightly.log
           if-no-files-found: error
 
+  reference-owner-soak:
+    if: ${{ !inputs.archives_only }}
+    name: reference-owner-soak
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Record owner-soak source identity
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-owner"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-owner/source-head.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-owner/source-before.status"
+          test ! -s "$RUNNER_TEMP/reference-owner/source-before.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-owner/source-before.sha256"
+      - name: File-backed TLS owner load, continuous compaction, and cold recovery
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-owner"
+          scripts/reference-owner-soak 2>&1 | tee "$RUNNER_TEMP/reference-owner/soak.log"
+      - name: Verify owner-soak source preservation
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-owner"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-owner/source-head-after.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-owner/source-after.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-owner/source-after.sha256"
+          test ! -s "$RUNNER_TEMP/reference-owner/source-after.status"
+          cmp "$RUNNER_TEMP/reference-owner/source-head.txt" "$RUNNER_TEMP/reference-owner/source-head-after.txt"
+          cmp "$RUNNER_TEMP/reference-owner/source-before.sha256" "$RUNNER_TEMP/reference-owner/source-after.sha256"
+          printf 'preserved\n' > "$RUNNER_TEMP/reference-owner/source-preserved.txt"
+      - name: Upload owner soak diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reference-owner-soak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/reference-owner/
+            reference/Cargo.lock
+          if-no-files-found: error
+
   multi-gigabyte-test:
+    if: ${{ !inputs.archives_only }}
     name: multi-gigabyte-test
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -798,6 +873,7 @@ jobs:
           if-no-files-found: ignore
 
   counter-reference-nightly:
+    if: ${{ !inputs.archives_only }}
     name: counter-reference-nightly
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -809,12 +885,105 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
+      - name: Record counter profile source identity
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-counter"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-counter/source-head.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-counter/source-before.status"
+          test ! -s "$RUNNER_TEMP/reference-counter/source-before.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-counter/source-before.sha256"
+          rustc --version --verbose > "$RUNNER_TEMP/reference-counter/rustc.txt"
+          cargo --version > "$RUNNER_TEMP/reference-counter/cargo.txt"
       - name: Counter reference nightly profile
-        run: scripts/counter-profile counter-nightly
+        run: |
+          scripts/counter-profile counter-nightly --artifacts "$RUNNER_TEMP/reference-counter/workload" 2>&1 | tee "$RUNNER_TEMP/reference-counter/profile.log"
+      - name: Verify counter profile source preservation
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/reference-counter"
+          git rev-parse HEAD > "$RUNNER_TEMP/reference-counter/source-head-after.txt"
+          git status --porcelain > "$RUNNER_TEMP/reference-counter/source-after.status"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/reference-counter/source-after.sha256"
+          test ! -s "$RUNNER_TEMP/reference-counter/source-after.status"
+          cmp "$RUNNER_TEMP/reference-counter/source-head.txt" "$RUNNER_TEMP/reference-counter/source-head-after.txt"
+          cmp "$RUNNER_TEMP/reference-counter/source-before.sha256" "$RUNNER_TEMP/reference-counter/source-after.sha256"
+          printf 'preserved\n' > "$RUNNER_TEMP/reference-counter/source-preserved.txt"
       - name: Upload counter nightly evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: counter-reference-nightly-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/reference-counter/counter-nightly/
+          path: |
+            ${{ runner.temp }}/reference-counter/
+            reference/Cargo.lock
           if-no-files-found: error
+
+  candidate-archives:
+    name: candidate-archives
+    if: ${{ inputs.archives_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.88.0"
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Bind candidate source and toolchains
+        run: |
+          CANDIDATE_ARTIFACTS="$RUNNER_TEMP/rafter-candidate-archives"
+          printf 'CANDIDATE_ARTIFACTS=%s\n' "$CANDIDATE_ARTIFACTS" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          mkdir "$CANDIDATE_ARTIFACTS"
+          git rev-parse HEAD > "$CANDIDATE_ARTIFACTS/source-head.txt"
+          git ls-files -z | xargs -0 sha256sum > "$CANDIDATE_ARTIFACTS/source-sha256.txt"
+          {
+            rustc -Vv
+            cargo -V
+            rustup run 1.88.0 rustc -Vv
+            rustup run 1.88.0 cargo -V
+            python3 --version
+          } > "$CANDIDATE_ARTIFACTS/toolchains.txt"
+      - name: Exact archives, reviewed processes, MSRV and upgrades
+        env:
+          RUSTUP_TOOLCHAIN: "1.97.1"
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          scripts/reference-package-process-check --msrv-toolchain 1.88.0 \
+            --artifacts "$CANDIDATE_ARTIFACTS/packages" \
+            2>&1 | tee "$CANDIDATE_ARTIFACTS/packages.log"
+      - name: Install the pinned advisory checker
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit the tested archive dependency graph
+        run: |
+          python3 scripts/archive_dependencies.py --audit \
+            --artifacts "$CANDIDATE_ARTIFACTS/packages" \
+            2>&1 | tee "$CANDIDATE_ARTIFACTS/audit.log"
+      - name: Verify source preservation
+        if: always()
+        env:
+          CANDIDATE_ARTIFACTS: ${{ runner.temp }}/rafter-candidate-archives
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          sha256sum --check --quiet "$CANDIDATE_ARTIFACTS/source-sha256.txt"
+          printf '%s\n' preserved > "$CANDIDATE_ARTIFACTS/source-preserved.txt"
+      - name: Upload candidate archive evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-archives-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rafter-candidate-archives/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30

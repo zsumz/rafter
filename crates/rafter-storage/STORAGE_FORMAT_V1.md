@@ -74,6 +74,11 @@ bytes.
 
 Checksum coverage ends immediately before `crc32`.
 
+File-backed opening verifies the complete checksum using a 4 KiB read buffer
+and retaining only the 47-byte body prefix. Oversized files preserve checksum,
+schema and trailing-byte error precedence without a file-sized allocation.
+Verification time remains proportional to the file length.
+
 ## Hard-state journal (opt-in)
 
 `JournalRaftHardStateStore` uses a distinct format at the same `hard-state`
@@ -162,6 +167,12 @@ crc32                u32
 During replay, entries at or below this boundary are ignored even if their old
 frames remain in the log file after an interrupted reclamation rewrite.
 
+File-backed opening verifies the full checksum with a 4 KiB read buffer and
+retains only the 13-byte body prefix. Oversized markers preserve checksum,
+schema and trailing-byte error precedence without a file-sized allocation.
+Invalid markers are refused before any uncommitted-tail repair can mutate the
+log. Checksum verification still scans the complete marker file.
+
 ## Snapshot envelope (`RFSN`)
 
 ```text
@@ -235,6 +246,13 @@ snapshot-<sequence>-<last_included_index>-<last_included_term>-<writer_id>.rfsn
 The manifest is the sole selector of the current snapshot. A complete snapshot
 file not named by this manifest is retained but ignored by open.
 
+File-backed opening checks the entire checksum with a 4 KiB read buffer and
+retains at most 65,550 body bytes: the 15-byte header plus a full `u16` filename.
+The format's maximum filename length remains accepted by the decoder. Oversized
+files preserve checksum, schema, filename and trailing-byte diagnostics without
+a file-sized allocation. Refusal precedes pending-transfer recovery cleanup;
+checksum verification time remains proportional to the manifest file length.
+
 ## Pending-transfer manifest (`RFPT`)
 
 ```text
@@ -256,6 +274,13 @@ snapshot metadata and an empty application payload. Its own payload and
 envelope checksums remain present. This nesting is part of the current v1 bytes
 and cannot be changed without a new `RFPT` version. Readers reject nested
 metadata envelopes larger than 4 MiB or carrying application payload bytes.
+
+File-backed opening verifies the full outer checksum with a 4 KiB read buffer
+and retains at most 4 MiB plus the 53-byte RFPT header. Nested decoding keeps
+the existing metadata cap. Trailing-byte counts include the unretained suffix
+and are rejected before progress/transfer-identity validation. An invalid
+manifest leaves snapshot and pending-body files intact; checksum verification
+still scans the complete manifest file.
 
 `transfer_id` must equal the deterministic `RaftSnapshot::transfer_id()` derived
 from `metadata_envelope`, `total_payload_len`, and
@@ -371,6 +396,9 @@ The fixed-size, checksummed `RFWM 00 00 00 01` manifest names the selected
 generation, operation, and compacted boundary. A selected checkpoint and segment
 must agree with all three fields. Recovery never falls back from a corrupt or
 missing manifest-selected file to an older generation or to `hard-state`.
+Opening the 36-byte manifest reads at most 37 bytes, including the extra byte
+needed to reject a trailing suffix. A malformed file cannot cause an unbounded
+manifest allocation or scan before the length check.
 
 ```text
 magic                    [8]   "RFWM 00 00 00 01"

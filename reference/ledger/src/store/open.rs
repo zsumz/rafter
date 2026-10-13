@@ -115,11 +115,13 @@ impl LedgerStore {
         faults: FaultPlan,
         on_unreadable: OnUnreadableFrame,
     ) -> Result<Self, LedgerStoreError> {
-        fs::create_dir_all(directory).map_err(|source| LedgerStoreError::Io {
-            operation: "create the ledger store directory",
-            path: directory.to_path_buf(),
-            source,
-        })?;
+        rafter_reference_harness::durable_directory::create_durable_directory(directory).map_err(
+            |source| LedgerStoreError::Io {
+                operation: "durably provision the ledger store directory",
+                path: directory.to_path_buf(),
+                source,
+            },
+        )?;
 
         let journal_path = directory.join(JOURNAL_FILE_NAME);
         // Before anything looks at the journal, so an interrupted creation's
@@ -131,12 +133,21 @@ impl LedgerStore {
             create_journal(directory, config)?;
         }
 
-        let bytes = fs::read(&journal_path).map_err(|source| LedgerStoreError::Io {
+        let mut file = fs::File::open(&journal_path).map_err(|source| LedgerStoreError::Io {
             operation: "read the ledger journal",
             path: journal_path.clone(),
             source,
         })?;
-        let scan = scan_journal(&bytes, config)?;
+        let length = file
+            .metadata()
+            .map_err(|source| LedgerStoreError::Io {
+                operation: "inspect the ledger journal",
+                path: journal_path.clone(),
+                source,
+            })?
+            .len();
+        let scan = scan_journal(&mut file, length, config, &journal_path)?;
+        drop(file);
 
         // A frame this build cannot read is not damage, so it is not something
         // a repair may clear. Discarding it would delete a newer build's
@@ -144,7 +155,7 @@ impl LedgerStore {
         // points refuse it, above the repair branch rather than inside it.
         if let Some(TornTail::UnsupportedFrameVersion { version }) = scan.torn_tail {
             return Err(LedgerStoreError::UnsupportedFrameVersion {
-                offset: scan.committed_len as u64,
+                offset: scan.committed_len,
                 version,
             });
         }
@@ -157,9 +168,9 @@ impl LedgerStore {
             .torn_tail
             .filter(|tail| !tail.is_truncatable_residue())
             .map(|corruption| Repair {
-                offset: scan.committed_len as u64,
+                offset: scan.committed_len,
                 corruption,
-                discarded_bytes: (bytes.len() - scan.committed_len) as u64,
+                discarded_bytes: length - scan.committed_len,
             });
         let repair = match (unreadable, on_unreadable) {
             (Some(repair), OnUnreadableFrame::Refuse) => {
@@ -174,7 +185,7 @@ impl LedgerStore {
             (None, OnUnreadableFrame::Refuse) => None,
         };
 
-        if scan.committed_len < bytes.len() {
+        if scan.committed_len < length {
             truncate_journal(&journal_path, scan.committed_len)?;
         }
 
@@ -189,7 +200,7 @@ impl LedgerStore {
             config,
             ledger,
             applied_index,
-            journal_len: scan.committed_len as u64,
+            journal_len: scan.committed_len,
             health: Health::Healthy,
             faults,
             write_plans: 0,
@@ -210,7 +221,7 @@ impl LedgerStore {
                 discarded_bytes: if repair.is_some() {
                     0
                 } else {
-                    (bytes.len() - scan.committed_len) as u64
+                    length - scan.committed_len
                 },
                 //
                 // There is no `repair.is_some()` guard here and it would be

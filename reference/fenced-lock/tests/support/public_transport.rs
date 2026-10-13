@@ -1,8 +1,7 @@
 //! Frozen version-1 client for adversarial current-process compatibility tests.
 
 use std::{
-    fs::File,
-    io::{BufReader, Read, Write},
+    io::{Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     sync::Arc,
@@ -13,7 +12,7 @@ use rafter_transport_tls::{ServerHelloStatus, ServerRefusal};
 use rustls::{
     client::{ClientConfig, ClientConnection, Resumption},
     crypto::ring,
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName},
+    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName},
     RootCertStore, StreamOwned,
 };
 
@@ -162,17 +161,14 @@ fn tls_client_config(node_id: NodeId) -> Arc<ClientConfig> {
 }
 
 fn load_certificates(path: &Path) -> Vec<CertificateDer<'static>> {
-    let file = File::open(path).expect("test certificate file opens");
-    rustls_pemfile::certs(&mut BufReader::new(file))
+    CertificateDer::pem_file_iter(path)
+        .expect("test certificate file opens")
         .collect::<Result<_, _>>()
         .expect("test certificates parse")
 }
 
 fn load_private_key(path: &Path) -> PrivateKeyDer<'static> {
-    let file = File::open(path).expect("test private key file opens");
-    rustls_pemfile::private_key(&mut BufReader::new(file))
-        .expect("test private key parses")
-        .expect("test private key exists")
+    PrivateKeyDer::from_pem_file(path).expect("test private key exists and parses")
 }
 
 fn encode_frozen_client_hello(output: &mut Vec<u8>, claimed_node: NodeId, session: u64) {

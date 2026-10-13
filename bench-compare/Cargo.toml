@@ -74,6 +74,10 @@ name = "check-transport-receive-memory"
 path = "src/bin/check-transport-receive-memory.rs"
 
 [[bin]]
+name = "check-wal-recovery-memory"
+path = "src/bin/check-wal-recovery-memory.rs"
+
+[[bin]]
 name = "bench-raft-rs"
 path = "src/bin/bench-raft-rs.rs"
 required-features = ["raft-rs"]

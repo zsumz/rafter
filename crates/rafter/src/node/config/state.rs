@@ -1,4 +1,4 @@
-//! Construction and structural validation for [`NodeConfig`](super::NodeConfig).
+//! Construction and structural validation for [`NodeConfig`].
 
 use std::collections::BTreeSet;
 

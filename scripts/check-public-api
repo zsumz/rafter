@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Check every public crate's source API against published 0.0.2-alpha.1."""
+
+import argparse
+from pathlib import Path
+import subprocess
+import tempfile
+
+from public_api_check import check
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--artifacts", type=Path, help="fresh evidence directory; must be ignored if inside the repository")
+    args = parser.parse_args()
+    if args.artifacts:
+        artifacts = args.artifacts.resolve()
+        if artifacts.is_relative_to(ROOT) and subprocess.run(
+                ["git", "check-ignore", "-q", str(artifacts)], cwd=ROOT).returncode:
+            parser.error("in-repository evidence must use an ignored directory, such as target/public-api")
+        artifacts.mkdir(parents=True, exist_ok=False)
+    else:
+        parent = ROOT / "target/public-api"
+        parent.mkdir(parents=True, exist_ok=True)
+        artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
+    try:
+        check(ROOT, artifacts)
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError, OSError,
+            subprocess.CalledProcessError) as error:
+        raise SystemExit(f"FAIL: {error}; evidence: {artifacts}") from error
+
+
+if __name__ == "__main__":
+    main()

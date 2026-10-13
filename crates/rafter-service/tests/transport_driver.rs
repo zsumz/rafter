@@ -403,7 +403,7 @@ fn waiters_are_bounded() {
     let refused = block_on(handle.write(("beta".to_owned(), "two".to_owned())))
         .expect_err("the second write exceeds the waiter bound");
 
-    assert_eq!(refused.kind(), WriteErrorKind::Transport);
+    assert_eq!(refused.kind(), WriteErrorKind::Backpressure);
     assert_eq!(
         refused.fate(),
         WriteFate::NotAppended,

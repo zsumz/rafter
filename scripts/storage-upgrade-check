@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Build real archive consumers and check forward recovery of file-backed stores.
+
+Requires Python 3.11+ and rustup. By default packages the candidate from this
+checkout. --candidate-archives reuses an existing exact package set instead.
+The checksum-pinned published archives may be cached for later --offline runs.
+Every invocation produces a fresh receipt, logs, locks, graphs and durable states.
+"""
+
+import shutil
+import sys
+import zlib
+
+from archive_compatibility import ArchiveRun, ROOT, run_matrix
+from archive_inputs import tree_inventory
+
+
+class Run(ArchiveRun):
+    label = "storage-upgrade"
+    scope = "forward file-store recovery"
+    packages = frozenset({"rafter", "rafter-crc32", "rafter-storage"})
+    dependencies = ("rafter", "rafter-storage")
+    probe_name = "rafter-storage-upgrade-probe"
+    fixture = ROOT / "reference/fenced-lock/src/bin/storage-format-probe"
+    baseline = ROOT / "verification/storage-upgrade-baseline.json"
+    script = "storage-upgrade-check"
+
+    def matrix(self, baseline, candidate):
+        states = self.artifacts / "states"
+        states.mkdir()
+        for case in ["log", "snapshot", "pending"]:
+            state = states / case
+            for role, binary, operation in [
+                ("baseline", baseline, "write"), ("baseline", baseline, "check"),
+                ("candidate", candidate, "check"), ("candidate", candidate, "extend"),
+                ("candidate", candidate, "check-extended"),
+            ]:
+                self.command(f"{case}-{role}-{operation}", [binary, operation, case, state], states)
+                self.receipt["cases"].append({"case": case, "role": role, "operation": operation,
+                                               "state": tree_inventory(state)})
+        future = states / "future-hard-state"
+        shutil.copytree(states / "log", future)
+        hard_state = future / "hard-state"
+        data = bytearray(hard_state.read_bytes())
+        if data[:4] != b"RFHS" or data[4] != 1:
+            raise ValueError("unexpected hard-state format; review the future-version fixture")
+        data[4] = 99
+        data[-4:] = zlib.crc32(data[:-4]).to_bytes(4, "big")
+        hard_state.write_bytes(data)
+        before = tree_inventory(future)
+        self.command("candidate-refuse-future-hard-state",
+                     [candidate, "refuse-version", "log", future], states)
+        after = tree_inventory(future)
+        if before != after:
+            raise ValueError("future-format refusal mutated durable bytes or directory shape")
+        self.receipt["cases"].append({"case": "future-hard-state", "role": "candidate",
+                                       "operation": "refuse-version", "state": after,
+                                       "unchanged": True})
+
+
+if __name__ == "__main__":
+    sys.exit(run_matrix(Run, __doc__))

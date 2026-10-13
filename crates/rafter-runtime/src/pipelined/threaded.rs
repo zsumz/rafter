@@ -58,7 +58,23 @@ where
         node: crate::DurableRaftNode<H, L, S>,
         options: PersistenceWorkerOptions,
     ) -> Result<Self, ThreadedPipelineStartError<H, L, S>> {
-        let worker = match PersistenceWorker::start(options) {
+        Self::start_with_wake(node, options, || {})
+    }
+
+    /// Starts the composition with completion and termination notifications.
+    ///
+    /// See [`PersistenceWorker::start_with_wake`] for callback and retained
+    /// notification requirements. Inline work returns directly to the caller
+    /// and needs no worker notification.
+    ///
+    /// # Errors
+    /// Returns the thread creation error without consuming the node.
+    pub fn start_with_wake(
+        node: crate::DurableRaftNode<H, L, S>,
+        options: PersistenceWorkerOptions,
+        wake: impl Fn() + Send + 'static,
+    ) -> Result<Self, ThreadedPipelineStartError<H, L, S>> {
+        let worker = match PersistenceWorker::start_with_wake(options, wake) {
             Ok(worker) => worker,
             Err(source) => {
                 return Err(ThreadedPipelineStartError {

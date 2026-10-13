@@ -16,18 +16,25 @@ use fixture_support::{
     run_fixture, run_fixture_with_inventory, run_fixture_without_libtest_args, stderr, Fixture,
 };
 
+#[path = "ci_test_inventory_contract/local.rs"]
+mod local;
+
 #[test]
 fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
     let root = workspace_root();
     let ci = read(&root.join(".github/workflows/ci.yml"));
+    let durable = "scripts/cargo-test-exact 440 - --locked -p rafter-service --features durable";
+    local::assert_durable_inventory(&root, durable);
     for selection in [
         "scripts/cargo-test-exact 6 dependency_boundary --workspace",
+        "scripts/cargo-test-exact 1 - --locked -p rafter-storage --lib -- --ignored --exact storage_failpoint_test::snapshot_process_test::snapshot_publication_survives_process_loss --nocapture",
+        durable,
         "scripts/cargo-test-exact 2 source_boundary -p rafter",
         "scripts/cargo-test-exact 1 file_size_guard -p rafter -- --nocapture",
         "scripts/cargo-test-exact 3 - -p rafter --test test_location_guard -- --nocapture",
         "scripts/cargo-test-exact 10 - -p rafter --test public_api_docs_guard -- --nocapture",
         "scripts/cargo-test-exact 1 - -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture",
-        "scripts/cargo-test-exact 64 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 65 execution::process:: --inventory verification/launcher-process-test-inventory.txt --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 4 producer::test_exec::detector_proof::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 1 producer::test_exec::process_tests --locked -p rafter-invariants -- --test-threads=1",
@@ -47,6 +54,7 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
     }
 
     let nightly = read(&root.join(".github/workflows/nightly.yml"));
+    local::assert_nightly_archive_profile(&nightly);
     assert!(nightly
         .contains("scripts/cargo-test-exact 1 multi_gigabyte -p rafter --release -- --ignored"));
 
@@ -207,6 +215,53 @@ fn verifier_jobs_share_runtime_class_and_use_reviewed_tool_actions() {
             }
         }
         assert!(!contents.contains("./.github/actions/setup-invariant-verifier"));
+    }
+}
+
+#[test]
+fn every_linux_evidence_job_normalizes_its_authenticated_runtime() {
+    let root = workspace_root();
+    let normalize = "uses: ./.github/actions/setup-invariant-runtime";
+    for (workflow, profile) in [
+        ("ci.yml", "pr"),
+        ("nightly.yml", "nightly"),
+        ("weekly.yml", "weekly"),
+    ] {
+        let contents = read(&root.join(".github/workflows").join(workflow));
+        let aggregate = format!("invariants-{profile}");
+        let mut jobs = vec![
+            "invariants-tests",
+            "invariants-simulator",
+            "invariants-tla",
+            "invariants-maelstrom",
+            &aggregate,
+        ];
+        if profile == "pr" {
+            jobs.push("invariants-tla-validation");
+        }
+        for job in jobs {
+            let block = workflow_job(&contents, job);
+            assert_eq!(block.matches(normalize).count(), 1, "{workflow}: {job}");
+            let normalized = block.find(normalize).unwrap();
+            let cache = block.find("uses: Swatinem/rust-cache@").unwrap();
+            assert!(
+                normalized < cache,
+                "{job} must normalize before evidence execution"
+            );
+            if profile != "pr" && (job == "invariants-maelstrom" || job == aggregate) {
+                let installation = block.find("uses: zactionsz/setup-maelstrom@").unwrap();
+                assert!(
+                    installation < normalized,
+                    "normalize after upstream apt installs"
+                );
+            }
+            if job == "invariants-maelstrom" || (profile != "pr" && job == aggregate) {
+                assert!(
+                    block[normalized..cache].contains("analysis-tools: \"true\""),
+                    "{workflow}: {job} must normalize authenticated analysis tools"
+                );
+            }
+        }
     }
 }
 

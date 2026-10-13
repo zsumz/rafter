@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -146,7 +146,7 @@ fn line(value: &serde_json::Value) -> Vec<u8> {
 
 fn with_fixture(test: impl FnOnce(&Fixture<'_>)) {
     let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    let root = PathBuf::from("target/rafter-invariants/compiler-transcript-tests")
+    let root = crate::tests::scratch_path("compiler-transcript-tests")
         .join(format!("{}-{id}", std::process::id()));
     let package = root.join("package");
     let source = package.join("src/lib.rs");

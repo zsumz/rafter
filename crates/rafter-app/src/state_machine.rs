@@ -206,6 +206,10 @@ pub trait ReplicatedStateMachine {
     /// one. `at` must be the state machine's own applied index; compacting above it
     /// raises the group's committed application index past a value the state
     /// machine will ever report.
+    /// Large snapshots can instead use caller-driven streamed creation with
+    /// the runtime's `SnapshotPayloadWriter` and an immutable
+    /// chunk source for the runtime's streamed compaction API, without building
+    /// this inline payload. The same exact applied-floor obligation applies.
     ///
     /// # Errors
     ///
@@ -223,7 +227,12 @@ pub trait ReplicatedStateMachine {
 
     /// Installs an application snapshot and makes its effects durable.
     ///
-    /// Rafter calls this when the local node accepts a leader's snapshot. After
+    /// Rafter calls this when the local node accepts a leader's snapshot. The
+    /// group rejects a boundary below the application's reported durable index
+    /// or its own recorded applied floor before calling this method. Failure to
+    /// read that durable index also refuses installation and poisons the group.
+    /// Equal boundaries are allowed; validating schema and payload remains the
+    /// application's responsibility. After
     /// it returns `Ok`, the state machine must be able to recover with all
     /// snapshot effects and applied-index progress through the installed
     /// snapshot boundary; returning `Ok` without incorporating the payload
@@ -232,6 +241,10 @@ pub trait ReplicatedStateMachine {
     /// [`ApplicationSnapshot::raft_snapshot`] is present, the snapshot payload
     /// may be managed by the runtime snapshot store instead of carried inline
     /// in [`ApplicationSnapshot::payload`].
+    /// The runtime's `SnapshotPayloadReader` reads that descriptor from
+    /// an existing chunk source with explicit payload/chunk limits. Decode into
+    /// temporary state, finish checksum verification, then atomically publish
+    /// the application state and applied floor; the reader does not publish them.
     ///
     /// # Errors
     ///

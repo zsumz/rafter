@@ -1,8 +1,8 @@
 //! The single-register linearizability decision over an observed history.
 //!
 //! Searches for one total order of the recorded client operations consistent
-//! with real-time precedence, treating an unknown-outcome write as optional so
-//! it may explain a later read or be left out entirely. It answers RD-06 only
+//! with real-time precedence. An unfinished or unknown-outcome invocation may
+//! take effect without a client reply, or may be omitted entirely. It answers RD-06 only
 //! for the history it is handed; what belongs in that history is decided above.
 
 use std::collections::BTreeSet;
@@ -39,10 +39,10 @@ fn observed_operations(history: &ClientHistory) -> Vec<Operation> {
     for write in history.writes.values() {
         let (completed_at, optional) = match write.status {
             ClientWriteStatus::Completed { completed_at, .. } => (completed_at, false),
-            ClientWriteStatus::Unknown { .. } => (u64::MAX, true),
             ClientWriteStatus::Pending
             | ClientWriteStatus::Accepted { .. }
-            | ClientWriteStatus::Rejected => continue,
+            | ClientWriteStatus::Unknown { .. } => (u64::MAX, true),
+            ClientWriteStatus::Rejected => continue,
         };
         operations.push(Operation {
             id: OperationId::Write(write.proposal_id),

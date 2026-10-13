@@ -644,6 +644,7 @@ impl ProcessCluster {
     }
 
     pub fn wait_status_above(&mut self, node_id: u64, name: &str, baseline: u64) {
+        let mut last_status = None;
         PROCESS_WAIT
             .until(
                 format!("node {node_id} status {name} to exceed {baseline}"),
@@ -654,10 +655,12 @@ impl ProcessCluster {
                         .expect("live node")
                         .request("STATUS")
                         .ok()?;
-                    (number_field(&status, name) > baseline).then_some(())
+                    let advanced = number_field(&status, name) > baseline;
+                    last_status = Some(status);
+                    advanced.then_some(())
                 },
             )
-            .unwrap_or_else(|error| panic!("{error}"));
+            .unwrap_or_else(|error| panic!("{error}; last status: {last_status:?}"));
     }
 
     pub fn wait_status_at_least(&mut self, node_id: u64, name: &str, minimum: u64) {

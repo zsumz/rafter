@@ -156,8 +156,15 @@ pub fn allocate_replica(
     group_id: u64,
     crash: AllocationCrashPoint,
 ) -> Result<ReplicaIdentity, IdentityError> {
-    fs::create_dir_all(allocation_dir)
-        .map_err(|source| io("create the allocation directory", allocation_dir, source))?;
+    rafter_reference_harness::durable_directory::create_durable_directory(allocation_dir).map_err(
+        |source| {
+            io(
+                "durably create the allocation directory",
+                allocation_dir,
+                source,
+            )
+        },
+    )?;
     let lock_path = allocation_dir.join(ALLOCATION_LOCK);
     let lock = OpenOptions::new()
         .create_new(true)
@@ -204,8 +211,15 @@ pub fn allocate_replica(
     };
     let parent = allocation_dir.join(format!("node-{}", next.0));
     let identity_path = parent.join(IDENTITY_FILE);
-    fs::create_dir_all(&parent)
-        .map_err(|source| io("create the replica identity directory", &parent, source))?;
+    rafter_reference_harness::durable_directory::create_durable_directory(&parent).map_err(
+        |source| {
+            io(
+                "durably create the replica identity directory",
+                &parent,
+                source,
+            )
+        },
+    )?;
     initialize_transport_state(&parent, group_id, next).map_err(|error| {
         IdentityError::Malformed {
             path: transport_session_path(&parent),
@@ -503,19 +517,20 @@ mod tests {
     fn allocation_is_monotonic_and_retirement_is_permanent() {
         let scratch =
             ScratchSpace::create("production-identity", "monotonic").expect("scratch opens");
-        let first = allocate_replica(scratch.path(), 7, AllocationCrashPoint::None)
+        let allocation_dir = scratch.path().join("deployment/replicas");
+        let first = allocate_replica(&allocation_dir, 7, AllocationCrashPoint::None)
             .expect("first identity allocates");
-        let second = allocate_replica(scratch.path(), 7, AllocationCrashPoint::None)
+        let second = allocate_replica(&allocation_dir, 7, AllocationCrashPoint::None)
             .expect("second identity allocates");
         assert_eq!((first.node_id, second.node_id), (NodeId(1), NodeId(2)));
 
-        let path = ReplicaIdentity::path(scratch.path(), first.node_id);
+        let path = ReplicaIdentity::path(&allocation_dir, first.node_id);
         retire_replica(&path, 7).expect("identity retires");
         assert!(matches!(
-            load_active_replica(scratch.path(), &path, 7),
+            load_active_replica(&allocation_dir, &path, 7),
             Err(IdentityError::Retired { node_id: NodeId(1) })
         ));
-        let replacement = allocate_replica(scratch.path(), 7, AllocationCrashPoint::None)
+        let replacement = allocate_replica(&allocation_dir, 7, AllocationCrashPoint::None)
             .expect("replacement uses a fresh identity");
         assert_eq!(replacement.node_id, NodeId(3));
     }

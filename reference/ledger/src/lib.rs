@@ -28,7 +28,7 @@ mod types;
 
 pub use adapter::{
     DurableLedgerError, DurableLedgerStateMachine, LedgerAdapterError, LedgerApplicationEntry,
-    LedgerCodecError, LedgerStateMachine, NonZeroField,
+    LedgerCodecError, LedgerSnapshotWriteError, LedgerStateMachine, NonZeroField,
 };
 pub use checker::{
     check_linearizable, Blocked, BlockedReason, CheckError, CheckReport, HistoryDefect, Violation,

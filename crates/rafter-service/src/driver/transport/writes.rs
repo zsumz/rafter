@@ -58,14 +58,8 @@ where
             .values()
             .filter(|waiter| waiter.outcome.is_none())
             .count();
-        if unresolved >= self.options.max_pending_waiters {
-            // Nothing was proposed, so the refusal is observed.
-            return Err(WriteError::Transport {
-                fate: WriteFate::NotAppended,
-                cause: ErrorCause::new(DriverRoutingError::PendingWaiterLimit {
-                    max_pending_waiters: self.options.max_pending_waiters,
-                }),
-            });
+        if unresolved >= self.options.max_pending_waiters || self.retained_waiters_full() {
+            return Err(WriteError::Backpressure);
         }
         let next = self
             .next_proposal_id

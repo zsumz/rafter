@@ -229,23 +229,28 @@ pub(super) fn self_removing_leader_commits_final_configuration_and_steps_down() 
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
             .expect("read detector spec");
-    let result = run_tlc_with_config(
-        &root,
-        "self-removal-commit",
-        &raft,
-        &detector,
-        SELF_REMOVAL_COMMIT_CONFIG,
-    );
-    let summary = parse(&result.stdout).expect("parse self-removal commit output");
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stdout)
-    );
-    assert!(summary.completed_without_error);
-    assert!(summary.process_finished);
-    assert!(summary.distinct_states >= 2);
-    assert!(summary.search_depth >= 2);
+    for mode in ["Default", "Suffix", "PrefixAndSuffix"] {
+        let config = SELF_REMOVAL_COMMIT_CONFIG
+            .replace("MaxLogLen = 2", "MaxLogLen = 4")
+            .replace(
+                "FixtureMode = \"Default\"",
+                &format!("FixtureMode = \"{mode}\""),
+            );
+        let result = run_tlc_with_config(&root, "self-removal-commit", &raft, &detector, &config);
+        let summary = parse(&result.stdout).expect("parse self-removal commit output");
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        assert!(summary.completed_without_error);
+        assert!(summary.process_finished);
+        assert!(
+            summary.distinct_states >= 2 && summary.search_depth >= 2,
+            "mode={mode}: {}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+    }
 }
 
 pub(super) fn missing_self_removal_step_down_breaks_commit_regression() {

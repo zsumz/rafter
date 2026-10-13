@@ -99,3 +99,57 @@ fn stopped_completion_releases_worker_credit_without_releasing_the_node_fence() 
         Err(PersistenceWorkerShutdownError::Panicked)
     );
 }
+
+#[test]
+fn wake_observes_completion_before_credit_is_released() {
+    let (mut pipeline, work) = pending();
+    let (notify, wake) = std::sync::mpsc::sync_channel(1);
+    let mut worker =
+        PersistenceWorker::start_with_wake(PersistenceWorkerOptions::new(), move || {
+            let _ = notify.try_send(());
+        })
+        .unwrap();
+    worker.try_submit(work).unwrap();
+    wake.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(worker.is_busy());
+    assert_eq!(worker.shutdown(), Err(PersistenceWorkerShutdownError::Busy));
+    let done = worker
+        .try_complete()
+        .unwrap()
+        .expect("publish precedes wake");
+    pipeline.complete(done.into_parts().0).unwrap();
+    assert!(!worker.is_busy());
+    worker.shutdown().unwrap();
+    wake.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(worker.try_complete().is_err());
+}
+
+#[test]
+fn storage_panic_disconnects_before_waking_a_sleeping_owner() {
+    let (mut pipeline, work) = panicking_pending();
+    let (notify, wake) = std::sync::mpsc::sync_channel(1);
+    let mut worker =
+        PersistenceWorker::start_with_wake(PersistenceWorkerOptions::new(), move || {
+            let _ = notify.try_send(());
+        })
+        .unwrap();
+    worker.try_submit(work).unwrap();
+    wake.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(worker.try_complete().is_err());
+    assert_eq!(
+        pipeline.step_batch(vec![Input::Tick]),
+        Err(PipelineError::PersistencePending)
+    );
+    let (_, next) = pending();
+    assert!(matches!(
+        worker.try_submit(next),
+        Err(TrySendError::Disconnected(_))
+    ));
+    assert_eq!(
+        worker.shutdown(),
+        Err(PersistenceWorkerShutdownError::Panicked)
+    );
+}

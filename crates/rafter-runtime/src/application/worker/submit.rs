@@ -20,7 +20,7 @@ where
     T: ApplicationEntry,
     S: DurableApplication<T>,
 {
-    /// Transfers one nonempty contiguous batch without waiting for queue room.
+    /// Transfers one nonempty batch of contiguous ranges without waiting for queue room.
     ///
     /// The last accepted index reserves the next submission boundary even
     /// while earlier batches are still running. Every refusal returns the exact
@@ -28,7 +28,7 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an ownership-preserving refusal for empty, noncontiguous,
+    /// Returns an ownership-preserving refusal for empty, invalid-range, noncontiguous,
     /// exhausted-index, oversized, over-capacity, or stopped submissions.
     pub fn try_submit(&self, entries: Vec<T>) -> Result<(), ApplicationSubmitError<T>> {
         let reject = |entries, rejection| ApplicationSubmitError { entries, rejection };
@@ -108,21 +108,20 @@ where
         let Some(first) = entries.first() else {
             return Err(ApplicationSubmitRejection::Empty);
         };
-        let first_index = first.log_index();
-        let mut last_index = first_index;
+        let (first_index, mut last_index) = range(first)?;
         let mut retained_bytes = first.retained_bytes();
         let mut retained_bytes_overflowed = false;
         let mut batch_bytes = first.batch_bytes();
         let mut batch_bytes_overflowed = false;
         for entry in entries.iter().skip(1) {
-            let actual = entry.log_index();
+            let (actual, end) = range(entry)?;
             let Some(expected) = checked_next(last_index) else {
                 return Err(ApplicationSubmitRejection::IndexExhausted { after: last_index });
             };
             if actual != expected {
                 return Err(ApplicationSubmitRejection::NonContiguous { expected, actual });
             }
-            last_index = actual;
+            last_index = end;
             if let Some(combined) = retained_bytes.checked_add(entry.retained_bytes()) {
                 retained_bytes = combined;
             } else {
@@ -155,6 +154,17 @@ where
             batch_bytes,
         })
     }
+}
+
+fn range(
+    entry: &impl ApplicationEntry,
+) -> Result<(LogIndex, LogIndex), ApplicationSubmitRejection> {
+    let first = entry.first_log_index();
+    let last = entry.log_index();
+    if first > last {
+        return Err(ApplicationSubmitRejection::InvalidRange { first, last });
+    }
+    Ok((first, last))
 }
 
 fn rollback<T>(shared: &mut super::Shared, previous: LogIndex, work: &Work<T>) {

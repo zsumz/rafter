@@ -296,8 +296,8 @@ fn persist_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("durable path {} has no parent", path.display()))?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    rafter_reference_harness::durable_directory::create_durable_directory(parent)
+        .map_err(|error| format!("could not durably create {}: {error}", parent.display()))?;
     let temp = path.with_extension(format!("tmp.{}", std::process::id()));
     let mut file = fs::File::create(&temp)
         .map_err(|error| format!("could not create {}: {error}", temp.display()))?;

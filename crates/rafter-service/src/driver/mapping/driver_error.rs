@@ -1,7 +1,7 @@
 //! What a driver reports about itself.
 //!
 //! One type for every way constructing or manually driving a managed driver can
-//! fail, with its rendering beside it. It carries no free-text message field:
+//! fail, with its rendering in [`display`]. It carries no free-text message field:
 //! the category is the variant and the detail is the preserved cause, so nothing
 //! downstream is tempted to match on rendered text.
 
@@ -11,6 +11,8 @@
 )]
 
 use super::*;
+
+mod display;
 
 /// Error returned while constructing or manually driving a managed service
 /// driver.
@@ -24,7 +26,7 @@ use super::*;
 /// [`ManagedDriverError::NoGroup`], [`ManagedDriverError::GroupAlreadyAdopted`],
 /// and [`ManagedDriverError::InvalidOptions`] — describe a single replica's slot
 /// and can only come from [`crate::TransportRaftDriver`], which has one. The
-/// rest are adoption and stepping faults that either driver reports, including
+/// remaining variants cover adoption, stepping, and membership refusals, including
 /// [`ManagedDriverError::MixedGroups`]: each driver serves one group ID, and
 /// each refuses a group that does not belong to it.
 #[non_exhaustive]
@@ -188,100 +190,16 @@ pub enum ManagedDriverError {
         /// Preserved typed group failure.
         cause: ErrorCause,
     },
-}
-
-impl fmt::Display for ManagedDriverError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyCluster => formatter.write_str("managed driver requires at least one group"),
-            Self::MissingPrimary { node_id } => {
-                write!(formatter, "managed driver primary node {node_id} is missing")
-            }
-            Self::MissingNode { node_id } => {
-                write!(formatter, "managed driver node {node_id} is missing")
-            }
-            Self::DuplicateNode { node_id } => {
-                write!(formatter, "managed driver has duplicate node {node_id}")
-            }
-            Self::PoisonedGroup { node_id, reason } => write!(
-                formatter,
-                "managed driver group for node {node_id} is poisoned: {reason}"
-            ),
-            Self::NonQuiescentGroup {
-                node_id,
-                pending_proposals,
-                reserved_reads,
-            } => write!(
-                formatter,
-                "managed driver cannot adopt node {node_id}: {pending_proposals} pending proposals and {reserved_reads} reserved reads remain"
-            ),
-            Self::LocalProposalIdExhausted {
-                node_id,
-                last_seen_local_proposal_id,
-            } => write!(
-                formatter,
-                "managed driver node {node_id} exhausted local proposal ids after {last_seen_local_proposal_id}"
-            ),
-            Self::ReadIdExhausted {
-                node_id,
-                last_seen_read_id,
-            } => write!(
-                formatter,
-                "managed driver node {node_id} exhausted read ids after {last_seen_read_id}"
-            ),
-            Self::MixedGroups => formatter.write_str("managed driver cannot adopt mixed group ids"),
-            Self::Stalled { max_steps } => write!(
-                formatter,
-                "managed driver made no progress within {max_steps} drive steps"
-            ),
-            Self::ShuttingDown => formatter.write_str("managed driver is shutting down"),
-            Self::NoGroup => {
-                formatter.write_str("managed driver has released its group and holds none")
-            }
-            Self::GroupAlreadyAdopted => {
-                formatter.write_str("managed driver already holds a group")
-            }
-            Self::InvalidOptions { field, reason } => {
-                write!(formatter, "managed driver option {field} is invalid: {reason}")
-            }
-            Self::RetiredNodeId { node_id } => write!(
-                formatter,
-                "managed driver cannot adopt {node_id}: a committed removal spent that identity"
-            ),
-            Self::InvalidControlPlaneCheckpoint { reason } => write!(
-                formatter,
-                "managed driver refused the peer control plane checkpoint: {reason}"
-            ),
-            Self::ControlPlaneContradicted { reason } => write!(
-                formatter,
-                "managed driver is terminally contradicted and adopts nothing: {reason}"
-            ),
-            Self::Group { .. } => formatter.write_str("managed driver group operation failed"),
-        }
-    }
-}
-
-impl Error for ManagedDriverError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Group { cause } => Some(cause.as_error()),
-            Self::InvalidControlPlaneCheckpoint { reason }
-            | Self::ControlPlaneContradicted { reason } => Some(reason),
-            Self::EmptyCluster
-            | Self::MissingPrimary { .. }
-            | Self::MissingNode { .. }
-            | Self::DuplicateNode { .. }
-            | Self::PoisonedGroup { .. }
-            | Self::NonQuiescentGroup { .. }
-            | Self::LocalProposalIdExhausted { .. }
-            | Self::ReadIdExhausted { .. }
-            | Self::MixedGroups
-            | Self::Stalled { .. }
-            | Self::ShuttingDown
-            | Self::NoGroup
-            | Self::GroupAlreadyAdopted
-            | Self::InvalidOptions { .. }
-            | Self::RetiredNodeId { .. } => None,
-        }
-    }
+    /// The protocol refused a caller-planned membership input.
+    ///
+    /// Returned by [`crate::TransportRaftDriver::change_membership`] after the
+    /// step's other effects have been routed. This is a request refusal, not a
+    /// terminal driver failure. A successful later request still requires its
+    /// own committed-membership observation before completing the change.
+    MembershipRejected {
+        /// Exact protocol precondition that was not satisfied.
+        reason: ProposalRejection,
+        /// Current leader, when known; a routing hint rather than authority.
+        leader_hint: Option<NodeId>,
+    },
 }

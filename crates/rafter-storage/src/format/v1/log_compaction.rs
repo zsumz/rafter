@@ -5,12 +5,12 @@ use std::{error::Error, fmt};
 use rafter::LogIndex;
 
 use crate::format::{
-    advanceable_log_index, finish_checksummed, verify_checksum, ChecksumError, CursorError, Reader,
-    Writer,
+    advanceable_log_index, finish_checksummed, ChecksumError, CursorError, Reader, Writer,
 };
 
 const RAFT_LOG_COMPACTION_MAGIC: [u8; 4] = *b"RFLC";
 const RAFT_LOG_COMPACTION_VERSION: u8 = 1;
+pub(crate) const COMPACTION_BODY_LEN: usize = 13;
 
 /// Errors returned while decoding a log-compaction marker.
 ///
@@ -110,10 +110,17 @@ pub fn encode_raft_log_compaction_marker(compacted_through: LogIndex) -> Vec<u8>
 /// Returns [`DecodeRaftLogCompactionMarkerError`] when the marker is malformed,
 /// uses an unsupported version, has trailing bytes, or fails checksum
 /// verification.
+#[cfg(test)]
 pub fn decode_raft_log_compaction_marker(
     input: &[u8],
 ) -> Result<LogIndex, DecodeRaftLogCompactionMarkerError> {
-    let body = verify_checksum(input)?;
+    let body = crate::format::verify_checksum(input)?;
+    decode_compaction_body(body)
+}
+
+pub(crate) fn decode_compaction_body(
+    body: &[u8],
+) -> Result<LogIndex, DecodeRaftLogCompactionMarkerError> {
     let mut reader = Reader::new(body);
     let magic = reader.magic()?;
     if magic != RAFT_LOG_COMPACTION_MAGIC {

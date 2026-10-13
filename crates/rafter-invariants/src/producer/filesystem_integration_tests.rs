@@ -11,15 +11,14 @@ use crate::{execution::filesystem::HeldDirectory, ArtifactRef};
 use super::{maelstrom_exec, simulator, test_compile, test_exec};
 
 fn test_path(label: &str) -> PathBuf {
-    PathBuf::from("target/rafter-invariants/filesystem-tests")
-        .join(format!("{label}-{}", std::process::id()))
+    crate::tests::scratch_path("filesystem-tests").join(format!("{label}-{}", std::process::id()))
 }
 
 #[test]
 fn layer_scratch_cleanup_rejects_expired_deadlines_before_mutation() {
     let source_ref = format!("deadline-{}", std::process::id());
     let compile_profile = format!("compile-expired-{}", std::process::id());
-    let compile_path = PathBuf::from("target/rafter-invariants/build")
+    let compile_path = crate::tests::scratch_path("build")
         .join(&source_ref)
         .join(format!("{compile_profile}-tests"));
     let test_scratch_path = test_path("test-expired");

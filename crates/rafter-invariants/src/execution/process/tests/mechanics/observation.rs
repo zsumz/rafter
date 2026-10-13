@@ -111,10 +111,11 @@ fn internal_observer_bounds_a_continuously_readable_pipe() {
 #[test]
 fn internal_observer_rejects_a_clean_exit_classified_after_its_deadline() {
     clear_signal_attempts();
-    // The scenario needs the child to have finished before the completion check
-    // runs, and the check to run after the execution deadline, so that a clean
-    // exit is what gets classified late. Holding for both states avoids guessing
-    // how long `/bin/sh` needs or accepting a fast child before the boundary.
+    // The scenario needs the child and its lineage to have finished before the
+    // completion check runs, and the check to run after the execution deadline,
+    // so that a clean exit is what gets classified late. Holding for both
+    // states avoids guessing how long `/bin/sh` or unrelated pre-exec windows
+    // need, or accepting a fast child before the boundary.
     await_next_internal_completion_after_deadline();
     let error =
         bounded_internal_output("/bin/sh", &["-c", "printf late"], Duration::from_millis(10))

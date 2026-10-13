@@ -10,6 +10,7 @@ mod constants;
 mod error;
 mod filesystem;
 mod manifest;
+mod manifest_read;
 mod paths;
 mod read;
 mod status;

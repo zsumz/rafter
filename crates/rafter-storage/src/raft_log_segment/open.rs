@@ -3,22 +3,17 @@
 //! Replay keeps only decoded entries resident: raw segment bytes are consumed
 //! incrementally, and malformed-tail offsets remain exact for safe repair.
 
-use std::{
-    fs::{File, OpenOptions},
-    io::{BufReader, Read},
-    path::Path,
-};
+use std::{fs::OpenOptions, io::BufReader, path::Path};
 
 use rafter::LogIndex;
 
 use super::{
-    compaction_marker_path, frames::RaftLogFrameScan, read_raft_log_frames, ContiguousLogEntries,
-    FileRaftLogSegment, NonContiguousRaftEntry, OpenRaftLogSegmentError,
+    frames::RaftLogFrameScan, marker::read_compaction_marker, read_raft_log_frames,
+    ContiguousLogEntries, FileRaftLogSegment, NonContiguousRaftEntry, OpenRaftLogSegmentError,
 };
 use crate::{
     durable_fs::{sync_parent_directory, ParentDirectorySyncBatch},
     file_store_health::FileStoreHealth,
-    raft_log_compaction::decode_raft_log_compaction_marker,
 };
 
 impl FileRaftLogSegment {
@@ -262,29 +257,4 @@ fn replay_entries_repairing_uncommitted_tail(
         },
     )?;
     Ok((entries, truncate_at))
-}
-
-fn read_compaction_marker(path: &Path) -> Result<LogIndex, OpenRaftLogSegmentError> {
-    let marker_path = compaction_marker_path(path);
-    let mut file = match File::open(&marker_path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(LogIndex::ZERO);
-        }
-        Err(error) => {
-            return Err(OpenRaftLogSegmentError::Io {
-                operation: "open raft log compaction marker",
-                path: marker_path,
-                source: error.into(),
-            });
-        }
-    };
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|error| OpenRaftLogSegmentError::Io {
-            operation: "read raft log compaction marker",
-            path: marker_path,
-            source: error.into(),
-        })?;
-    decode_raft_log_compaction_marker(&bytes).map_err(OpenRaftLogSegmentError::CompactionMarker)
 }

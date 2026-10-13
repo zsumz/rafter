@@ -16,9 +16,11 @@
 # durable-service reference, and then rejects either graph if it reaches back
 # into the checkout, pulls an unpublished crate, or turns on an internal test
 # hook. It tests the artifact users receive, not the source tree that produced
-# it. Fast source mode is a separate lane and lives in
-# scripts/reference-source-check; this script never builds a consumer against
-# `crates/`.
+# it. Deterministic and MSRV modes also recover published storage and exchange
+# peer frames in both directions, then run mixed-version TLS processes, using
+# the same candidate archives. Fast source
+# mode lives in scripts/reference-source-check; this script never builds a
+# consumer against `crates/`.
 #
 # Why packaging skips Cargo's built-in archive verification:
 # the workspace crates depend on each other by version as well as by path.
@@ -31,10 +33,11 @@
 #
 # Network use: every Rafter crate in the consumer graph resolves through
 # [patch.crates-io] to an unpacked archive, so none of them is ever fetched.
-# The only registry traffic is the index refresh `cargo package` performs and
-# the third-party crates a publishable crate depends on (today `fs4`, reached
-# through rafter-storage, and its transitive dependencies). Once those are in
-# the local Cargo cache the whole lane runs under --offline.
+# The compatibility phase downloads checksum-pinned published baseline archives.
+# Other registry traffic is the index refresh `cargo package` performs and
+# third-party dependencies of publishable crates. With those dependencies in
+# Cargo's cache and the released archives in the upgrade baseline cache, the
+# whole lane runs under --offline.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -108,12 +111,22 @@ case "$mode" in
         ;;
 esac
 
-for tool in cargo jq openssl tar; do
+required_tools=(cargo jq openssl tar)
+if [[ "$mode" != process ]]; then
+    required_tools+=(rustup)
+fi
+if [[ "$mode" != process || -n "$artifact_dir" ]]; then
+    required_tools+=(python3)
+fi
+for tool in "${required_tools[@]}"; do
     if ! command -v "$tool" > /dev/null 2>&1; then
         echo "error: $tool is required by scripts/reference-package-check" >&2
         exit 1
     fi
 done
+if [[ "$mode" != process || -n "$artifact_dir" ]]; then
+    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "error: archive qualification requires Python 3.11+")'
+fi
 if [[ "$mode" == msrv || "$mode" == process-msrv ]]; then
     if ! command -v rustup > /dev/null 2>&1; then
         echo "error: rustup is required for the published-shape MSRV phase" >&2
@@ -155,6 +168,11 @@ case "$mode" in
         ;;
 esac
 phase_status=(pending pending pending pending pending pending)
+if [[ "$mode" != process ]]; then
+    phase_count=7
+    phase_name+=("qualify published storage, peer wire, and rolling upgrades")
+    phase_status+=(pending)
+fi
 current_phase=-1
 
 finding_count=0
@@ -503,6 +521,8 @@ done
 if [[ -n "$artifact_dir" ]]; then
     cp "$hashes_file" "$artifact_dir/package-sha256.txt"
     cp "$versions_file" "$artifact_dir/crate-versions.txt"
+    run python3 "$repo_root/scripts/archive_retention.py" \
+        --artifacts "$artifact_dir" --source "$package_dir"
 fi
 
 fast_service_runtime_version="$(
@@ -805,6 +825,17 @@ metadata_file="$workdir/consumer-metadata.json"
 cargo_run metadata --format-version 1 --locked > "$metadata_file"
 if [[ -n "$artifact_dir" ]]; then
     cp "$metadata_file" "$artifact_dir/consumer-metadata.json"
+    # process-msrv may replace the phase-4 lock before its MSRV build. Keep
+    # the exact final lock paired with this --locked metadata, rather than
+    # making later dependency checks guess which earlier lock was resolved.
+    cp "$consumer_workspace/Cargo.lock" "$artifact_dir/Cargo.resolved.lock"
+    (
+        cd "$artifact_dir"
+        for resolution_input in consumer-metadata.json Cargo.resolved.lock; do
+            resolution_digest="$(openssl dgst -sha256 "$resolution_input" | awk '{ print $NF }')"
+            printf '%s  %s\n' "$resolution_digest" "$resolution_input"
+        done
+    ) > "$artifact_dir/resolved-inputs.sha256"
 fi
 
 if ! "$tools_root/reference-package-boundary-check" \
@@ -875,4 +906,36 @@ else
     log "      soon as a consumer manifest names a versioned Rafter crate."
 fi
 
+if [[ -n "$artifact_dir" ]]; then
+    run python3 "$repo_root/scripts/archive_dependencies.py" \
+        --artifacts "$artifact_dir" --release "$repo_root/RELEASE.md"
+fi
+
 end_phase
+
+# Compatibility fixtures are independently compiled twice. Candidate consumers use
+# precisely the archives qualified above, never a second packaging invocation.
+if [[ "$mode" != process ]]; then
+    begin_phase 6
+    compatibility_args=(--candidate-archives "$package_dir")
+    if [[ "$offline" == true ]]; then
+        compatibility_args+=(--offline)
+    fi
+    if [[ "$mode" == msrv || "$mode" == process-msrv ]]; then
+        compatibility_args+=(--toolchain "$msrv_toolchain")
+    fi
+    for check in storage-upgrade wire-compatibility rolling-upgrade; do
+        check_args=("${compatibility_args[@]}")
+        if [[ -n "$artifact_dir" ]]; then
+            check_args+=(--artifacts "$artifact_dir/$check")
+        fi
+        run python3 "$repo_root/scripts/$check-check" "${check_args[@]}"
+    done
+    end_phase
+fi
+
+# Retain the same bytes after all consumers and upgrade checks have run, before
+# successful cleanup removes the packaging workdir. Never repackage for upload.
+if [[ -n "$artifact_dir" ]]; then
+    run python3 "$repo_root/scripts/archive_retention.py" --artifacts "$artifact_dir"
+fi

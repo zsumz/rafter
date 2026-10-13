@@ -153,7 +153,11 @@ impl DurableLedgerStateMachine {
     /// [`discipline::admit_install`] refuses on the absence rather than on the
     /// reason.
     fn promoted_source(&self, snapshot: &ApplicationSnapshot) -> Option<FileRaftSnapshotStore> {
-        if !discipline::install_needs_source(snapshot, self.store.applied_index()) {
+        if !discipline::install_needs_source(
+            snapshot,
+            self.store.applied_index(),
+            self.store.config(),
+        ) {
             return None;
         }
         FileRaftSnapshotStore::open(&self.snapshot_dir).ok()
@@ -270,11 +274,14 @@ impl ReplicatedStateMachine for DurableLedgerStateMachine {
         &mut self,
         at: LogIndex,
     ) -> Result<ApplicationSnapshot, ApplicationSnapshotError<Self::Error>> {
+        if self.store.requires_reopen() {
+            return Err(DurableLedgerError::Store(LedgerStoreError::StoreRequiresReopen).into());
+        }
         discipline::admit_snapshot_request(at, self.store.applied_index())
             .map_err(DurableLedgerError::Adapter)?;
         Ok(ApplicationSnapshot {
             applied_index: at,
-            payload: codec::encode_snapshot(at.0, &self.store.ledger().snapshot())
+            payload: codec::encode_snapshot(at.0, self.store.ledger())
                 .map_err(LedgerAdapterError::from)
                 .map_err(DurableLedgerError::Adapter)?,
             raft_snapshot: None,
@@ -290,17 +297,15 @@ impl ReplicatedStateMachine for DurableLedgerStateMachine {
         // shape arrived, the bytes leave `admit_install` having passed the same
         // decode and the same index check.
         let source = self.promoted_source(&snapshot);
-        let ledger_snapshot = discipline::admit_install(
+        let ledger = discipline::admit_install(
             &snapshot,
             self.store.applied_index(),
+            self.store.config(),
             source
                 .as_ref()
                 .map(|store| store as &dyn SnapshotChunkSource),
         )
         .map_err(DurableLedgerError::Adapter)?;
-        let ledger = Ledger::from_snapshot(self.store.config(), ledger_snapshot)
-            .map_err(LedgerAdapterError::Snapshot)
-            .map_err(DurableLedgerError::Adapter)?;
 
         // An install replaces state rather than extending it, so it is
         // published by rewriting the journal. The applied floor moves with the

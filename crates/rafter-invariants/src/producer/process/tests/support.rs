@@ -6,7 +6,7 @@ static TEST_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 
 pub(super) fn unique_test_path(label: &str) -> PathBuf {
     let sequence = next_sequence();
-    PathBuf::from("target/rafter-invariants/process-tests").join(format!(
+    crate::tests::scratch_path("process-tests").join(format!(
         "rafter-invariants-{label}-{}-{sequence}",
         std::process::id()
     ))

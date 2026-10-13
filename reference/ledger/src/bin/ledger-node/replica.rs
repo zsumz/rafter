@@ -222,11 +222,12 @@ impl Replica {
         let raft_dir = node_dir.join("raft");
         let app_dir = node_dir.join("app");
         for directory in [node_dir, &raft_dir, &app_dir] {
-            std::fs::create_dir_all(directory).map_err(|source| OpenError::Io {
-                operation: "create a replica directory",
-                path: directory.to_path_buf(),
-                source,
-            })?;
+            rafter_reference_harness::durable_directory::create_durable_directory(directory)
+                .map_err(|source| OpenError::Io {
+                    operation: "durably provision a replica directory",
+                    path: directory.to_path_buf(),
+                    source,
+                })?;
         }
 
         // Ownership first. Everything below this line assumes this process is

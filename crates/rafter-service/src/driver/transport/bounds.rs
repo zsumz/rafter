@@ -22,7 +22,9 @@ use super::super::*;
 /// Bounds on one driver's local work.
 ///
 /// Every bound is a refusal rather than an unbounded wait, so a stalled
-/// protocol surfaces as a typed error instead of a hang.
+/// protocol surfaces as a typed error instead of a hang. Client admission
+/// reports [`WriteError::Backpressure`] or [`ReadError::Backpressure`] before
+/// allocating an operation ID.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct TransportDriverOptions {
@@ -37,8 +39,21 @@ pub struct TransportDriverOptions {
     /// A waiter stops counting the moment it resolves, including when
     /// [`TransportRaftDriver::abandon_write`] or
     /// [`TransportRaftDriver::abandon_read`] resolves it, so a caller that stops
-    /// waiting gets its slot back without waiting for the client to poll.
+    /// waiting gets its pending slot back without waiting for the client to
+    /// poll. The retained waiter still counts toward `max_retained_waiters`.
     pub max_pending_waiters: usize,
+    /// Maximum write and read waiters combined, including resolved results
+    /// whose client futures have not been polled to completion or dropped.
+    ///
+    /// Defaults to 2048. Resolution and abandonment do not release this credit;
+    /// consuming or dropping the future does. A full table refuses admission
+    /// before allocating an ID, proposing a command, or reserving a barrier.
+    /// Local reads register no waiter and do not use this budget.
+    ///
+    /// This bounds retained entries, not bytes in arbitrary application query
+    /// and result types. The embedding must bound those values, input frames,
+    /// and already-consumed receipts. A forgotten future retains its credit.
+    pub max_retained_waiters: usize,
 }
 
 impl TransportDriverOptions {
@@ -47,6 +62,7 @@ impl TransportDriverOptions {
     pub const fn new() -> Self {
         Self {
             max_pending_waiters: 1024,
+            max_retained_waiters: 2048,
         }
     }
 
@@ -61,6 +77,16 @@ impl TransportDriverOptions {
         self
     }
 
+    /// Sets the shared pending-plus-completed waiter limit (must be nonzero).
+    ///
+    /// It may be smaller than the per-kind pending limit; admission must fit
+    /// both. Increase it only with a corresponding retained-result budget.
+    #[must_use]
+    pub const fn with_max_retained_waiters(mut self, max_retained_waiters: usize) -> Self {
+        self.max_retained_waiters = max_retained_waiters;
+        self
+    }
+
     /// Fails closed on a bound that would make an operation impossible.
     ///
     /// Zero is meaningless rather than merely small: a driver that admits no
@@ -71,6 +97,12 @@ impl TransportDriverOptions {
             return Err(ManagedDriverError::InvalidOptions {
                 field: "max_pending_waiters",
                 reason: "a driver that admits no waiters cannot serve any operation",
+            });
+        }
+        if self.max_retained_waiters == 0 {
+            return Err(ManagedDriverError::InvalidOptions {
+                field: "max_retained_waiters",
+                reason: "a driver that retains no waiters cannot serve any managed write",
             });
         }
         Ok(self)

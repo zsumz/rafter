@@ -5,7 +5,10 @@
 //! itself; drivers and manual runtimes can inspect the returned app-layer
 //! plans and perform equivalent routing, fencing, and reporting.
 
-use rafter::{LogIndex, MembershipSet, NodeId, PromotionBarrier};
+use rafter::{
+    ConfigurationPhase, ConfigurationProposalRejection, LogIndex, MembershipConfig, MembershipSet,
+    NodeId, PromotionBarrier,
+};
 use rafter_app::membership::{
     MembershipChange, MembershipChangeReport, MembershipPlan, MembershipStep, MembershipStepReport,
     MembershipStepStatus, NodeInfo,
@@ -54,7 +57,12 @@ impl<G: Clone> MembershipController<G> {
         }
     }
 
-    /// Plans learner promotion using the caller-supplied promotion barrier.
+    /// Plans learner promotion through joint consensus into stable membership.
+    ///
+    /// Uses the caller-supplied promotion barrier. The caller must wait for the
+    /// joint configuration to commit before executing the final `LeaveJoint`
+    /// step, and for the stable configuration to commit before completing the
+    /// flow.
     #[must_use]
     pub fn promote_learner(&self, barrier: PromotionBarrier) -> PlannedMembershipChange<G> {
         let node_id = barrier.learner_id;
@@ -63,11 +71,17 @@ impl<G: Clone> MembershipController<G> {
             plan: self.plan(vec![
                 MembershipStep::WaitForCatchUp(node_id),
                 MembershipStep::PromoteLearner(node_id),
+                MembershipStep::LeaveJoint,
             ]),
         }
     }
 
     /// Plans removing a node and then fencing its transport identity.
+    ///
+    /// `RemoveNode` is a complete removal obligation here: for a voter, the
+    /// executor must also leave joint consensus and observe the stable commit
+    /// before fencing. Use [`Self::remove_node_from`] to make those proposal
+    /// steps explicit from a known membership.
     #[must_use]
     pub fn remove_node(&self, node_id: NodeId) -> PlannedMembershipChange<G> {
         PlannedMembershipChange {
@@ -77,6 +91,64 @@ impl<G: Clone> MembershipController<G> {
                 MembershipStep::FencePeer(node_id),
             ]),
         }
+    }
+
+    /// Plans explicit removal steps from a known stable membership.
+    ///
+    /// Voter removal enters joint consensus, leaves it, and then fences the
+    /// identity. Learner removal preserves the voter set and needs no joint
+    /// phase. Other voters and learners are preserved in the planned target.
+    ///
+    /// The caller must serialize membership changes and verify that `current`
+    /// is still both effective and committed before starting; otherwise replan.
+    /// Wait for the joint commit before `LeaveJoint`, and for the stable commit
+    /// excluding `node_id` before `FencePeer`. This helper does not execute or
+    /// observe those commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns the corresponding configuration rejection for a joint starting
+    /// membership, an unknown node, removal of the last voter, or an invalid
+    /// derived target.
+    pub fn remove_node_from(
+        &self,
+        node_id: NodeId,
+        current: &MembershipConfig,
+    ) -> Result<PlannedMembershipChange<G>, ConfigurationProposalRejection> {
+        let MembershipConfig::Stable(stable) = current else {
+            return Err(
+                ConfigurationProposalRejection::StableConfigurationRequired {
+                    phase: ConfigurationPhase::Joint,
+                },
+            );
+        };
+        if stable.learners().contains(&node_id) {
+            return Ok(self.remove_node(node_id));
+        }
+        if !stable.voters().contains(&node_id) {
+            return Err(ConfigurationProposalRejection::VoterNotFound { node_id });
+        }
+        if stable.voters().len() == 1 {
+            return Err(ConfigurationProposalRejection::CannotRemoveLastVoter { node_id });
+        }
+        let target = MembershipSet::new(
+            stable
+                .voters()
+                .iter()
+                .copied()
+                .filter(|id| *id != node_id)
+                .collect(),
+            stable.learners().to_vec(),
+        )
+        .map_err(|error| ConfigurationProposalRejection::InvalidMembership { error })?;
+        Ok(PlannedMembershipChange {
+            change: MembershipChange::RemoveNode { node_id },
+            plan: self.plan(vec![
+                MembershipStep::EnterJoint(target),
+                MembershipStep::LeaveJoint,
+                MembershipStep::FencePeer(node_id),
+            ]),
+        })
     }
 
     /// Plans a voter-set change through joint consensus.

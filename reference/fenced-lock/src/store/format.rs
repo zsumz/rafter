@@ -35,7 +35,7 @@ pub(super) const SEALED_MARK: u8 = SLOT_MAGIC[0];
 /// every interrupted publication leaves it behind. The converse does not hold,
 /// and assuming it was the defect this store was corrected for: a slot carrying
 /// this value may equally hold a sealed image whose mark byte rotted to zero.
-/// Skipping needs [`SlotDamage::is_publication_residue`], which asks a second
+/// Skipping needs [`SlotDamage::is_publication_residue`](super::SlotDamage::is_publication_residue), which asks a second
 /// question beside this byte, not this byte alone.
 pub(super) const UNSEALED_MARK: u8 = 0x00;
 

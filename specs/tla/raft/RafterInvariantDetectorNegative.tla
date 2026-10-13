@@ -40,7 +40,9 @@ FixtureModes == {
     ApplicationRecorderMode,
     ApplicationEpochRecorderMode,
     CommitQuorumRecorderMode,
-    ReadBarrierRecorderMode
+    ReadBarrierRecorderMode,
+    "Suffix",
+    "PrefixAndSuffix"
 }
 
 FixtureConstantsOK ==
@@ -381,6 +383,10 @@ FaultyCommitQuorumRecorder ==
   LET witness ==
         [index |-> 1,
          entry |-> Entry(1, FixtureValueA),
+         commitFrom |-> 0,
+         commitThrough |-> 1,
+         configurationEntries |-> {},
+         priorMembership |-> StableMembership(Nodes),
          leader |-> FixtureA,
          leaderRole |-> Leader,
          leaderTerm |-> 1,
@@ -1210,6 +1216,10 @@ SnapshotLifecycleTransition ==
 SnapshotLifecycleWitness ==
   [index |-> 1,
    entry |-> SnapshotLifecycleEntry,
+   commitFrom |-> 0,
+   commitThrough |-> 1,
+   configurationEntries |-> {},
+   priorMembership |-> StableMembership(Nodes),
    leader |-> FixtureA,
    leaderRole |-> Leader,
    leaderTerm |-> 1,
@@ -1391,6 +1401,10 @@ SelfRemovalJointTransition ==
 SelfRemovalJointWitness ==
   [index |-> 1,
    entry |-> SelfRemovalJointEntry,
+   commitFrom |-> 0,
+   commitThrough |-> 1,
+   configurationEntries |-> {SelfRemovalJointEntry},
+   priorMembership |-> StableMembership(Nodes),
    leader |-> FixtureA,
    leaderRole |-> Leader,
    leaderTerm |-> 1,
@@ -1400,13 +1414,24 @@ SelfRemovalJointWitness ==
    configIndex |-> 1,
    replicas |-> Nodes]
 
+SelfRemovalBatchLog ==
+  CASE FixtureMode = "Suffix" ->
+         <<SelfRemovalJointEntry, SelfRemovalStableEntry, Entry(1, FixtureValueA)>>
+    [] FixtureMode = "PrefixAndSuffix" ->
+         <<SelfRemovalJointEntry, Entry(1, FixtureValueA),
+           SelfRemovalStableEntry, Entry(1, FixtureValueB)>>
+    [] OTHER -> <<SelfRemovalJointEntry, SelfRemovalStableEntry>>
+
+SelfRemovalFinalIndex == IF FixtureMode = "PrefixAndSuffix" THEN 3 ELSE 2
+SelfRemovalBatchEnd == Len(SelfRemovalBatchLog)
+
 SelfRemovalCommitInit ==
   /\ FixtureConstantsOK
   /\ currentTerm = BaseTerm
   /\ votedFor = [n \in Nodes |-> FixtureA]
   /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
   /\ log = [n \in Nodes |->
-       <<SelfRemovalJointEntry, SelfRemovalStableEntry>>]
+       SelfRemovalBatchLog]
   /\ commitIndex = [n \in Nodes |-> 1]
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotTransfer = NoSnapshotTransfer
@@ -1422,7 +1447,7 @@ SelfRemovalCommitInit ==
   /\ membership = SelfRemovalJointMembership
   /\ appliedConfigIndex = 1
   /\ effectiveMembership = SelfRemovalStableMembership
-  /\ effectiveConfigIndex = 2
+  /\ effectiveConfigIndex = SelfRemovalFinalIndex
   /\ electedLeaders = [t \in 1..MaxTerm |->
        IF t = 1 THEN {FixtureA} ELSE {}]
   /\ logicalPrefixLedger = {}
@@ -1435,11 +1460,11 @@ SelfRemovalCommitInit ==
 
 SelfRemovalCommitAction ==
   /\ commitIndex[FixtureA] = 1
-  /\ Commit(FixtureA, 2)
+  /\ Commit(FixtureA, SelfRemovalBatchEnd)
 
 SelfRemovalCommitNext ==
   \/ SelfRemovalCommitAction
-  \/ /\ commitIndex[FixtureA] = 2
+  \/ /\ commitIndex[FixtureA] = SelfRemovalBatchEnd
      /\ UNCHANGED vars
 
 SelfRemovalCommitSpec ==
@@ -1449,16 +1474,39 @@ SelfRemovalCommitSpec ==
 
 SelfRemovalCommitInvariant ==
   /\ effectiveMembership = SelfRemovalStableMembership
-  /\ effectiveConfigIndex = 2
+  /\ effectiveConfigIndex = SelfRemovalFinalIndex
   /\ IF commitIndex[FixtureA] = 1
      THEN /\ role[FixtureA] = Leader
           /\ PendingSelfRemoval(FixtureA)
-     ELSE /\ commitIndex[FixtureA] = 2
+     ELSE /\ commitIndex[FixtureA] = SelfRemovalBatchEnd
           /\ role[FixtureA] = Follower
           /\ ~PendingSelfRemoval(FixtureA)
 
+\* Exercise the oracle independently of the Commit action's admission guards.
+\* In suffix modes, a witness after the boundary would otherwise launder a
+\* non-voter's authority into a later, separate commit advancement.
+SelfRemovalCertificateBounds ==
+  IF commitIndex[FixtureA] = 1 THEN TRUE
+  ELSE LET certificates == CommitCertificatesFor(
+             FixtureA, 1, SelfRemovalBatchEnd,
+             FrozenCommitContext(Leader, 1,
+               SelfRemovalStableMembership, SelfRemovalJointMembership),
+             SelfRemovalFinalIndex)
+           witness == CHOOSE candidate \in certificates :
+                        candidate.index = SelfRemovalBatchEnd
+       IN /\ CommitWitnessOK(witness)
+          /\ ~CommitWitnessOK([witness EXCEPT
+                !.commitFrom = SelfRemovalFinalIndex])
+          /\ ~CommitWitnessOK([witness EXCEPT
+                !.configurationEntries = {Entry(1, FixtureValueA)}])
+          /\ ~CommitWitnessOK([witness EXCEPT
+                !.configurationEntries = {ConfigurationEntry(2, SelfRemovalStableMembership)}])
+          /\ ~CommitWitnessOK([witness EXCEPT
+                !.authorityMembership = JointMembership({FixtureA}, SelfRemovalNewVoters)])
+          /\ ~CommitWitnessOK([witness EXCEPT !.replicas = {FixtureA}])
+
 SelfRemovalCommitComplete ==
-  /\ commitIndex[FixtureA] = 2
+  /\ commitIndex[FixtureA] = SelfRemovalBatchEnd
   /\ role[FixtureA] = Follower
 
 SelfRemovalCommitCompletes == <>SelfRemovalCommitComplete

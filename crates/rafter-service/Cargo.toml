@@ -10,10 +10,16 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+durable = ["dep:rafter-runtime", "dep:rafter-storage"]
+
 [dependencies]
 rafter = { path = "../rafter", version = "=0.0.2-alpha.1" }
 rafter-app = { path = "../rafter-app", version = "=0.0.2-alpha.1" }
 rafter-runtime-api = { path = "../rafter-runtime-api", version = "=0.0.2-alpha.1" }
+rafter-runtime = { path = "../rafter-runtime", version = "=0.0.2-alpha.1", optional = true }
+rafter-storage = { path = "../rafter-storage", version = "=0.0.2-alpha.1", optional = true }
 
 [dev-dependencies]
 rafter-runtime = { path = "../rafter-runtime", version = "=0.0.2-alpha.1" }

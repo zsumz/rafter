@@ -9,10 +9,7 @@
 
 use super::{PersistenceCompletion, PersistenceWork};
 use rafter::SnapshotChunkSource;
-use rafter_storage::{
-    telemetry::{self, Metric},
-    RaftHardStateStore, RaftLogSegment, RaftSnapshotStore,
-};
+use rafter_storage::{telemetry::Metric, RaftHardStateStore, RaftLogSegment, RaftSnapshotStore};
 use std::{
     error::Error,
     fmt, io,
@@ -22,6 +19,8 @@ use std::{
     },
     thread::{self, JoinHandle},
 };
+
+mod run;
 
 /// Cumulative named storage counters returned with a worker completion.
 pub type PersistenceWorkerTelemetry = Vec<(&'static str, Metric)>;
@@ -152,32 +151,31 @@ where
     ///
     /// Returns the operating-system thread creation error.
     pub fn start(options: PersistenceWorkerOptions) -> io::Result<Self> {
+        Self::start_with_wake(options, || {})
+    }
+
+    /// Starts a worker that notifies its owner after completion or termination.
+    ///
+    /// `wake` runs on the worker thread after a completion is available or its
+    /// channels are disconnected, including after a storage panic. It must be
+    /// bounded, nonblocking, non-panicking, and must not reenter the worker.
+    /// Use a retained/coalescing notification (such as `Thread::unpark`), not
+    /// an edge that can be lost before the owner waits. Poll before waiting;
+    /// notifications may be redundant and do not themselves release credits.
+    ///
+    /// # Errors
+    /// Returns the operating-system thread creation error.
+    pub fn start_with_wake(
+        options: PersistenceWorkerOptions,
+        wake: impl Fn() + Send + 'static,
+    ) -> io::Result<Self> {
         let (requests, receive) = mpsc::sync_channel::<Box<PersistenceWork<H, L, S>>>(1);
         let (send, completions) = mpsc::sync_channel(1);
         let busy = AtomicBool::new(false);
         let collect_storage_telemetry = options.collect_storage_telemetry;
         let thread = thread::Builder::new()
             .name("rafter-persistence".to_owned())
-            .spawn(move || {
-                telemetry::set_enabled(collect_storage_telemetry);
-                while let Ok(work) = receive.recv() {
-                    let completion = work.persist();
-                    let storage_telemetry = if collect_storage_telemetry {
-                        telemetry::snapshot()
-                    } else {
-                        Vec::new()
-                    };
-                    if send
-                        .try_send(PersistenceWorkerCompletion {
-                            completion,
-                            storage_telemetry,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })?;
+            .spawn(move || run::run(receive, send, collect_storage_telemetry, wake))?;
         Ok(Self {
             requests: Some(requests),
             completions,

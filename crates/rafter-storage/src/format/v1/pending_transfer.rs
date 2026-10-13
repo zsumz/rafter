@@ -8,16 +8,15 @@ use std::{error::Error, fmt};
 
 use rafter::{NodeId, RaftSnapshot, RaftSnapshotMetadata, SnapshotTransferId};
 
-use super::snapshot::{
-    decode_raft_snapshot, encode_raft_snapshot_metadata_envelope, DecodeRaftSnapshotError,
-    EncodeRaftSnapshotError,
-};
-use crate::format::{
-    finish_checksummed, verify_checksum, ChecksumError, CursorError, Reader, Writer,
-};
+use super::snapshot::{decode_raft_snapshot, DecodeRaftSnapshotError};
+use crate::format::{ChecksumError, CursorError, Reader};
+
+mod encode;
+pub(crate) use encode::encode_pending_snapshot_transfer_manifest;
 
 pub(crate) const PENDING_SNAPSHOT_TRANSFER_MANIFEST_MAGIC: [u8; 4] = *b"RFPT";
 pub(crate) const PENDING_SNAPSHOT_TRANSFER_MANIFEST_VERSION: u8 = 1;
+const MAX_METADATA_ENVELOPE_LEN: usize = 4 * 1024 * 1024;
 
 /// The largest accepted nested RFSN metadata envelope.
 ///
@@ -25,7 +24,10 @@ pub(crate) const PENDING_SNAPSHOT_TRANSFER_MANIFEST_VERSION: u8 = 1;
 /// maximum u16 member counts. Four MiB leaves deliberate headroom while
 /// preventing a corrupt manifest from smuggling arbitrary payload bytes inside
 /// the metadata-only nested snapshot envelope.
-pub(crate) const MAX_PENDING_SNAPSHOT_METADATA_ENVELOPE_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const MAX_PENDING_SNAPSHOT_METADATA_ENVELOPE_BYTES: u64 =
+    MAX_METADATA_ENVELOPE_LEN as u64;
+// The fixed RFPT header precedes the already-bounded nested metadata envelope.
+pub(crate) const MAX_PENDING_SNAPSHOT_MANIFEST_BODY_LEN: usize = 53 + MAX_METADATA_ENVELOPE_LEN;
 
 /// Durable descriptor of one resumable inbound snapshot transfer.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -184,41 +186,24 @@ impl From<ChecksumError> for DecodePendingSnapshotTransferError {
     }
 }
 
-/// Encodes one canonical RFPT manifest.
-///
-/// # Errors
-///
-/// Returns [`EncodeRaftSnapshotError`] when the nested metadata-only RFSN
-/// envelope cannot represent the snapshot metadata.
-pub(crate) fn encode_pending_snapshot_transfer_manifest(
-    manifest: &PendingTransferManifest,
-) -> Result<Vec<u8>, EncodeRaftSnapshotError> {
-    let metadata_envelope = encode_raft_snapshot_metadata_envelope(&manifest.metadata)?;
-
-    let mut writer = Writer::new();
-    writer.bytes(&PENDING_SNAPSHOT_TRANSFER_MANIFEST_MAGIC);
-    writer.u8(PENDING_SNAPSHOT_TRANSFER_MANIFEST_VERSION);
-    writer.u64(manifest.leader_id.0);
-    writer.u64(manifest.transfer_id.0);
-    writer.u64(manifest.total_payload_len);
-    writer.u32(manifest.application_payload_crc32);
-    writer.u64(manifest.received_payload_len);
-    writer.u32(manifest.body_checksum);
-    writer.u64(metadata_envelope.len() as u64);
-    writer.bytes(&metadata_envelope);
-    Ok(finish_checksummed(writer))
-}
-
 /// Decodes one strict RFPT manifest and validates its snapshot descriptor.
 ///
 /// # Errors
 ///
 /// Returns [`DecodePendingSnapshotTransferError`] when framing, checksum,
 /// nested-metadata, progress, identity, or trailing-byte validation fails.
+#[cfg(test)]
 pub(crate) fn decode_pending_snapshot_transfer_manifest(
     envelope: &[u8],
 ) -> Result<PendingTransferManifest, DecodePendingSnapshotTransferError> {
-    let body = verify_checksum(envelope)?;
+    let body = crate::format::verify_checksum(envelope)?;
+    decode_pending_manifest_body(body, 0)
+}
+
+pub(crate) fn decode_pending_manifest_body(
+    body: &[u8],
+    omitted_trailing_bytes: usize,
+) -> Result<PendingTransferManifest, DecodePendingSnapshotTransferError> {
     let mut reader = Reader::new(body);
     let magic = reader.magic()?;
     if magic != PENDING_SNAPSHOT_TRANSFER_MANIFEST_MAGIC {
@@ -258,7 +243,12 @@ pub(crate) fn decode_pending_snapshot_transfer_manifest(
             },
         );
     }
-    reader.finish()?;
+    // Streaming admission retains every possible field but can omit a suffix.
+    // Keep this check before progress/identity validation, matching slice decode.
+    let remaining = reader.remaining().saturating_add(omitted_trailing_bytes);
+    if remaining != 0 {
+        return Err(DecodePendingSnapshotTransferError::TrailingBytes(remaining));
+    }
 
     if received_payload_len > total_payload_len {
         return Err(DecodePendingSnapshotTransferError::ReceivedPayloadTooLong {

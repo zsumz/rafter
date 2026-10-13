@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Verify the teaching excerpts and build the guide's complete source reference."""
+import argparse
+import hashlib
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from textwrap import dedent
+import json
+
+from counter_guide_deps import (
+    checkout_args, pinned_dependencies, published_crates, validate_graph,
+)
+
+ROOT = Path(__file__).resolve().parent.parent
+PROJECT = ROOT / "docs/examples/counter"
+GUIDE = ROOT / "docs/getting-started.md"
+FILES = {
+    "Cargo.toml", "rust-toolchain.toml", ".gitignore", "certs.sh",
+    "src/main.rs", "src/counter.rs", "src/peers.rs", "src/http.rs",
+    "src/disk.rs", "src/checkpoint.rs", "src/application.rs", "src/owner.rs", "src/policy.rs",
+    "src/snapshots.rs",
+}
+BLOCK = re.compile(r"(<!-- counter-file: ([^\n]+) -->\n```[^\n]*\n)(.*?)(^```)",
+                   re.MULTILINE | re.DOTALL)
+SNIPPET = re.compile(r"<!-- counter-snippet: ([^\n]+) -->\n```rust\n(.*?)^```",
+                     re.MULTILINE | re.DOTALL)
+
+
+def check_excerpts(text):
+    excerpts = list(SNIPPET.finditer(text))
+    if not excerpts:
+        raise SystemExit("guide has no checked teaching excerpts")
+    for match in excerpts:
+        name, expected = match[1], dedent(match[2]).strip()
+        if name not in FILES:
+            raise SystemExit(f"unknown source file for excerpt: {name}")
+        lines = (PROJECT / name).read_text().splitlines()
+        length = len(expected.splitlines())
+        if not expected or not any(
+            dedent("\n".join(lines[start:start + length])).strip() == expected
+            for start in range(len(lines) - length + 1)
+        ):
+            raise SystemExit(f"teaching excerpt differs from {name}; update the explanation and excerpt")
+    print(f"PASS: {len(excerpts)} teaching excerpts match the standalone application", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--update", action="store_true", help="refresh inline files without running Cargo")
+    parser.add_argument("--mode", choices=("checkout", "pinned"), default="checkout",
+                        help="qualify checkout libraries (default) or the standalone Git pin")
+    parser.add_argument("--pressure", action="store_true",
+                        help="run blocked-publication and full-client-queue qualification (POSIX)")
+    parser.add_argument("--soak-artifacts", type=Path,
+                        help="retain a 60-second local leader-loss/cold-restart run and its build evidence in a new directory")
+    args = parser.parse_args()
+    text = GUIDE.read_text()
+    matches = list(BLOCK.finditer(text))
+    names = [match[2] for match in matches]
+    if len(names) != len(FILES) or set(names) != FILES:
+        raise SystemExit("guide must contain every application file exactly once")
+    if args.update:
+        text = BLOCK.sub(lambda match: match[1] + (PROJECT / match[2]).read_text() + match[4], text)
+        GUIDE.write_text(text)
+        print("Refreshed the guide's complete application files.")
+        check_excerpts(text)
+        return
+    for match in matches:
+        if match[3] != (PROJECT / match[2]).read_text():
+            raise SystemExit(f"guide copy differs from {match[2]}; run with --update")
+
+    check_excerpts(text)
+    revision, required = pinned_dependencies(PROJECT / "Cargo.toml")
+    crates = published_crates(ROOT)
+    config_args = checkout_args(crates) if args.mode == "checkout" else []
+
+    # Compile the complete source reference outside the repository, not an example
+    # target that could accidentally rely on a workspace-only dependency.
+    with tempfile.TemporaryDirectory(prefix="rafter-counter-guide-") as temporary:
+        copied = Path(temporary)
+        for match in matches:
+            destination = copied / match[2]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(match[3])
+        shutil.copyfile(PROJECT / "Cargo.lock", copied / "Cargo.lock")
+        shutil.copyfile(PROJECT / "smoke.py", copied / "smoke.py")
+        shutil.copyfile(PROJECT / "compaction.py", copied / "compaction.py")
+        shutil.copyfile(PROJECT / "pressure.py", copied / "pressure.py")
+        shutil.copyfile(PROJECT / "load.py", copied / "load.py")
+        shutil.copyfile(PROJECT / "test_load.py", copied / "test_load.py")
+        shutil.copyfile(PROJECT / "check_load.py", copied / "check_load.py")
+        shutil.copyfile(PROJECT / "test_check_load.py", copied / "test_check_load.py")
+        shutil.copyfile(PROJECT / "soak.py", copied / "soak.py")
+        shutil.copyfile(PROJECT / "test_soak.py", copied / "test_soak.py")
+        shutil.copytree(PROJECT / "tests", copied / "tests")
+        env = dict(os.environ)
+        target = Path(env.get("CARGO_TARGET_DIR", ROOT / "target/counter-guide")).resolve() / args.mode
+        env["CARGO_TARGET_DIR"] = str(target)
+        # Only the temporary copy may rewrite its seed lock for path overrides.
+        # The canonical standalone lock must remain valid without overrides.
+        metadata_command = ["cargo", "metadata", "--format-version", "1", *config_args]
+        if args.mode == "pinned":
+            metadata_command.append("--locked")
+        metadata = json.loads(subprocess.check_output(metadata_command, cwd=copied, env=env))
+        used = validate_graph(metadata, crates, revision, required, args.mode, copied)
+        print(f"PASS: {len(used)} Rafter crates resolve to {args.mode}; standalone pin {revision}", flush=True)
+        artifacts = args.soak_artifacts.resolve() if args.soak_artifacts else None
+        if artifacts is not None:
+            artifacts.mkdir()
+            shutil.copyfile(copied / "Cargo.lock", artifacts / "resolved-Cargo.lock")
+            (artifacts / "cargo-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+            (artifacts / "build-inputs.json").write_text(json.dumps({
+                "mode": args.mode, "library_git_pin": revision, "metadata_command": metadata_command,
+                "checkout_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                "checkout_status": subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True),
+                "copied_source_sha256": {str(path.relative_to(copied)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                         for path in sorted(copied.rglob("*")) if path.is_file()},
+            }, indent=2) + "\n")
+        commands = [
+            [sys.executable, "-m", "unittest", "test_load.py", "test_check_load.py", "test_soak.py"],
+            ["rustc", "--version"],
+            ["cargo", "fmt", "--all", "--", "--check"],
+            ["cargo", "clippy", *config_args, "--locked", "--all-targets", "--", "-D", "warnings"],
+            ["cargo", "test", *config_args, "--locked"],
+            ["cargo", "build", *config_args, "--locked"],
+            [sys.executable, "pressure.py" if args.pressure else "smoke.py",
+             str(target / "debug/rafter-counter")],
+        ]
+        if not args.pressure:
+            commands.append([sys.executable, "compaction.py",
+                             str(target / "debug/rafter-counter")])
+            commands.append([sys.executable, "smoke.py",
+                             str(target / "debug/rafter-counter"), "--explicit-peers"])
+        if artifacts is not None:
+            commands.append([sys.executable, "soak.py", "--binary", str(target / "debug/rafter-counter"),
+                             "--output", str(artifacts / "run")])
+        for command in commands:
+            print("Running:", " ".join(command), flush=True)
+            subprocess.run(command, cwd=copied, env=env, check=True)
+    print("PASS: the complete app copied from the guide builds and survives the process checks")
+
+
+if __name__ == "__main__":
+    main()

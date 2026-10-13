@@ -33,8 +33,8 @@ use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyEntry, ReplicatedStateMachine,
 };
 use rafter_reference_ledger::{
-    store::LedgerStore, AccountId, Command, DurableLedgerError, DurableLedgerStateMachine,
-    LedgerAdapterError, Mutation,
+    store::LedgerStore, AccountId, ApplyDisposition, Command, DurableLedgerError,
+    DurableLedgerStateMachine, LedgerAdapterError, LedgerStateMachine, Mutation,
 };
 use rafter_storage::{FileRaftSnapshotStore, PersistedRaftSnapshot, RaftSnapshotStore};
 
@@ -287,4 +287,110 @@ fn a_stale_promoted_install_is_refused_ahead_of_the_store() {
         "and refusing on the index means the store was never opened"
     );
     assert_eq!(app.store().applied_index(), applied_before);
+}
+
+#[test]
+fn a_streamed_multi_chunk_schema_preserves_state_floor_and_cached_retry_after_reopen() {
+    let scratch = ScratchDir::new("streamed-ledger-schema");
+    let bounds = config(1, 2048);
+    let mut original = LedgerStateMachine::new(bounds);
+    let mut commands = vec![open_session(0, 1)];
+    for id in 0..2048 {
+        commands.push(execute(
+            0,
+            1,
+            id + 1,
+            Mutation::OpenAccount {
+                account_id: AccountId::new(id),
+            },
+        ));
+    }
+    let deposit = execute(
+        0,
+        1,
+        2049,
+        Mutation::Deposit {
+            account_id: AccountId::new(0),
+            amount: amount(9),
+        },
+    );
+    commands.push(deposit.clone());
+    let at = LogIndex(u64::try_from(commands.len()).unwrap());
+    original
+        .apply_batch(ApplyBatch {
+            entries: commands
+                .into_iter()
+                .enumerate()
+                .map(|(index, command)| ApplyEntry {
+                    index: LogIndex(u64::try_from(index).unwrap() + 1),
+                    term: Term(1),
+                    command,
+                    local_proposal_id: None,
+                })
+                .collect(),
+        })
+        .unwrap();
+    let expected = original.ledger().view();
+    let built = original.build_snapshot(at).unwrap();
+    assert!(built.payload.len() > 2 * 16 * 1024);
+    let snapshot = descriptor(at, &built.payload);
+    promote_into_store(scratch.path(), &snapshot, built.payload);
+    let mut app = DurableLedgerStateMachine::new(
+        LedgerStore::open(scratch.path(), bounds).unwrap(),
+        snapshot_dir(scratch.path()),
+    );
+    app.install_snapshot(promoted(&snapshot)).unwrap();
+    assert_eq!(app.ledger().view(), expected);
+    assert_eq!(app.store().applied_index(), at);
+    drop(app);
+    let mut reopened = DurableLedgerStateMachine::new(
+        LedgerStore::open(scratch.path(), bounds).unwrap(),
+        snapshot_dir(scratch.path()),
+    );
+    assert_eq!(reopened.ledger().view(), expected);
+    assert_eq!(reopened.store().applied_index(), at);
+    let retry = reopened
+        .apply_batch(ApplyBatch {
+            entries: vec![ApplyEntry {
+                index: LogIndex(at.0 + 1),
+                term: Term(1),
+                command: deposit,
+                local_proposal_id: None,
+            }],
+        })
+        .unwrap();
+    assert_eq!(retry[0].result.disposition, ApplyDisposition::Replayed);
+    assert_eq!(reopened.ledger().view(), expected);
+}
+
+#[test]
+fn inadmissible_descriptors_do_not_open_or_create_the_snapshot_store() {
+    let (snapshot, _) = snapshot_from("streamed-descriptor", &workload());
+    for mode in 0..4 {
+        let scratch = ScratchDir::new("streamed-descriptor-refusal");
+        let mut app = open(scratch.path());
+        let mut offered = promoted(&snapshot);
+        let descriptor = offered.raft_snapshot.as_mut().unwrap();
+        match mode {
+            0 => offered.applied_index = LogIndex(snapshot.metadata.last_included_index.0 + 1),
+            1 => {
+                descriptor.metadata.application.kind =
+                    ApplicationSnapshotKind::new("other").unwrap();
+            }
+            2 => {
+                descriptor.metadata.application.version =
+                    ApplicationSnapshotVersion::new(2).unwrap();
+            }
+            _ => descriptor.application_payload_len = u64::MAX,
+        }
+        assert!(matches!(
+            app.install_snapshot(offered),
+            Err(ApplicationSnapshotError::StateMachine(
+                DurableLedgerError::Adapter(LedgerAdapterError::SnapshotPayloadUnavailable { .. })
+            ))
+        ));
+        assert!(!snapshot_dir(scratch.path()).exists());
+        assert_eq!(app.store().applied_index(), LogIndex::ZERO);
+        assert_eq!(app.ledger().summary().open_accounts, 0);
+    }
 }

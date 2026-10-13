@@ -18,6 +18,7 @@ use crate::{adapter::codec, ApplyOutcome, Command};
 /// correlation only after the application transaction is durable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LedgerApplicationEntry {
+    first_index: LogIndex,
     entry: ApplyEntry<Command>,
 }
 
@@ -25,7 +26,18 @@ impl LedgerApplicationEntry {
     /// Wraps one decoded committed application entry.
     #[must_use]
     pub const fn new(entry: ApplyEntry<Command>) -> Self {
-        Self { entry }
+        Self {
+            first_index: entry.index,
+            entry,
+        }
+    }
+
+    /// Includes an owner-verified protocol-only prefix before this command.
+    /// The worker validates continuity and the inclusive range at admission.
+    #[must_use]
+    pub const fn with_protocol_prefix(mut self, first_index: LogIndex) -> Self {
+        self.first_index = first_index;
+        self
     }
 
     /// Returns the wrapped application entry.
@@ -48,6 +60,10 @@ impl From<ApplyEntry<Command>> for LedgerApplicationEntry {
 }
 
 impl ApplicationEntry for LedgerApplicationEntry {
+    fn first_log_index(&self) -> LogIndex {
+        self.first_index
+    }
+
     fn log_index(&self) -> LogIndex {
         self.entry.index
     }

@@ -16,17 +16,28 @@ kernel self-check the simulator reached for is now the documented public
 `Node::validate_derived_state`, returning a typed `StateValidationError`, and
 the feature is deleted from `rafter` entirely. The design and what it
 deliberately defers are recorded in [`docs/api-promotions.md`](docs/api-promotions.md).
-C1 streaming snapshots and C2 replication pipelining remain additive future
-work and are not preconditions smuggled into this preflight.
+Streaming application snapshots and persistence pipelining now have additive
+runtime APIs: `SnapshotPayloadReader` and `SnapshotPayloadWriter` provide
+bounded streaming adapters, and the opt-in pipeline overlaps eligible leader
+append messages with local persistence. The default-off `rafter-service/durable`
+feature supplies a bounded client owner and driver using the existing transport.
+Applications still own schema validation, atomic durable publication, membership
+execution, and peer policy. See the [current capability boundaries](docs/work-completion.md#additive-capabilities-and-remaining-work)
+and the [runtime](crates/rafter-runtime/README.md) and
+[service](crates/rafter-service/README.md) contracts.
 
 For a non-release completion run at one checked-out SHA, run and retain:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked -p rafter-service --features durable --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo test --locked -p rafter-service --features durable
 scripts/rustdoc-check
+scripts/check-public-api
 scripts/work-completion-check
+scripts/audit-published-dependencies --include-workspace
 scripts/reference-source-check
 scripts/reference-package-check
 scripts/reference-process-check --list-only
@@ -39,6 +50,34 @@ scripts/counter-profile counter-nightly
 scripts/counter-profile counter-weekly
 ```
 
+For hosted Linux archive qualification before merging, use the
+[manual candidate archive profile](docs/reference-consumers.md#manual-candidate-archive-qualification).
+It runs the combined process/MSRV/upgrade lane and audits the same archive set,
+retaining source hashes and diagnostics. Full invariant and owner-soak evidence
+remain separate release requirements. Review the [native target and filesystem
+qualification matrix](docs/platform-qualification.md) before selecting the
+release support scope.
+
+The public dependency audit requires cargo-audit 0.22.2 (installed with
+`cargo +1.97.1 install cargo-audit --version 0.22.2 --locked`), Python 3.11+,
+and network access. Retain its exact lock, feature coverage and fetched advisory
+database identity alongside archive evidence. It rejects advisories and warnings
+without exclusions. The root workspace, including test/verifier dependencies,
+receives a separate audit and retained lock. Standalone benchmark/fuzz/reference
+locks and license policy need separate review.
+
+The source API gate requires Rust 1.97.1, cargo-semver-checks 0.51.0 (install with
+`cargo +1.97.1 install cargo-semver-checks --version 0.51.0 --locked`), Python
+3.11+, and network access. It compares all eleven public crates with the explicit
+published `0.0.2-alpha.1` baseline in default and all-feature modes. Patch-level
+policy detects unintended breaks even while the candidate still has its alpha
+version. Retain its source snapshot, tool/compiler identity and complete raw
+reports. CI checks its Linux host; local runs check their recorded host target.
+Other feature combinations and targets require separate qualification. This is
+source API evidence, not a Rust ABI, behavior, wire or storage compatibility proof.
+Known checker gaps, including handwritten trait implementation removal, require
+supplemental downstream compiler contracts; see [release readiness](docs/release-readiness.md).
+
 The scheduled `invariants-nightly`, `invariants-weekly`, and pinned Maelstrom
 jobs remain the authoritative Linux evidence for their full profiles. The
 fenced-lock and sharded-counter authenticated transport cases are included in
@@ -48,6 +87,20 @@ not a generic server, certificate platform, or deployment controller.
 
 This section does not authorize a version change, RC, `1.0.0`, tag, publish,
 mandatory release workflow, or mixed-version compatibility claim.
+
+The deterministic and MSRV package lanes include the
+[file-store upgrade matrix](docs/storage-upgrades.md), the
+[bidirectional peer-codec matrix](docs/wire-compatibility.md), and the
+[rolling TLS upgrade scenario](docs/rolling-upgrades.md). They exercise published
+alpha archive writes, candidate recovery and continuation, canonical peer frames
+in both directions, typed refusals, and a mixed-version cluster through writes,
+quorum reads, membership changes, and snapshot catch-up. Retain all three
+receipts with the exact-package evidence. The rolling scenario covers its stated
+single-host fixture and upgrade path; other versions, application schema changes,
+downgrades, multi-host operation, and crashes outside the six qualified
+replacement boundaries after the committed workload is applied need separate
+qualification. Application publication interruptions can require an explicit
+recovery decision; the rolling test never silently repairs or reseeds them.
 
 ## 0.0.2-alpha.1 Product Preview
 
@@ -276,8 +329,10 @@ Before publishing, run:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked -p rafter-service --features durable --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo test --locked -p rafter-service --features durable
 scripts/rustdoc-check
 cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
 cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings

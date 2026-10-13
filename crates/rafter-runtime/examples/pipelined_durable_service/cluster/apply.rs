@@ -1,14 +1,41 @@
 //! Application completion, draining, and snapshot replacement.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use rafter::{LogIndex, NodeId};
-use rafter_runtime::application::ApplicationEvent;
+use rafter_runtime::application::{ApplicationEvent, ApplicationSubmitRejection};
 
 use super::super::application::{self, AppliedCommand};
 use super::{node_ids, Cluster};
 
 impl Cluster {
+    pub(super) fn dispatch_application(
+        &mut self,
+        node_id: NodeId,
+        mut entries: VecDeque<AppliedCommand>,
+    ) {
+        while !entries.is_empty() {
+            let worker = self
+                .replicas
+                .get(&node_id)
+                .expect("replica exists")
+                .application
+                .as_ref()
+                .expect("application worker is running");
+            match worker.try_submit_prefix(&mut entries) {
+                Ok(_) => {}
+                Err(ApplicationSubmitRejection::Full { .. }) if worker.is_busy() => {
+                    // The library admission call never blocks. This reference
+                    // scheduler waits for one completion, consumes its client
+                    // outcomes, and retries the unchanged owned remainder.
+                    let event = worker.complete().expect("application worker remains live");
+                    self.handle_application_event(event);
+                }
+                Err(reason) => panic!("committed application dispatch was refused: {reason:?}"),
+            }
+        }
+    }
+
     pub(super) fn poll_applications(&mut self) {
         for node_id in node_ids() {
             loop {

@@ -12,20 +12,14 @@
 //! Ledger, session, and deduplication decisions are not here and never will be.
 //! They belong to [`crate::Ledger`], which both machines drive.
 
-use std::borrow::Cow;
-
-use rafter::{LogIndex, RaftSnapshot, SnapshotChunkRequest, SnapshotChunkSource};
+use rafter::{LogIndex, RaftSnapshot, SnapshotChunkSource};
 use rafter_app::state_machine::{ApplicationSnapshot, ReadBarrier};
+use rafter_runtime::snapshot_io::{
+    SnapshotCancellation, SnapshotPayloadReader, SnapshotReadOptions,
+};
 
-use crate::{adapter::codec, LedgerAdapterError, LedgerSnapshot};
+use crate::{adapter::codec, Ledger, LedgerAdapterError, LedgerConfig};
 
-/// Bytes pulled per read while streaming a promoted payload out of a snapshot
-/// source.
-///
-/// The payload is assembled from bounded reads rather than one read the length
-/// of the descriptor, because that length is a number the sending replica
-/// chose. A snapshot large enough to matter is streamed either way; a snapshot
-/// small enough not to costs one read.
 const PROMOTED_READ_CHUNK: u32 = 16 * 1024;
 
 /// Refuses a committed entry at or below the durable applied floor.
@@ -75,55 +69,40 @@ pub(crate) fn admit_snapshot_request(
     Ok(())
 }
 
-/// Validates a snapshot install and returns the model snapshot it carries.
+/// Validates inline or promoted bytes into temporary, bounded ledger state.
 ///
-/// Three refusals, in the order a reader should think about them: an install
-/// that would move the applied floor backwards makes acknowledged commands
-/// executable again, so it is refused before anything is read; a payload that
-/// cannot be obtained at all has nothing to install; and a payload whose own
-/// index disagrees with the declared one is not the snapshot the installer
-/// thinks it is.
-///
-/// # Where the bytes come from
-///
-/// An install arrives in one of two shapes and this function is the only place
-/// that knows the difference. A locally built snapshot carries its bytes
-/// inline. A Raft-driven install carries none: Rafter hands over a
-/// [`RaftSnapshot`] descriptor whose application bytes were already staged and
-/// promoted into the replica's own snapshot store, and `source` is this
-/// replica's read side of that store. The bytes are then streamed back in
-/// bounded chunks keyed by [`RaftSnapshot::transfer_id`], which is what makes
-/// the store answer for *this* transfer rather than whatever it happens to
-/// hold.
-///
-/// Both shapes leave here through the same decode and the same index check.
-/// That is the point of resolving the bytes rather than validating them: a
-/// second path would be a second opinion about what a legal ledger snapshot
-/// is, and the one that only promoted transfers take is the one nobody reads.
-///
-/// A refusal is still the answer whenever the bytes genuinely are not there —
-/// no descriptor and no inline payload, no configured source, or a source that
-/// cannot serve that transfer id, descriptor, length, and checksum. Every one
-/// of those is [`LedgerAdapterError::SnapshotPayloadUnavailable`], and none of
-/// them installs an empty ledger over live state.
+/// The applied-floor check precedes source effects. Both forms share the same
+/// field decoder and model restorer. Promoted bytes additionally require exact
+/// descriptor identity, length, CRC32, and full consumption before state can
+/// leave this function. A refusal changes no installed state or applied floor.
 pub(crate) fn admit_install(
     snapshot: &ApplicationSnapshot,
     applied_index: LogIndex,
+    config: LedgerConfig,
     source: Option<&dyn SnapshotChunkSource>,
-) -> Result<LedgerSnapshot, LedgerAdapterError> {
+) -> Result<Ledger, LedgerAdapterError> {
     if let Some(refusal) = behind_floor(snapshot, applied_index) {
         return Err(refusal);
     }
-    let payload = resolve_payload(snapshot, source)?;
-
-    let (payload_index, ledger_snapshot) = codec::decode_snapshot(&payload)?;
+    let (payload_index, ledger) = if snapshot.payload.is_empty() {
+        let unavailable = LedgerAdapterError::SnapshotPayloadUnavailable {
+            applied_index: snapshot.applied_index,
+        };
+        let descriptor = admit_descriptor(snapshot, config)?;
+        let Some(source) = source else {
+            return Err(unavailable);
+        };
+        read_promoted(descriptor, source, applied_index, config)?
+    } else {
+        codec::decode_snapshot::<LedgerAdapterError>(&snapshot.payload, config)?
+    };
     if payload_index != snapshot.applied_index.0 {
         return Err(LedgerAdapterError::SnapshotIndexMismatch {
             payload_index: LogIndex(payload_index),
             declared_index: snapshot.applied_index,
         });
     }
-    Ok(ledger_snapshot)
+    Ok(ledger)
 }
 
 /// Whether an install needs bytes from a snapshot source at all.
@@ -138,10 +117,30 @@ pub(crate) fn admit_install(
 pub(crate) fn install_needs_source(
     snapshot: &ApplicationSnapshot,
     applied_index: LogIndex,
+    config: LedgerConfig,
 ) -> bool {
     behind_floor(snapshot, applied_index).is_none()
         && snapshot.payload.is_empty()
-        && snapshot.raft_snapshot.is_some()
+        && admit_descriptor(snapshot, config).is_ok()
+}
+
+fn admit_descriptor(
+    snapshot: &ApplicationSnapshot,
+    config: LedgerConfig,
+) -> Result<&RaftSnapshot, LedgerAdapterError> {
+    let unavailable = LedgerAdapterError::SnapshotPayloadUnavailable {
+        applied_index: snapshot.applied_index,
+    };
+    let descriptor = snapshot.raft_snapshot.as_ref().ok_or(unavailable)?;
+    if descriptor.metadata.last_included_index != snapshot.applied_index
+        || descriptor.metadata.application.kind.as_str() != "ledger"
+        || descriptor.metadata.application.version.get()
+            != u16::from(codec::SNAPSHOT_FORMAT_VERSION)
+        || descriptor.application_payload_len > codec::snapshot_payload_limit(config)
+    {
+        return Err(unavailable);
+    }
+    Ok(descriptor)
 }
 
 /// Names the refusal for an install that would move the applied floor
@@ -162,55 +161,34 @@ fn behind_floor(
     )
 }
 
-/// Produces the application bytes one install must decode.
-///
-/// Inline bytes win when they are present, so a caller that already holds the
-/// payload never consults a store. Everything else is the promoted form, and it
-/// needs both halves — a descriptor naming the transfer and a source holding it
-/// — before a byte is read.
-fn resolve_payload<'a>(
-    snapshot: &'a ApplicationSnapshot,
-    source: Option<&dyn SnapshotChunkSource>,
-) -> Result<Cow<'a, [u8]>, LedgerAdapterError> {
-    if !snapshot.payload.is_empty() {
-        return Ok(Cow::Borrowed(&snapshot.payload));
-    }
+fn read_promoted(
+    descriptor: &RaftSnapshot,
+    source: &dyn SnapshotChunkSource,
+    applied_index: LogIndex,
+    config: LedgerConfig,
+) -> Result<(u64, Ledger), LedgerAdapterError> {
     let unavailable = LedgerAdapterError::SnapshotPayloadUnavailable {
-        applied_index: snapshot.applied_index,
+        applied_index: descriptor.metadata.last_included_index,
     };
-    let (Some(descriptor), Some(source)) = (snapshot.raft_snapshot.as_ref(), source) else {
-        return Err(unavailable);
-    };
-    read_promoted(descriptor, source)
-        .map(Cow::Owned)
-        .ok_or(unavailable)
+    let mut reader = SnapshotPayloadReader::new(
+        descriptor,
+        source,
+        applied_index,
+        SnapshotReadOptions::new(codec::snapshot_payload_limit(config))
+            .with_chunk_bytes(PROMOTED_READ_CHUNK),
+        SnapshotCancellation::new(),
+    )
+    .map_err(|_| unavailable)?;
+    let decoded = codec::decode_snapshot_stream(
+        &mut reader,
+        descriptor.application_payload_len,
+        config,
+        |_| unavailable,
+    )?;
+    reader.finish().map_err(|_| unavailable)?;
+    Ok(decoded)
 }
 
-/// Streams one promoted payload out of `source` in bounded reads.
-///
-/// `None` means the source did not serve some chunk of this transfer, which is
-/// the only answer a [`SnapshotChunkSource`] gives for a snapshot it does not
-/// hold, cannot read, or holds under a different descriptor or checksum. The
-/// caller turns that into the one typed refusal rather than guessing which of
-/// those it was: none of them yields bytes this replica may install.
-fn read_promoted(descriptor: &RaftSnapshot, source: &dyn SnapshotChunkSource) -> Option<Vec<u8>> {
-    // Deliberately not reserved from `application_payload_len`: the length is
-    // the sender's claim, and the loop below already refuses to read past it.
-    let mut payload = Vec::new();
-    let mut offset = 0_u64;
-    while offset < descriptor.application_payload_len {
-        let remaining = descriptor.application_payload_len - offset;
-        let len = u32::try_from(remaining.min(u64::from(PROMOTED_READ_CHUNK))).ok()?;
-        let chunk = source.snapshot_chunk(SnapshotChunkRequest {
-            transfer_id: descriptor.transfer_id(),
-            metadata: &descriptor.metadata,
-            total_payload_len: descriptor.application_payload_len,
-            application_payload_crc32: descriptor.application_payload_crc32,
-            offset,
-            len,
-        })?;
-        payload.extend_from_slice(&chunk);
-        offset += u64::from(len);
-    }
-    Some(payload)
-}
+#[cfg(test)]
+#[path = "discipline/stream_tests.rs"]
+mod stream_tests;

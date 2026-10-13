@@ -6,12 +6,12 @@
 
 use std::{error::Error, fmt};
 
-use crate::format::{
-    finish_checksummed, verify_checksum, ChecksumError, CursorError, Reader, Writer,
-};
+use crate::format::{finish_checksummed, ChecksumError, CursorError, Reader, Writer};
 
 pub(super) const SNAPSHOT_MANIFEST_MAGIC: [u8; 4] = *b"RFSM";
 pub(super) const SNAPSHOT_MANIFEST_VERSION: u8 = 1;
+// Fixed fields (magic, version, sequence, filename length) plus a full u16 name.
+pub(crate) const MAX_SNAPSHOT_MANIFEST_BODY_LEN: usize = 15 + u16::MAX as usize;
 
 /// Errors returned while encoding the current-snapshot manifest.
 ///
@@ -168,10 +168,17 @@ pub(crate) fn encode_manifest(
 ///
 /// Returns [`RaftSnapshotManifestDecodeError`] when framing, checksum, UTF-8,
 /// filename, or trailing-byte validation fails.
+#[cfg(test)]
 pub(crate) fn decode_manifest(
     input: &[u8],
 ) -> Result<SnapshotManifest, RaftSnapshotManifestDecodeError> {
-    let body = verify_checksum(input)?;
+    let body = crate::format::verify_checksum(input)?;
+    decode_manifest_body(body)
+}
+
+pub(crate) fn decode_manifest_body(
+    body: &[u8],
+) -> Result<SnapshotManifest, RaftSnapshotManifestDecodeError> {
     let mut reader = Reader::new(body);
     let magic = reader.magic()?;
     if magic != SNAPSHOT_MANIFEST_MAGIC {

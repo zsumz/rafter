@@ -66,8 +66,8 @@ fn registry_package_inventory_mismatch_is_rejected() {
 
 fn with_fixture(test: impl FnOnce(&Fixture)) {
     let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-    let root = PathBuf::from("target/rafter-invariants/metadata-tests")
-        .join(format!("{}-{id}", std::process::id()));
+    let root =
+        crate::tests::scratch_path("metadata-tests").join(format!("{}-{id}", std::process::id()));
     let workspace = root.join("workspace");
     let package = workspace.join("fixture");
     let vendor = root.join("vendor");

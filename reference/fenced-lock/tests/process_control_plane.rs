@@ -379,13 +379,11 @@ fn an_unpersistable_control_plane_stops_the_process_under_a_client_flood() {
 /// only `submit` and `query` do — so the `QUERY` below is deterministically the
 /// operation that trips the seam however many local reads precede it.
 ///
-/// Socket write order is deliberately not mistaken for admission order. Every
-/// connection has its own reader thread, so a later-written local read can reach
-/// the main loop first under load. The injected-fault seam suffixes replies with
-/// that loop's ticket: a served local read is legal only when its ticket precedes
-/// the query's, while every later ticket must be refused. The baseline assertion
-/// before the fault keeps a fixture that stopped reaching the replica at all from
-/// passing silently.
+/// The fault harness admits the query and all following local reads in one
+/// ordered queue message, then acknowledges the batch before any replies. That
+/// establishes a real backlog behind the breaking operation independently of
+/// socket reader scheduling. Every later request must be refused or disconnected;
+/// none may be served. The baseline read proves the replica was serving normally.
 #[test]
 #[ignore = "spawns real processes; run with --ignored (see the module docs)"]
 fn a_stored_control_plane_failure_refuses_the_requests_queued_behind_it() {
@@ -400,6 +398,15 @@ fn a_stored_control_plane_failure_refuses_the_requests_queued_behind_it() {
     cluster.submit_to_leader(open_session(0, 1));
     cluster.submit_to_leader(submit(0, 1, 1, acquire("vault", 10)));
     cluster.wait_applied_through(victim, LogIndex(1));
+
+    assert!(
+        cluster
+            .node_mut(victim)
+            .ask("HARNESS_BATCH 9")
+            .unwrap()
+            .starts_with("ERR "),
+        "batch admission must be unavailable without fault injection"
+    );
 
     cluster.kill(victim);
     let mut faulted = cluster.restart_with_control_plane_fault(victim, 1);
@@ -416,50 +423,64 @@ fn a_stored_control_plane_failure_refuses_the_requests_queued_behind_it() {
          before the fault trips"
     );
 
-    // Every connection established before anything is written, so the sends
-    // below are one write each on an open socket.
-    let mut breaking = process::QueuedRequest::connect(addr);
-    let mut queued: Vec<process::QueuedRequest> = (0..QUEUED_BEHIND)
-        .map(|_| process::QueuedRequest::connect(addr))
-        .collect();
+    for invalid_batch in [
+        "HARNESS_BATCH 0",
+        "HARNESS_BATCH 65",
+        "HARNESS_BATCH invalid",
+    ] {
+        assert!(faulted.ask(invalid_batch).unwrap().starts_with("ERR "));
+    }
 
-    breaking.send("QUERY LOCK vault");
-    queued.retain_mut(|request| request.try_send("LOCAL LOCK vault").is_ok());
-    let refused_before_receive = queued.len() < QUEUED_BEHIND;
+    // Validation is atomic: a malformed later line must not admit the query
+    // that would already trip the fault if dispatched as it was read.
+    let mut invalid = process::QueuedRequest::connect(addr);
+    invalid.send("HARNESS_BATCH 2");
+    invalid.send("QUERY LOCK vault");
+    invalid.send("INVALID");
+    assert!(invalid.recv().unwrap().starts_with("ERR "));
 
-    let breaking_answer = breaking
-        .recv()
-        .expect("the replica answers the request that breaks it");
-    assert!(
-        breaking_answer.starts_with("ABANDONED"),
-        "the operation that made the control plane undurable is refused rather \
-         than served: {breaking_answer}"
+    let mut batch = process::QueuedRequest::connect(addr);
+    batch.send(&format!("HARNESS_BATCH {}", QUEUED_BEHIND + 1));
+    batch.send("QUERY LOCK vault");
+    for _ in 0..QUEUED_BEHIND {
+        batch.send("LOCAL LOCK vault");
+    }
+    assert_eq!(
+        batch.recv().expect("the complete batch is admitted"),
+        format!("HARNESS_QUEUED {}", QUEUED_BEHIND + 1),
+        "the query must have real queued work behind it before it runs"
     );
-    let breaking_ticket = harness_ticket(&breaking_answer);
-    let mut observed_behind = refused_before_receive;
-    for (index, request) in queued.iter_mut().enumerate() {
-        // A connection the replica closed as it exits is not a served read, and
-        // is the ordinary ending for a request that arrived after the loop.
-        let Ok(answer) = request.recv() else {
-            observed_behind = true;
-            continue;
-        };
-        if answer.starts_with("OK LOCK") {
-            let ticket = harness_ticket(&answer);
-            assert!(
-                ticket < breaking_ticket,
-                "request {index} was served after the replica knew its control \
-                 plane was not durable: query ticket {breaking_ticket}, local \
-                 ticket {ticket}, answer {answer}"
-            );
+    let mut breaking_ticket = None;
+    let mut refused_tickets = Vec::new();
+    let mut answered = std::collections::BTreeSet::new();
+    while let Ok(answer) = batch.recv() {
+        let (index, response) = answer
+            .strip_prefix("HARNESS_REPLY ")
+            .and_then(|answer| answer.split_once(' '))
+            .expect("a batch reply identifies its request");
+        let index: usize = index.parse().unwrap();
+        assert!(index <= QUEUED_BEHIND && answered.insert(index));
+        assert!(
+            response.starts_with("ABANDONED"),
+            "queued request {index} was served after the replica knew its control \
+             plane was not durable: {answer}"
+        );
+        let ticket = harness_ticket(response);
+        if index == 0 {
+            breaking_ticket = Some(ticket);
         } else {
-            observed_behind = true;
+            refused_tickets.push(ticket);
+        }
+        if answered.len() == QUEUED_BEHIND + 1 {
+            break;
         }
     }
-    assert!(
-        observed_behind,
-        "the fixture did not place any request behind the breaking query"
-    );
+    let breaking_ticket = breaking_ticket.expect("the replica answers the query that breaks it");
+    assert!(refused_tickets
+        .iter()
+        .all(|ticket| *ticket > breaking_ticket));
+    // Closing the connection refuses the unanswered requests in the already
+    // admitted batch; it cannot hide work that arrived ahead of the query.
 
     let refused = faulted.wait_refused();
     assert!(

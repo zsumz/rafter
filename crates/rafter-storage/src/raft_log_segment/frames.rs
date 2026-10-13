@@ -241,10 +241,17 @@ fn encoded_frame_len(encoded: &[u8]) -> Result<u32, EncodeRaftLogEntryError> {
 }
 
 fn read_frame_bytes(reader: &mut impl Read, len: usize) -> io::Result<Vec<u8>> {
-    let mut encoded = vec![0; len];
+    let mut encoded = Vec::new();
     let mut filled = 0;
     while filled < len {
         let chunk_end = filled.saturating_add(STREAM_READ_CHUNK_LEN).min(len);
+        // A file may end before its earlier metadata length. Grow from the
+        // bytes reached, amortizing copies without reserving the whole claim.
+        if chunk_end > encoded.capacity() {
+            let capacity = len.min(chunk_end.max(encoded.capacity().saturating_mul(2)));
+            encoded.reserve_exact(capacity - encoded.len());
+        }
+        encoded.resize(chunk_end, 0);
         let read = read_to_fill(reader, &mut encoded[filled..chunk_end])?;
         filled += read;
         if filled < chunk_end {
