@@ -31,8 +31,9 @@ The checkout is merge commit `55219c61`, whose tree matches the candidate. The
 retained logs verify that checkout, compiler and exact test outcomes; the native
 receipts below additionally verify a clean checkout at capture time. They do not
 supply a before/after source inventory for these two jobs or replace
-maintainer architecture approval. The current PR invariant jobs remain in
-progress; the completed aggregates at `5d1cc025` retain their own source identity.
+maintainer architecture approval. The `0ef3a1a0` PR invariant producers and
+44-invariant aggregate have passed and been independently read back. The earlier
+PR and full Nightly aggregates at `5d1cc025` retain their own source identity.
 The earlier complete local workspace result is recorded in the
 [release-readiness checkpoint](release-readiness.md#current-code-checkpoint).
 
