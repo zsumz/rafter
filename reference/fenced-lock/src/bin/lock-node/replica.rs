@@ -211,10 +211,14 @@ impl fmt::Display for OpenError {
                 formatter,
                 "the durable lock store needs an operator decision and this replica will not \
                  serve until it gets one: {detail}. Restarting under the same mode will not \
-                 change it. Running with --recover {next_mode} is the next step and it discards \
-                 something: `repair` gives up a slot this build cannot read, and `reseed` gives \
-                 up this replica's whole durable lock state, fencing high-water marks included. \
-                 Both are safe only because the replicated log still holds what they discard"
+                 change it. Before choosing --recover {next_mode}, preserve this stopped \
+                 replica's complete directory. `repair` discards a slot and may refuse a fencing \
+                 mark regression; `reseed` deletes both application slots, including fencing \
+                 marks and cached results. Recovery requires retained committed history and \
+                 any application snapshot covering a compacted prefix, restored before its \
+                 suffix is applied. This message does not verify those prerequisites. Neither \
+                 mode rebuilds missing identity, peer-policy, or transport replay records. \
+                 Wait for READY after validated recovery before serving"
             ),
             Self::Store { detail } => write!(formatter, "durable store failed: {detail}"),
             Self::Runtime { detail } => write!(formatter, "raft recovery failed: {detail}"),

@@ -568,6 +568,8 @@ Reseeding must restore the local snapshot before replaying the suffix, catch up
 over TLS, preserve the session cache across an ordinary restart, and retain
 monotonic fencing against the independent guarded resource. Its Raft, identity
 and transport metadata are retained; no replacement directory is substituted.
+The [recovery and maintenance runbook](recovery-and-maintenance.md) ties these
+diagnostics and recovery decisions to one focused executable check.
 These deliberate seal-byte faults do not establish automatic recovery from all
 application publication interruptions. Its frozen version-1 adversarial client hand-encodes the outer hello
 and peer frame before talking to the current runtime over real mutual TLS.

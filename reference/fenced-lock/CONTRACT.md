@@ -6,6 +6,9 @@ checker run in source and exact-package modes. Its integration process suite
 and bounded authenticated production-composition fixture run in source and
 exact-package process modes.
 
+The [recovery and maintenance runbook](../../docs/recovery-and-maintenance.md)
+connects operator decisions and readiness signals to executable recovery checks.
+
 This crate began as a dependency-free deterministic lock service and now carries
 that same application contract onto Rafter's public crates, over a durable
 transactional backend of its own. Every seam that proves missing, awkward, or

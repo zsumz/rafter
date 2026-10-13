@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Qualify the operator recovery contract against this checkout's public libraries.
+# Usage: scripts/recovery-contract-check [--list-only]
+set -euo pipefail
+
+list_only=()
+case "$#:${1:-}" in
+    0:) ;;
+    1:--list-only) list_only=(--list-only) ;;
+    *)
+        echo "usage: scripts/recovery-contract-check [--list-only]" >&2
+        exit 2
+        ;;
+esac
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/rafter-recovery-contract.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+# Propagate failed/empty patch discovery instead of testing registry libraries.
+"${repo_root}/scripts/reference-source-check" --print-args > "$scratch/patch"
+patch=()
+while IFS= read -r argument; do
+    [[ -n "$argument" ]] || continue
+    patch+=("$argument")
+done < "$scratch/patch"
+if (( ${#patch[@]} == 0 )); then
+    echo "error: empty public dependency patch table" >&2
+    exit 1
+fi
+
+source_ref="$(git -C "$repo_root" rev-parse HEAD)"
+printf 'recovery contract source: %s\n' "$source_ref"
+git -C "$repo_root" status --short
+rustc --version
+cargo --version
+cd "${repo_root}/reference"
+
+# Each exact name is independently listed and checked before execution. These
+# are existing regressions: the contract does not replace their assertions.
+cases=(
+    gen5_repair_deadlock:gen5_the_ordinary_crash_on_a_release_is_repairable
+    gen5_repair_deadlock:gen5_the_ordinary_crash_on_an_acquisition_has_no_way_forward
+    durable_repair_marks:a_repair_that_would_regress_a_mark_is_refused_by_both_entry_points
+    durable_repair_marks:a_repair_that_cannot_read_the_discarded_image_says_so
+    gen6_reseed_compaction:gen6_a_reseed_over_a_compacted_log_is_refused_at_the_composition_seam
+    gen6_reseed_compaction:gen6_a_reseed_with_a_commit_above_the_boundary_is_refused_before_it_applies
+    gen6_reseed_compaction:gen6_a_reseed_over_an_uncompacted_log_still_recovers_its_marks
+)
+for selection in "${cases[@]}"; do
+    IFS=: read -r target name <<< "$selection"
+    printf '%s\n' "$name" > "$scratch/inventory"
+    "${repo_root}/scripts/cargo-test-exact" 1 - \
+        --inventory "$scratch/inventory" "${list_only[@]+"${list_only[@]}"}" \
+        "${patch[@]}" -p rafter-reference-fenced-lock --test "$target" -- \
+        --exact "$name" --test-threads=1 --nocapture
+done
+
+# Reuse the complete reviewed TLS process suite: normal restart/readiness,
+# explicit repair, fencing refusal, snapshot+suffix reseed, and peer policy.
+"${repo_root}/scripts/cargo-test-exact" 8 - \
+    --inventory "${repo_root}/verification/reference-process-test-inventory.fenced-lock-production.txt" \
+    "${list_only[@]+"${list_only[@]}"}" "${patch[@]}" \
+    -p rafter-reference-fenced-lock --test process_production -- \
+    --ignored --test-threads=1 --nocapture
+
+if (( ${#list_only[@]} > 0 )); then
+    echo "recovery contract: all 15 reviewed selections match; execution not performed"
+else
+    echo "recovery contract: all 15 selected tests passed"
+fi
