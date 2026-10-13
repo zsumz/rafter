@@ -1,168 +1,137 @@
 # Release readiness — 2026-10-12
 
-Initial review base: `021f4f9bb2f6960cb75b24f5a627f1872a12d430` (`origin/main`).
-Remote branches, pull requests, and workflow results were initially refreshed on
-October 10, 2026. An October 12 fetch confirms `origin/main` and the other branch
-tips are unchanged; only the release-work branches have advanced. The initial build
-changes added a Rust 1.88.0 toolchain pin and setup instructions, without changing
-consensus behavior or declaring a release.
-CI's shared setup action explicitly selects each job's requested toolchain so
-the local pin does not override newer tool-installation, packaging, or fuzz jobs.
-The initial build slice's `zrail.lock` update changed only that setup action's
-input digest. Subsequent qualification changes are described below. Changes to
-these gate inputs require the repository's architecture environment review when
-submitted as a pull request; a candidate lock refresh does not grant that review.
+Status snapshot: October 13, 2026 at 01:19 UTC (October 12 locally). A fresh read
+of all 21 remote heads still places `main` at
+`021f4f9bb2f6960cb75b24f5a627f1872a12d430`, matching the initial branch review.
+The recent commits are on the release-work branches. Rust 1.88.0 builds the
+library; the initial local blocker was the missing toolchain. The repository now pins that
+toolchain, while CI explicitly selects each job's separately required compiler.
 
-Rafter has a strong foundation: a dependency-free deterministic kernel,
-runtime fences before dependent outputs, bounded persistence and application workers,
-authenticated transport, independent reference consumers, format vectors,
-simulation, and TLA+ evidence. The highest-value next work is reproducible
-release qualification, executable upgrade contracts, and a smaller integration
-burden for durable applications. More throughput work should follow those.
+Rafter already has authenticated TLS transport. The durable owner, reference
+services and standalone counter reuse it. The remaining release work is to
+qualify the final integration, establish deployment bounds and select the
+supported operational contract. A green component test is not a stable-release
+claim.
 
 ## Current code checkpoint
 
-The release work is on `codex/stable-release-slices`, with library code through
-[`78382a8d`](https://github.com/zsumz/rafter/commit/78382a8d6a8b155e9af5a212ff8c14b664aa7983)
-qualified by the complete runnable CI and Nightly profiles at `7151197c`, in draft
-[PR #23](https://github.com/zsumz/rafter/pull/23). Eight validated follow-ups through
-`6034dc9c` add source-preservation receipts, process-resource observations, the
-updated standalone counter pin, benchmark dependency cleanup, and capability and
-platform documentation. They leave the library sources, root workspace manifest,
-root lockfile, and toolchain unchanged. Their integrated hosted qualification is
-still required. The transport already
-exists: durable composition reuses its authenticated TLS sender and inbound
-validation. No transport replacement, version bump, tag, or publication is part
-of this checkpoint.
+The frozen integration is
+[`b2847c07`](https://github.com/zsumz/rafter/commit/b2847c07a8582b93fe2df31adec2adab179ff7c3)
+on `codex/stable-release-slices`, in draft
+[PR #23](https://github.com/zsumz/rafter/pull/23). Its PR and Nightly TLA+ producers
+are still running, so its invariant aggregates remain outstanding. Maintainer
+architecture approval is also outstanding. Local `zrail.lock` refreshes do not
+grant that approval.
 
-The durable feature now provides bounded managed writes, local/quorum reads,
-leadership transfer, shutdown, snapshot maintenance/handoff, and opt-in membership
-proposal admission. It exposes retained credits, admission refusals, and existing
-persistence-worker diagnostics. Membership receipts identify durable append;
-the embedding still observes exact configuration commits, executes plans, and
-persists peer retirement and authorization policy. The feature remains default-off.
+Six later commits through
+[`d439da22`](https://github.com/zsumz/rafter/commit/d439da22d240c4ccb5b7060ee903d1dcde7537f1)
+on `codex/stable-release-counter-directories` add ledger publication crash tests,
+their dependency-lock receipt, and ordered directory provisioning for all three
+durable reference consumers. Their combined archive qualification is running.
+They have not been integrated into the frozen candidate. Both checkpoints leave
+the published library sources, root workspace manifest/lock and toolchain
+unchanged from the library checkpoint at
+[`78382a8d`](https://github.com/zsumz/rafter/commit/78382a8d6a8b155e9af5a212ff8c14b664aa7983).
 
-| Qualification | Source checkpoint and result |
+The default-off `rafter-service/durable` feature supplies bounded managed writes,
+local/quorum reads, leadership transfer, shutdown, snapshot maintenance/handoff,
+and opt-in membership proposal admission. It exposes retained credits, refusals
+and persistence-worker diagnostics. Membership receipts identify durable append;
+the embedding still tracks exact configuration commits, executes membership
+plans, and persists peer authorization and retirement policy. Streaming snapshot
+adapters are additive and bounded; applications still own schema validation and
+atomic publication of their state and applied floor. See the
+[capability boundaries](work-completion.md#additive-capabilities-and-remaining-work)
+and [release checklist](../RELEASE.md).
+
+| Qualification | Verified checkpoint and scope |
 | --- | --- |
-| Integrated workspace with durable feature | `78382a8d`: all-target build, 3,349 tests (zero failed, 59 ignored), strict all-target Clippy and strict rustdoc pass on Rust 1.88 on Apple Silicon macOS. All 2,825 tracked source hashes remain unchanged. Ignored cases have separate reviewed selections; they are not counted as executed here. |
-| PR invariant aggregate | [CI at `7151197c`](https://github.com/zsumz/rafter/actions/runs/38264606712): all runnable jobs and all 44 invariants pass. The aggregate uses merge commit `4d0f1850`, whose tree matches that branch head. Architecture environment review remains waiting. |
-| Full nightly | [Nightly at `7151197c`](https://github.com/zsumz/rafter/actions/runs/38264626527): all 16 applicable jobs and all 44 invariants pass, including process, owner-soak, fuzz, simulator, Maelstrom and TLA+ profiles. The optional archive job is skipped in this full profile and qualified separately below. |
-| Linux I/O and snapshot faults | [Run at `0160bf63`](https://github.com/zsumz/rafter/actions/runs/38275151755): both handshake deadline regressions, all four I/O scenarios and all 36 snapshot process-loss cases pass with the updated counter pin. Readback verifies all 2,828 source hashes, 138 snapshot pre-recovery inputs, 24 node-crash inputs, 90 process-resource samples and complete owned-resource cleanup. Samples observe resource use; they do not establish whole-host limits. |
-| Exact packages and Rust 1.88 MSRV | [Archive run at `7151197c`](https://github.com/zsumz/rafter/actions/runs/38264629968): all seven phases pass, including 56 reviewed process cases and storage, bidirectional wire and rolling TLS upgrades. All 2,825 tracked source hashes match that immutable Git tree. |
-| Shipped archive dependency graph | The same `7151197c` archive receipts pass the strict audit of all 51 packages, including 40 registry dependencies, with zero vulnerabilities, warnings or exclusions. Downloaded inputs reproduce the dependency projection and verify audit/upgrade hash links. Retained evidence contains archive hashes and receipts, not archive bytes. |
-| Permanent owner soak | The `7151197c` Linux nightly passes all 96 load/compaction/cold-recovery cycles in 236.19 seconds: 12,288 writes and 12,288 mixed reads, final balance 12,288. Downloaded logs and the generated resolved lock were checked. This workflow revision predates the new full source inventory. |
-| Public API compatibility | [CI at `7151197c`](https://github.com/zsumz/rafter/actions/runs/38264606712/job/114863550418): all 22 default/all-feature comparisons across 11 public crates pass against `0.0.2-alpha.1`. Readback verifies exact commands, package coverage, reports and all 2,825 source hashes against the merge tree and candidate tree. |
-| Native platforms | The same CI records Ubuntu 24.04.5 on x86-64 and macOS 15.7.9 on Apple Silicon, using Rust 1.88. The macOS lane passes all 321 storage tests; process-loss selection is separate on Linux. Hosted filesystem type and mount options were not retained. See the [platform matrix](platform-qualification.md). |
-| Durable performance baseline | The [local baseline](../bench-compare/METHODOLOGY.md#local-release-readiness-baseline) at `0eb06666` validates 40 isolated timing samples and preserves the binary and all 2,823 source hashes. It compares checkpoint replacement with the optional journal on local APFS; it does not measure multi-host TLS service latency or competitors. |
-| Architecture and source preservation | The slices through `6034dc9c` pass local architecture and source/staging checks, with no new grants or debt. Maintainer architecture approval remains open. |
+| Integrated library build | `78382a8d`: all-target build, 3,349 tests passed, 59 ignored, strict all-target Clippy and rustdoc on Rust 1.88/Apple Silicon macOS. Ignored tests have separate reviewed selections. |
+| Previous complete invariant profiles | [PR at `bc6d1677`](https://github.com/zsumz/rafter/actions/runs/38296623957) and [Nightly at `bc6d1677`](https://github.com/zsumz/rafter/actions/runs/38297161459): both invariant aggregates independently checked, with 44 invariants, 125 required clauses, 77 fixtures and 79 bindings. All 16 applicable Nightly jobs passed. The old PR run was subsequently cancelled when `b2847c07` was pushed; its unapproved architecture-review job was cancelled and the dependent gate failed. It was never a fully approved CI run. |
+| Frozen integration | [CI at `b2847c07`](https://github.com/zsumz/rafter/actions/runs/38326474147) and [Nightly at `b2847c07`](https://github.com/zsumz/rafter/actions/runs/38326565330): completed runnable jobs passed; TLA+ producers and final invariant aggregates remain pending. The CI merge tree matches the branch tree. |
+| Public source API | The `b2847c07` CI passes all 22 default/all-feature comparisons across 11 crates against `0.0.2-alpha.1`. Readback verifies commands, reports and all 2,837 source files. This is source API evidence; wire and storage compatibility have separate executable checks. |
+| Exact archives, MSRV and upgrades | [Archives at `b2847c07`](https://github.com/zsumz/rafter/actions/runs/38326581942): seven phases, 56 reviewed process cases, 11 archives, Rust 1.88 MSRV, storage upgrades, bidirectional wire exchange and rolling TLS upgrades pass. All 2,837 source files match Git. The dependency projection covers 51 packages, including 40 registry packages. Retained artifacts contain archive hashes and receipts, not the archive bytes. |
+| Linux I/O and snapshot faults | [I/O run at `b2847c07`](https://github.com/zsumz/rafter/actions/runs/38326471338): four I/O scenarios, two TLS deadline regressions and 36 snapshot process-loss cases pass. Readback checks 138 pre-recovery snapshot inputs, 24 node-crash inputs, 90 resource observations and the complete source inventory. Process loss retains the kernel/page cache. |
+| Owner lifetime and compaction | The `b2847c07` Nightly owner job passes 96 cold-recovery cycles (12,288 writes and reads) and 256 compactions with the same live owners (32,768 writes and reads). Cold recovery preserves the final balance and the next write reaches 32,769. Exact cycle inventories, all source bytes and the resolved dependency lock were checked. |
+| Simulator | The `b2847c07` Nightly bundle independently verifies 77 detector executions, 79 bindings, 14 exhausted bounded models, 18 source-seeded soaks of 1,024 steps each, and 180 liveness report bindings. This does not replace the pending full invariant aggregate. |
+| Ledger publication and directory sync | [Linux at `4079be1d`](https://github.com/zsumz/rafter/actions/runs/38330349594): all four jobs pass. The ledger job executes six directory-helper tests and 13 actual `SIGKILL` publication cases, retaining 15 inputs before recovery. Two cases require explicit repair; strict open is not weakened. All 2,844 source files and the resolved reference lock were verified. |
+| Other directory callers | `d82aa927`: fenced-lock passes 219 ordinary tests and 20 process cases. `d439da22`: counter passes 124 ordinary tests and 27 process cases. Both pass strict lint/docs and source/architecture checks. [Combined archive qualification](https://github.com/zsumz/rafter/actions/runs/38331550435) is still running at the snapshot time above. |
 
-Downloaded PR and Nightly aggregate reports at `7151197c` verify all 44 invariant
-identities and 125 required clauses, 160 content-addressed verifier members each,
-77 executed fixtures, 79 evidence bindings, 33 fixture/detector source-file hashes,
-and the source tree and lock. The hosted aggregates verify their complete producer
-sets (219 and 1,097
-artifacts respectively); those raw producer sets were not downloaded or replayed
-again locally. These results qualify their recorded sources, not later commits.
+The previous PR TLA+ primary model at `bc6d1677` exhausted its queue after
+36,058,645 distinct states, along with its two required bounded obligations.
+The same checkpoint's Nightly exhausted four mandatory bounded models but its
+separate larger continuation stopped at the 195-minute budget with 55,325,720
+states queued. Both profiles passed 11 named negative cases and 34 mutation
+controls. Retained raw receipts preserve TLC's fingerprint collision estimates.
+These are bounded results; the larger Nightly model has not been exhaustively
+checked, and previous results do not qualify a later Git identity by inheritance.
 
-The PR TLA+ profile requires exhaustive completion of its primary bounded model.
-Nightly instead combines four mandatory exhaustive proof obligations with a larger
-reporting continuation. Its primary frontier was still growing at the budget
-limit: the final retained telemetry sample records 44,644,282 distinct states and
-29,459,513 queued states. The downloaded telemetry archive matches its published
-hash. Those sampled counts do not establish exhaustive completion of the larger
-model; a green Nightly result must retain that distinction.
+## Operational evidence and limits
 
-The integrated follow-ups preserve source inventories and generated dependency
-locks around the owner soak and all three counter profiles. The new owner guard
-passes a real 96-cycle local soak; the counter guards pass all 33 negative/positive
-controls and actual 64-, 1,024- and 4,096-group local profiles, with all 2,828 tracked
-source hashes unchanged. Hosted execution of the new guards remains required.
-The standalone counter pins `7151197c`; both checkout and pinned modes pass smoke
-and blocked-publication pressure checks. Its managed admission limits do not
-bound the separate HTTP server's connections, queues or threads.
+The retained 30-minute local TLS workload at `1dac862b` used previously qualified,
+unchanged compiled inputs and recorded 180,152 operations. It acknowledged 26,531
+writes, completed 6,632 reads and retained 117 uncertain writes. Independent
+history replay selected one uncertain write, and cold recovery preserved 26,532
+increments; the next write reached 26,533. An actual leader `SIGKILL` demonstrated
+majority progress before the victim restarted. The run preserves raw outcomes,
+latency distributions and sparse process-resource observations. It is one local
+host, not sustained multi-host qualification or a whole-host memory bound.
 
-At integration, [Weekly at `0160bf63`](https://github.com/zsumz/rafter/actions/runs/38276509325)
-has passed its counter, test, Maelstrom and simulator producers; TLA+ and the final
-aggregate remain pending. Independent raw readbacks verify 115 exact test
-executions, 18 successful Maelstrom process receipts, 77 simulator detector tests,
-14 exhausted bounded simulator models and 18 seeded soaks. The simulator uses the
-reviewed Nightly bounds; this is not qualification of a larger-memory deep Weekly
-profile. Completed producers do not substitute for the Weekly aggregate.
+The `b2847c07` Linux run adds a source-bound 60-second concurrent TLS history with
+7,826 operations and an independently replayed 2,013-step witness. The separate
+[durable performance baseline](../bench-compare/METHODOLOGY.md#local-release-readiness-baseline)
+at `0eb06666` retains 40 isolated timing samples comparing checkpoint replacement
+with the optional journal on local APFS. Neither result establishes peak service
+throughput, a latency ceiling or superiority over other libraries. The teaching
+HTTP ingress has no whole-server connection/thread bound, and that application
+does not schedule periodic compaction; owner admission budgets alone do not
+close those deployment limits.
 
-The original `66bf4f43` archive process run remains a failed receipt. Its readiness
-test killed a follower during application-journal publication, then required plain
-recovery despite a legitimate complete unsealed frame. The unchanged test
-reproduced that refusal. The correction isolates readiness from that crash window
-and requires a successful process exit and `STOPPED` marker before handoff.
-Strict journal repair policy and dedicated abrupt-crash cases remain intact.
+Native receipts record OS, compiler, filesystem and mount options. The completed
+Linux jobs use Ubuntu 24.04/x86-64 with ext4 root mounts reporting `nobarrier` and
+`data=writeback`; private loop/ext4 fault volumes have separate receipts. Passing
+process-loss tests on these mounts supplies no physical-power-loss guarantee.
+Local observations use APFS. The [platform matrix](platform-qualification.md)
+keeps executed coverage separate from support commitments.
 
-The [manual candidate archive profile](reference-consumers.md#manual-candidate-archive-qualification)
-makes Linux process/MSRV/upgrade and advisory qualification available before
-merge. Its separate concurrency group preserves full Nightly runs. It does not
-replace the authenticated invariant aggregate or owner soak.
+The directory fixes close a demonstrated missing synchronization obligation.
+The reference helper creates one directory, synchronizes its parent, then creates
+the next child. Retry first synchronizes the nearest existing ancestor's parent,
+covering residue from its own failed attempt. Its negative control rejects plain
+`create_dir_all`. Externally supplied ancestors must already be durable. The
+counter's staged Raft activation already synchronized its new directory and
+parent at explicit crash boundaries; those boundaries are preserved. The
+[storage protocol](../crates/rafter-storage/DURABILITY_PROTOCOL.md#directory-provisioning)
+still defines the caller's provisioning obligations. This is not physical
+power-loss qualification of arbitrary application databases.
 
-The [Linux I/O qualification](io-stall-qualification.md) uses private loop/ext4
-filesystems with verified cleanup. At `78382a8d`, both whole-cluster stall cases
-hold I/O for about 53 seconds, retain one live write/eight bytes through nine
-uncertain timeouts, resume progress and preserve acknowledged state through cold
-recovery. One case also verifies three actual `SIGKILL` exits while I/O is held.
-Published pending-write metrics can remain stale at zero while the owner is
-blocked; live admission credits expose the retained charge. All credits drain.
-The isolated-leader case holds only node 1's filesystem for about eight seconds:
-node 3 becomes leader in term 2 and acknowledges value 106 before resume. All
-replicas converge; value 107 survives cold recovery and the next write reaches
-108. These are single-host kernel I/O stalls and process loss with the kernel and
-page cache present; they do not establish physical power-loss safety.
+## Remaining release priorities
 
-The snapshot-store process-loss matrix covers nine existing publication/cleanup
-boundaries through streamed source publication and received-transfer promotion,
-with and without an old snapshot. All 36 cases require actual `SIGKILL`, copy
-inputs before strict reopen, validate old/new selection and payloads, and publish
-again afterward. The dedicated Linux job and exact CI/local selections are
-recorded in [I/O qualification](io-stall-qualification.md#snapshot-publication-process-loss).
-Application-database publication and physical power loss remain separate work.
+1. Finish the existing `b2847c07` PR/Nightly producers and authenticated aggregates,
+   and the `d439da22` archive run. Verify their retained evidence before integrating
+   the six reference follow-ups, then qualify the final candidate. Keep results
+   attached to their actual source rather than adding overlapping test counts.
+2. Obtain maintainer architecture approval and reconcile the still-open,
+   overlapping [PR #13](https://github.com/zsumz/rafter/pull/13). A local gate-input
+   refresh, draft PR or passed code check does not satisfy that approval.
+3. Set the supported integration contract before promising stability: the durable
+   feature is opt-in, membership execution/committed-change tracking and general
+   peer policy remain embedding responsibilities, and applications own atomic
+   snapshot publication. The [completion map](work-completion.md) records these
+   boundaries; the implementation work above should not be relisted as absent.
+4. Qualify sustained multi-host TLS load, deployment-wide memory/latency bounds
+   and the intended storage stack's power-loss behavior. Host access and the target
+   environment remain unspecified. Preserve uncertain outcomes and recovery
+   witnesses, and keep optional diagnostics out of timing comparisons.
+5. Select OS/filesystem support commitments and dependency-license policy.
+   Resolve remaining benchmark comparator dependency findings separately from
+   the audited public graph. Refresh the final archive/advisory evidence before
+   any coordinated release candidate; do not infer support from compilation.
 
-A deterministic regression exposed a directory-provisioning omission: opening a
-standalone snapshot store beneath three missing directory levels scheduled only
-the final parent for synchronization. The fix synchronizes every new directory's
-parent. Existing-directory and failed-initial-open provisioning requirements are
-explicit in the [durability protocol](../crates/rafter-storage/DURABILITY_PROTOCOL.md#directory-provisioning).
-The regression checks the actual synchronization batch; it does not reproduce a
-physical power-loss failure. The fix at `79f9a902` passes 321 local storage tests,
-30 guards, strict lint/docs, the 36-case process matrix and the Linux runs above.
-
-The TLS handshake investigation reproduced an inner-I/O deadline gap: a 300 ms
-deadline allowed one encrypted record to trickle for 2.39 seconds before returning
-plaintext. The public transport retained a connection beyond one second with a
-500 ms handshake budget. Wrapping Rustls' underlying ciphertext I/O with the
-existing deadline socket bounds every inner read and write; the isolated
-correction cuts the same read off at 301 ms and releases the public transport
-slot on time. The final regression fails against the original deadline code and
-passes the fix. All 160 local transport tests, 33 guards, strict lint/docs and
-both Linux handshake cases pass. The regression uses valid mutual TLS and a
-valid Rafter client hello, and joins both workers before reporting failure.
-
-Stable-release qualification remains open. In priority order:
-
-1. Freeze the follow-up integration and run its complete hosted Linux qualification,
-   including the new source-preservation guards, archive/process profiles and
-   authenticated invariant aggregate. Preserve `7151197c` and the individually
-   qualified follow-ups as source-specific evidence. Obtain the
-   repository's architecture review and reconcile the overlapping PR #13.
-2. Set the supported integration scope explicitly. Automatic membership-plan
-   execution, committed-change tracking, general peer policy and retirement-history
-   recovery remain embedding work; bounded proposal admission is already available.
-3. Extend process-loss and Linux I/O-stall cases to physical power-loss publication,
-   sustained multi-host TLS workloads and whole-host memory/latency bounds. Keep
-   optional diagnostics disabled for timing comparisons.
-4. Decide OS/filesystem support commitments from the
-   [platform qualification matrix](platform-qualification.md), and record license
-   policy. Resolve remaining benchmark comparator dependency findings separately
-   from the already-audited public graph.
-
-The sections below retain the initial assessment and subsequent qualification
-history. Their test counts and hosted results belong to the stated checkpoints;
-they are not a combined full-candidate result.
+The sections below retain the initial assessment and implementation history.
+Their counts, pending states and proposed sequences belong to their named
+checkpoints; the current status and remaining priorities are above. No change has
+been merged into `main`, tagged or published as a release during this work.
 
 ## Initial build and qualification
 
@@ -1428,17 +1397,3 @@ three workloads on Rust 1.88 (22,256 proposals). Comparator versions, Rafter
 library source, and the root workspace lock are unchanged. This closes one
 benchmark dependency finding; it does not supply a clean benchmark audit or a
 new performance comparison.
-
-## Suggested sequence
-
-1. Finish hosted evidence for the repaired CI and reconcile PR #13 with the
-   qualified guide/counter port on this release branch.
-2. Establish the API/format/upgrade contract and implement the durable service
-   composition against independent consumers. Decide snapshot API scope here.
-3. Run the full Linux candidate qualification and realistic operational soak
-   against one exact archive set. Produce a coordinated prerelease candidate
-   only after its evidence and compatibility matrix are complete.
-
-This assessment is a build-and-readiness review, not an exhaustive independent
-proof of the Raft implementation. No branch was merged, version changed,
-package published, or hosted check bypassed during this work.
