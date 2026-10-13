@@ -2,23 +2,23 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "6f6d91bb32b30ab36a462b1cdb8051fde2410c82803a84a81fb3804af18a911b"
+contract_sha256 = "b0a0ba361dc9c01887fc911f175531e80a0b3bafc64fcd8038c32f7e09a3b100"
 
 [analysis]
-inventory_sha256 = "4bd9b29a147c69add8a78cb9e8878b7887348f0d96ff581128939baca14724f5"
+inventory_sha256 = "d3695c92b00109b1259f7065c826d70a13d9e4651bbf4db398f43b7db11725ac"
 exclusions_sha256 = "938ddad6868e3a6a928a0720de503d2c6745c1ed05522321fd81e0d2a9f4c6ca"
 cargo_lock_sha256 = "aebbcd6c51e01fb77b97c69e2304f3ad34c66cdf6f3b2cc4e0fdc89829a9581f"
 cargo_features_sha256 = "47c0921024bfff9f3940814f4bb24aefa991504628f7da720988c1c30e253694"
 feature_worlds_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 feature_worlds = 0
 packages = 16
-targets = 165
-physical_rust_files = 2171
-base_source_contexts = 3704
+targets = 167
+physical_rust_files = 2173
+base_source_contexts = 3706
 derived_source_contexts = 0
-source_facts = 823575
-projection_queries = 3167206
-projected_facts = 2538
+source_facts = 824346
+projection_queries = 3168025
+projected_facts = 2567
 unresolved_bindings = 0
 analyzer_semantics = 6
 
@@ -28,7 +28,7 @@ sha256 = "9259ae9e9f531ebd96eb0f449385e3dd80c795aef987588b244eb06b2bb5bb0e"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "8dd31e3f9afe86e107a7f9c8158f0c04dbc1e52713e560234ac8e8a0e0c0c4c1"
+sha256 = "49ac86ab52eed4327a63486794118ea69b48e2ba6d879c048d4211530426b86a"
 
 [[package]]
 name = "rafter"
@@ -1276,6 +1276,10 @@ path = "scripts/archive_dependencies.py"
 sha256 = "061c7fb3d9763c7e193624e0fcc0597ef990919d5c32f8b95b5e7999c1259a77"
 
 [[gate.input]]
+path = "scripts/archive_retention.py"
+sha256 = "f32af7fe70ff2bad7a646f07ba05d9a8ddb5d8cda3c15b6b7054ace0217b49f0"
+
+[[gate.input]]
 path = "scripts/audit-published-dependencies"
 sha256 = "606d7bfd9710396ec7ce09dd6551f656eb5b011e5bb6ca88e9ecb31022e28b51"
 
@@ -1313,7 +1317,7 @@ sha256 = "ea1d4ab30bc5ec891f9ef9ddaebbb363a0cc781749e1e7796eaab2aabe7c5476"
 
 [[gate.input]]
 path = "scripts/reference-package-check"
-sha256 = "75269f6de71d8ec2ea3a069bea033886d8f4392e4ad877f693beed6755f68a8c"
+sha256 = "772867adcfa226f7a8f6f2458b4d9d4b018531faec856e1b602668ea923cc7c9"
 
 [[gate.input]]
 path = "scripts/reference-source-check"
@@ -1329,7 +1333,7 @@ sha256 = "e82fc776949cd198e04885c066a33565fb1182f0e20b2aeac133b88175ea28e3"
 
 [[gate.input]]
 path = "scripts/tests/test_archive_dependencies.py"
-sha256 = "ef11594cf8be27db8ef338d23fb7beb17e3f1abe4eec1e5661bd5a3a7a6ce711"
+sha256 = "e98367ab9442f4d57b4e77de49923d3ce6c2b414a0ca14d03d69c0ce50e09dd1"
 
 [[gate.input]]
 path = "scripts/tests/test_invariant_runtime_setup.py"
@@ -1380,12 +1384,12 @@ inputs_sha256 = "63d6d174b5eaa0e0bf722727d36823c30620a4d7c7b884df24f43f65ff4f945
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "c5843df1e869cab9328f086c8b9ff856bbbcb72aef2850f02cfeefe628b025fd"
+inputs_sha256 = "08b1da5e398206e672aef12f774e43ea3c4750e23741725b7e9935a56e3f9e53"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "1bf12b35b0abb6b3a84d294e7733c564739f50d31b2b56a8c9532422e61e212c"
+inputs_sha256 = "9477ff625baac2578091ccd45a7cdd8887a9e06e8011d7f01ec419d05bf41abc"
 
 [[macro_source]]
 allowance = "clap::Parser"
@@ -1613,7 +1617,7 @@ value = 434
 [[ratchet]]
 rule = "rust.file-size"
 target = "crates/rafter-multiraft/tests/audit_adversarial.rs"
-value = 623
+value = 610
 
 [[ratchet]]
 rule = "rust.file-size"
