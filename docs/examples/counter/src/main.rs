@@ -7,6 +7,7 @@ mod http;
 mod owner;
 mod peers;
 mod policy;
+mod snapshots;
 
 use counter::Counter;
 use rafter::{NodeConfig, NodeId};
@@ -124,6 +125,7 @@ fn run(id: u64) -> Result<()> {
         15 + id * 5,
     )?
     .with_heartbeat_interval_ticks(3);
+    let mut snapshots = snapshots::Snapshots::new(&directory)?;
     let (transport, validator) = peers::open(id, &directory)?;
     let mut driver = owner::recover(
         config,
@@ -179,6 +181,7 @@ fn run(id: u64) -> Result<()> {
         &stop,
         &ready,
         &connections,
+        &mut snapshots,
     );
     ready.store(false, Ordering::Release);
     stop.store(true, Ordering::Release);

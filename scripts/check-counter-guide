@@ -23,6 +23,7 @@ FILES = {
     "Cargo.toml", "rust-toolchain.toml", ".gitignore", "certs.sh",
     "src/main.rs", "src/counter.rs", "src/peers.rs", "src/http.rs",
     "src/disk.rs", "src/checkpoint.rs", "src/application.rs", "src/owner.rs", "src/policy.rs",
+    "src/snapshots.rs",
 }
 BLOCK = re.compile(r"(<!-- counter-file: ([^\n]+) -->\n```[^\n]*\n)(.*?)(^```)",
                    re.MULTILINE | re.DOTALL)
@@ -88,6 +89,7 @@ def main():
             destination.write_text(match[3])
         shutil.copyfile(PROJECT / "Cargo.lock", copied / "Cargo.lock")
         shutil.copyfile(PROJECT / "smoke.py", copied / "smoke.py")
+        shutil.copyfile(PROJECT / "compaction.py", copied / "compaction.py")
         shutil.copyfile(PROJECT / "pressure.py", copied / "pressure.py")
         shutil.copyfile(PROJECT / "load.py", copied / "load.py")
         shutil.copyfile(PROJECT / "test_load.py", copied / "test_load.py")
@@ -130,6 +132,8 @@ def main():
              str(target / "debug/rafter-counter")],
         ]
         if not args.pressure:
+            commands.append([sys.executable, "compaction.py",
+                             str(target / "debug/rafter-counter")])
             commands.append([sys.executable, "smoke.py",
                              str(target / "debug/rafter-counter"), "--explicit-peers"])
         if artifacts is not None:
