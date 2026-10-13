@@ -20,7 +20,7 @@ class RuntimeSetupTests(unittest.TestCase):
                           "Dir::Etc::sourceparts=-",
                           f"Dir::State::lists={fixture.state}/lists",
                           f"Dir::Cache::archives={fixture.state}/archives",
-                          "Acquire::Retries=3"]:
+                          "Acquire::Retries=3", "Acquire::Languages=none"]:
                 self.assertIn(value, args)
                 self.assertEqual(args[args.index(value) - 1], "-o")
             for forbidden in ["--ignore-missing", "--fix-missing", "--allow-unauthenticated",
@@ -127,11 +127,24 @@ class RuntimeSetupTests(unittest.TestCase):
             self.assert_pins_and_source(fixture)
             self.assertEqual(len(fixture.calls("dpkg-query")), 11)
 
+    def test_every_caller_reserves_time_for_setup_cleanup(self):
+        callers = 0
+        for name in ["ci", "nightly", "weekly"]:
+            workflow = (ROOT / f".github/workflows/{name}.yml").read_text()
+            blocks = re.findall(r"uses: \./\.github/actions/setup-invariant-runtime\n(.*?)(?=\n      - |\Z)",
+                                workflow, re.DOTALL)
+            callers += len(blocks)
+            for block in blocks:
+                timeout = re.search(r"timeout-minutes: (\d+)", block)
+                self.assertIsNotNone(timeout, name)
+                self.assertGreaterEqual(int(timeout.group(1)), 17, name)
+        self.assertEqual(callers, 16)
+
     def test_action_and_local_and_ci_gates_enforce_the_helper(self):
         action = (ROOT / ".github/actions/setup-invariant-runtime/action.yml").read_text()
         invoke = 'bash "$GITHUB_ACTION_PATH/install-packages.sh" "$state" "${packages[@]}"'
         self.assertEqual(action.count(invoke), 1)
-        self.assertIn("timeout --signal=TERM --kill-after=10s 8m", action)
+        self.assertIn("timeout --signal=TERM --kill-after=10s 15m", action)
         self.assertLess(action.index(invoke), action.index("sha256sum"))
         self.assertIn("Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg", action)
         self.assertIn("snapshot=20261009T000000Z", action)

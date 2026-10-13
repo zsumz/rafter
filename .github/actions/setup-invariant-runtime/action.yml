@@ -58,9 +58,11 @@ runs:
             gnuplot-data=6.0.0+dfsg1-1ubuntu3
           )
         fi
-        # Bound all attempts and installation, including child processes. A
+        # Bound all attempts and installation, including child processes. The caller reserves two more minutes for
+        # termination and digest reporting; matching eight-minute inner/outer
+        # deadlines previously killed successful installations before completion. A
         # cancelled/failed setup must never reach evidence production.
-        timeout --signal=TERM --kill-after=10s 8m \
+        timeout --signal=TERM --kill-after=10s 15m \
           bash "$GITHUB_ACTION_PATH/install-packages.sh" "$state" "${packages[@]}"
         sha256sum /usr/bin/bash /usr/bin/perl /usr/bin/ps /usr/bin/time
         if [[ "$ANALYSIS_TOOLS" = true ]]; then

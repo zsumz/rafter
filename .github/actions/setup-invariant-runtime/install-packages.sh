@@ -30,6 +30,7 @@ apt_options=(
   -o "Dir::State::lists=$state/lists"
   -o "Dir::Cache::archives=$state/archives"
   -o Acquire::Retries=3
+  -o Acquire::Languages=none
 )
 install_options=(
   install -y --no-install-recommends --no-remove --allow-downgrades --reinstall

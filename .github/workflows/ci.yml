@@ -414,7 +414,7 @@ jobs:
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
       - uses: ./.github/actions/setup-invariant-runtime
-        timeout-minutes: 8
+        timeout-minutes: 17
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -541,7 +541,7 @@ jobs:
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
       - uses: ./.github/actions/setup-invariant-runtime
-        timeout-minutes: 8
+        timeout-minutes: 17
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -605,7 +605,7 @@ jobs:
       - name: Stage source-bound TLA+ tool
         run: install -D -m 0444 "$TLA2TOOLS_JAR" tools/cache/tla2tools.jar
       - uses: ./.github/actions/setup-invariant-runtime
-        timeout-minutes: 8
+        timeout-minutes: 17
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -682,7 +682,7 @@ jobs:
       - name: Stage source-bound TLA+ tool
         run: install -D -m 0444 "$TLA2TOOLS_JAR" tools/cache/tla2tools.jar
       - uses: ./.github/actions/setup-invariant-runtime
-        timeout-minutes: 8
+        timeout-minutes: 17
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
@@ -717,7 +717,7 @@ jobs:
       - uses: ./.github/actions/configure-invariant-cargo
       - uses: ./.github/actions/setup-rust
       - uses: ./.github/actions/setup-invariant-runtime
-        timeout-minutes: 8
+        timeout-minutes: 17
         with:
           analysis-tools: "true"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
@@ -766,7 +766,7 @@ jobs:
     # Preserve failure reports, but let canceled runs release the CI queue.
     if: always() && !cancelled()
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 130
     env:
       INVARIANT_EVIDENCE_DIR: rafter-invariants-pr-evidence-${{ github.run_id }}-${{ github.run_attempt }}
       INVARIANT_REPORT_DIR: rafter-invariants-pr-${{ github.run_id }}-${{ github.run_attempt }}
@@ -789,7 +789,7 @@ jobs:
           architecture: x64
           check-latest: false
       - uses: ./.github/actions/setup-invariant-runtime
-        timeout-minutes: 8
+        timeout-minutes: 17
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         timeout-minutes: 8
         with:
