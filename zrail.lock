@@ -1305,7 +1305,7 @@ sha256 = "3dbd02f4f2dcfc9576c0a0a345664ec253684c0d84c092ce9ac81297047deecd"
 
 [[gate.input]]
 path = "scripts/reference-ledger-publication"
-sha256 = "8cdd2760501bae8e74f1a8d185d6ec77858425a0b7dcc665c2976031127e147d"
+sha256 = "52c03a43433a9a6797949072662d7136974300f1798e97dfb8d05ba9e51475c1"
 
 [[gate.input]]
 path = "scripts/reference-owner-soak"

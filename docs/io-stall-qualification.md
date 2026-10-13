@@ -270,7 +270,9 @@ or an entire Raft node's recovery across all stores.
 ## Ledger application publication process loss
 
 The separate `ledger-publication` job tests the reference ledger's application
-journal. Its one exactly selected, ignored Unix test contains 13 cases: three
+journal. It first selects exactly six directory-provisioning regressions against
+the neutral reference helper, covering parent synchronization, failed-sync retry,
+existing state, invalid components, a creation race and relative paths. Its one exactly selected, ignored Unix test contains 13 cases: three
 journal-creation boundaries, four append/seal boundaries, and three replacement
 boundaries each for snapshot-state replacement and in-place compaction. Pause
 hooks exist only in the library test binary. Every case requires a child to reach

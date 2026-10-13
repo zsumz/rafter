@@ -31,6 +31,10 @@ git -C "$repo_root" rev-parse HEAD
 rustc --version --verbose
 cargo --version
 cd "${repo_root}/reference"
+# Exercise native directory synchronization on the same host as publication.
+"${repo_root}/scripts/cargo-test-exact" 6 durable_directory:: \
+    "${list_only[@]+"${list_only[@]}"}" "${patch[@]}" \
+    -p rafter-reference-harness --lib -- --test-threads=1 --nocapture
 "${repo_root}/scripts/cargo-test-exact" 1 - \
     "${list_only[@]+"${list_only[@]}"}" "${patch[@]}" \
     -p rafter-reference-ledger --lib -- --ignored --exact \
