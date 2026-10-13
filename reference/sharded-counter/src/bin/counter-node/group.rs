@@ -2,7 +2,7 @@
 
 use std::{
     error::Error,
-    fmt, fs,
+    fmt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -117,11 +117,12 @@ impl SharedGroup {
         let raft_dir = group_dir.join("raft");
         let app_dir = group_dir.join("app");
         for directory in [group_dir, raft_dir.as_path(), app_dir.as_path()] {
-            fs::create_dir_all(directory).map_err(|source| OpenError::Io {
-                operation: "create group directory",
-                path: directory.to_path_buf(),
-                source,
-            })?;
+            rafter_reference_harness::durable_directory::create_durable_directory(directory)
+                .map_err(|source| OpenError::Io {
+                    operation: "durably create group directory",
+                    path: directory.to_path_buf(),
+                    source,
+                })?;
         }
         let stores = FileRaftNodeStores::open(&raft_dir)
             .map_err(|error| OpenError::RaftStore(error.to_string()))?;

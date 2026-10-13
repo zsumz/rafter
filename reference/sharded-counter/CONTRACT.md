@@ -1598,6 +1598,16 @@ fairness claim belongs to the deterministic profiles below. Every host binds
 ephemeral loopback ports and publishes its peer address under its own durable
 directory. No test picks a port.
 
+Host, group-container, slot and application directories use the shared reference
+directory helper before their durable files open. Registry publication uses it
+for its parent too. Each new entry is synchronized in its parent before another
+child is created; a failure stops the operation. Retry first synchronizes the
+nearest existing ancestor's parent, covering a prior failed attempt's residue.
+Externally supplied ancestors must already be durable, and the filesystem must
+support directory synchronization. Existing files and ownership locks retain
+their separate recovery and exclusion rules. The staged Raft activation protocol
+below already synchronizes its new directory and parent at explicit boundaries.
+
 Each group owns `FileRaftNodeStores` and one checksummed application record.
 The application record atomically publishes the applied index, counter value,
 session epochs, completed-request cache, exact outstanding client operations

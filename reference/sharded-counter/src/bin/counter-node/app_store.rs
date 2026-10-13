@@ -331,7 +331,8 @@ impl ApplicationRecord {
         max_sessions: usize,
         quota: WorkQuota,
     ) -> Result<(Self, DurableCounterStateMachine), StoreError> {
-        fs::create_dir_all(app_dir).map_err(|source| io_error("create", app_dir, source))?;
+        rafter_reference_harness::durable_directory::create_durable_directory(app_dir)
+            .map_err(|source| io_error("durably create", app_dir, source))?;
         let path = app_dir.join("state.rcap");
         if path.exists() {
             return Err(StoreError::AlreadyExists { path });
@@ -1301,7 +1302,7 @@ mod tests {
     fn terminal_poison_failure_survives_retirement_and_clears_on_reopen() {
         let scratch = ScratchSpace::create("counter-app-store", "terminal-poison")
             .expect("scratch directory is created");
-        let app_dir = scratch.path().join("app");
+        let app_dir = scratch.path().join("host/groups/1/app");
         let quota = WorkQuota::new(4).expect("test quota is nonzero");
         let (record, state_machine) =
             ApplicationRecord::bootstrap(&app_dir, 8, quota).expect("record bootstraps");
