@@ -346,6 +346,9 @@ jobs:
       - invariants-maelstrom
     # Preserve failure reports, but let canceled runs release the CI queue.
     if: always() && !cancelled()
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 130
     env:
@@ -380,33 +383,59 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      # Each download receives exactly one validated ID. Flatten that archive
+      # to preserve receipt paths; no wildcard or multi-artifact merge is used.
+      - name: Select current-run producer evidence
+        id: evidence
+        if: always()
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INVARIANT_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/invariant_evidence.py --profile weekly
       - name: Download available weekly test evidence
+        if: always() && steps.evidence.outputs.tests != ''
         timeout-minutes: 2
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: invariants-weekly-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          merge-multiple: true
+          artifact-ids: ${{ steps.evidence.outputs.tests }}
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tests
       - name: Download available weekly simulator evidence
+        if: always() && steps.evidence.outputs.simulator != ''
         timeout-minutes: 2
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: invariants-weekly-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
+          merge-multiple: true
+          artifact-ids: ${{ steps.evidence.outputs.simulator }}
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/simulator
       - name: Download available weekly TLA+ evidence
+        if: always() && steps.evidence.outputs.tla != ''
         timeout-minutes: 2
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: invariants-weekly-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          merge-multiple: true
+          artifact-ids: ${{ steps.evidence.outputs.tla }}
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tla
       - name: Download available weekly Maelstrom evidence
+        if: always() && steps.evidence.outputs.maelstrom != ''
         timeout-minutes: 2
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: invariants-weekly-evidence-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
+          merge-multiple: true
+          artifact-ids: ${{ steps.evidence.outputs.maelstrom }}
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/maelstrom
       - name: Stage current-run weekly evidence artifacts
         timeout-minutes: 2
@@ -591,6 +620,7 @@ jobs:
         if: always()
         timeout-minutes: 1
         env:
+          EVIDENCE_SELECTION: ${{ steps.evidence.outcome }}
           AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
           REPORT_READY: ${{ steps.report.outputs.complete }}
           VERIFIER_SEAL_RESULT: ${{ steps.verifier_archive.outcome }}
@@ -601,6 +631,7 @@ jobs:
           TLA_RESULT: ${{ needs.invariants-tla.result }}
           MAELSTROM_RESULT: ${{ needs.invariants-maelstrom.result }}
         run: |
+          test "$EVIDENCE_SELECTION" = "success"
           test "$TESTS_RESULT" = "success"
           test "$SIMULATOR_RESULT" = "success"
           test "$TLA_RESULT" = "success"

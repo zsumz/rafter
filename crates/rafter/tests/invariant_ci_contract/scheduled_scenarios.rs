@@ -56,7 +56,6 @@ fn scheduled_invariant_evidence_is_isolated_by_run_attempt() {
         }
 
         let aggregate = job_block(&source, aggregate_job);
-        assert!(!aggregate.contains("merge-multiple:"));
         assert!(!aggregate.contains(&format!("pattern: invariants-{profile}-evidence-")));
         let mut download_paths = Vec::new();
         for layer in SCHEDULED_LAYERS {
@@ -69,7 +68,7 @@ fn scheduled_invariant_evidence_is_isolated_by_run_attempt() {
             );
             assert!(download.contains("continue-on-error: true"));
             assert!(download.contains(&format!(
-                "name: invariants-{profile}-evidence-{layer}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}"
+                "artifact-ids: ${{{{ steps.evidence.outputs.{layer} }}}}"
             )));
             let expected_path =
                 format!("${{{{ runner.temp }}}}/${{{{ env.INVARIANT_EVIDENCE_DIR }}}}/{layer}");

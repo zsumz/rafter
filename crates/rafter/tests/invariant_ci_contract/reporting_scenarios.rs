@@ -198,6 +198,7 @@ fn assert_gate_rejects_failed_evidence(
         gate_step,
         root,
         &fixture.environment(&[
+            ("EVIDENCE_SELECTION", "success"),
             ("AGGREGATE_STATUS", "0"),
             ("REPORT_READY", "true"),
             ("TESTS_RESULT", "success"),
@@ -216,6 +217,7 @@ fn assert_gate_rejects_failed_evidence(
         gate_step,
         root,
         &fixture.environment(&[
+            ("EVIDENCE_SELECTION", "success"),
             ("AGGREGATE_STATUS", "0"),
             ("REPORT_READY", "false"),
             ("TESTS_RESULT", "success"),

@@ -84,6 +84,9 @@ multiplexed peer connection.
 
 ## Verification lanes
 
+See [invariant CI retries](invariant-ci-retries.md) for bounded runtime setup,
+producer-attempt selection, and the limits of reusing same-run evidence.
+
 | Tier | Stable jobs and commands | Claim |
 | --- | --- | --- |
 | Every pull request | CI `lint`, `current-stable`, `public-api`, `dependency-audit`, `test`, `reference-source`, `reference-package`, `reference-package-msrv`, `counter-reference-fast`, and `invariants-pr` | Workspace quality; current-stable workspace and optional durable builds; published source API comparisons; public dependency advisories across all features and a separate complete-workspace audit; source and exact-package deterministic consumers; process and owner-soak inventory membership; published-shape Rust 1.88; fast scheduler profile; deterministic 44-invariant aggregate |

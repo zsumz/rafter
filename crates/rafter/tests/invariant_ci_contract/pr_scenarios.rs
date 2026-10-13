@@ -206,7 +206,6 @@ fn pr_invariant_evidence_is_isolated_by_run_attempt() {
 
     let aggregate = job_block(&source, "invariants-pr");
     assert!(aggregate.contains("if: always()"));
-    assert!(!aggregate.contains("merge-multiple:"));
     assert!(!aggregate.contains("pattern: invariants-pr-evidence-"));
     let mut download_paths = Vec::new();
     for producer in &PR_EVIDENCE_PRODUCERS {
@@ -216,7 +215,7 @@ fn pr_invariant_evidence_is_isolated_by_run_attempt() {
             download.contains("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093")
         );
         assert!(download.contains(&format!(
-            "name: invariants-pr-evidence-{}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}",
+            "artifact-ids: ${{{{ steps.evidence.outputs.{} }}}}",
             producer.layer
         )));
         let expected_path = format!(

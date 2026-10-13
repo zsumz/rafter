@@ -107,7 +107,7 @@ tools = ["python3"]
 
 [tasks.runtime-setup-tests]
 description = "Exercise bounded runtime retrieval, cached installation, and fail-closed setup."
-run = ["python3", "-m", "unittest", "scripts/tests/test_invariant_runtime_setup.py"]
+run = ["python3", "-m", "unittest", "scripts/tests/test_invariant_runtime_setup.py", "scripts/tests/test_invariant_evidence.py"]
 tools = ["python3"]
 
 [tasks.io-stall-tests]

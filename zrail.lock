@@ -2,7 +2,7 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "b0a0ba361dc9c01887fc911f175531e80a0b3bafc64fcd8038c32f7e09a3b100"
+contract_sha256 = "b3447b3d7c2f072feff59c20e7b77856bdb09e0a4f089e7c35ddd83a1d577c2a"
 
 [analysis]
 inventory_sha256 = "d3695c92b00109b1259f7065c826d70a13d9e4651bbf4db398f43b7db11725ac"
@@ -16,7 +16,7 @@ targets = 167
 physical_rust_files = 2173
 base_source_contexts = 3706
 derived_source_contexts = 0
-source_facts = 824346
+source_facts = 824332
 projection_queries = 3168025
 projected_facts = 2567
 unresolved_bindings = 0
@@ -28,7 +28,7 @@ sha256 = "9259ae9e9f531ebd96eb0f449385e3dd80c795aef987588b244eb06b2bb5bb0e"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "49ac86ab52eed4327a63486794118ea69b48e2ba6d879c048d4211530426b86a"
+sha256 = "98d876435eedc71c6809b0ae21c8d83c438b6efdf1d1f8d693c7e43954537b12"
 
 [[package]]
 name = "rafter"
@@ -1245,7 +1245,7 @@ requirement = "0.10.9"
 [[gate]]
 name = "ci"
 path = ".github/workflows/ci.yml"
-sha256 = "57603b40d81898c00cf988bc5ee8cb8d1df7de70d92b797462177f151b59693e"
+sha256 = "e136458d200bf176e9af8134328ee979ccda1510cc9c8d3487b98f1543967d3c"
 
 [[gate.input]]
 path = ".github/actions/configure-invariant-cargo/action.yml"
@@ -1253,11 +1253,11 @@ sha256 = "d0bd42b67da87cd2aafabb4df2c3dc9a26bad783968911c44dc73b3aa7931559"
 
 [[gate.input]]
 path = ".github/actions/setup-invariant-runtime/action.yml"
-sha256 = "e816816d622c3bab74e3dbc1115530ac208a7264aa819795556c66d9819b676d"
+sha256 = "970158455feb933efab1b76d73f47c1c9d7bc7ff05b25be1f81288bbb4075281"
 
 [[gate.input]]
 path = ".github/actions/setup-invariant-runtime/install-packages.sh"
-sha256 = "d92a9d14de5780c1cb4771a55f77a765f46a4fe14f8c2ab7191ddadde703a2a2"
+sha256 = "9160f089127c8032a34bcb578f275c187e2ad4444d29d46452c2d29aa92b5eba"
 
 [[gate.input]]
 path = ".github/actions/setup-rust/action.yml"
@@ -1269,7 +1269,7 @@ sha256 = "2506067790acdd0fddb705eaab52834df7caf5b65d4e4c0678230db7e9176985"
 
 [[gate.input]]
 path = ".github/workflows/nightly.yml"
-sha256 = "5a76a24d7672cffae51a78919273e0681947e7f13517cb725f7dbff733db8c1a"
+sha256 = "bce3747ba92a2f0e1edab281b833421f9223f4acfc4f977af34d5a75516503d3"
 
 [[gate.input]]
 path = "scripts/archive_dependencies.py"
@@ -1290,6 +1290,10 @@ sha256 = "b175525ade2c69293fc459124d2aa296651cc2249ad7ea2df5626c7f55a3d636"
 [[gate.input]]
 path = "scripts/check-public-api"
 sha256 = "b39f0399a94640bfece882f33842854bb025393174d6dc1fc8a682cc99e691c7"
+
+[[gate.input]]
+path = "scripts/invariant_evidence.py"
+sha256 = "0801a95322db583dfdb4d31722ed893c41cae62d6863b782270bbe753e819a55"
 
 [[gate.input]]
 path = "scripts/invariants-pr-preflight"
@@ -1336,8 +1340,12 @@ path = "scripts/tests/test_archive_dependencies.py"
 sha256 = "e98367ab9442f4d57b4e77de49923d3ce6c2b414a0ca14d03d69c0ce50e09dd1"
 
 [[gate.input]]
+path = "scripts/tests/test_invariant_evidence.py"
+sha256 = "b5ec516638e6fccd2a117965f4ca88c75c5b181d5b7a69698d3f9c51c962bd50"
+
+[[gate.input]]
 path = "scripts/tests/test_invariant_runtime_setup.py"
-sha256 = "30e199304ad5cddd4f832d8ae4467d2cad6325653cbe9532dcbab95eebf31b72"
+sha256 = "285b78c736be388190be7bad2425afe61ffb6786679f9a5c3c1812bed4646075"
 
 [[gate.input]]
 path = "scripts/tests/test_public_api_check.py"
@@ -1369,7 +1377,7 @@ sha256 = "629f298ce8e746c8a259c1213c7d51128d2dfde1eac6c5bece31928753b96e6d"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "df47b4da80a70e8c115eb26ae707f177a36c05eb6dfd267d1fc62d3c9b61fd45"
+sha256 = "3038605f197bef9faecf5597156f6b4be7ba19b6716dfdb7fabbb19b0c2891ff"
 
 [[gate]]
 name = "rustdoc"
@@ -1384,12 +1392,12 @@ inputs_sha256 = "63d6d174b5eaa0e0bf722727d36823c30620a4d7c7b884df24f43f65ff4f945
 [[macro_implementation]]
 package = "rafter-invariants"
 directory = "crates/rafter-invariants"
-inputs_sha256 = "0ebf215e62e4ef738c6adca79f3fad370c61f7217c6eab5886be56d0eb8086bd"
+inputs_sha256 = "91da4389ea6c435af1360db871be00dca34c5ce9b3f0762756ad641a2e9dad6e"
 
 [[macro_implementation]]
 package = "rafter-multiraft"
 directory = "crates/rafter-multiraft"
-inputs_sha256 = "9477ff625baac2578091ccd45a7cdd8887a9e06e8011d7f01ec419d05bf41abc"
+inputs_sha256 = "65b3e48d4d082534b03baaf63382319469cedcf4cf2e469ed6bdbd7e619a73ac"
 
 [[macro_source]]
 allowance = "clap::Parser"
