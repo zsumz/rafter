@@ -27,7 +27,8 @@ use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 /// deliberately resolves without removing, so an abandoned waiter still answers
 /// a late poll from a future its caller kept.
 ///
-/// Reclamation goes through [`DriverShared::reclaim`] rather than taking the
+/// Reclamation goes through
+/// [`DriverShared::reclaim`](super::shared::DriverShared::reclaim) rather than taking the
 /// driver's lock here, and that indirection is the whole point of it: a future
 /// may be dropped by code this driver is running under its own lock — an
 /// embedder's transport, state machine, or waker, or a

@@ -132,7 +132,7 @@ impl Node {
     /// A snapshot carries the committed configuration **at** its boundary and
     /// nothing about the configurations that committed and were superseded below
     /// it. This call therefore emits no
-    /// [`Output::ConfigurationCommitted`](super::Output::ConfigurationCommitted),
+    /// [`Output::ConfigurationCommitted`],
     /// and neither does installing a snapshot received from a leader: those
     /// outputs come from the commit index crossing a configuration *entry*, and
     /// compaction is what removes the entries. The same is true of a replica

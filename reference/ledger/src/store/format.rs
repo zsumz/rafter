@@ -29,8 +29,9 @@ pub(super) const SEALED_FRAME_MARK: u8 = BEGIN_MAGIC[0];
 /// every interrupted append leaves it behind. The converse does not hold, and
 /// assuming it was the defect this store was corrected for: a tail carrying
 /// this value may equally be a committed frame whose mark byte rotted to zero.
-/// Truncating needs [`TornTail::is_interrupted_append`], which asks a second
-/// question beside this byte, not this byte alone.
+/// Truncating needs
+/// [`TornTail::is_interrupted_append`](super::TornTail::is_interrupted_append),
+/// which asks a second question beside this byte, not this byte alone.
 ///
 /// It is zero because that is also what a filesystem leaves when a crash
 /// extended a file without persisting its data. The coincidence is convenient
@@ -39,7 +40,7 @@ pub(super) const SEALED_FRAME_MARK: u8 = BEGIN_MAGIC[0];
 /// retracts, because it made zeros landing over a *committed* frame read as
 /// residue too. What the value earns is a place in `verify_identity`'s first
 /// test. Everything past that is decided by `read_frame`'s ordering and by
-/// [`TornTail::is_truncatable_residue`].
+/// [`TornTail::is_truncatable_residue`](super::TornTail::is_truncatable_residue).
 pub(super) const UNSEALED_FRAME_MARK: u8 = 0x00;
 
 /// Version byte of every record this build writes.

@@ -1,7 +1,7 @@
 //! Election timeouts, pre-vote, binding votes, and leadership acquisition.
 //!
 //! This module owns campaign transitions and vote eligibility. Durable term
-//! and vote changes remain explicit in [`Node`](super::Node) state, while
+//! and vote changes remain explicit in [`Node`] state, while
 //! [`ElectionState`](super::state::ElectionState) owns only the local timer and
 //! grants collected during active rounds.
 
