@@ -307,6 +307,28 @@ in nothing else. Every ledger, session, and deduplication decision is the pure
 model's, and the applied-index, read-barrier, and snapshot-admission rules are
 shared code rather than two implementations that agree today.
 
+### Directory provisioning
+
+`LedgerStore::open` and the ledger node's startup paths durably provision their
+directories before opening application or Raft files. The shared reference helper
+creates one directory at a time and synchronizes its parent before creating the
+next child. A synchronization error stops opening; it cannot be followed by an
+application acknowledgement.
+
+An existing target or nearest existing ancestor has its parent synchronized too.
+That covers the one directory entry an earlier failed creation/synchronization
+attempt may have left behind. A retry persists that entry before creating any
+more children. The helper never removes directories or application files and
+does not replace the replica's separate ownership lock.
+
+Ancestors supplied by external code must already be durably provisioned. The
+helper cannot discover arbitrary unsynchronized directories created outside this
+ordered protocol. The host filesystem must support directory synchronization;
+this closes a missing synchronization obligation, not a physical power-loss
+qualification. The six helper regressions exercise actual directory topology,
+parent-sync failures and retry, existing state, a creation race, invalid
+components and relative paths.
+
 ### Transaction boundary
 
 One transaction carries the whole application state at one applied index. The

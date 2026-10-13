@@ -1,7 +1,7 @@
 [package]
 name = "rafter-reference-harness"
 version = "0.0.0"
-description = "Neutral test mechanisms shared by the Rafter reference workspace."
+description = "Neutral filesystem and test mechanisms for the Rafter reference workspace."
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

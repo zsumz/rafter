@@ -115,11 +115,13 @@ impl LedgerStore {
         faults: FaultPlan,
         on_unreadable: OnUnreadableFrame,
     ) -> Result<Self, LedgerStoreError> {
-        fs::create_dir_all(directory).map_err(|source| LedgerStoreError::Io {
-            operation: "create the ledger store directory",
-            path: directory.to_path_buf(),
-            source,
-        })?;
+        rafter_reference_harness::durable_directory::create_durable_directory(directory).map_err(
+            |source| LedgerStoreError::Io {
+                operation: "durably provision the ledger store directory",
+                path: directory.to_path_buf(),
+                source,
+            },
+        )?;
 
         let journal_path = directory.join(JOURNAL_FILE_NAME);
         // Before anything looks at the journal, so an interrupted creation's
