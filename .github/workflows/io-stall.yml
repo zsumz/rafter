@@ -4,6 +4,12 @@ on:
   push:
     paths:
       - '.github/workflows/io-stall.yml'
+      - 'scripts/reference-ledger-publication'
+      - 'scripts/reference-source-check'
+      - 'scripts/cargo-test-exact'
+      - 'reference/ledger/**'
+      - 'reference/harness/**'
+      - 'reference/Cargo.toml'
       - 'scripts/check-io-stall'
       - 'scripts/io_stall_*.py'
       - 'scripts/tests/*io_stall*.py'
@@ -20,6 +26,12 @@ on:
   pull_request:
     paths:
       - '.github/workflows/io-stall.yml'
+      - 'scripts/reference-ledger-publication'
+      - 'scripts/reference-source-check'
+      - 'scripts/cargo-test-exact'
+      - 'reference/ledger/**'
+      - 'reference/harness/**'
+      - 'reference/Cargo.toml'
       - 'scripts/check-io-stall'
       - 'scripts/io_stall_*.py'
       - 'scripts/tests/*io_stall*.py'
@@ -82,6 +94,49 @@ jobs:
         with:
           name: snapshot-process-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/snapshot-process-evidence
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+
+  ledger-publication:
+    # Process loss preserves the kernel/page cache; no block-device manipulation.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.88.0"
+      - name: Record source and compiler identity
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/ledger-publication-evidence"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD > "$RUNNER_TEMP/ledger-publication-evidence/source.txt"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/ledger-publication-evidence/source-before.sha256"
+          rustc --version --verbose > "$RUNNER_TEMP/ledger-publication-evidence/rustc.txt"
+          cargo --version > "$RUNNER_TEMP/ledger-publication-evidence/cargo.txt"
+          python3 scripts/record-storage-environment --output "$RUNNER_TEMP/ledger-publication-evidence/storage-environment.json"
+      - name: Kill ledger writers at every selected publication boundary
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/ledger-publication-target"
+          export RAFTER_LEDGER_PUBLICATION_ARTIFACTS="$RUNNER_TEMP/ledger-publication-evidence/cases"
+          scripts/reference-ledger-publication 2>&1 | tee "$RUNNER_TEMP/ledger-publication-evidence/process.log"
+      - name: Verify source preservation
+        if: always()
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          git ls-files -z | xargs -0 sha256sum > "$RUNNER_TEMP/ledger-publication-evidence/source-after.sha256"
+          cmp "$RUNNER_TEMP/ledger-publication-evidence/source-before.sha256" "$RUNNER_TEMP/ledger-publication-evidence/source-after.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ledger-publication-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ledger-publication-evidence
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 30

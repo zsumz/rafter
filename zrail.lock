@@ -2,7 +2,7 @@
 schema = 3
 semantics = 6
 producer = "0.0.3-rc.8"
-contract_sha256 = "3cc6d173e3ca2244df273d1fdca1e8b77a0cf76031a02e4dee7055c5d501f656"
+contract_sha256 = "6f6d91bb32b30ab36a462b1cdb8051fde2410c82803a84a81fb3804af18a911b"
 
 [analysis]
 inventory_sha256 = "4bd9b29a147c69add8a78cb9e8878b7887348f0d96ff581128939baca14724f5"
@@ -28,7 +28,7 @@ sha256 = "9259ae9e9f531ebd96eb0f449385e3dd80c795aef987588b244eb06b2bb5bb0e"
 
 [[analysis.contract_source]]
 path = "zrail.toml"
-sha256 = "1b76f1251ea589aeb13f23c44b69c7610e11313e23300152276429929239f168"
+sha256 = "8dd31e3f9afe86e107a7f9c8158f0c04dbc1e52713e560234ac8e8a0e0c0c4c1"
 
 [[package]]
 name = "rafter"
@@ -1264,6 +1264,10 @@ path = ".github/actions/setup-rust/action.yml"
 sha256 = "7ae4cdd9c7d91b6d352fdc68d1e1daaa8780c803f1cadedb09245efc5084fa5a"
 
 [[gate.input]]
+path = ".github/workflows/io-stall.yml"
+sha256 = "33393bda999dafc86c3aa3824e2cdf39f6862c7cbfe1402b89400cac8816bfb4"
+
+[[gate.input]]
 path = ".github/workflows/nightly.yml"
 sha256 = "5a76a24d7672cffae51a78919273e0681947e7f13517cb725f7dbff733db8c1a"
 
@@ -1298,6 +1302,10 @@ sha256 = "63ec18c9e87e0d5ca730b57f3a2ae5eadeff7498749e2fd12cfdc7c041d1c48c"
 [[gate.input]]
 path = "scripts/record-storage-environment"
 sha256 = "3dbd02f4f2dcfc9576c0a0a345664ec253684c0d84c092ce9ac81297047deecd"
+
+[[gate.input]]
+path = "scripts/reference-ledger-publication"
+sha256 = "8cdd2760501bae8e74f1a8d185d6ec77858425a0b7dcc665c2976031127e147d"
 
 [[gate.input]]
 path = "scripts/reference-owner-soak"
@@ -1357,7 +1365,7 @@ sha256 = "629f298ce8e746c8a259c1213c7d51128d2dfde1eac6c5bece31928753b96e6d"
 
 [[gate.input]]
 path = "zcheck.toml"
-sha256 = "1bfe523788a23568c77d147442e8e92f872831dd5c5682ef78778a996436ab54"
+sha256 = "df47b4da80a70e8c115eb26ae707f177a36c05eb6dfd267d1fc62d3c9b61fd45"
 
 [[gate]]
 name = "rustdoc"

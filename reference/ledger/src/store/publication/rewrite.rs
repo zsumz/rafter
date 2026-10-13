@@ -67,6 +67,9 @@ impl LedgerStore {
         })?;
         drop(file);
 
+        #[cfg(all(test, unix))]
+        super::super::process_test::pause(super::super::process_test::Point::RewriteAfterTempSync);
+
         if let Some(error) = self.take_fault(plan, WriteFaultSite::BeforeRename) {
             return Err(self.publication_failed(error));
         }
@@ -77,10 +80,20 @@ impl LedgerStore {
                 source,
             })
         })?;
+
+        #[cfg(all(test, unix))]
+        super::super::process_test::pause(super::super::process_test::Point::RewriteAfterRename);
+
         if let Some(error) = self.take_fault(plan, WriteFaultSite::AfterRename) {
             return Err(self.publication_failed(error));
         }
         sync_directory(&self.directory).map_err(|error| self.publication_failed(error))?;
+
+        #[cfg(all(test, unix))]
+        super::super::process_test::pause(
+            super::super::process_test::Point::RewriteAfterDirectorySync,
+        );
+
         Ok(HEADER_LEN as u64 + frame.len())
     }
 }

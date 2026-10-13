@@ -266,3 +266,41 @@ all 2,825 tracked source hashes before and after execution. These are
 snapshot-store process-loss checks with the kernel and page cache present;
 they do not model physical power loss, the application database's publication,
 or an entire Raft node's recovery across all stores.
+
+## Ledger application publication process loss
+
+The separate `ledger-publication` job tests the reference ledger's application
+journal. Its one exactly selected, ignored Unix test contains 13 cases: three
+journal-creation boundaries, four append/seal boundaries, and three replacement
+boundaries each for snapshot-state replacement and in-place compaction. Pause
+hooks exist only in the library test binary. Every case requires a child to reach
+its named boundary and exit from `SIGKILL`; startup and reaping have deadlines.
+
+Before recovery, the parent copies every regular database file, including the
+staging journal, and verifies its bytes against a length/CRC32 inventory. Recovery
+compares the full ledger view and applied index together: balances, deposited
+supply, session state, cached requests and cached results. It checks the exact
+committed-frame count, replays the last request without another mutation, commits
+a fresh request, and reopens that result.
+
+The two complete-but-unsealed append cases must fail ordinary open with
+`UnsealedCompleteFrame`, without changing any journal byte. Only a separate,
+explicit repair after input preservation may discard that unacknowledged frame;
+the repair must report its exact length and recover the previous state. A sealed
+append is recovered as the complete new state. Replacement before rename selects
+the old journal; replacement after rename selects the new one. Compaction keeps
+the state and reduces the committed frame count only after rename.
+
+Run on Linux or macOS with `zcheck run reference-ledger-publication`, or use
+`scripts/reference-ledger-publication --list-only` to check the exact selection.
+`zcheck run full` includes the matrix. Set `RAFTER_LEDGER_PUBLICATION_ARTIFACTS`
+to a new directory whose parent exists to retain successful cases too; failures
+always retain their workspace. The Linux job preserves source/compiler identity,
+native filesystem observations, all case outcomes and pre-recovery files for 30
+days. The initial local matrix passes all 13 verified process exits.
+
+This qualifies process loss in this reference application's journal with the
+kernel and page cache intact. It does not establish physical power-loss behavior,
+the durability of an arbitrary embedding database, or an entire Raft node's
+recovery across all stores. The existing injected-error and torn-byte tests
+remain separate coverage.

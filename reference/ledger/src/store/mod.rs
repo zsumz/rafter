@@ -480,6 +480,8 @@ mod frame_output;
 mod handle;
 mod journal_file;
 mod open;
+#[cfg(all(test, unix))]
+mod process_test;
 mod publication;
 pub mod raw_journal;
 mod report;

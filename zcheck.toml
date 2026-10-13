@@ -331,6 +331,13 @@ timeout = "60m"
 tools = ["cargo", "rustc", "git"]
 resources = ["reference-target"]
 
+[tasks.reference-ledger-publication]
+description = "Kill ledger writers at 13 creation, append, replacement and compaction cases; verify refusal, explicit repair and recovery."
+run = ["scripts/reference-ledger-publication"]
+timeout = "10m"
+tools = ["cargo", "rustc", "git"]
+resources = ["reference-target"]
+
 [tasks.reference-package]
 description = "Run exact-package consumers, storage/wire compatibility, and mixed-version TLS rolling upgrades."
 needs = ["archive-compatibility-runner-tests"]
@@ -346,7 +353,7 @@ tools = ["python3"]
 
 [tasks.full]
 description = "Qualify the checkout and every locally runnable deeper evidence lane."
-needs = ["check", "current-stable", "public-api", "dependency-audit", "invariants-pr", "model-check", "reference-source", "reference-package", "reference-owner-soak"]
+needs = ["check", "current-stable", "public-api", "dependency-audit", "invariants-pr", "model-check", "reference-source", "reference-package", "reference-owner-soak", "reference-ledger-publication"]
 
 # Performance evidence stays opt-in, separate from concurrent correctness work.
 [tasks.build-durable-bench]

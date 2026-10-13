@@ -19,6 +19,7 @@ release, a version change, a tag, a publication, or a mixed-version guarantee.
 | Replicated ledger | Durable per-replica process composition, including fail-closed journal repair escalation | `scripts/reference-process-check`; CI/main and Nightly `reference-process` |
 | Replicated ledger | Exact archive deterministic and process execution | `scripts/reference-package-check`; `scripts/reference-package-process-check`; CI `reference-package` and `reference-package-process` |
 | Fast durable service | Exact-archive execution of the three-voter WAL, persistence-pipeline, bounded-transport, durable-application, snapshot, and recovery composition | `scripts/reference-package-check`; CI `reference-package` and `reference-package-msrv` |
+| Ledger application publication | Verified process termination at 13 creation/append/replacement/compaction cases; strict refusal, explicit repair, state and deduplicated retry | `scripts/reference-ledger-publication`; I/O qualification `ledger-publication` |
 | Durable service owner | Fixed 96-cycle cold-recovery and 256-cycle continuous-owner file/TLS workloads; bounded credits, fairness, compaction, quorum reads, and deduplicated retry | `scripts/reference-owner-soak`; Nightly `reference-owner-soak` |
 | Standalone TLS counter | Extracted teaching application with checked dependency provenance, bounded durable owner, blocked-publication backpressure, and real process failures/recovery in checkout and pinned-Git modes | `scripts/check-counter-guide`; CI `lint` |
 | Fenced lock | Deterministic lock histories, an independent linearizability checker, and an independent guarded-resource checker | `scripts/reference-source-check`; CI `reference-source` |
@@ -162,6 +163,7 @@ script scripts/reference-source-check
 script scripts/reference-package-check
 script scripts/reference-process-check
 script scripts/reference-owner-soak
+script scripts/reference-ledger-publication
 script scripts/reference-package-process-check
 script scripts/counter-profile
 script scripts/maelstrom-lin-kv
@@ -181,6 +183,7 @@ workflow-job .github/workflows/ci.yml reference-package-process
 workflow-job .github/workflows/ci.yml reference-process
 workflow-job .github/workflows/ci.yml counter-reference-fast
 workflow-job .github/workflows/io-stall.yml snapshot-publication
+workflow-job .github/workflows/io-stall.yml ledger-publication
 workflow-job .github/workflows/nightly.yml burn-in
 workflow-job .github/workflows/nightly.yml invariants-maelstrom
 workflow-job .github/workflows/nightly.yml invariants-nightly

@@ -269,6 +269,9 @@ impl LedgerStore {
             return Err(self.publication_failed(error));
         }
 
+        #[cfg(all(test, unix))]
+        super::process_test::pause(super::process_test::Point::AppendAfterWrite);
+
         if let Some(error) = self.take_fault(plan, WriteFaultSite::AtFileSync) {
             return Err(self.publication_failed(error));
         }
@@ -279,6 +282,9 @@ impl LedgerStore {
                 source,
             })
         })?;
+
+        #[cfg(all(test, unix))]
+        super::process_test::pause(super::process_test::Point::AppendAfterFrameSync);
 
         self.seal_frame(&mut file, offset, plan, &journal_path)
     }
@@ -307,6 +313,9 @@ impl LedgerStore {
             })
         })?;
 
+        #[cfg(all(test, unix))]
+        super::process_test::pause(super::process_test::Point::AppendAfterSealWrite);
+
         if let Some(error) = self.take_fault(plan, WriteFaultSite::AtSealSync) {
             return Err(self.publication_failed(error));
         }
@@ -316,7 +325,11 @@ impl LedgerStore {
                 path: path.to_path_buf(),
                 source,
             })
-        })
+        })?;
+
+        #[cfg(all(test, unix))]
+        super::process_test::pause(super::process_test::Point::AppendAfterSealSync);
+        Ok(())
     }
 
     fn seek(&mut self, file: &mut File, offset: u64, path: &Path) -> Result<(), LedgerStoreError> {

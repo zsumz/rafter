@@ -54,13 +54,24 @@ pub(super) fn create_journal(
         })?;
     drop(file);
 
+    #[cfg(all(test, unix))]
+    super::process_test::pause(super::process_test::Point::CreateAfterTempSync);
+
     let journal_path = directory.join(JOURNAL_FILE_NAME);
     fs::rename(&staged_path, &journal_path).map_err(|source| LedgerStoreError::Io {
         operation: "publish the staged ledger journal",
         path: journal_path,
         source,
     })?;
-    sync_directory(directory)
+
+    #[cfg(all(test, unix))]
+    super::process_test::pause(super::process_test::Point::CreateAfterRename);
+
+    sync_directory(directory)?;
+
+    #[cfg(all(test, unix))]
+    super::process_test::pause(super::process_test::Point::CreateAfterDirectorySync);
+    Ok(())
 }
 
 /// Discards an uncommitted tail and makes the shortened file durable.
