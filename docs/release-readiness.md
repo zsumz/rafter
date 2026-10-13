@@ -1,8 +1,8 @@
 # Release readiness — 2026-10-13
 
-Status snapshot: October 13, 2026 at 16:50 UTC. The latest inspected remote
+Status snapshot: October 13, 2026. The latest inspected remote
 `main` is still `021f4f9bb2f6960cb75b24f5a627f1872a12d430`. The release work
-is on `codex/` branches and draft [PR #23](https://github.com/zsumz/rafter/pull/23).
+is on `codex/` branches and [PR #23](https://github.com/zsumz/rafter/pull/23).
 Rust 1.88.0 builds the library; the initial local blocker was the missing
 toolchain. The repository pins it, while CI selects each job's required compiler.
 
@@ -13,6 +13,42 @@ contract. The evidence below does not establish a stable release or superiority
 over other libraries.
 
 ## Current code checkpoint
+
+The `d6064724` integration reached hosted architecture approval: both
+`zrail-policy-review` and `zrail` passed in
+[CI run 38433947941](https://github.com/zsumz/rafter/actions/runs/38433947941).
+Its workspace test job nevertheless failed on the detector-replay inventory.
+The private Rustdoc link fixes in three kernel source files changed the
+byte-bound inventory without updating its approved hash. Local execution
+reproduced the exact CI mismatch. Temporarily restoring only those three
+comments made the existing all-profile inventory test pass; the corrected
+comments were then restored. No detector, witness, fixture count, or execution
+policy changed.
+
+The final repair pins inventory `7582567073abcf67f4710835f79931323449e9507fbf7ee99ea9ed08ca86c37f`
+in the verifier and all three profiles, retaining 77 fixtures, 79 evidence
+bindings, and two targets. Its final hosted checks and architecture approval
+must qualify the repaired head. The failed `d6064724` run is retained as failed
+evidence; earlier successful aggregates do not replace this gate. Public library
+sources, dependency versions, and the default-off durable feature are unchanged
+by this repair.
+
+The focused local replay suite passes 49 tests on Rust 1.88/macOS; its one
+ignored TLC test remains separately qualified by the hosted lane. The first
+sandboxed attempt could not inspect process groups with `/bin/ps`; the normal
+host execution passes its process-cleanup check. Strict invariant-tool Clippy,
+formatting, and all 40 completion manifest entries pass. Architecture analysis
+reports zero findings after updating
+only the invariant tool's package fingerprint; the incremental diff adds no
+grants or debt.
+
+Reconciliation with PR #13 at `3790e23a` reviewed all 19 changed paths. Its
+counter, tests, guide, and CI coverage are included or superseded by the current
+durable counter. The final repair also carries over its omitted README
+clarification of supplied storage/TLS and application responsibilities. Close
+that PR as superseded after #23 merges; do not independently merge its older
+full-log counter or dependency pins. PR #23 is ready for review; the merge
+remains an experimental integration, with public versions at `0.0.2-alpha.1`.
 
 The release branch now includes the approved consolidated candidate and its
 architecture refresh,
