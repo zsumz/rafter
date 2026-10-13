@@ -98,7 +98,9 @@ quorum reads, membership changes, and snapshot catch-up. Retain all three
 receipts with the exact-package evidence. The rolling scenario covers its stated
 single-host fixture and upgrade path; other versions, application schema changes,
 downgrades, multi-host operation, and crashes outside the six qualified
-replacement boundaries need separate qualification.
+replacement boundaries after the committed workload is applied need separate
+qualification. Application publication interruptions can require an explicit
+recovery decision; the rolling test never silently repairs or reseeds them.
 
 ## 0.0.2-alpha.1 Product Preview
 

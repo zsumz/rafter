@@ -4,7 +4,10 @@ use std::{path::PathBuf, process::ExitStatus};
 
 use rafter::NodeId;
 
-use crate::{copy_state, production_process::ProductionCluster};
+use crate::{
+    copy_state,
+    production_process::{wait_until, ProductionCluster},
+};
 
 pub struct Replacements {
     crash_inputs: Option<PathBuf>,
@@ -32,6 +35,25 @@ impl Replacements {
             cluster.stop_checked(node);
             return;
         };
+        // Strict reopen is qualified after the submitted workload is applied.
+        // Killing a lagging application during its publication can correctly
+        // require an explicit repair decision; that is a separate contract.
+        // No new client command is submitted between this barrier and SIGKILL.
+        let leader = cluster.wait_for_leader();
+        let observed = cluster.observe(leader);
+        let committed = observed.number("commit_index");
+        // Application indices intentionally skip Raft no-ops and configuration
+        // entries, so they need not equal the committed Raft index.
+        let application = observed.number("applied_index");
+        assert!(application > 0 && application <= committed);
+        let (observed_commit, applied) =
+            wait_until("replacement victim to apply the committed workload", || {
+                let observed = cluster.observe(node);
+                let observed_commit = observed.number("commit_index");
+                let applied = observed.number("applied_index");
+                (observed_commit >= committed && applied >= application)
+                    .then_some((observed_commit, applied))
+            });
         let (pid, status) = cluster.crash_checked(node);
         require_sigkill(status);
         // The killed child has been reaped, and no replacement is started until
@@ -41,7 +63,8 @@ impl Replacements {
             &root.join(format!("{stage}-node-{}", node.0)),
         );
         println!(
-            "UPGRADE_CRASH stage={stage} node={} pid={pid} signal=9",
+            "UPGRADE_CRASH stage={stage} node={} pid={pid} signal=9 \
+             committed={committed} application={application} observed_commit={observed_commit} applied={applied}",
             node.0
         );
     }

@@ -52,10 +52,20 @@ In the orderly scenario, every requested stop requires the `BYE` reply,
 successful process exit, and durable `STOPPED` lifecycle event. The process-loss
 scenario instead requires actual `SIGKILL` and reaping at six selected boundaries:
 each of the three published-to-candidate replacements, followed by each of the
-three final candidate restarts. It copies the killed replica's entire directory
+three final candidate restarts. Before each kill, the test reads the leader's
+committed Raft index and applied application index, then waits for the victim
+to reach both boundaries; no further client command is submitted before the
+kill. Application indices skip Raft no-ops and configuration entries, so equality
+with the committed Raft index is not required. The receipt retains and checks
+the leader's boundaries and the victim's observed indices. This qualifies abrupt replacement after the submitted workload has
+been applied. It copies the killed replica's entire directory
 before a replacement can open it, retaining identity, transport replay, Raft and
 application recovery inputs. The receipt requires all six ordered crash records,
-their process IDs and signal 9, and nonempty recovery data for every case.
+their process IDs and signal 9, and recovery data for every case. A separate
+hashed `crash-inputs.tar` preserves the complete pre-recovery directory shape,
+including empty snapshot directories that ordinary artifact uploads omit. The
+runner reads that archive back against its inventory before passing; the log
+file itself may legitimately be empty after compaction.
 Snapshot-sender cohort stops and final cleanup still require checked orderly
 shutdown in both scenarios. Both scenarios keep every original read, snapshot,
 membership, retirement and bounded-history assertion, including the deliberately
@@ -65,6 +75,16 @@ No repair, reseeding, or durable-directory replacement is allowed. Final state
 for each scenario is copied only after all its processes have stopped. A killed
 process leaves the operating system and page cache alive; these boundaries do
 not establish physical-power-loss safety or interrupted application migration.
+
+A local run without the applied-index barrier killed a lagging replica while
+it published a renewal. Strict reopen refused a complete but unsealed application
+image, as the lock store's recovery contract requires: those bytes also admit
+the interpretation of a damaged previously sealed image. That failure is not
+cleared by retrying strict open. The existing explicit repair path cross-checks
+fencing marks, and refuses some interrupted acquisitions; it is not used by this
+qualification. Automatic recovery from arbitrary application publication
+interruptions remains outside this scenario's guarantee. The raw failed run
+and its pre-recovery inputs remain retained separately from passing evidence.
 
 ## Running and reviewing evidence
 

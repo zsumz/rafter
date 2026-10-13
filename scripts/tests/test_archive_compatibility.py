@@ -276,7 +276,7 @@ class RollingBoundary(unittest.TestCase):
 
     def test_crash_replacements_require_exact_mode_order_and_signal(self):
         lines = [line.replace("mode=graceful", "mode=sigkill") for line in self.lines]
-        markers = [f"UPGRADE_CRASH stage={stage} node={node} pid={100 + index} signal=9"
+        markers = [f"UPGRADE_CRASH stage={stage} node={node} pid={100 + index} signal=9 committed=18 application=17 observed_commit=18 applied=17"
                    for index, (stage, node) in enumerate(self.runner["CRASHES"])]
         transcript = "\n".join(lines + markers)
         self.assertEqual(len(self.runner["observations"](transcript, "sigkill")), 18)
@@ -287,6 +287,13 @@ class RollingBoundary(unittest.TestCase):
             "\n".join(lines + list(reversed(markers))),
             transcript.replace("signal=9", "signal=15", 1),
             transcript.replace("pid=100", "pid=0", 1),
+            transcript.replace("committed=18", "committed=0", 1),
+            transcript.replace("application=17", "application=0", 1),
+            transcript.replace("application=17", "application=19", 1),
+            transcript.replace("observed_commit=18", "observed_commit=17", 1),
+            transcript.replace("applied=17", "applied=19", 1),
+            transcript.replace("applied=17", "applied=16", 1),
+            transcript.replace(" committed=18 application=17 observed_commit=18 applied=17", "", 1),
             transcript.replace("mode=sigkill", "mode=graceful"),
             transcript.replace("UPGRADE_REPLACEMENTS mode=sigkill", ""),
             transcript + "\nUPGRADE_REPLACEMENTS mode=sigkill",
@@ -334,6 +341,38 @@ class RollingBoundary(unittest.TestCase):
             (root / "unexpected-case").mkdir()
             with self.assertRaisesRegex(ValueError, "incomplete or unexpected"):
                 self.runner["crash_inventory"](root)
+
+    def test_crash_archive_preserves_empty_directories_and_refuses_lost_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = root / "inputs"
+            inputs.mkdir()
+            (inputs / "snapshots").mkdir()
+            (inputs / "log").write_bytes(b"")
+            (inputs / "identity").write_bytes(b"retained identity")
+            inventory = tree_inventory(inputs)
+            archive = root / "crash-inputs.tar"
+            record = self.runner["archive_crash_inputs"](inputs, archive, inventory)
+            self.assertEqual(record, {"path": archive.name, "bytes": archive.stat().st_size,
+                                      "sha256": sha256(archive)})
+            with tarfile.open(archive) as retained:
+                self.assertEqual(set(retained.getnames()), {"snapshots", "log", "identity"})
+                self.assertTrue(retained.getmember("snapshots").isdir())
+                self.assertEqual(retained.extractfile("log").read(), b"")
+                self.assertEqual(retained.extractfile("identity").read(), b"retained identity")
+            add = tarfile.TarFile.add
+
+            def omit_empty_directory(archive, path, **kwargs):
+                if not Path(path).is_dir():
+                    add(archive, path, **kwargs)
+
+            with patch.object(tarfile.TarFile, "add", new=omit_empty_directory):
+                with self.assertRaisesRegex(ValueError, "does not preserve recovery inputs"):
+                    self.runner["archive_crash_inputs"](inputs, root / "missing-directory.tar", inventory)
+            (inputs / "identity").write_bytes(b"changed after inventory")
+            with self.assertRaisesRegex(ValueError, "changed before archive"):
+                self.runner["archive_crash_inputs"](inputs, root / "changed.tar", inventory)
+            self.assertFalse((root / "changed.tar").exists())
 
     def test_multi_consumer_workspace_cannot_hide_an_extra_private_member(self):
         case = DependencyBoundary()

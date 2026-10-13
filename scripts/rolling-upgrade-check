@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Qualify published/candidate Raft libraries in real authenticated processes."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import sys
+import tarfile
 import tomllib
 
 from archive_compatibility import ArchiveRun, ROOT, run_matrix
@@ -48,14 +50,18 @@ def crash_records(transcript, mode):
     if mode not in ("graceful", "sigkill") or re.findall(
             r"UPGRADE_REPLACEMENTS mode=(\S+)", transcript) != [mode]:
         raise ValueError("rolling-upgrade replacement mode is missing or ambiguous")
-    records = [{"stage": stage, "node": int(node), "pid": int(pid), "signal": int(signal)}
-               for stage, node, pid, signal in re.findall(
-                   r"UPGRADE_CRASH stage=(\S+) node=(\d+) pid=(\d+) signal=(\d+)", transcript)]
+    records = [{"stage": stage, "node": int(node), "pid": int(pid), "signal": int(signal),
+                "committed": int(committed), "application": int(application),
+                "observed_commit": int(observed_commit), "applied": int(applied)}
+               for stage, node, pid, signal, committed, application, observed_commit, applied in re.findall(
+                   r"UPGRADE_CRASH stage=(\S+) node=(\d+) pid=(\d+) signal=(\d+) committed=(\d+) application=(\d+) observed_commit=(\d+) applied=(\d+)", transcript)]
     expected = list(CRASHES) if mode == "sigkill" else []
     if ([(r["stage"], r["node"]) for r in records] != expected
             or transcript.count("UPGRADE_CRASH ") != len(records)
-            or any(r["pid"] == 0 or r["signal"] != 9 for r in records)):
-        raise ValueError("rolling-upgrade requires the exact ordered SIGKILL replacements")
+            or any(r["pid"] == 0 or r["signal"] != 9
+                   or not 0 < r["application"] <= r["committed"] <= r["observed_commit"]
+                   or not r["application"] <= r["applied"] <= r["observed_commit"] for r in records)):
+        raise ValueError("rolling-upgrade requires the exact ordered SIGKILL replacements after the applied boundary")
     return records
 
 
@@ -77,6 +83,31 @@ def crash_inventory(directory):
                    for slot in (0, 1)):
             raise ValueError(f"rolling-upgrade pre-recovery application state missing: {case}")
     return inventory
+
+
+def archive_crash_inputs(directory, destination, inventory):
+    """Preserve empty directories that artifact uploads otherwise discard."""
+    if tree_inventory(directory) != inventory:
+        raise ValueError("crash recovery inputs changed before archive")
+    with tarfile.open(destination, "x") as archive:
+        for name in sorted(inventory):
+            archive.add(directory / name, arcname=name, recursive=False)
+    # Read our output back before claiming that it preserves the inventory.
+    # No archive member is extracted into the filesystem or executed.
+    retained = {}
+    with tarfile.open(destination, "r:") as archive:
+        for member in archive.getmembers():
+            name = member.name.rstrip("/")
+            if name in retained or not (member.isdir() or member.isfile()):
+                raise ValueError("unexpected or duplicate crash archive member")
+            if member.isdir():
+                retained[name] = {"kind": "directory"}
+            else:
+                retained[name] = {"kind": "file", "bytes": member.size,
+                                  "sha256": hashlib.sha256(archive.extractfile(member).read()).hexdigest()}
+    if retained != inventory:
+        raise ValueError("crash archive does not preserve recovery inputs")
+    return {"path": destination.name, "bytes": destination.stat().st_size, "sha256": sha256(destination)}
 
 
 def observations(transcript, mode="graceful"):
@@ -210,6 +241,9 @@ class Run(ArchiveRun):
             if mode == "sigkill":
                 self.receipt["replacement_crashes"] = crash_records(transcript, mode)
                 self.receipt["pre_recovery_state"] = crash_inventory(self.artifacts / "crash-inputs")
+                self.receipt["pre_recovery_archive"] = archive_crash_inputs(
+                    self.artifacts / "crash-inputs", self.artifacts / "crash-inputs.tar",
+                    self.receipt["pre_recovery_state"])
         self.receipt["cases"] = cases
 
 
