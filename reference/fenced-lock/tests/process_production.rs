@@ -507,3 +507,9 @@ fn wait_counter(cluster: &mut ProductionCluster, node: NodeId, name: &str, minim
 fn explicit_repair_of_an_unsealed_renewal_recovers_committed_state() {
     production_recovery::explicit_repair_recovers_committed_state();
 }
+
+#[test]
+#[ignore = "spawns authenticated real processes; run with --ignored"]
+fn explicit_repair_refuses_to_discard_an_acknowledged_fencing_mark() {
+    production_recovery::explicit_repair_refuses_acknowledged_mark_loss();
+}

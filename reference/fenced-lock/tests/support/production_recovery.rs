@@ -8,17 +8,17 @@ use std::{fs, io::Write, path::Path};
 
 use rafter::NodeId;
 use rafter_reference_fenced_lock::{
-    check_linearizable,
+    check_evidence, check_linearizable,
     store::{LockStore, LockStoreError, SlotDamage},
-    ApplyDisposition,
+    ApplyDisposition, GuardedRejection, RecordingGuardedResource,
 };
 
 use crate::{
-    applied,
+    applied, guarded_write,
     process::{parse_query_response, QueryOutcome},
     process_config,
     production_process::{wait_until, ProductionCluster, ProductionNode, NODE_IDS},
-    support::{acquire, open_session, renew, resource, submit},
+    support::{acquire, open_session, release, renew, resource, submit},
 };
 
 pub fn explicit_repair_recovers_committed_state() {
@@ -100,6 +100,123 @@ pub fn explicit_repair_recovers_committed_state() {
     println!("TLS_EXPLICIT_REPAIR complete-unsealed-renewal strict-refusal-preserves-bytes explicit-repair tls-catchup cold-cache-and-fencing");
 }
 
+/// Acknowledged acquisitions cannot be repaired by adopting a lower mark, even
+/// when the operator explicitly selects repair. The unaffected quorum keeps
+/// serving; the refused replica must preserve the evidence for a later decision.
+pub fn explicit_repair_refuses_acknowledged_mark_loss() {
+    let mut cluster = ProductionCluster::start("production-repair-refusal", process_config());
+    let leader = cluster.wait_for_leader();
+    let victim = NodeId(3);
+    assert_ne!(leader, victim);
+    let vault = resource("vault");
+    let mut guarded = RecordingGuardedResource::new(vault);
+    cluster.submit_to_leader(open_session(0, 1));
+    let first = cluster
+        .submit_to_leader(submit(0, 1, 1, acquire("vault", 10)))
+        .acquired_token();
+    assert_eq!(guarded_write(&mut guarded, first, 11), Ok(11));
+    cluster.submit_to_leader(submit(0, 1, 2, release("vault", first.get())));
+    let acknowledged = cluster
+        .submit_to_leader(submit(0, 1, 3, acquire("vault", 10)))
+        .acquired_token();
+    assert!(acknowledged > first);
+    assert_eq!(guarded_write(&mut guarded, acknowledged, 22), Ok(22));
+    let boundary = cluster.observe(leader).number("applied_index");
+    wait_until("acquisition to be durably applied by the victim", || {
+        (cluster.observe(victim).number("applied_index") >= boundary).then_some(())
+    });
+    cluster.stop_checked(victim);
+    let node_dir = cluster.root().join("node-3");
+    let app_dir = node_dir.join("app");
+    remove_seal(&app_dir);
+    let paths = [
+        "app/lock-state.0",
+        "app/lock-state.1",
+        "transport-replay",
+        "control-plane",
+        "raft/log",
+        "raft/hard-state",
+    ];
+    let before = paths.map(|name| fs::read(node_dir.join(name)).unwrap());
+    let refusal = LockStore::open_and_repair(&app_dir, process_config()).unwrap_err();
+    assert!(
+        matches!(
+            &refusal,
+            LockStoreError::DiscardWouldRegressMark {
+                resource: named,
+                acknowledged: mark,
+                offered: Some(offered),
+                damage: SlotDamage::UnsealedCompleteImage { .. },
+                ..
+            } if *named == vault && *mark == acknowledged && *offered == first
+        ),
+        "{refusal}"
+    );
+
+    for attempt in 1..=2 {
+        let mut process = ProductionNode::spawn_with_mode(
+            cluster.root(),
+            victim,
+            &NODE_IDS,
+            cluster.config(),
+            "repair",
+        );
+        let (status, output) = process.wait_refused();
+        assert!(!status.success(), "{output}");
+        assert!(output.contains("\"kind\":\"NEEDS_DECISION\""), "{output}");
+        assert!(output.contains(&refusal.to_string()), "{output}");
+        assert!(output.contains("--recover reseed"), "{output}");
+        require_no_successful_start(&output);
+        assert_eq!(
+            paths.map(|name| fs::read(node_dir.join(name)).unwrap()),
+            before
+        );
+        println!("TLS_REPAIR_REFUSAL attempt={attempt} acknowledged={} offered={} unchanged-six-durable-files no-ready-no-peer-listener", acknowledged.get(), first.get());
+    }
+
+    cluster.submit_to_leader(submit(0, 1, 4, release("vault", acknowledged.get())));
+    let next = cluster
+        .submit_to_leader(submit(0, 1, 5, acquire("vault", 10)))
+        .acquired_token();
+    assert!(next > acknowledged);
+    assert_eq!(guarded_write(&mut guarded, next, 33), Ok(33));
+    assert_eq!(
+        guarded_write(&mut guarded, acknowledged, 99),
+        Err(GuardedRejection::StaleFencingToken {
+            highest_accepted: next
+        })
+    );
+    assert_eq!(cluster.query(vault).view().held_token, Some(next.get()));
+    check_evidence(process_config(), cluster.history(), guarded.history())
+        .expect("the live quorum and guarded-resource histories remain valid");
+    for node in cluster.live_nodes() {
+        cluster.stop_checked(node);
+    }
+    assert_eq!(
+        paths.map(|name| fs::read(node_dir.join(name)).unwrap()),
+        before
+    );
+    println!(
+        "TLS_REPAIR_REFUSAL quorum-progress higher-token stale-token-rejected no-implicit-reseed"
+    );
+}
+
+fn require_no_successful_start(output: &str) {
+    for kind in [
+        "READY",
+        "PEER_LISTENING",
+        "REPAIRED",
+        "RESEEDED",
+        "CREATED",
+        "RECOVERED",
+    ] {
+        assert!(
+            !output.contains(&format!("\"kind\":\"{kind}\"")),
+            "{output}"
+        );
+    }
+}
+
 fn remove_seal(app_dir: &Path) -> u64 {
     let store = LockStore::open(app_dir, process_config()).unwrap();
     let live = store
@@ -137,12 +254,7 @@ fn require_unchanged_refusals(cluster: &ProductionCluster, victim: NodeId, node_
             "{output}"
         );
         assert!(output.contains("--recover repair"), "{output}");
-        for kind in ["READY", "PEER_LISTENING", "REPAIRED", "RESEEDED", "CREATED"] {
-            assert!(
-                !output.contains(&format!("\"kind\":\"{kind}\"")),
-                "{output}"
-            );
-        }
+        require_no_successful_start(&output);
         assert_eq!(
             paths.map(|name| fs::read(node_dir.join(name)).unwrap()),
             before

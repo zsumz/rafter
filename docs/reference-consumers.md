@@ -538,11 +538,16 @@ mismatched credentials, replay and removed-peer refusal, checkpoint
 loss/corruption, strict refusal and explicit repair of an unsealed renewal,
 readiness under incomplete recovery, connection overflow,
 monotonic replacement, and both independent lock/guarded-resource checkers.
-`scripts/reference-process-check` selects it through a reviewed six-test
+`scripts/reference-process-check` selects it through a reviewed seven-test
 inventory. The repair case requires two unchanged-byte strict refusals without
 readiness or a peer listener, explicit mark-checked repair, authenticated catch-up,
 and cold recovery of the full application state, fencing floor and session cache.
-Its deliberate seal-byte fault does not establish automatic recovery from all
+A complementary acquisition fault requires explicit repair to refuse twice,
+without readiness or a peer listener, preserving both application slots, Raft
+log/hard state, peer policy and transport replay bytes. The surviving TLS quorum
+then issues a higher fencing token and its independent guarded-resource history
+rejects the stale token. Neither case implicitly reseeds the replica.
+These deliberate seal-byte faults do not establish automatic recovery from all
 application publication interruptions. Its frozen version-1 adversarial client hand-encodes the outer hello
 and peer frame before talking to the current runtime over real mutual TLS.
 
