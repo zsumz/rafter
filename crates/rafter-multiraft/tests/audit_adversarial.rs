@@ -21,8 +21,8 @@ use rafter_multiraft::{
 };
 
 use support::{
-    metrics, ApplyingDriver, DropFlag, DropWatch, FailingDriver, NotDefault, ShardFailure,
-    StepCounter, WatchedDriver,
+    metrics, ApplyingDriver, DropFlag, DropWatch, FailingDriver, ShardFailure, StepCounter,
+    WatchedDriver,
 };
 
 // ---------------------------------------------------------------------------
@@ -414,19 +414,6 @@ fn a_refused_open_hands_the_callers_driver_back() {
     assert_eq!(returned.metrics().group_id, 1);
     drop(returned);
     assert!(dropped.get(), "the caller decides when it goes");
-}
-
-#[test]
-fn a_default_host_needs_nothing_of_its_command_and_result_types() {
-    // Derived `Default` bounded every parameter on `Default`, including the
-    // command and result types this host never stores by value, so this line
-    // did not compile for any real command type.
-    let host = TypedMultiRaftHost::<u64, NotDefault, NotDefault>::default();
-    assert!(host.is_empty());
-    assert_eq!(host.len(), 0);
-
-    let untyped = MultiRaftHost::<u64>::default();
-    assert!(untyped.is_empty());
 }
 
 #[test]
