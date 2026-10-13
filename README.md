@@ -39,9 +39,11 @@ It performs no IO. A durable embedding handles each step in this order:
 input -> Raft step -> persist required changes -> send messages / apply entries
 ```
 
-`rafter-runtime` enforces this persist-before-output boundary. You supply the
-transport, application state machine, and scheduling policy. See the
-[architecture guide](./docs/architecture.md) for the runtime contract and recovery.
+`rafter-runtime` enforces this persist-before-output boundary. Pair it with the
+file-backed stores in `rafter-storage` or implement the storage traits yourself.
+Your application defines how committed entries affect its state and how that
+state is recovered. See the [architecture guide](./docs/architecture.md) for the
+runtime contract and recovery.
 
 ## API Layers
 
@@ -54,6 +56,11 @@ Choose the layer that matches how much of the integration you want Rafter to pro
 | `rafter-app` | You want an embedded replicated state machine. |
 | `rafter-service` | You want async handles, an optional durable owner, and transport traits. |
 | `rafter-multiraft` | You want many caller-defined Raft groups in one host. |
+
+Storage and transport are separate choices. `rafter-storage` provides file-backed
+stores and traits for custom backends. `rafter-transport-tls` provides mutually
+authenticated peer connections through the service layer, whose transport traits
+also support your own implementation.
 
 ## Example
 
@@ -219,17 +226,19 @@ only after consuming that completion.
 
 ## Boundaries
 
-Rafter is not a database, a transport security layer, or a server framework.
-Production embeddings still own:
+The `rafter` kernel stays deterministic and sans-IO. Storage, networking, and
+scheduling live in the surrounding layers you choose. Your application supplies
+the state machine and operational policy:
 
-```txt
-application state durability
-applied-index recovery
-peer identity and authorization
-removed-peer fencing
-transport encryption
-snapshot validation
-```
+- Application state-machine behavior, durable state, and applied-index recovery.
+- Application snapshot contents and validation.
+- Certificate provisioning and rotation, peer identity mappings, and membership
+  policy, including retiring removed peers.
+- Service discovery, deployment, and client-facing APIs.
+
+When you use `rafter-transport-tls`, the transport handles encryption, peer
+authentication, and enforcement of the configured peer policy. Your application
+supplies the credentials and keeps that policy current.
 
 ## Status
 
