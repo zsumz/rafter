@@ -113,11 +113,13 @@ impl LockStore {
         directory: &Path,
         config: LockConfig,
     ) -> Result<Self, LockStoreError> {
-        fs::create_dir_all(directory).map_err(|source| LockStoreError::Io {
-            operation: "create the lock store directory",
-            path: directory.to_path_buf(),
-            source,
-        })?;
+        rafter_reference_harness::durable_directory::create_durable_directory(directory).map_err(
+            |source| LockStoreError::Io {
+                operation: "durably create the lock store directory",
+                path: directory.to_path_buf(),
+                source,
+            },
+        )?;
 
         let reseed = survey_for_reseed(directory)?;
         for slot in [SlotIndex::Zero, SlotIndex::One] {

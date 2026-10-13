@@ -4,7 +4,7 @@
 //! two readings. They share one opening path and differ in exactly one branch;
 //! the third decision, which keeps neither reading, is `reseed`.
 
-use std::{fs, path::Path};
+use std::path::Path;
 
 use rafter::LogIndex;
 
@@ -159,11 +159,13 @@ impl LockStore {
         faults: FaultPlan,
         on_unreadable: OnUnreadableSlot,
     ) -> Result<Self, LockStoreError> {
-        fs::create_dir_all(directory).map_err(|source| LockStoreError::Io {
-            operation: "create the lock store directory",
-            path: directory.to_path_buf(),
-            source,
-        })?;
+        rafter_reference_harness::durable_directory::create_durable_directory(directory).map_err(
+            |source| LockStoreError::Io {
+                operation: "durably create the lock store directory",
+                path: directory.to_path_buf(),
+                source,
+            },
+        )?;
 
         let created = establish_slot_files(directory)?;
 

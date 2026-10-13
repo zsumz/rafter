@@ -427,6 +427,22 @@ never lower a high-water mark.
 The durable composition keeps the lock service in a consumer-owned transactional
 store. The store is an implementation choice; everything in this section is not.
 
+### Directory provisioning
+
+Store open and reseed, both node startup paths, and production identity allocation
+use the shared reference directory helper before writing durable state. It creates
+one directory at a time and synchronizes its parent before creating a child. A
+failed synchronization stops startup or allocation before files in that directory
+can be acknowledged. Retrying first synchronizes the nearest existing ancestor's
+parent, including the entry left by a prior failed attempt.
+
+Externally supplied ancestors must already be durably provisioned, and the host
+filesystem must support directory synchronization. The helper preserves existing
+files and does not acquire the replica ownership lock. Its six regressions cover
+synchronization ordering and retry; they do not qualify physical power loss.
+Identity allocation also exercises nested directory creation while retaining
+monotonic allocation and permanent retirement.
+
 ### Transaction boundary
 
 One transaction atomically commits:

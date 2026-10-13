@@ -484,8 +484,8 @@ impl TerminalFailure {
 
 fn run(config: &Config) -> Result<(), String> {
     let node_dir = config.node_dir();
-    std::fs::create_dir_all(&node_dir)
-        .map_err(|error| format!("could not create {}: {error}", node_dir.display()))?;
+    rafter_reference_harness::durable_directory::create_durable_directory(&node_dir)
+        .map_err(|error| format!("could not durably create {}: {error}", node_dir.display()))?;
 
     let tls = PeerTlsConfig::load(config.node_id, &config.tls)?;
     let (jobs_tx, jobs_rx) = mpsc::sync_channel(CLIENT_PENDING_LIMIT);
