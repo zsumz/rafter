@@ -521,6 +521,8 @@ done
 if [[ -n "$artifact_dir" ]]; then
     cp "$hashes_file" "$artifact_dir/package-sha256.txt"
     cp "$versions_file" "$artifact_dir/crate-versions.txt"
+    run python3 "$repo_root/scripts/archive_retention.py" \
+        --artifacts "$artifact_dir" --source "$package_dir"
 fi
 
 fast_service_runtime_version="$(
@@ -930,4 +932,10 @@ if [[ "$mode" != process ]]; then
         run python3 "$repo_root/scripts/$check-check" "${check_args[@]}"
     done
     end_phase
+fi
+
+# Retain the same bytes after all consumers and upgrade checks have run, before
+# successful cleanup removes the packaging workdir. Never repackage for upload.
+if [[ -n "$artifact_dir" ]]; then
+    run python3 "$repo_root/scripts/archive_retention.py" --artifacts "$artifact_dir"
 fi

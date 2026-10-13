@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from archive_dependencies import audit, derive, prepare, public_closure  # noqa: E402
+from archive_retention import retain, verify  # noqa: E402
 from published_dependency_audit import AUDIT_VERSION, REGISTRY, audit_policy  # noqa: E402
 
 
@@ -374,6 +375,97 @@ class ArchiveAudit(unittest.TestCase):
             self.run_audit()
         self.assertEqual((self.destination / "receipt.json").read_bytes(), original)
 
+
+
+class RetainedArchiveBytes(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.source = self.root / "packaging"
+        self.artifacts = self.root / "artifacts"
+        self.source.mkdir()
+        self.artifacts.mkdir()
+        self.name = "rafter-0.0.2-alpha.1.crate"
+        # Retention treats Cargo archives as opaque bytes, not executable input.
+        self.payload = b"exact packaging output\0" * 8192
+        (self.source / self.name).write_bytes(self.payload)
+        self.manifest = self.artifacts / "package-sha256.txt"
+        self.manifest.write_text(hashlib.sha256(self.payload).hexdigest() + f"  {self.name}\n")
+
+    def test_retained_bytes_survive_cleanup_and_can_be_verified_by_the_cli(self):
+        self.assertEqual(retain(self.artifacts, self.source), 1)
+        (self.source / self.name).unlink()
+        self.source.rmdir()
+        self.assertEqual((self.artifacts / "archives" / self.name).read_bytes(), self.payload)
+        script = Path(__file__).resolve().parents[1] / "archive_retention.py"
+        result = subprocess.run([sys.executable, str(script), "--artifacts", str(self.artifacts)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS: 1 retained crate archives", result.stdout)
+
+    def test_changed_packaging_output_is_refused(self):
+        (self.source / self.name).write_bytes(b"different packaging invocation")
+        with self.assertRaisesRegex(ValueError, "digest mismatch"):
+            retain(self.artifacts, self.source)
+
+    def test_retention_never_overwrites_an_existing_directory(self):
+        retain(self.artifacts, self.source)
+        before = (self.artifacts / "archives" / self.name).read_bytes()
+        with self.assertRaises(FileExistsError):
+            retain(self.artifacts, self.source)
+        self.assertEqual((self.artifacts / "archives" / self.name).read_bytes(), before)
+
+    def test_missing_extra_corrupt_and_symlinked_archives_are_refused(self):
+        retain(self.artifacts, self.source)
+        archived = self.artifacts / "archives" / self.name
+        archived.unlink()
+        with self.assertRaisesRegex(ValueError, "inventory differs"):
+            verify(self.artifacts)
+        archived.write_bytes(b"corrupt")
+        with self.assertRaisesRegex(ValueError, "digest mismatch"):
+            verify(self.artifacts)
+        archived.unlink()
+        archived.symlink_to(self.source / self.name)
+        with self.assertRaisesRegex(ValueError, "regular archive input"):
+            verify(self.artifacts)
+        archived.unlink()
+        archived.write_bytes(self.payload)
+        extra = self.artifacts / "archives" / "extra.crate"
+        extra.write_bytes(b"unexpected")
+        with self.assertRaisesRegex(ValueError, "inventory differs"):
+            verify(self.artifacts)
+
+    def test_manifest_rejects_empty_duplicate_and_redirected_names_before_copying(self):
+        valid = self.manifest.read_text()
+        for value in ("", valid + valid, valid.replace(self.name, "../outside.crate"),
+                      valid.replace(self.name, "/outside.crate"), valid.replace(self.name, "wrong.txt")):
+            with self.subTest(value=value):
+                self.manifest.write_text(value)
+                with self.assertRaises(ValueError):
+                    retain(self.artifacts, self.source)
+                self.assertFalse((self.artifacts / "archives").exists())
+
+    def test_symlinked_sources_manifests_and_archive_directories_are_refused(self):
+        source = self.source / self.name
+        saved = self.root / "saved.crate"
+        source.rename(saved)
+        source.symlink_to(saved)
+        with self.assertRaisesRegex(ValueError, "regular archive input"):
+            retain(self.artifacts, self.source)
+        (self.artifacts / "archives").rmdir()
+        source.unlink()
+        saved.rename(source)
+        saved_manifest = self.root / "manifest.txt"
+        self.manifest.rename(saved_manifest)
+        self.manifest.symlink_to(saved_manifest)
+        with self.assertRaisesRegex(ValueError, "regular archive input"):
+            retain(self.artifacts, self.source)
+        self.manifest.unlink()
+        saved_manifest.rename(self.manifest)
+        (self.artifacts / "archives").symlink_to(self.source, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "directory missing"):
+            verify(self.artifacts)
 
 if __name__ == "__main__":
     unittest.main()

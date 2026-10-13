@@ -198,11 +198,26 @@ combined modes also run the documented storage, wire and rolling TLS upgrade
 scenarios against the pinned published baseline.
 
 The `reference-package-process` and `reference-package-msrv` jobs pass an
-explicit artifact directory. Each upload contains archive SHA-256 values, the
-generated patch table and lockfile, Cargo metadata, the boundary verdict,
-toolchain versions, inventory counts and copies, and per-suite logs. A failed
-runner retains its temporary workdir and preserves the original exit status;
-the artifact directory contains every diagnostic produced before the failure.
+explicit artifact directory. Each upload contains the tested `.crate` files in
+`archives/`, their `package-sha256.txt` inventory, the generated patch table and
+lockfile, Cargo metadata, the boundary verdict, toolchain versions, inventory
+counts and copies, and per-suite logs. The runner copies the first packaging
+output and verifies its hashes immediately and after all qualification phases;
+it never packages a second set for upload. Retention refuses changed bytes,
+missing or extra archives, symlinks, and an existing destination. A failed runner
+retains its temporary workdir and preserves the original exit status; the
+artifact directory contains every diagnostic produced before the failure.
+Retained files alone do not indicate that the qualification phases passed.
+
+After downloading an artifact, verify the retained bytes without unpacking or
+executing them:
+
+```sh
+python3 scripts/archive_retention.py --artifacts /path/to/package-artifacts
+```
+
+Older runs that retained only hashes cannot supply their archive bytes through
+this check. Their existing receipts remain evidence for those named runs.
 
 `Cargo.resolved.lock` is the final consumer lock paired with
 `consumer-metadata.json`; `resolved-inputs.sha256` binds those two retained
