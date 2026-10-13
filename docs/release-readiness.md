@@ -107,8 +107,12 @@ at `0eb06666` retains 40 isolated timing samples comparing checkpoint replacemen
 with the optional journal on local APFS. Neither result establishes peak service
 throughput, a latency ceiling or superiority over other libraries. The teaching
 HTTP ingress has no whole-server connection/thread bound, and that application
-does not schedule periodic compaction; owner admission budgets alone do not
-close those deployment limits.
+now schedules local compaction and serves a bounded current snapshot through the
+existing TLS transport. The counter process check requires repeated compaction,
+pruning, offline-follower snapshot catch-up, and cold recovery. Its configurable
+applied-index trigger can be deferred by busy work; publication and disposal remain
+synchronous. Owner admission budgets and this trigger do not establish deployment-wide
+memory, disk or latency ceilings.
 
 Native receipts record OS, compiler, filesystem and mount options. The completed
 Linux jobs use Ubuntu 24.04/x86-64 with ext4 root mounts reporting `nobarrier` and

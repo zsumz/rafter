@@ -7,6 +7,7 @@ mod http;
 mod owner;
 mod peers;
 mod policy;
+mod snapshots;
 
 use counter::Counter;
 use rafter::{NodeConfig, NodeId};
@@ -18,6 +19,7 @@ use rafter_service::{
 };
 use rafter_storage::{
     FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
+    RaftSnapshotStore,
 };
 use rafter_transport_tls::{FileTransportSessionStore, SessionStoreLimits, TlsSender};
 use std::{
@@ -112,6 +114,9 @@ fn run(id: u64) -> Result<()> {
     // Acquire exclusive directory ownership before opening any application files.
     let (hard_state_store, log_segment, snapshot_store) =
         FileRaftNodeStores::open(directory.join("raft"))?.into_parts();
+    if let Some(snapshot) = snapshot_store.current_snapshot() {
+        counter::validate_snapshot_descriptor(&snapshot)?;
+    }
     let app = Counter::open(&directory)?;
     let checkpoint = checkpoint::load(&directory.join("checkpoint"), id)?;
     let config = NodeConfig::new(
@@ -124,6 +129,7 @@ fn run(id: u64) -> Result<()> {
         15 + id * 5,
     )?
     .with_heartbeat_interval_ticks(3);
+    let mut snapshots = snapshots::Snapshots::new(&directory)?;
     let (transport, validator) = peers::open(id, &directory)?;
     let mut driver = owner::recover(
         config,
@@ -179,6 +185,7 @@ fn run(id: u64) -> Result<()> {
         &stop,
         &ready,
         &connections,
+        &mut snapshots,
     );
     ready.store(false, Ordering::Release);
     stop.store(true, Ordering::Release);

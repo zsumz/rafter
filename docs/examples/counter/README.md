@@ -28,6 +28,7 @@ Run the additional checks with Rust 1.88, OpenSSL, and Python 3 installed:
 cargo test --locked
 cargo build --locked
 python3 smoke.py target/debug/rafter-counter
+python3 compaction.py target/debug/rafter-counter
 ```
 
 Application tests also qualify `src/application.rs` with the bounded worker:
@@ -35,6 +36,23 @@ protocol-only prefixes, result correlation, retained credits, and failed durable
 publication. The main thread owns `DurableRaftDriver`; HTTP callers use bounded
 client handles. Shutdown waits for storage release while that owner keeps driving.
 The optional `rafter-service/durable` feature is enabled explicitly.
+
+The owner compacts after its durable application floor advances 1,024 Raft indexes
+beyond the previous snapshot. `COUNTER_SNAPSHOT_ENTRIES` accepts a positive integer
+for that trigger. Busy work defers compaction; publication and retired-entry disposal
+are synchronous, so this is not a strict disk-size or latency ceiling. Maintenance
+prunes previous snapshot files. The durable runtime reads bounded chunks from the
+current snapshot for the existing TLS transport; these reads remain synchronous.
+Offline replicas can catch up from that snapshot after the old log is removed.
+The compaction process check holds one follower offline across repeated snapshots,
+then requires TLS snapshot catch-up and a cold restart preserving every acknowledged
+write. Both guide modes run this check.
+
+Startup and snapshot installation require group `counter`, application kind
+`counter-v1`, and format version 1. Installation also requires the descriptor,
+wrapper and decoded state to agree on the applied floor. Both stored and inline
+snapshot payloads are limited to 65,536 bytes. Incompatible snapshots are refused
+before the application record is replaced; checksums do not grant schema compatibility.
 
 This example supports only the original three voters. Its checkpoint preserves
 the existing retirement facts across restart, and membership changes, contradictory

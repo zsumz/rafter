@@ -120,6 +120,9 @@ second live writer:
 ```rust
 let (hard_state_store, log_segment, snapshot_store) =
     FileRaftNodeStores::open(directory.join("raft"))?.into_parts();
+if let Some(snapshot) = snapshot_store.current_snapshot() {
+    counter::validate_snapshot_descriptor(&snapshot)?;
+}
 let app = Counter::open(&directory)?;
 ```
 
@@ -353,10 +356,21 @@ database, or supply both.
 A **snapshot** is a saved application image at a particular applied index.
 Your implementation defines that image and restores it; you also decide when
 to create one and compact old log entries. The counter implements snapshot
-methods, but this small starter keeps its log and does not schedule compaction
-or configure outbound snapshot transfer. Its three members are fixed, and
-configuration changes are refused. The owner handles a recovered snapshot by
-installing its exact saved bytes before resuming admission.
+methods and compacts when its durable application floor advances 1,024 Raft
+indexes beyond the last snapshot. Set `COUNTER_SNAPSHOT_ENTRIES` to another
+positive integer to change that trigger. Busy application work defers maintenance;
+this trigger is not a strict log-size or latency bound. Snapshot publication and
+retired-entry disposal are synchronous. Only the current snapshot file is retained.
+
+The durable runtime reads bounded chunks from the snapshot store and sends them
+through the existing TLS transport, allowing an offline follower to catch up after
+log compaction. Those reads remain synchronous storage work. The owner installs
+received or recovered snapshot bytes before resuming admission. Startup and installation
+accept only the `counter` snapshot group and `counter-v1` application kind at version 1.
+Installation also checks the descriptor's applied floor and caps both stored and inline
+payloads at 65,536 bytes before decoding or publishing application state. Valid checksums
+alone do not make a different application format compatible. Its three members remain
+fixed, and configuration changes are refused.
 
 You also own deployment choices: peer addresses, certificates, membership
 changes, client authentication, and when a recovered server may accept requests.
@@ -529,6 +543,7 @@ mod http;
 mod owner;
 mod peers;
 mod policy;
+mod snapshots;
 
 use counter::Counter;
 use rafter::{NodeConfig, NodeId};
@@ -540,6 +555,7 @@ use rafter_service::{
 };
 use rafter_storage::{
     FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
+    RaftSnapshotStore,
 };
 use rafter_transport_tls::{FileTransportSessionStore, SessionStoreLimits, TlsSender};
 use std::{
@@ -634,6 +650,9 @@ fn run(id: u64) -> Result<()> {
     // Acquire exclusive directory ownership before opening any application files.
     let (hard_state_store, log_segment, snapshot_store) =
         FileRaftNodeStores::open(directory.join("raft"))?.into_parts();
+    if let Some(snapshot) = snapshot_store.current_snapshot() {
+        counter::validate_snapshot_descriptor(&snapshot)?;
+    }
     let app = Counter::open(&directory)?;
     let checkpoint = checkpoint::load(&directory.join("checkpoint"), id)?;
     let config = NodeConfig::new(
@@ -646,6 +665,7 @@ fn run(id: u64) -> Result<()> {
         15 + id * 5,
     )?
     .with_heartbeat_interval_ticks(3);
+    let mut snapshots = snapshots::Snapshots::new(&directory)?;
     let (transport, validator) = peers::open(id, &directory)?;
     let mut driver = owner::recover(
         config,
@@ -701,6 +721,7 @@ fn run(id: u64) -> Result<()> {
         &stop,
         &ready,
         &connections,
+        &mut snapshots,
     );
     ready.store(false, Ordering::Release);
     stop.store(true, Ordering::Release);
@@ -880,6 +901,7 @@ pub fn drive(
     stop: &AtomicBool,
     ready: &AtomicBool,
     connections: &AtomicUsize,
+    snapshots: &mut crate::snapshots::Snapshots,
 ) -> Result<()> {
     let inbound = transport.inbound();
     let mut next_tick = Instant::now();
@@ -893,6 +915,7 @@ pub fn drive(
             shutdown_requested = true;
         }
         let reschedule = turn(driver)?;
+        snapshots.maintain(driver)?;
         if driver.state() == ServiceState::Draining && !draining_reported {
             eprintln!(
                 "Node {}: draining durable work",
@@ -1100,7 +1123,7 @@ impl DurableApplication<Entry> for Counter {
 ```rust
 //! The application's counter and the last command included in its saved value.
 use crate::disk;
-use rafter::{LogIndex, SnapshotChunkRequest, SnapshotChunkSource};
+use rafter::{LogIndex, RaftSnapshot, SnapshotChunkRequest, SnapshotChunkSource};
 use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
     ReplicatedStateMachine, SnapshotSupport,
@@ -1111,6 +1134,27 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
+
+pub(crate) const SNAPSHOT_GROUP: &str = "counter";
+pub(crate) const SNAPSHOT_KIND: &str = "counter-v1";
+pub(crate) const SNAPSHOT_VERSION: u16 = 1;
+pub(crate) const MAX_SNAPSHOT_BYTES: usize = 65_536;
+
+pub(crate) fn validate_snapshot_descriptor(snapshot: &RaftSnapshot) -> io::Result<()> {
+    if snapshot.metadata.group_id.as_str() != SNAPSHOT_GROUP {
+        return Err(disk::invalid("counter snapshot belongs to another group"));
+    }
+    let application = &snapshot.metadata.application;
+    if application.kind.as_str() != SNAPSHOT_KIND || application.version.get() != SNAPSHOT_VERSION {
+        return Err(disk::invalid(
+            "unsupported counter snapshot application format",
+        ));
+    }
+    if snapshot.application_payload_len > MAX_SNAPSHOT_BYTES as u64 {
+        return Err(disk::invalid("counter snapshot is too large"));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1217,8 +1261,12 @@ impl ReplicatedStateMachine for Counter {
             return Err(disk::invalid("snapshot would move the counter backwards").into());
         }
         let payload = if let Some(descriptor) = &snapshot.raft_snapshot {
-            if descriptor.application_payload_len > 65_536 {
-                return Err(disk::invalid("counter snapshot is too large").into());
+            validate_snapshot_descriptor(descriptor)?;
+            if descriptor.metadata.last_included_index != snapshot.applied_index {
+                return Err(disk::invalid(
+                    "snapshot descriptor progress does not match its wrapper",
+                )
+                .into());
             }
             let store = FileRaftSnapshotStore::open(&self.snapshots)
                 .map_err(|error| disk::invalid(&error.to_string()))?;
@@ -1233,6 +1281,9 @@ impl ReplicatedStateMachine for Counter {
                 })
                 .ok_or_else(|| disk::invalid("snapshot payload is unavailable"))?
         } else {
+            if snapshot.payload.len() > MAX_SNAPSHOT_BYTES {
+                return Err(disk::invalid("counter snapshot is too large").into());
+            }
             snapshot.payload
         };
         let next: State = serde_json::from_slice(&payload).map_err(io::Error::from)?;
@@ -1769,5 +1820,129 @@ pub fn load(path: &Path, node: u64) -> io::Result<PeerControlPlaneCheckpoint<u64
 ```
 
 </details>
+
+</details>
+
+<details>
+<summary><strong>src/snapshots.rs</strong> — Compact and serve bounded counter snapshots</summary>
+
+<!-- counter-file: src/snapshots.rs -->
+```rust
+//! Periodic application snapshots and retention through the existing durable owner.
+use crate::{
+    counter::{Counter, MAX_SNAPSHOT_BYTES, SNAPSHOT_GROUP, SNAPSHOT_KIND, SNAPSHOT_VERSION},
+    disk, Driver, Result, Runtime,
+};
+use rafter::{
+    ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, LogIndex,
+    RaftSnapshot, RaftSnapshotMetadata, SnapshotGroupId,
+};
+use rafter_app::state_machine::ReplicatedStateMachine;
+use rafter_runtime::service::{ServiceAdapterError, ServiceError, ServiceState};
+use rafter_storage::{
+    FileRaftSnapshotStore, InMemoryRaftSnapshotStore, PersistedRaftSnapshot, RaftSnapshotStore,
+    SnapshotRetention,
+};
+use std::{
+    num::NonZeroU64,
+    path::{Path, PathBuf},
+};
+
+pub struct Snapshots {
+    every: NonZeroU64,
+    directory: PathBuf,
+    pruned: Option<LogIndex>,
+}
+impl Snapshots {
+    pub fn new(directory: &Path) -> Result<Self> {
+        let every = match std::env::var("COUNTER_SNAPSHOT_ENTRIES") {
+            Ok(value) => value.parse::<NonZeroU64>()?,
+            Err(std::env::VarError::NotPresent) => NonZeroU64::new(1024).unwrap(),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Self {
+            every,
+            directory: directory.join("raft/snapshots"),
+            pruned: None,
+        })
+    }
+
+    pub fn maintain(&mut self, driver: &mut Driver) -> Result<()> {
+        if driver.state() != ServiceState::Ready {
+            return Ok(());
+        }
+        let node = driver.ready_node().ok_or("ready owner has no node")?;
+        let floor = driver
+            .durable_through()
+            .ok_or("ready owner has no application floor")?;
+        if floor.0.saturating_sub(node.snapshot_index().0) >= self.every.get() {
+            match driver.compact_snapshot_with(build) {
+                // Counter entries contain a scalar command. Disposal is synchronous,
+                // like publication; the threshold is not a disk or latency ceiling.
+                Ok(retired) => drop(retired),
+                Err(
+                    ServiceError::NotQuiescent
+                    | ServiceError::NotReady(
+                        ServiceState::Busy | ServiceState::Draining | ServiceState::Stopped,
+                    ),
+                ) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let Some(node) = driver.ready_node() else {
+            return Ok(());
+        };
+        let Some(snapshot) = node.snapshot() else {
+            return Ok(());
+        };
+        let at = snapshot.metadata.last_included_index;
+        if self.pruned != Some(at) {
+            // No runtime persistence job is in flight, and this thread owns the
+            // Raft directory. The runtime already materializes bounded snapshot
+            // chunks for TLS; queued messages own their bytes across pruning.
+            FileRaftSnapshotStore::open(&self.directory)?
+                .prune_snapshots(SnapshotRetention::CurrentOnly)?;
+            self.pruned = Some(at);
+        }
+        Ok(())
+    }
+}
+
+fn build(
+    app: &mut Counter,
+    node: &Runtime,
+) -> std::result::Result<(RaftSnapshot, InMemoryRaftSnapshotStore), ServiceAdapterError> {
+    let at = app.applied_index()?;
+    let metadata = RaftSnapshotMetadata::new(
+        SnapshotGroupId::new(SNAPSHOT_GROUP)?,
+        node.id(),
+        at,
+        node.term_at_index(at)
+            .ok_or_else(|| disk::invalid("snapshot boundary has no term"))?,
+        node.current_term(),
+        ApplicationSnapshotMetadata::new(
+            ApplicationSnapshotKind::new(SNAPSHOT_KIND)?,
+            ApplicationSnapshotVersion::new(SNAPSHOT_VERSION)?,
+        ),
+    )?;
+    let payload = app
+        .build_snapshot(at)
+        .map_err(|error| disk::invalid(&error.to_string()))?
+        .payload;
+    if payload.len() > MAX_SNAPSHOT_BYTES {
+        return Err(disk::invalid("counter snapshot is too large").into());
+    }
+    let store = InMemoryRaftSnapshotStore::with_snapshot(PersistedRaftSnapshot {
+        metadata,
+        application_payload: payload,
+    });
+    Ok((
+        store
+            .current_snapshot()
+            .ok_or_else(|| disk::invalid("missing built snapshot"))?,
+        store,
+    ))
+}
+```
 
 </details>

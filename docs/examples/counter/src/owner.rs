@@ -156,6 +156,7 @@ pub fn drive(
     stop: &AtomicBool,
     ready: &AtomicBool,
     connections: &AtomicUsize,
+    snapshots: &mut crate::snapshots::Snapshots,
 ) -> Result<()> {
     let inbound = transport.inbound();
     let mut next_tick = Instant::now();
@@ -169,6 +170,7 @@ pub fn drive(
             shutdown_requested = true;
         }
         let reschedule = turn(driver)?;
+        snapshots.maintain(driver)?;
         if driver.state() == ServiceState::Draining && !draining_reported {
             eprintln!(
                 "Node {}: draining durable work",
