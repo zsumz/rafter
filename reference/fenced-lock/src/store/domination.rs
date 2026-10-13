@@ -114,7 +114,7 @@ pub(super) fn verify_session_cache_dominates(
 /// [`Repair`] claimed for all of them: reading that slot is exactly what failed,
 /// so nobody can say what was in it. That sentence was true of every damage
 /// except the one that matters. [`SlotDamage::UnsealedCompleteImage`] is a whole
-/// image that verified under the restored mark — [`classify_unsealed`] decoded
+/// image that verified under the restored mark — `classify_unsealed` decoded
 /// it far enough to report a generation — so "nobody can say" was a claim about
 /// the mechanism's scope made one step wider than the mechanism reached.
 ///

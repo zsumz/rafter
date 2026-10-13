@@ -217,11 +217,11 @@ fn require_no_successful_start(output: &str) {
     }
 }
 
-fn remove_seal(app_dir: &Path) -> u64 {
+pub(super) fn remove_seal(app_dir: &Path) -> u64 {
     let store = LockStore::open(app_dir, process_config()).unwrap();
     let live = store
         .live_slot()
-        .expect("the acknowledged renewal has a live slot");
+        .expect("the acknowledged command has a live slot");
     let generation = store.generation();
     assert!(generation >= 3);
     drop(store);

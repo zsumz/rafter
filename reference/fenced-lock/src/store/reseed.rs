@@ -63,30 +63,30 @@ impl LockStore {
     /// `a_reseeded_replica_recovers_its_marks_from_the_group` runs that end to
     /// end and checks the mark comes back at or above the quorum's.
     ///
-    /// # The Raft state beside the store must not be compacted
+    /// # A compacted prefix needs snapshot recovery
     ///
-    /// Retained is the whole of it. Nothing supplies a prefix this replica's
-    /// own log has already dropped — a follower whose log matches the leader's
-    /// is never sent a snapshot, so "the group will fill in what compaction
-    /// removed" is a claim about the layer beneath that the layer beneath does
-    /// not make. Earlier revisions of this paragraph made it anyway.
+    /// Replaying the retained suffix onto the empty store is not sufficient.
+    /// A follower whose Raft log already matches the leader's need not receive
+    /// a new snapshot from the group. The local snapshot must supply the prefix
+    /// compaction removed, before any later application entry is replayed.
     ///
-    /// A replica that has compacted therefore has a snapshot boundary above
-    /// the [`LogIndex::ZERO`] a re-seeded store honestly reports, and the
-    /// composition refuses rather than running: the Raft node still opens —
-    /// it raises the declared floor to its boundary and documents that it
-    /// does — and the group over it fails with
-    /// `GroupError::AppliedIndexBelowSnapshotBoundary` naming both indexes,
-    /// which `gen6_reseed_compaction.rs` pins. That refusal is the
-    /// good outcome. It is what stops this call from reaching, on a compacted
-    /// replica, the state the section below gives as the reason to refuse a
-    /// `NoReadableImage`: a store handing out token 1 for a resource whose
-    /// guarded downstream has already accepted more.
+    /// This function only empties the application store. The process composition
+    /// drains runtime recovery through `RaftGroup::apply_recovery_outputs`.
+    /// When those outputs contain committed application entries above the local
+    /// snapshot boundary, that operation first installs the retained snapshot.
+    /// `explicit_reseed_restores_a_compacted_snapshot_before_replaying_its_suffix`
+    /// checks this path over real files and authenticated TLS, including cold
+    /// session-cache recovery and fencing marks from both snapshot and suffix.
     ///
-    /// The way forward from that refusal is not another re-seed. Delete the
-    /// Raft log, hard state, and snapshot alongside the application store, so
-    /// the replica rejoins the group empty and is sent a snapshot the ordinary
-    /// way.
+    /// This does not make every compacted replica recoverable. With no committed
+    /// application suffix and no recovery snapshot directive, the recovery pump
+    /// performs no implicit install. A store still below the snapshot boundary
+    /// is refused on use. Missing, invalid or unsupported snapshots also prevent
+    /// recovery; a caller must not bypass the applied-floor checks. The raw
+    /// output-pump cases in `gen6_reseed_compaction.rs` retain those guards.
+    /// Repeating a reseed cannot reconstruct missing state. Restore a validated
+    /// snapshot through the application recovery path or use the embedding's
+    /// explicit replica-replacement procedure while preserving quorum state.
     ///
     /// # What it costs, and the premise nothing here can check
     ///

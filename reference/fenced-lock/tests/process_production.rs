@@ -16,6 +16,8 @@ mod process;
 mod production_process;
 #[path = "support/production_recovery.rs"]
 mod production_recovery;
+#[path = "support/production_reseed.rs"]
+mod production_reseed;
 #[path = "support/public_transport.rs"]
 mod public_transport;
 #[path = "support/scratch.rs"]
@@ -512,4 +514,10 @@ fn explicit_repair_of_an_unsealed_renewal_recovers_committed_state() {
 #[ignore = "spawns authenticated real processes; run with --ignored"]
 fn explicit_repair_refuses_to_discard_an_acknowledged_fencing_mark() {
     production_recovery::explicit_repair_refuses_acknowledged_mark_loss();
+}
+
+#[test]
+#[ignore = "spawns authenticated real processes; run with --ignored"]
+fn explicit_reseed_restores_a_compacted_snapshot_before_replaying_its_suffix() {
+    production_reseed::explicit_reseed_restores_snapshot_and_suffix();
 }

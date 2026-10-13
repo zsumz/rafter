@@ -60,11 +60,13 @@
 //! adopting a lower mark would let a guarded resource accept two tenures under
 //! one token. `reseed` deletes both slots.
 //!
-//! None of that is unrecoverable for a *replica*. The durable lock image is a
-//! projection of the replicated log, its applied index is the join point, and a
-//! reseeded replica re-applies everything above index zero from the log. What
-//! is unrecoverable is the case where the group cannot supply those entries,
-//! which is a fact about the cluster and not about this process.
+//! Reseeding relies on retained Raft state. An uncompacted replica replays its
+//! log from zero; recovery with a committed application suffix first installs
+//! the local snapshot covering the compacted prefix. Without that restoration,
+//! the applied-floor checks refuse service. In particular, a fully compacted
+//! replica with no application suffix and no recovery snapshot directive does
+//! not install implicitly. The group is not a promise to replace missing local
+//! history merely because this process deleted its application projection.
 //!
 //! A replica's durable state lives under `<cluster-dir>/node-<id>/`, split into
 //! `raft/` for Rafter's stores and `app/` for the two lock slots.
