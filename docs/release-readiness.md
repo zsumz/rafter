@@ -1,6 +1,6 @@
 # Release readiness — 2026-10-13
 
-Status snapshot: October 13, 2026 at 10:08 UTC. The latest inspected remote
+Status snapshot: October 13, 2026 at 14:34 UTC. The latest inspected remote
 `main` is still `021f4f9bb2f6960cb75b24f5a627f1872a12d430`. The release work
 is on `codex/` branches and draft [PR #23](https://github.com/zsumz/rafter/pull/23).
 Rust 1.88.0 builds the library; the initial local blocker was the missing
@@ -18,10 +18,12 @@ The integrated release branch is at
 [`0ef3a1a0`](https://github.com/zsumz/rafter/commit/0ef3a1a04b071feda743dd2ac66789cae48748a0).
 Its two latest tests exercise explicit TLS replica repair and refusal to discard
 an acknowledged fencing mark. Its exact Linux archive qualification passes all
-seven phases and 58 reviewed process cases. The new
-[PR CI](https://github.com/zsumz/rafter/actions/runs/38377077377) is still running
-its simulator and TLA+ jobs before aggregation; it must not be described as
-fully qualified.
+seven phases and 58 reviewed process cases. The automated producers in
+[PR CI](https://github.com/zsumz/rafter/actions/runs/38377077377), including the
+simulator and exhaustive bounded TLA+ job, have passed. Its invariant aggregate
+also passes all 44 invariants and 125 clauses; independent readback checks its
+160 verifier members, 77 fixtures and 79 evidence bindings. Maintainer
+architecture approval is pending, so the PR run is not yet fully approved.
 
 The preceding integrated checkpoint,
 [`5d1cc025`](https://github.com/zsumz/rafter/commit/5d1cc025c92ec9a67bb2da2d4ead83c069628ca0),
@@ -51,11 +53,50 @@ production cases. Independent readback checks all 2,847 source files, the
 retention, and the clean 51-package dependency audit. The follow-up is not yet
 integrated into PR #23.
 
-These follow-ups leave the published library sources, root workspace
-manifest/lock and toolchain unchanged from
+The `0ef3a1a0` and `99ebfe37` follow-ups leave the published library sources,
+root workspace manifest/lock and toolchain unchanged from
 [`78382a8d`](https://github.com/zsumz/rafter/commit/78382a8d6a8b155e9af5a212ff8c14b664aa7983).
 The `5d1cc025` model/workflow inputs are also unchanged at `0ef3a1a0`; its
 results remain identified as execution at `5d1cc025`.
+
+The consolidated candidate,
+[`ffa83de8`](https://github.com/zsumz/rafter/commit/ffa83de828c0b3ae2945e0a943b16667a6ab02b8),
+is pushed on `codex/stable-release-consolidated-candidate` and includes the
+reseed follow-up plus seven later slices. It retains exact package archives,
+repairs private Rustdoc links, and adds published collection and non-default-key
+host contracts. The counter now compacts periodically, prunes old snapshots,
+and checks snapshot group, application kind/version, size and applied boundary
+before publication. The reusable application group also refuses a regressing
+snapshot output before calling the installer. That last guard changes library
+implementation; the earlier unchanged-library statement does not cover this
+candidate.
+
+At this exact candidate, local qualification passes 19 collection/host contract
+tests, 11 snapshot-support tests, both complete counter guide modes, 53 archive
+controls and 17 guide controls. Each guide mode runs 19 Rust and 34 Python tests,
+mutual-TLS smoke checks, and repeated compaction with offline catch-up and cold
+recovery. Strict Clippy and public/private Rustdoc pass. All 22 source API
+comparisons against the published alpha pass on Apple Silicon macOS, with all
+2,853 source files independently checked. The seven-phase deterministic package
+lane passes storage, wire and rolling-upgrade checks. All 11 original archives
+remain available after temporary-build cleanup; readback verifies 1,135 packaged
+tracked files, clean Git provenance, and the unchanged 51-package public graph
+and declared licenses. These executions have overlapping coverage; their counts
+must not be added to the historical totals below.
+
+The candidate's
+[Linux I/O qualification](https://github.com/zsumz/rafter/actions/runs/38412250147)
+has passed all four jobs, with independent readback of all 2,853 source files
+and the retained I/O, TLS history, snapshot and ledger records. Its separate
+[Linux archive qualification](https://github.com/zsumz/rafter/actions/runs/38412348911)
+passes all seven phases and 59 reviewed process cases. Readback verifies the
+11 retained archive byte streams, 1,135 packaged source files, storage/wire
+upgrade checks, six rolling-upgrade SIGKILL exits and all 80 pre-recovery files.
+The public 51-package dependency audit is clean. No new full Nightly is claimed. Local architecture analysis reports ten
+expected stale lock/inventory/input findings, including a required line-ceiling tightening
+from 623 to 610. The architecture diff requests no new grants. `zrail.lock` is
+unchanged while explicit approval to refresh those records is pending; hosted
+maintainer approval remains separate. The candidate is not integrated into PR #23.
 
 The default-off `rafter-service/durable` feature supplies bounded managed writes,
 local/quorum reads, leadership transfer, shutdown, snapshot maintenance/handoff,
@@ -77,7 +118,7 @@ and [release checklist](../RELEASE.md).
 | Linux I/O and publication | [I/O at `0ef3a1a0`](https://github.com/zsumz/rafter/actions/runs/38377077535): all four jobs pass. Readback checks four stall scenarios, two TLS deadline regressions, 36 snapshot process-loss cases, six directory-helper tests and 13 ledger publication cases, including two explicit repairs. It verifies 138 pre-recovery snapshot inputs, 24 node-crash inputs, 15 ledger inputs and all 2,846 source files. Process loss retains the kernel/page cache. |
 | Owner lifetime and compaction | The `5d1cc025` Nightly owner job passes 96 cold-recovery cycles (12,288 writes and reads) and 256 compactions with the same live owners (32,768 writes and reads). Cold recovery preserves balance 32,768 and the next write reaches 32,769. Cycle inventories, source bytes and the resolved dependency lock were checked. |
 | Simulator | The `5d1cc025` Nightly bundle independently verifies 77 detector executions, 79 bindings, 14 exhausted bounded models, 18 source-seeded soaks of 1,024 steps each, and 180 liveness report bindings. Its results also pass the full invariant aggregate. |
-| TLA+ | The `5d1cc025` PR model exhausts its frontier: 255,177,640 generated states, 36,058,645 distinct states, depth 40. Both additional PR obligations and all four required Nightly bounded models exhaust their frontiers. Each producer checks 11 negative cases and 34 mutation controls. The separate Nightly continuation resumes a compatible checkpoint and stops at its 195-minute budget with 104,831,004 states queued; it does not exhaust the larger model. Raw progress, source inputs and artifact hashes were independently checked. |
+| TLA+ | The current `0ef3a1a0` PR model and both required PR obligations exhaust their frontiers. Readback checks 255,177,640 generated states, 36,058,645 distinct states, depth 40, zero queued states, 40 retained members and 15 source inputs at merge `55219c61`. Its 11 negative cases and 34 mutation controls pass. The preceding `5d1cc025` PR model reaches the same totals. Both additional PR obligations and all four required Nightly bounded models exhaust their frontiers. Each producer checks 11 negative cases and 34 mutation controls. The separate Nightly continuation resumes a compatible checkpoint and stops at its 195-minute budget with 104,831,004 states queued; it does not exhaust the larger model. Raw progress, source inputs and artifact hashes were independently checked. |
 | Rolling process loss | The `0ef3a1a0` archive run executes both TLS upgrade scenarios, 36 observations, snapshots in both directions, membership/retirement assertions, and independently checked histories. Six actual SIGKILL exits occur after the victim reaches separate committed Raft and applied application boundaries. An uncompressed tar preserves all 80 Linux pre-recovery files and empty directories; ordinary artifact upload omits an empty directory from the loose copy. No hidden repair/reseed is allowed. |
 | Counter scheduling profiles | The `0ef3a1a0` fast profile passes 64 groups and 192 proposals; the `5d1cc025` Nightly profile passes 1,024 groups and 4,096 proposals. Independent history and queue checks verify drained queues, conserved outcomes, source inventories and the generated locks. These in-memory adapter profiles do not measure TLS/storage throughput. |
 | Sampled fuzzing | Four `5d1cc025` Nightly targets pass for 1,801 seconds each, recording 310,567,502 executions total. Raw logs bind checkout, commands, compiler and completions. Maximum input size is 4,096 bytes. Counts include repeated inputs; retained logs do not include full source-preservation inventories, corpus bytes or an explicit cargo-fuzz version. |
@@ -148,12 +189,14 @@ scope](rolling-upgrades.md).
 
 ## Remaining release priorities
 
-1. Complete the running `0ef3a1a0` PR qualification, then integrate the separately
-   qualified `99ebfe37` follow-up and qualify that integration. Its Linux archive
-   qualification is complete, including all 59 reviewed process cases. The
-   `5d1cc025` PR/Nightly aggregates are complete. Keep each result attached to
-   its actual source; do not add overlapping test counts or relabel historical
-   runs as final-source execution.
+1. Obtain explicit approval to refresh the consolidated candidate's reviewed
+   architecture records, then integrate the combined candidate and qualify
+   that integration. The `0ef3a1a0` invariant aggregate and the candidate's
+   Linux archive qualification have passed and been independently read back.
+   The candidate already includes the
+   `99ebfe37` recovery follow-up; avoid serially integrating each tested topic
+   and restarting the same long qualification. Keep every result attached to
+   its executed source, and keep the completed `5d1cc025` full Nightly separate.
 2. Obtain maintainer architecture approval and decide the disposition of the
    still-open, overlapping [PR #13](https://github.com/zsumz/rafter/pull/13).
    Read-only reconciliation found all 19 changed paths represented or evolved
