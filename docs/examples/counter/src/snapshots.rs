@@ -1,5 +1,8 @@
 //! Periodic application snapshots and retention through the existing durable owner.
-use crate::{counter::Counter, disk, Driver, Result, Runtime};
+use crate::{
+    counter::{Counter, MAX_SNAPSHOT_BYTES, SNAPSHOT_GROUP, SNAPSHOT_KIND, SNAPSHOT_VERSION},
+    disk, Driver, Result, Runtime,
+};
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, LogIndex,
     RaftSnapshot, RaftSnapshotMetadata, SnapshotGroupId,
@@ -14,8 +17,6 @@ use std::{
     num::NonZeroU64,
     path::{Path, PathBuf},
 };
-
-const MAX_PAYLOAD: u64 = 65_536;
 
 pub struct Snapshots {
     every: NonZeroU64,
@@ -83,22 +84,22 @@ fn build(
 ) -> std::result::Result<(RaftSnapshot, InMemoryRaftSnapshotStore), ServiceAdapterError> {
     let at = app.applied_index()?;
     let metadata = RaftSnapshotMetadata::new(
-        SnapshotGroupId::new("counter")?,
+        SnapshotGroupId::new(SNAPSHOT_GROUP)?,
         node.id(),
         at,
         node.term_at_index(at)
             .ok_or_else(|| disk::invalid("snapshot boundary has no term"))?,
         node.current_term(),
         ApplicationSnapshotMetadata::new(
-            ApplicationSnapshotKind::new("counter-v1")?,
-            ApplicationSnapshotVersion::new(1)?,
+            ApplicationSnapshotKind::new(SNAPSHOT_KIND)?,
+            ApplicationSnapshotVersion::new(SNAPSHOT_VERSION)?,
         ),
     )?;
     let payload = app
         .build_snapshot(at)
         .map_err(|error| disk::invalid(&error.to_string()))?
         .payload;
-    if payload.len() > MAX_PAYLOAD as usize {
+    if payload.len() > MAX_SNAPSHOT_BYTES {
         return Err(disk::invalid("counter snapshot is too large").into());
     }
     let store = InMemoryRaftSnapshotStore::with_snapshot(PersistedRaftSnapshot {

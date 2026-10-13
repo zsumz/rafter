@@ -19,6 +19,7 @@ use rafter_service::{
 };
 use rafter_storage::{
     FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
+    RaftSnapshotStore,
 };
 use rafter_transport_tls::{FileTransportSessionStore, SessionStoreLimits, TlsSender};
 use std::{
@@ -113,6 +114,9 @@ fn run(id: u64) -> Result<()> {
     // Acquire exclusive directory ownership before opening any application files.
     let (hard_state_store, log_segment, snapshot_store) =
         FileRaftNodeStores::open(directory.join("raft"))?.into_parts();
+    if let Some(snapshot) = snapshot_store.current_snapshot() {
+        counter::validate_snapshot_descriptor(&snapshot)?;
+    }
     let app = Counter::open(&directory)?;
     let checkpoint = checkpoint::load(&directory.join("checkpoint"), id)?;
     let config = NodeConfig::new(

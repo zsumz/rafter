@@ -48,6 +48,12 @@ The compaction process check holds one follower offline across repeated snapshot
 then requires TLS snapshot catch-up and a cold restart preserving every acknowledged
 write. Both guide modes run this check.
 
+Startup and snapshot installation require group `counter`, application kind
+`counter-v1`, and format version 1. Installation also requires the descriptor,
+wrapper and decoded state to agree on the applied floor. Both stored and inline
+snapshot payloads are limited to 65,536 bytes. Incompatible snapshots are refused
+before the application record is replaced; checksums do not grant schema compatibility.
+
 This example supports only the original three voters. Its checkpoint preserves
 the existing retirement facts across restart, and membership changes, contradictory
 records, or lost checkpoint history refuse startup. It does not implement dynamic

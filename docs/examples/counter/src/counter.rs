@@ -1,6 +1,6 @@
 //! The application's counter and the last command included in its saved value.
 use crate::disk;
-use rafter::{LogIndex, SnapshotChunkRequest, SnapshotChunkSource};
+use rafter::{LogIndex, RaftSnapshot, SnapshotChunkRequest, SnapshotChunkSource};
 use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
     ReplicatedStateMachine, SnapshotSupport,
@@ -11,6 +11,27 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
+
+pub(crate) const SNAPSHOT_GROUP: &str = "counter";
+pub(crate) const SNAPSHOT_KIND: &str = "counter-v1";
+pub(crate) const SNAPSHOT_VERSION: u16 = 1;
+pub(crate) const MAX_SNAPSHOT_BYTES: usize = 65_536;
+
+pub(crate) fn validate_snapshot_descriptor(snapshot: &RaftSnapshot) -> io::Result<()> {
+    if snapshot.metadata.group_id.as_str() != SNAPSHOT_GROUP {
+        return Err(disk::invalid("counter snapshot belongs to another group"));
+    }
+    let application = &snapshot.metadata.application;
+    if application.kind.as_str() != SNAPSHOT_KIND || application.version.get() != SNAPSHOT_VERSION {
+        return Err(disk::invalid(
+            "unsupported counter snapshot application format",
+        ));
+    }
+    if snapshot.application_payload_len > MAX_SNAPSHOT_BYTES as u64 {
+        return Err(disk::invalid("counter snapshot is too large"));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -117,8 +138,12 @@ impl ReplicatedStateMachine for Counter {
             return Err(disk::invalid("snapshot would move the counter backwards").into());
         }
         let payload = if let Some(descriptor) = &snapshot.raft_snapshot {
-            if descriptor.application_payload_len > 65_536 {
-                return Err(disk::invalid("counter snapshot is too large").into());
+            validate_snapshot_descriptor(descriptor)?;
+            if descriptor.metadata.last_included_index != snapshot.applied_index {
+                return Err(disk::invalid(
+                    "snapshot descriptor progress does not match its wrapper",
+                )
+                .into());
             }
             let store = FileRaftSnapshotStore::open(&self.snapshots)
                 .map_err(|error| disk::invalid(&error.to_string()))?;
@@ -133,6 +158,9 @@ impl ReplicatedStateMachine for Counter {
                 })
                 .ok_or_else(|| disk::invalid("snapshot payload is unavailable"))?
         } else {
+            if snapshot.payload.len() > MAX_SNAPSHOT_BYTES {
+                return Err(disk::invalid("counter snapshot is too large").into());
+            }
             snapshot.payload
         };
         let next: State = serde_json::from_slice(&payload).map_err(io::Error::from)?;
