@@ -18,8 +18,8 @@ The strict build and exact-package baseline is Rust 1.88. The additional
 The full invariant evidence executor requires Linux. Its macOS tests exercise
 portable process handling and the required refusal of Linux-only execution.
 
-At candidate `b2847c07`, the completed native jobs in
-[CI run 38326474147](https://github.com/zsumz/rafter/actions/runs/38326474147)
+At candidate `0ef3a1a0`, the completed native jobs in
+[CI run 38377077377](https://github.com/zsumz/rafter/actions/runs/38377077377)
 record Ubuntu 24.04.5 on x86-64 and macOS 15.7.9 on Apple Silicon, both using
 Rust 1.88. Linux passes 3,255 workspace tests (53 ignored) and the separate
 440-test durable selection. These counts overlap. The macOS storage command
@@ -27,13 +27,13 @@ passes 321 tests with one process-loss case intentionally ignored; that case has
 a separate Linux selection. Its strict workspace/durable lint and reviewed
 launcher selections also pass.
 
-The checkout is merge commit `d62dc853`, whose tree matches the candidate. The
+The checkout is merge commit `55219c61`, whose tree matches the candidate. The
 retained logs verify that checkout, compiler and exact test outcomes; the native
 receipts below additionally verify a clean checkout at capture time. They do not
 supply a before/after source inventory for these two jobs or replace
-maintainer architecture approval. Both final invariant aggregates at this
-checkpoint subsequently passed independent readback. The earlier
-complete local workspace result is recorded in the
+maintainer architecture approval. The current PR invariant jobs remain in
+progress; the completed aggregates at `5d1cc025` retain their own source identity.
+The earlier complete local workspace result is recorded in the
 [release-readiness checkpoint](release-readiness.md#current-code-checkpoint).
 
 ## Native environment receipts
@@ -64,8 +64,8 @@ recorded test results and the storage contract below.
 
 ## Observed candidate test storage
 
-The `b2847c07` [Linux test job](https://github.com/zsumz/rafter/actions/runs/38326474147/job/115066227482)
-and [macOS storage/launcher job](https://github.com/zsumz/rafter/actions/runs/38326474147/job/115066227371)
+The `0ef3a1a0` [Linux test job](https://github.com/zsumz/rafter/actions/runs/38377077377/job/115228075000)
+and [macOS storage/launcher job](https://github.com/zsumz/rafter/actions/runs/38377077377/job/115228075424)
 retain their own native receipts. Independent readback checks the downloaded
 artifact hashes, recorded Git/compiler identity, recorder source hash, raw mount
 queries and selection of all three directories: workspace, Rust temporary path
@@ -74,7 +74,7 @@ and runner temporary path. Both receipts are under
 
 | Job | Receipt in the diagnostics artifact | Observed filesystem and volume | Mountpoint and options |
 | --- | --- | --- | --- |
-| Linux test | `linux-storage-environment.json` | ext4 on `/dev/nvme0n1p1` | `/`; `rw,relatime,discard,journal_async_commit,nobarrier,errors=remount-ro,commit=30,data=writeback` |
+| Linux test | `linux-storage-environment.json` | ext4 on `/dev/sda1` | `/`; `rw,relatime,discard,journal_async_commit,nobarrier,errors=remount-ro,commit=30,data=writeback` |
 | macOS storage/launcher | `macos-storage-environment.json` | APFS on `/dev/disk2s5` | `/System/Volumes/Data`; `local,journaled,nobrowse,root data` |
 
 Each job's three directories resolve to its listed volume. On macOS, the

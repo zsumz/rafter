@@ -1,40 +1,61 @@
-# Release readiness — 2026-10-12
+# Release readiness — 2026-10-13
 
-Status snapshot: October 13, 2026 at 04:22 UTC (October 12 locally). A fresh read
-of all 23 remote heads still places `main` at
-`021f4f9bb2f6960cb75b24f5a627f1872a12d430`, matching the initial branch review.
-The recent commits are on the release-work branches. Rust 1.88.0 builds the
-library; the initial local blocker was the missing toolchain. The repository now pins that
-toolchain, while CI explicitly selects each job's separately required compiler.
+Status snapshot: October 13, 2026 at 10:08 UTC. The latest inspected remote
+`main` is still `021f4f9bb2f6960cb75b24f5a627f1872a12d430`. The release work
+is on `codex/` branches and draft [PR #23](https://github.com/zsumz/rafter/pull/23).
+Rust 1.88.0 builds the library; the initial local blocker was the missing
+toolchain. The repository pins it, while CI selects each job's required compiler.
 
 Rafter already has authenticated TLS transport. The durable owner, reference
-services and standalone counter reuse it. The remaining release work is to
-qualify the final integration, establish deployment bounds and select the
-supported operational contract. A green component test is not a stable-release
-claim.
+services and standalone counter reuse it. The remaining release work is final
+integration qualification, deployment bounds and a supported operational
+contract. The evidence below does not establish a stable release or superiority
+over other libraries.
 
 ## Current code checkpoint
 
-The last complete automated qualification is
-[`b2847c07`](https://github.com/zsumz/rafter/commit/b2847c07a8582b93fe2df31adec2adab179ff7c3),
-preserved on `codex/stable-release-continuous-owner`. Release integration is
-tracked in draft [PR #23](https://github.com/zsumz/rafter/pull/23). The baseline's
-full Nightly and both invariant aggregates have passed. Independent readback
-verifies 44 invariants, 125 required clauses, 160 hashed verifier members,
-77 fixtures and 79 evidence bindings in each aggregate. Maintainer architecture approval
-remains outstanding. Local `zrail.lock` refreshes do
-not grant that approval.
+The integrated release branch is at
+[`0ef3a1a0`](https://github.com/zsumz/rafter/commit/0ef3a1a04b071feda743dd2ac66789cae48748a0).
+Its two latest tests exercise explicit TLS replica repair and refusal to discard
+an acknowledged fencing mark. Its exact Linux archive qualification passes all
+seven phases and 58 reviewed process cases. The new
+[PR CI](https://github.com/zsumz/rafter/actions/runs/38377077377) is still running
+its simulator and TLA+ jobs before aggregation; it must not be described as
+fully qualified.
 
-Twelve later commits through
-[`abf951e1`](https://github.com/zsumz/rafter/commit/abf951e10fb919d959e3434251a90e863248c682)
-on `codex/stable-release-rolling-crashes` add ledger publication crash tests,
-their dependency-lock receipt, ordered directory provisioning for all three
-durable reference consumers, rolling SIGKILL replacements after the workload
-is applied, and complete retention of the pre-recovery directory tree. Their
-Linux archive qualification is recorded below. Final integration checks remain
-tracked with PR #23. Both checkpoints leave the published library sources,
-root workspace manifest/lock and toolchain unchanged from the library checkpoint
-at [`78382a8d`](https://github.com/zsumz/rafter/commit/78382a8d6a8b155e9af5a212ff8c14b664aa7983).
+The preceding integrated checkpoint,
+[`5d1cc025`](https://github.com/zsumz/rafter/commit/5d1cc025c92ec9a67bb2da2d4ead83c069628ca0),
+completed every automated PR producer, both 44-invariant aggregates and the full
+[Nightly](https://github.com/zsumz/rafter/actions/runs/38347238007). Independent
+readback verifies 125 required clauses, 160 hashed verifier members, 77 fixtures
+and 79 evidence bindings in each aggregate. The hosted aggregates verified
+219 PR and 1,016 Nightly raw producer artifacts; local readback retained their
+report/verifier bundles, not a fresh execution of the whole raw producer bundle.
+The [PR run](https://github.com/zsumz/rafter/actions/runs/38347096750) was later
+cancelled by the `0ef3a1a0` push while architecture approval remained pending.
+It was never a fully approved CI run. Maintainer approval is still outstanding;
+local architecture checks and lock refreshes do not grant it.
+
+A separate follow-up,
+[`99ebfe37`](https://github.com/zsumz/rafter/commit/99ebfe3764f77865aac57dee9d2a1b1aa3ce2aff)
+on `codex/stable-release-tls-reseed`, adds explicit reseeding from a retained
+snapshot and committed suffix, followed by TLS catch-up, cold retry-cache checks
+and monotonic fencing. Its targeted test, all eight production-process tests,
+strict Clippy, strict Rustdoc including private items, and architecture checks
+pass locally. It also corrects stale recovery documentation and two broken
+private Rustdoc links. Its
+[Linux archive qualification](https://github.com/zsumz/rafter/actions/runs/38379518298)
+passes all seven phases and 59 reviewed process cases, including all eight
+production cases. Independent readback checks all 2,847 source files, the
+11 archive receipts, storage/wire/rolling upgrades, complete rolling crash-input
+retention, and the clean 51-package dependency audit. The follow-up is not yet
+integrated into PR #23.
+
+These follow-ups leave the published library sources, root workspace
+manifest/lock and toolchain unchanged from
+[`78382a8d`](https://github.com/zsumz/rafter/commit/78382a8d6a8b155e9af5a212ff8c14b664aa7983).
+The `5d1cc025` model/workflow inputs are also unchanged at `0ef3a1a0`; its
+results remain identified as execution at `5d1cc025`.
 
 The default-off `rafter-service/durable` feature supplies bounded managed writes,
 local/quorum reads, leadership transfer, shutdown, snapshot maintenance/handoff,
@@ -50,30 +71,21 @@ and [release checklist](../RELEASE.md).
 | Qualification | Verified checkpoint and scope |
 | --- | --- |
 | Integrated library build | `78382a8d`: all-target build, 3,349 tests passed, 59 ignored, strict all-target Clippy and rustdoc on Rust 1.88/Apple Silicon macOS. Ignored tests have separate reviewed selections. |
-| Previous complete invariant profiles | [PR at `bc6d1677`](https://github.com/zsumz/rafter/actions/runs/38296623957) and [Nightly at `bc6d1677`](https://github.com/zsumz/rafter/actions/runs/38297161459): both invariant aggregates independently checked, with 44 invariants, 125 required clauses, 77 fixtures and 79 bindings. All 16 applicable Nightly jobs passed. The old PR run was subsequently cancelled when `b2847c07` was pushed; its unapproved architecture-review job was cancelled and the dependent gate failed. It was never a fully approved CI run. |
-| Completed automated baseline | [CI at `b2847c07`](https://github.com/zsumz/rafter/actions/runs/38326474147) and [Nightly at `b2847c07`](https://github.com/zsumz/rafter/actions/runs/38326565330): the full Nightly and both 44-invariant aggregates pass and their retained report/verifier bundles pass independent readback. The CI merge tree matches the branch tree. Maintainer architecture approval remains pending. |
-| Native test jobs | The `b2847c07` CI passes 3,255 Linux workspace tests (53 ignored), a separate 440-test durable selection, and 321 macOS storage tests (one ignored). Counts overlap. Independent log and native-receipt checks bind Ubuntu 24.04.5/ext4 and macOS 15.7.9/APFS to the recorded merge tree. See the [platform observations](platform-qualification.md#observed-candidate-test-storage). |
-| Public source API | The `b2847c07` CI passes all 22 default/all-feature comparisons across 11 crates against `0.0.2-alpha.1`. Readback verifies commands, reports and all 2,837 source files. This is source API evidence; wire and storage compatibility have separate executable checks. |
-| Exact archives, MSRV and upgrades | [Archives at `b2847c07`](https://github.com/zsumz/rafter/actions/runs/38326581942): seven phases, 56 reviewed process cases, 11 archives, Rust 1.88 MSRV, storage upgrades, bidirectional wire exchange and rolling TLS upgrades pass. All 2,837 source files match Git. The dependency projection covers 51 packages, including 40 registry packages. Retained artifacts contain archive hashes and receipts, not the archive bytes. |
-| Linux I/O and snapshot faults | [I/O run at `b2847c07`](https://github.com/zsumz/rafter/actions/runs/38326471338): four I/O scenarios, two TLS deadline regressions and 36 snapshot process-loss cases pass. Readback checks 138 pre-recovery snapshot inputs, 24 node-crash inputs, 90 resource observations and the complete source inventory. Process loss retains the kernel/page cache. |
-| Owner lifetime and compaction | The `b2847c07` Nightly owner job passes 96 cold-recovery cycles (12,288 writes and reads) and 256 compactions with the same live owners (32,768 writes and reads). Cold recovery preserves the final balance and the next write reaches 32,769. Exact cycle inventories, all source bytes and the resolved dependency lock were checked. |
-| Simulator | The `b2847c07` Nightly bundle independently verifies 77 detector executions, 79 bindings, 14 exhausted bounded models, 18 source-seeded soaks of 1,024 steps each, and 180 liveness report bindings. Its results also pass the completed full invariant aggregate. |
-| TLA+ | The `b2847c07` PR model exhausts its frontier: 255,177,640 generated states, 36,058,645 distinct states, depth 40. Both additional PR obligations and all four required Nightly bounded models exhaust their frontiers. Each producer checks 11 negative cases and 34 mutation controls. The separate Nightly continuation resumes a compatible checkpoint and stops at its 195-minute budget with 84,441,061 states queued; it does not exhaust the larger model. Raw progress, source inputs and retained artifact hashes were independently checked. |
-| Rolling process loss | `abf951e1` locally passes both exact-archive TLS scenarios: 36 observations, snapshots in both directions, all membership/retirement assertions, and two independently checked 25-operation histories including one uncertain attempt each. Six actual SIGKILL exits occur only after the victim reaches the leader's committed Raft and applied application boundaries. All 81 pre-recovery files and empty directories survive tar readback. [Linux archive run](https://github.com/zsumz/rafter/actions/runs/38346138814) passes all seven phases, 56 reviewed process cases, MSRV, upgrades and the public dependency audit. Complete pre-recovery tar contents and retained source bindings pass independent readback; ordinary artifact uploads may omit empty directories from the loose copy. |
-| Counter scheduling profiles | The `b2847c07` fast and Nightly profiles pass with 64/1,024 groups and 192/4,096 completed proposals. Independent history and queue checks verify drained queues, conserved outcomes, all 2,837 source files and the generated lock. These are deterministic in-memory adapter profiles; they do not measure TLS or storage throughput. |
-| Sampled fuzzing | All four `b2847c07` Nightly targets pass for 1,801 seconds each, recording 475,541,120 executions in total. Raw logs bind the checkout, commands, compiler, seeds and successful completions. The maximum generated input size is 4,096 bytes. Counts include repeated inputs; retained logs do not contain full source-preservation inventories, corpus bytes or an explicit cargo-fuzz version. |
-| Burn-in | The `b2847c07` Nightly burn-in passes 14 exhausted bounded models, 18 fresh-seeded soaks of 1,024 steps, and 321 storage tests (one ignored) in 27m52s. Uploaded logs and durations match the actual job stream. Three runs at `7151197c`, `bc6d1677` and `b2847c07`, with explicitly verified identical burn-in code, locks, toolchain/setup and job definition, total 70m43s. This satisfies the script's aggregate-duration rule; it is not a 30-minute run at the current source. |
-| Ledger publication and directory sync | [Linux at `4079be1d`](https://github.com/zsumz/rafter/actions/runs/38330349594): all four jobs pass. The ledger job executes six directory-helper tests and 13 actual `SIGKILL` publication cases, retaining 15 inputs before recovery. Two cases require explicit repair; strict open is not weakened. All 2,844 source files and the resolved reference lock were verified. |
-| Other directory callers | `d82aa927`: fenced-lock passes 219 ordinary tests and 20 process cases. `d439da22`: counter passes 124 ordinary tests and 27 process cases. Both pass strict lint/docs and source/architecture checks. [Combined Linux archive qualification](https://github.com/zsumz/rafter/actions/runs/38331550435) passes all seven phases and 56 reviewed process cases, with storage, wire and rolling upgrades. Readback verifies all 2,844 source files, 11 archive receipts and the clean 51-package dependency audit. The 56 cases include the consumer process cases above; they are not additional unique tests. |
+| Native test jobs | `0ef3a1a0` passes 3,255 Linux workspace tests (53 ignored), a separate 440-test durable selection, and 321 macOS storage tests (one ignored). Counts overlap. Independent logs and native receipts bind Ubuntu 24.04.5/ext4 and macOS 15.7.9/APFS to merge `55219c61`, whose tree matches the branch. See the [platform observations](platform-qualification.md#observed-candidate-test-storage). |
+| Public source API | `0ef3a1a0` passes all 22 default/all-feature comparisons across 11 crates against `0.0.2-alpha.1`. Readback checks commands, reports and all 2,846 source files at PR merge `55219c61`, whose tree exactly matches the candidate. Source API checks do not replace wire/storage compatibility checks. |
+| Exact archives, MSRV and upgrades | [Archives at `0ef3a1a0`](https://github.com/zsumz/rafter/actions/runs/38350169041): seven phases, 58 reviewed process cases, 11 archives, Rust 1.88 MSRV, storage upgrades, bidirectional wire exchange and rolling TLS upgrades pass. All 2,846 source files match Git. The audited dependency projection covers 51 packages, including 40 registry packages. Artifacts retain archive hashes and receipts, not the archive bytes. |
+| Linux I/O and publication | [I/O at `0ef3a1a0`](https://github.com/zsumz/rafter/actions/runs/38377077535): all four jobs pass. Readback checks four stall scenarios, two TLS deadline regressions, 36 snapshot process-loss cases, six directory-helper tests and 13 ledger publication cases, including two explicit repairs. It verifies 138 pre-recovery snapshot inputs, 24 node-crash inputs, 15 ledger inputs and all 2,846 source files. Process loss retains the kernel/page cache. |
+| Owner lifetime and compaction | The `5d1cc025` Nightly owner job passes 96 cold-recovery cycles (12,288 writes and reads) and 256 compactions with the same live owners (32,768 writes and reads). Cold recovery preserves balance 32,768 and the next write reaches 32,769. Cycle inventories, source bytes and the resolved dependency lock were checked. |
+| Simulator | The `5d1cc025` Nightly bundle independently verifies 77 detector executions, 79 bindings, 14 exhausted bounded models, 18 source-seeded soaks of 1,024 steps each, and 180 liveness report bindings. Its results also pass the full invariant aggregate. |
+| TLA+ | The `5d1cc025` PR model exhausts its frontier: 255,177,640 generated states, 36,058,645 distinct states, depth 40. Both additional PR obligations and all four required Nightly bounded models exhaust their frontiers. Each producer checks 11 negative cases and 34 mutation controls. The separate Nightly continuation resumes a compatible checkpoint and stops at its 195-minute budget with 104,831,004 states queued; it does not exhaust the larger model. Raw progress, source inputs and artifact hashes were independently checked. |
+| Rolling process loss | The `0ef3a1a0` archive run executes both TLS upgrade scenarios, 36 observations, snapshots in both directions, membership/retirement assertions, and independently checked histories. Six actual SIGKILL exits occur after the victim reaches separate committed Raft and applied application boundaries. An uncompressed tar preserves all 80 Linux pre-recovery files and empty directories; ordinary artifact upload omits an empty directory from the loose copy. No hidden repair/reseed is allowed. |
+| Counter scheduling profiles | The `0ef3a1a0` fast profile passes 64 groups and 192 proposals; the `5d1cc025` Nightly profile passes 1,024 groups and 4,096 proposals. Independent history and queue checks verify drained queues, conserved outcomes, source inventories and the generated locks. These in-memory adapter profiles do not measure TLS/storage throughput. |
+| Sampled fuzzing | Four `5d1cc025` Nightly targets pass for 1,801 seconds each, recording 310,567,502 executions total. Raw logs bind checkout, commands, compiler and completions. Maximum input size is 4,096 bytes. Counts include repeated inputs; retained logs do not include full source-preservation inventories, corpus bytes or an explicit cargo-fuzz version. |
+| Burn-in | `5d1cc025` passes 14 exhausted bounded models, 18 fresh-seeded soaks and 321 storage tests (one ignored) in 28m11s. With two historical runs whose relevant inputs and job definition are explicitly identical, the aggregate is 71m02s. This satisfies the script's aggregate-duration rule; it is not a 30-minute run at the current source. |
 
-The previous PR TLA+ primary model at `bc6d1677` exhausted its queue after
-36,058,645 distinct states, along with its two required bounded obligations.
-The same checkpoint's Nightly exhausted four mandatory bounded models but its
-separate larger continuation stopped at the 195-minute budget with 55,325,720
-states queued. Both profiles passed 11 named negative cases and 34 mutation
-controls. Retained raw receipts preserve TLC's fingerprint collision estimates.
-These are bounded results; the larger Nightly model has not been exhaustively
-checked, and previous results do not qualify a later Git identity by inheritance.
+These are bounded results. Neither a complete bounded frontier nor a resumed
+larger model proves unbounded Raft correctness. Prior results do not qualify a
+later Git identity by inheritance; each source binding above is retained.
 
 ## Operational evidence and limits
 
@@ -86,8 +98,10 @@ majority progress before the victim restarted. The run preserves raw outcomes,
 latency distributions and sparse process-resource observations. It is one local
 host, not sustained multi-host qualification or a whole-host memory bound.
 
-The `b2847c07` Linux run adds a source-bound 60-second concurrent TLS history with
-7,826 operations and an independently replayed 2,013-step witness. The separate
+The `0ef3a1a0` Linux run adds a source-bound 60-second concurrent TLS history with
+6,450 operations and an independently replayed 1,242-step witness. Cold recovery
+preserves 995 increments and the next write reaches 996. The history retains
+132 uncertain writes; its valid witness selects none of them. The separate
 [durable performance baseline](../bench-compare/METHODOLOGY.md#local-release-readiness-baseline)
 at `0eb06666` retains 40 isolated timing samples comparing checkpoint replacement
 with the optional journal on local APFS. Neither result establishes peak service
@@ -119,21 +133,28 @@ a lagging lock replica killed during application publication can retain a comple
 unsealed image. Strict open leaves that ambiguous image alone. The six passing
 replacement cases now observe separate Raft and application boundaries before
 killing; they do not establish automatic recovery from every publication
-interruption. No repair or reseed is hidden in that check. The existing explicit
-repair path still refuses fencing-mark regression. The failed run and its
-recovery inputs remain separate evidence; see the [rolling qualification
+interruption. No repair or reseed is hidden in that check. The explicit repair
+tests at `0ef3a1a0` check both safe renewal recovery and
+refusal to regress an acknowledged fencing mark. The separate `99ebfe37` test
+checks operator-selected reseeding when a valid snapshot and committed suffix
+remain. A fully compacted replica without an application suffix or recovery
+snapshot directive still refuses below its snapshot boundary. The failed run
+and its recovery inputs remain separate evidence; see the [rolling qualification
 scope](rolling-upgrades.md).
 
 ## Remaining release priorities
 
-1. Finish integration and final-source qualification of the independently
-   qualified follow-ups. The `b2847c07` PR/Nightly
-   aggregates are complete. Keep results attached to their actual source and
-   compare unchanged qualification inputs explicitly; do not add overlapping
-   test counts or relabel historical runs as final-source execution.
-2. Obtain maintainer architecture approval and reconcile the still-open,
-   overlapping [PR #13](https://github.com/zsumz/rafter/pull/13). A local gate-input
-   refresh, draft PR or passed code check does not satisfy that approval.
+1. Complete the running `0ef3a1a0` PR qualification, then integrate the separately
+   qualified `99ebfe37` follow-up and qualify that integration. Its Linux archive
+   qualification is complete, including all 59 reviewed process cases. The
+   `5d1cc025` PR/Nightly aggregates are complete. Keep each result attached to
+   its actual source; do not add overlapping test counts or relabel historical
+   runs as final-source execution.
+2. Obtain maintainer architecture approval and decide the disposition of the
+   still-open, overlapping [PR #13](https://github.com/zsumz/rafter/pull/13).
+   Read-only reconciliation found all 19 changed paths represented or evolved
+   in the release branch, so no additional merge is needed to obtain its code.
+   Closing that PR and approving PR #23 remain maintainer actions.
 3. Set the supported integration contract before promising stability: the durable
    feature is opt-in, membership execution/committed-change tracking and general
    peer policy remain embedding responsibilities, and applications own atomic

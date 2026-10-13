@@ -96,12 +96,12 @@ impl LockStore {
     /// state offered. Re-seeding gives up this replica's ability to refuse a
     /// mark regression, in exchange for the log's authority over the same fact.
     ///
-    /// And the premise: that the group still holds those entries. Re-seeding
-    /// one replica of three is recoverable. Re-seeding a quorum destroys the
-    /// marks outright, and a guarded resource downstream may then accept two
-    /// independent tenures under one token. Nothing in this call can tell those
-    /// two situations apart — it sees one directory — so it does not try, and
-    /// it is not the place that decides.
+    /// The premise is that retained Raft logs and any required snapshots still
+    /// encode the committed history. This call cannot inspect them or the other
+    /// replicas; it sees only the application directory. Emptying that directory
+    /// is not permission to discard the cluster's authoritative copies. Reseeding
+    /// application stores alone does not erase their Raft logs, but each replica
+    /// must complete validated recovery before it may serve.
     ///
     /// # Errors
     ///
