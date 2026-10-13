@@ -1,7 +1,7 @@
 # Release readiness — 2026-10-12
 
-Status snapshot: October 13, 2026 at 01:19 UTC (October 12 locally). A fresh read
-of all 21 remote heads still places `main` at
+Status snapshot: October 13, 2026 at 01:31 UTC (October 12 locally). A fresh read
+of all 22 remote heads still places `main` at
 `021f4f9bb2f6960cb75b24f5a627f1872a12d430`, matching the initial branch review.
 The recent commits are on the release-work branches. Rust 1.88.0 builds the
 library; the initial local blocker was the missing toolchain. The repository now pins that
@@ -27,8 +27,9 @@ Six later commits through
 [`d439da22`](https://github.com/zsumz/rafter/commit/d439da22d240c4ccb5b7060ee903d1dcde7537f1)
 on `codex/stable-release-counter-directories` add ledger publication crash tests,
 their dependency-lock receipt, and ordered directory provisioning for all three
-durable reference consumers. Their combined archive qualification is running.
-They have not been integrated into the frozen candidate. Both checkpoints leave
+durable reference consumers. Their combined Linux archive qualification passes
+all seven phases, including process/MSRV and upgrade checks. They have not been
+integrated into the frozen candidate. Both checkpoints leave
 the published library sources, root workspace manifest/lock and toolchain
 unchanged from the library checkpoint at
 [`78382a8d`](https://github.com/zsumz/rafter/commit/78382a8d6a8b155e9af5a212ff8c14b664aa7983).
@@ -56,7 +57,7 @@ and [release checklist](../RELEASE.md).
 | Owner lifetime and compaction | The `b2847c07` Nightly owner job passes 96 cold-recovery cycles (12,288 writes and reads) and 256 compactions with the same live owners (32,768 writes and reads). Cold recovery preserves the final balance and the next write reaches 32,769. Exact cycle inventories, all source bytes and the resolved dependency lock were checked. |
 | Simulator | The `b2847c07` Nightly bundle independently verifies 77 detector executions, 79 bindings, 14 exhausted bounded models, 18 source-seeded soaks of 1,024 steps each, and 180 liveness report bindings. This does not replace the pending full invariant aggregate. |
 | Ledger publication and directory sync | [Linux at `4079be1d`](https://github.com/zsumz/rafter/actions/runs/38330349594): all four jobs pass. The ledger job executes six directory-helper tests and 13 actual `SIGKILL` publication cases, retaining 15 inputs before recovery. Two cases require explicit repair; strict open is not weakened. All 2,844 source files and the resolved reference lock were verified. |
-| Other directory callers | `d82aa927`: fenced-lock passes 219 ordinary tests and 20 process cases. `d439da22`: counter passes 124 ordinary tests and 27 process cases. Both pass strict lint/docs and source/architecture checks. [Combined archive qualification](https://github.com/zsumz/rafter/actions/runs/38331550435) is still running at the snapshot time above. |
+| Other directory callers | `d82aa927`: fenced-lock passes 219 ordinary tests and 20 process cases. `d439da22`: counter passes 124 ordinary tests and 27 process cases. Both pass strict lint/docs and source/architecture checks. [Combined Linux archive qualification](https://github.com/zsumz/rafter/actions/runs/38331550435) passes all seven phases and 56 reviewed process cases, with storage, wire and rolling upgrades. Readback verifies all 2,844 source files, 11 archive receipts and the clean 51-package dependency audit. The 56 cases include the consumer process cases above; they are not additional unique tests. |
 
 The previous PR TLA+ primary model at `bc6d1677` exhausted its queue after
 36,058,645 distinct states, along with its two required bounded obligations.
@@ -108,10 +109,11 @@ power-loss qualification of arbitrary application databases.
 
 ## Remaining release priorities
 
-1. Finish the existing `b2847c07` PR/Nightly producers and authenticated aggregates,
-   and the `d439da22` archive run. Verify their retained evidence before integrating
-   the six reference follow-ups, then qualify the final candidate. Keep results
-   attached to their actual source rather than adding overlapping test counts.
+1. Finish the existing `b2847c07` PR/Nightly producers and authenticated aggregates.
+   The `d439da22` archive evidence is verified. Integrate the six reference
+   follow-ups and documentation updates after the frozen candidate finishes,
+   then qualify the final candidate. Keep results attached to their actual source
+   rather than adding overlapping test counts.
 2. Obtain maintainer architecture approval and reconcile the still-open,
    overlapping [PR #13](https://github.com/zsumz/rafter/pull/13). A local gate-input
    refresh, draft PR or passed code check does not satisfy that approval.
