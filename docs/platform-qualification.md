@@ -30,8 +30,9 @@ launcher selections also pass.
 The checkout is merge commit `d62dc853`, whose tree matches the candidate. The
 retained logs verify that checkout, compiler and exact test outcomes; the native
 receipts below additionally verify a clean checkout at capture time. They do not
-supply a before/after source inventory for these two jobs or replace the pending
-final invariant aggregates and maintainer architecture approval. The earlier
+supply a before/after source inventory for these two jobs or replace
+maintainer architecture approval. Both final invariant aggregates at this
+checkpoint subsequently passed independent readback. The earlier
 complete local workspace result is recorded in the
 [release-readiness checkpoint](release-readiness.md#current-code-checkpoint).
 
