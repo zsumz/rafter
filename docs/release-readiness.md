@@ -525,7 +525,17 @@ The external `rafter-crc32/tests/published_api.rs` consumer now supplements that
 specific gap with generic default construction, `std::mem::take` reset and the
 independent IEEE check vector. The same consumer passes against the published
 alpha; removing the trait fails compilation and using the wrong default state
-fails its behavior check. Other handwritten trait contracts still need review.
+fails its behavior check.
+
+The external `rafter/tests/published_collections.rs` consumer adds three core
+collection contracts. It exercises generic construction, borrowed iteration and
+reset for `SharedEntries`, plus byte-container comparisons, content hashing and
+ordering for `SharedPayload` views. The identical consumer passes on Rust 1.88
+against both the checksum-pinned published alpha and the candidate. In isolated
+negative controls, removing `FromIterator` or `AsRef` fails downstream compilation;
+hashing the entire backing buffer instead of the visible payload fails the
+behavior check. These contracts supplement the API checker; other handwritten
+trait implementations and behavioral compatibility still need review.
 The actual enum
 regression above is detected by the automated gate, with no success receipt
 written on failure.
