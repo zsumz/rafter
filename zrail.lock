@@ -1265,7 +1265,7 @@ sha256 = "7ae4cdd9c7d91b6d352fdc68d1e1daaa8780c803f1cadedb09245efc5084fa5a"
 
 [[gate.input]]
 path = ".github/workflows/io-stall.yml"
-sha256 = "33393bda999dafc86c3aa3824e2cdf39f6862c7cbfe1402b89400cac8816bfb4"
+sha256 = "2506067790acdd0fddb705eaab52834df7caf5b65d4e4c0678230db7e9176985"
 
 [[gate.input]]
 path = ".github/workflows/nightly.yml"

@@ -296,8 +296,8 @@ Run on Linux or macOS with `zcheck run reference-ledger-publication`, or use
 `zcheck run full` includes the matrix. Set `RAFTER_LEDGER_PUBLICATION_ARTIFACTS`
 to a new directory whose parent exists to retain successful cases too; failures
 always retain their workspace. The Linux job preserves source/compiler identity,
-native filesystem observations, all case outcomes and pre-recovery files for 30
-days. The initial local matrix passes all 13 verified process exits.
+native filesystem observations, the resolved reference dependency lock, all case
+outcomes and pre-recovery files for 30 days. The initial local matrix passes all 13 verified process exits.
 
 This qualifies process loss in this reference application's journal with the
 kernel and page cache intact. It does not establish physical power-loss behavior,

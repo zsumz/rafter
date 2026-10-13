@@ -125,6 +125,7 @@ jobs:
           export CARGO_TARGET_DIR="$RUNNER_TEMP/ledger-publication-target"
           export RAFTER_LEDGER_PUBLICATION_ARTIFACTS="$RUNNER_TEMP/ledger-publication-evidence/cases"
           scripts/reference-ledger-publication 2>&1 | tee "$RUNNER_TEMP/ledger-publication-evidence/process.log"
+          cp reference/Cargo.lock "$RUNNER_TEMP/ledger-publication-evidence/reference-Cargo.lock"
       - name: Verify source preservation
         if: always()
         run: |
