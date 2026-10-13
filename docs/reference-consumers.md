@@ -535,10 +535,15 @@ structurally different bounded process consumers. The fenced-lock
 
 `tests/process_production.rs` exercises authenticated service, unknown and
 mismatched credentials, replay and removed-peer refusal, checkpoint
-loss/corruption, readiness under incomplete recovery, connection overflow,
+loss/corruption, strict refusal and explicit repair of an unsealed renewal,
+readiness under incomplete recovery, connection overflow,
 monotonic replacement, and both independent lock/guarded-resource checkers.
-`scripts/reference-process-check` selects it through a reviewed five-test
-inventory. Its frozen version-1 adversarial client hand-encodes the outer hello
+`scripts/reference-process-check` selects it through a reviewed six-test
+inventory. The repair case requires two unchanged-byte strict refusals without
+readiness or a peer listener, explicit mark-checked repair, authenticated catch-up,
+and cold recovery of the full application state, fencing floor and session cache.
+Its deliberate seal-byte fault does not establish automatic recovery from all
+application publication interruptions. Its frozen version-1 adversarial client hand-encodes the outer hello
 and peer frame before talking to the current runtime over real mutual TLS.
 
 The sharded-counter process uses one stable physical `PeerId` per host and one

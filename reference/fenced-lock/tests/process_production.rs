@@ -14,6 +14,8 @@
 mod process;
 #[path = "support/production_process.rs"]
 mod production_process;
+#[path = "support/production_recovery.rs"]
+mod production_recovery;
 #[path = "support/public_transport.rs"]
 mod public_transport;
 #[path = "support/scratch.rs"]
@@ -498,4 +500,10 @@ fn wait_counter(cluster: &mut ProductionCluster, node: NodeId, name: &str, minim
         let observation = cluster.observe(node);
         (observation.number(name) >= minimum).then_some(())
     });
+}
+
+#[test]
+#[ignore = "spawns authenticated real processes; run with --ignored"]
+fn explicit_repair_of_an_unsealed_renewal_recovers_committed_state() {
+    production_recovery::explicit_repair_recovers_committed_state();
 }
