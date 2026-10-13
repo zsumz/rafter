@@ -3,7 +3,7 @@
 use std::{fs, path::PathBuf};
 
 use crate::{
-    durable_fs::sync_parent_directory,
+    durable_fs::sync_directory,
     telemetry::{Stage, Timer},
 };
 
@@ -20,7 +20,8 @@ impl FileRaftSnapshotStore {
     /// files and recognized temporary files are also left untouched. Unless the
     /// policy is [`SnapshotRetention::KeepAll`], future crash-orphaned snapshot
     /// files are removed independently of the previous-snapshot count.
-    /// Deletions are followed by one snapshot-directory sync.
+    /// Every successful call except `KeepAll` synchronizes the snapshot directory,
+    /// including retries that find no remaining files to delete.
     ///
     /// A cleanup I/O error does not poison the store because maintenance never
     /// changes logical Raft state. The returned error records the observed
@@ -66,7 +67,8 @@ impl FileRaftSnapshotStore {
     /// files left by interrupted publication.
     ///
     /// Stable pending-transfer files and unrecognized directory entries are not
-    /// touched. The removals are followed by one snapshot-directory sync.
+    /// touched. Every successful call synchronizes the snapshot directory,
+    /// including retries that find no remaining temporary files.
     ///
     /// # Errors
     ///
@@ -103,7 +105,6 @@ impl FileRaftSnapshotStore {
         temporary_files: Vec<SnapshotTemporaryFileInfo>,
     ) -> Result<SnapshotPruneReport, SnapshotPruneError> {
         let mut report = SnapshotPruneReport::default();
-        let mut first_removed_path = None;
 
         for snapshot in snapshots {
             let path = self.directory.join(&snapshot.file_name);
@@ -115,7 +116,6 @@ impl FileRaftSnapshotStore {
                     report,
                 ));
             }
-            first_removed_path.get_or_insert_with(|| path.clone());
             report.removed_snapshots.push(snapshot);
         }
         for temporary in temporary_files {
@@ -128,19 +128,19 @@ impl FileRaftSnapshotStore {
                     report,
                 ));
             }
-            first_removed_path.get_or_insert_with(|| path.clone());
             report.removed_temporary_files.push(temporary);
         }
 
-        if let Some(removed_path) = first_removed_path {
-            if let Err(error) = sync_parent_directory(&removed_path) {
-                return Err(prune_io_error(
-                    "sync raft snapshot directory after maintenance",
-                    self.directory.clone(),
-                    error,
-                    report,
-                ));
-            }
+        // A previous attempt may have deleted everything before its sync failed.
+        // The empty inventory is not proof that those deletions are durable,
+        // including after reopen, so every successful maintenance pass must sync.
+        if let Err(error) = sync_directory(&self.directory) {
+            return Err(prune_io_error(
+                "sync raft snapshot directory after maintenance",
+                self.directory.clone(),
+                error,
+                report,
+            ));
         }
         Ok(report)
     }

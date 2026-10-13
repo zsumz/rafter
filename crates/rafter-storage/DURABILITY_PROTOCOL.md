@@ -404,6 +404,21 @@ Equal-index ID disagreements, missing retained identities, and snapshot identiti
 beyond their boundary are rejected. The normalized identity supplies exported
 configuration state, later configuration IDs, and the next hard-state write.
 
+## Snapshot retention and temporary-file cleanup
+
+`prune_snapshots` and `cleanup_abandoned_snapshot_temporary_files` remove only
+inventory-selected, nonauthoritative artifacts. They preserve the current
+manifest, selected snapshot, stable inbound-transfer staging, and unknown files.
+`KeepAll` is a no-op. Every other successful maintenance call synchronizes the
+snapshot directory, even when no eligible files remain.
+
+A deletion or directory-sync failure returns an observed deletion prefix and
+does not poison the store. Retry the same maintenance operation, on the same
+handle or after reopening. A retry must synchronize the directory again: an
+empty inventory after an earlier failed sync establishes visible absence, not
+durable deletion. Its report describes only files removed during that attempt.
+This maintenance does not change the logical snapshot authority or on-disk format.
+
 ## Executable crash matrix
 
 Unit scenarios arm one thread-local, one-shot failpoint at named filesystem

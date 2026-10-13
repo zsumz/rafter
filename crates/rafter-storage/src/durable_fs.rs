@@ -46,8 +46,12 @@ fn parent_directory(path: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-fn sync_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     let directory = File::open(path)?;
+    #[cfg(test)]
+    crate::storage_failpoint_test::check(
+        crate::storage_failpoint_test::DurabilityPoint::DirectoryBeforeSync,
+    )?;
     directory.sync_all()
 }
 

@@ -48,6 +48,9 @@ use state::{snapshot_path, CurrentSnapshot, StagedTransfer};
 #[path = "raft_snapshot_store/health_test.rs"]
 mod health_test;
 #[cfg(test)]
+#[path = "raft_snapshot_store/inventory_retry_test.rs"]
+mod inventory_retry_test;
+#[cfg(test)]
 #[path = "raft_snapshot_store/inventory_test.rs"]
 mod inventory_test;
 #[cfg(test)]
