@@ -38,6 +38,15 @@ where
             );
             return Err(GroupError::SnapshotsUnsupported { snapshot_index });
         }
+        // A delayed or replayed output must not roll back durable application
+        // state. Check both the live floor and progress retained by this group
+        // before giving the application an opportunity to publish older bytes.
+        let applied_floor = self.app_applied_index()?.max(self.last_applied_index);
+        if snapshot_index < applied_floor {
+            return Err(self.poison_with_malformed_snapshot(format!(
+                "snapshot index {snapshot_index} is below applied floor {applied_floor}"
+            )));
+        }
         let application_snapshot = ApplicationSnapshot {
             applied_index: snapshot_index,
             payload: Vec::new(),
